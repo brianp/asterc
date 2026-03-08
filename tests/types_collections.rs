@@ -1,0 +1,154 @@
+mod common;
+
+// ─── Phase 3: Collections and Type Annotations ─────────────────────
+
+// ─── Let with type annotation ───────────────────────────────────────
+
+#[test]
+fn integration_let_with_type_annotation() {
+    common::check_ok("let x: Int = 5");
+}
+
+#[test]
+fn integration_let_type_annotation_mismatch() {
+    let err = common::check_err("let x: Int = \"hello\"");
+    assert!(err.contains("annotation") || err.contains("mismatch"));
+}
+
+#[test]
+fn integration_let_type_annotation_string() {
+    common::check_ok("let name: String = \"alice\"");
+}
+
+#[test]
+fn integration_let_type_annotation_bool() {
+    common::check_ok("let flag: Bool = true");
+}
+
+// ─── List literals ──────────────────────────────────────────────────
+
+#[test]
+fn integration_list_literal_ints() {
+    common::check_ok("let xs = [1, 2, 3]");
+}
+
+#[test]
+fn integration_list_literal_strings() {
+    common::check_ok("let xs = [\"a\", \"b\"]");
+}
+
+#[test]
+fn integration_empty_list_with_annotation() {
+    common::check_ok("let xs: List[Int] = []");
+}
+
+#[test]
+fn integration_list_mixed_types_error() {
+    let err = common::check_err("let xs = [1, \"two\"]");
+    assert!(err.contains("element") || err.contains("mismatch") || err.contains("consistent"));
+}
+
+// ─── Indexing ───────────────────────────────────────────────────────
+
+#[test]
+fn integration_index_list() {
+    common::check_ok("let xs = [1, 2, 3]\nlet y = xs[0]");
+}
+
+#[test]
+fn integration_index_non_int_error() {
+    let err = common::check_err("let xs = [1, 2]\nlet y = xs[\"bad\"]");
+    assert!(err.contains("Int") || err.contains("index"));
+}
+
+// ─── For-in over List[T] ───────────────────────────────────────────
+
+#[test]
+fn integration_for_over_list() {
+    common::check_ok("let xs = [1, 2, 3]\nfor x in xs\n  let y = x + 1\n");
+}
+
+// ─── Phase 4: Modules, Imports, Builtins ────────────────────────────
+
+#[test]
+fn integration_use_whole_module() {
+    common::check_ok("use io");
+}
+
+#[test]
+fn integration_use_with_path() {
+    common::check_ok("use std/http");
+}
+
+#[test]
+fn integration_use_selective() {
+    common::check_ok("use std/http { Request, Response }");
+}
+
+#[test]
+fn integration_pub_def() {
+    common::check_ok("pub def greet(name: String) -> String\n  name\n");
+}
+
+#[test]
+fn integration_pub_class() {
+    common::check_ok("pub class Point\n  x: Int\n  y: Int\n");
+}
+
+#[test]
+fn integration_pub_let() {
+    common::check_ok("pub let VERSION = 1");
+}
+
+#[test]
+fn integration_builtin_print() {
+    common::check_ok("print(\"hello\")");
+}
+
+#[test]
+fn integration_builtin_len_list() {
+    common::check_ok("let xs = [1, 2, 3]\nlet n = len(xs)");
+}
+
+#[test]
+fn integration_builtin_len_string() {
+    common::check_ok("let n = len(\"hello\")");
+}
+
+#[test]
+fn integration_builtin_to_string() {
+    common::check_ok("let s = to_string(42)");
+}
+
+#[test]
+fn integration_use_deep_path() {
+    common::check_ok("use std/net/tcp");
+}
+
+#[test]
+fn integration_use_with_alias() {
+    common::check_ok("use std/http as h");
+}
+
+#[test]
+fn integration_use_selective_with_alias() {
+    common::check_ok("use std/http/Security { CSRF, BasicAuth } as hs");
+}
+
+#[test]
+fn integration_use_then_code() {
+    common::check_ok("use io\nlet x = 5\nlog(\"hello\")");
+}
+
+// ─── List type annotation ───────────────────────────────────────────
+
+#[test]
+fn integration_let_list_type_annotation() {
+    common::check_ok("let xs: List[Int] = [1, 2, 3]");
+}
+
+#[test]
+fn integration_let_list_type_annotation_mismatch() {
+    let err = common::check_err("let xs: List[String] = [1, 2]");
+    assert!(err.contains("annotation") || err.contains("mismatch"));
+}

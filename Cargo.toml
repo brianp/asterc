@@ -1,0 +1,22 @@
+[package]
+name = "asterc"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+lexer = { path = "lexer" }
+ast = { path = "ast" }
+parser = { path = "parser" }
+typecheck = { path = "typecheck" }
+
+[workspace]
+members = [
+    "ast",                # AST data structures + serialization
+    "lexer",             # tokenization
+    "parser",          # CST/AST builder
+    "typecheck",   # type inference/checking
+    # "vm",           # interpreter/bytecode runtime
+]
+resolver = "2"
+
+[dev-dependencies]

@@ -1,0 +1,51 @@
+# Phase 6+7: Call-Site Async, Error Handling, Pattern Matching
+
+# Pattern matching
+let status = 200
+let message = match status
+  200 => "OK"
+  404 => "Not Found"
+  500 => "Server Error"
+  _ => "Unknown"
+
+# Match with booleans
+let flag = true
+let label = match flag
+  true => "yes"
+  false => "no"
+
+# Error handling with throws/throw/!
+class AppError extends Error
+  code: Int
+
+def safe_divide(a: Int, b: Int) throws AppError -> Int
+  match b
+    0 => throw AppError("division by zero", 0)
+    _ => a
+
+# Error propagation with !
+def chain_divide(x: Int) throws AppError -> Int
+  let result = safe_divide(x, 2)!
+  result + 1
+
+# Async functions
+async def fetch_data() -> String
+  "data"
+
+# Resolve call from sync context
+def get_data() -> String
+  resolve fetch_data()
+
+# Async call from async context
+async def parallel_work() -> Void
+  let task = async fetch_data()
+
+# Detached fire-and-forget
+async def background() -> Void
+  detached async fetch_data()
+
+# Async scope for structured concurrency
+async def orchestrate() -> Void
+  async scope
+    let a = async fetch_data()
+    let b = async fetch_data()

@@ -1,0 +1,201 @@
+use crate::types::Type;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClassInfo {
+    pub ty: Type,
+    pub fields: HashMap<String, Type>,
+    pub methods: HashMap<String, Type>,
+    pub generic_params: Option<Vec<String>>,
+    pub extends: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TraitInfo {
+    pub name: String,
+    pub methods: HashMap<String, Type>,
+    pub required_methods: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeEnv {
+    pub variables: HashMap<String, Type>,
+    pub classes: HashMap<String, ClassInfo>,
+    pub traits: HashMap<String, TraitInfo>,
+    pub parent: Option<Rc<TypeEnv>>,
+}
+
+impl Default for TypeEnv {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TypeEnv {
+    pub fn new() -> Self {
+        Self {
+            variables: HashMap::new(),
+            classes: HashMap::new(),
+            traits: HashMap::new(),
+            parent: None,
+        }
+    }
+
+    /// Create a child scope that inherits from this environment.
+    /// Clones the current level's maps into an Rc snapshot so children observe
+    /// lexical scoping semantics (no visibility of later parent mutations).
+    /// The clone is shallow: only the current level's HashMaps are copied;
+    /// ancestor levels are shared via Rc reference counting.
+    pub fn child(&self) -> TypeEnv {
+        TypeEnv {
+            variables: HashMap::new(),
+            classes: HashMap::new(),
+            traits: HashMap::new(),
+            parent: Some(Rc::new(self.clone())),
+        }
+    }
+
+    pub fn get_var(&self, name: &str) -> Option<Type> {
+        self.variables
+            .get(name)
+            .cloned()
+            .or_else(|| self.parent.as_ref().and_then(|p| p.get_var(name)))
+    }
+
+    pub fn set_var(&mut self, name: String, ty: Type) {
+        self.variables.insert(name, ty);
+    }
+
+    pub fn get_class(&self, name: &str) -> Option<ClassInfo> {
+        self.classes
+            .get(name)
+            .cloned()
+            .or_else(|| self.parent.as_ref().and_then(|p| p.get_class(name)))
+    }
+
+    pub fn set_class(&mut self, name: String, info: ClassInfo) {
+        self.classes.insert(name, info);
+    }
+
+    pub fn get_trait(&self, name: &str) -> Option<TraitInfo> {
+        self.traits
+            .get(name)
+            .cloned()
+            .or_else(|| self.parent.as_ref().and_then(|p| p.get_trait(name)))
+    }
+
+    pub fn set_trait(&mut self, name: String, info: TraitInfo) {
+        self.traits.insert(name, info);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Type;
+
+    fn dummy_class(name: &str) -> ClassInfo {
+        ClassInfo {
+            ty: Type::Custom(name.to_string(), Vec::new()),
+            fields: HashMap::new(),
+            methods: HashMap::new(),
+            generic_params: None,
+            extends: None,
+        }
+    }
+
+    #[test]
+    fn new_env_is_empty() {
+        let env = TypeEnv::new();
+        assert!(env.variables.is_empty());
+        assert!(env.classes.is_empty());
+        assert!(env.parent.is_none());
+    }
+
+    #[test]
+    fn set_and_get_var_in_same_env() {
+        let mut env = TypeEnv::new();
+        env.set_var("x".into(), Type::Int);
+        assert_eq!(env.get_var("x"), Some(Type::Int));
+        assert_eq!(env.get_var("y"), None);
+    }
+
+    #[test]
+    fn child_inherits_parent_var() {
+        let mut parent = TypeEnv::new();
+        parent.set_var("x".into(), Type::Int);
+        let child = parent.child();
+        assert_eq!(child.get_var("x"), Some(Type::Int));
+    }
+
+    #[test]
+    fn child_can_shadow_var() {
+        let mut parent = TypeEnv::new();
+        parent.set_var("x".into(), Type::Int);
+        let mut child = parent.child();
+        child.set_var("x".into(), Type::Float);
+        assert_eq!(child.get_var("x"), Some(Type::Float));
+    }
+
+    #[test]
+    fn set_and_get_class_in_same_env() {
+        let mut env = TypeEnv::new();
+        let info = dummy_class("Foo");
+        env.set_class("Foo".into(), info.clone());
+        assert_eq!(env.get_class("Foo"), Some(info));
+        assert_eq!(env.get_class("Bar"), None);
+    }
+
+    #[test]
+    fn child_inherits_parent_class() {
+        let mut parent = TypeEnv::new();
+        let info = dummy_class("Foo");
+        parent.set_class("Foo".into(), info.clone());
+        let child = parent.child();
+        assert_eq!(child.get_class("Foo"), Some(info));
+    }
+
+    #[test]
+    fn child_can_shadow_class() {
+        let mut parent = TypeEnv::new();
+        let info_parent = dummy_class("Foo");
+        parent.set_class("Foo".into(), info_parent);
+        let mut child = parent.child();
+        let info_child = dummy_class("FooChild");
+        child.set_class("Foo".into(), info_child.clone());
+        assert_eq!(child.get_class("Foo"), Some(info_child));
+    }
+
+    #[test]
+    fn fields_and_methods_stored_in_classinfo() {
+        let mut fields = HashMap::new();
+        fields.insert("x".into(), Type::Int);
+        let mut methods = HashMap::new();
+        methods.insert("m".into(), Type::Void);
+        let info = ClassInfo {
+            ty: Type::Custom("Point".into(), Vec::new()),
+            fields: fields.clone(),
+            methods: methods.clone(),
+            generic_params: None,
+            extends: None,
+        };
+        let mut env = TypeEnv::new();
+        env.set_class("Point".into(), info.clone());
+        let got = env.get_class("Point").unwrap();
+        assert_eq!(got.fields, fields);
+        assert_eq!(got.methods, methods);
+    }
+
+    #[test]
+    fn child_shares_parent_via_rc() {
+        let mut parent = TypeEnv::new();
+        parent.set_var("x".into(), Type::Int);
+        parent.set_var("y".into(), Type::Float);
+        let child = parent.child();
+        // Parent is shared via Rc, not cloned deeply
+        assert!(child.parent.is_some());
+        assert_eq!(child.get_var("x"), Some(Type::Int));
+        assert_eq!(child.get_var("y"), Some(Type::Float));
+    }
+}

@@ -1,0 +1,37 @@
+# Phase 7: Error Handling RFC — throws, throw, !, extends
+
+# Error hierarchy with extends
+class AppError
+  message: String
+
+class NetworkError extends AppError
+  url: String
+
+# Function that declares throws
+def fetch(url: String) throws NetworkError -> String
+  throw NetworkError("timeout", url)
+
+# Propagation with !
+def load(url: String) throws AppError -> String
+  fetch(url)!
+
+# throw with void return
+def validate(x: Int) throws AppError
+  if x < 0
+    throw AppError("negative")
+
+# extends with includes
+trait Printable
+  def to_str() -> String
+
+class DetailedError extends AppError includes Printable
+  detail: String
+  def to_str() -> String
+    "error"
+
+# resolve (renamed from blocking)
+async def fetch_data() -> String
+  "data"
+
+def get_data() -> String
+  resolve fetch_data()
