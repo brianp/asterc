@@ -42,7 +42,7 @@ fn lambda_type_check() {
         body: vec![Stmt::Expr(Expr::Ident("a".into()))],
         is_async: false,
         generic_params: None,
-                throws: None,
+        throws: None,
     };
     let ty = tc.check_expr(&lambda).unwrap();
     match ty {
@@ -69,7 +69,7 @@ fn call_type_check_and_mismatch() {
         body: vec![Stmt::Expr(Expr::Ident("x".into()))],
         is_async: false,
         generic_params: None,
-                throws: None,
+        throws: None,
     };
     tc.check_stmt(&Stmt::Let {
         name: "f".into(),
@@ -141,12 +141,13 @@ fn class_type_check_and_member_access() {
         }],
         is_public: false,
         generic_params: None,
-            extends: None,
+        extends: None,
         includes: None,
     };
     tc.check_stmt(&class_stmt).unwrap();
 
-    tc.env.set_var("p".into(), Type::Custom("Point".into(), Vec::new()));
+    tc.env
+        .set_var("p".into(), Type::Custom("Point".into(), Vec::new()));
     let access = Expr::Member {
         object: Box::new(Expr::Ident("p".into())),
         field: "x".into(),
@@ -962,7 +963,7 @@ fn class_includes_trait_gets_methods() {
         }],
         is_public: false,
         generic_params: None,
-            extends: None,
+        extends: None,
         includes: Some(vec!["Printable".into()]),
     };
     assert!(tc.check_stmt(&class_stmt).is_ok());
@@ -977,7 +978,7 @@ fn class_includes_unknown_trait_error() {
         methods: vec![],
         is_public: false,
         generic_params: None,
-            extends: None,
+        extends: None,
         includes: Some(vec!["NonExistent".into()]),
     };
     let err = tc.check_stmt(&class_stmt).unwrap_err();
@@ -1014,7 +1015,7 @@ fn class_missing_trait_method_error() {
         methods: vec![],
         is_public: false,
         generic_params: None,
-            extends: None,
+        extends: None,
         includes: Some(vec!["Printable".into()]),
     };
     let err = tc.check_stmt(&class_stmt).unwrap_err();
@@ -1196,7 +1197,7 @@ fn class_includes_trait_wrong_signature_error() {
         }],
         is_public: false,
         generic_params: None,
-            extends: None,
+        extends: None,
         includes: Some(vec!["Displayable".into()]),
     };
     let err = tc.check_stmt(&class_stmt).unwrap_err();
@@ -1226,12 +1227,13 @@ fn member_access_finds_method_unqualified() {
         }],
         is_public: false,
         generic_params: None,
-            extends: None,
+        extends: None,
         includes: None,
     };
     tc.check_stmt(&class_stmt).unwrap();
 
-    tc.env.set_var("p".into(), Type::Custom("Point".into(), Vec::new()));
+    tc.env
+        .set_var("p".into(), Type::Custom("Point".into(), Vec::new()));
     // Access via p.show (unqualified) should work
     let access = Expr::Member {
         object: Box::new(Expr::Ident("p".into())),
@@ -1253,7 +1255,7 @@ fn return_type_mismatch_in_function_error() {
         body: vec![Stmt::Return(Expr::Str("hello".into()))],
         is_async: false,
         generic_params: None,
-                throws: None,
+        throws: None,
     };
     let err = tc.check_expr(&lambda).unwrap_err();
     assert!(err.contains("return") || err.contains("mismatch") || err.contains("Return"));
@@ -1274,7 +1276,7 @@ fn return_mid_body_type_mismatch_error() {
         ],
         is_async: false,
         generic_params: None,
-                throws: None,
+        throws: None,
     };
     let err = tc.check_expr(&lambda).unwrap_err();
     assert!(err.contains("return") || err.contains("mismatch") || err.contains("Return"));
@@ -1351,7 +1353,7 @@ fn return_correct_type_ok() {
         body: vec![Stmt::Return(Expr::Int(42))],
         is_async: false,
         generic_params: None,
-                throws: None,
+        throws: None,
     };
     assert!(tc.check_expr(&lambda).is_ok());
 }

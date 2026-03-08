@@ -875,7 +875,10 @@ fn parses_use_deep_path() {
     let m = parse_ok("use std/net/tcp");
     match &m.body[0] {
         Stmt::Use { path, names, alias } => {
-            assert_eq!(path, &["std".to_string(), "net".to_string(), "tcp".to_string()]);
+            assert_eq!(
+                path,
+                &["std".to_string(), "net".to_string(), "tcp".to_string()]
+            );
             assert!(names.is_none());
             assert!(alias.is_none());
         }
@@ -904,7 +907,10 @@ fn parses_use_selective_multiple() {
     match &m.body[0] {
         Stmt::Use { path, names, alias } => {
             assert_eq!(path, &["std".to_string(), "http".to_string()]);
-            assert_eq!(names.as_ref().unwrap(), &["Request".to_string(), "Response".to_string()]);
+            assert_eq!(
+                names.as_ref().unwrap(),
+                &["Request".to_string(), "Response".to_string()]
+            );
             assert!(alias.is_none());
         }
         other => panic!("expected Use, got {other:?}"),
@@ -931,8 +937,18 @@ fn parses_use_selective_with_alias() {
     let m = parse_ok("use std/http/Security { CSRF, BasicAuth } as hs");
     match &m.body[0] {
         Stmt::Use { path, names, alias } => {
-            assert_eq!(path, &["std".to_string(), "http".to_string(), "Security".to_string()]);
-            assert_eq!(names.as_ref().unwrap(), &["CSRF".to_string(), "BasicAuth".to_string()]);
+            assert_eq!(
+                path,
+                &[
+                    "std".to_string(),
+                    "http".to_string(),
+                    "Security".to_string()
+                ]
+            );
+            assert_eq!(
+                names.as_ref().unwrap(),
+                &["CSRF".to_string(), "BasicAuth".to_string()]
+            );
             assert_eq!(alias.as_deref(), Some("hs"));
         }
         other => panic!("expected Use, got {other:?}"),
@@ -945,7 +961,9 @@ fn parses_use_selective_with_alias() {
 fn parses_pub_def() {
     let m = parse_ok("pub def foo() -> Int\n  42\n");
     match &m.body[0] {
-        Stmt::Let { name, is_public, .. } => {
+        Stmt::Let {
+            name, is_public, ..
+        } => {
             assert_eq!(name, "foo");
             assert_eq!(*is_public, true);
         }
@@ -968,7 +986,9 @@ fn parses_private_def_by_default() {
 fn parses_pub_class() {
     let m = parse_ok("pub class Foo\n  x: Int\n");
     match &m.body[0] {
-        Stmt::Class { name, is_public, .. } => {
+        Stmt::Class {
+            name, is_public, ..
+        } => {
             assert_eq!(name, "Foo");
             assert_eq!(*is_public, true);
         }
@@ -991,7 +1011,9 @@ fn parses_private_class_by_default() {
 fn parses_pub_let() {
     let m = parse_ok("pub let x = 5");
     match &m.body[0] {
-        Stmt::Let { name, is_public, .. } => {
+        Stmt::Let {
+            name, is_public, ..
+        } => {
             assert_eq!(name, "x");
             assert_eq!(*is_public, true);
         }
@@ -1014,7 +1036,12 @@ fn parses_private_let_by_default() {
 fn parses_pub_async_def() {
     let m = parse_ok("pub async def fetch(url: String) -> String\n  url\n");
     match &m.body[0] {
-        Stmt::Let { name, is_public, value, .. } => {
+        Stmt::Let {
+            name,
+            is_public,
+            value,
+            ..
+        } => {
             assert_eq!(name, "fetch");
             assert_eq!(*is_public, true);
             match value {
@@ -1090,7 +1117,12 @@ class Outer
 fn parses_generic_class() {
     let m = parse_ok("class Stack[T]\n  items: List[T]\n");
     match &m.body[0] {
-        Stmt::Class { name, generic_params, fields, .. } => {
+        Stmt::Class {
+            name,
+            generic_params,
+            fields,
+            ..
+        } => {
             assert_eq!(name, "Stack");
             assert_eq!(generic_params.as_ref().unwrap(), &["T".to_string()]);
             assert_eq!(fields.len(), 1);
@@ -1103,9 +1135,16 @@ fn parses_generic_class() {
 fn parses_generic_class_multiple_params() {
     let m = parse_ok("class Pair[A, B]\n  first: A\n  second: B\n");
     match &m.body[0] {
-        Stmt::Class { name, generic_params, .. } => {
+        Stmt::Class {
+            name,
+            generic_params,
+            ..
+        } => {
             assert_eq!(name, "Pair");
-            assert_eq!(generic_params.as_ref().unwrap(), &["A".to_string(), "B".to_string()]);
+            assert_eq!(
+                generic_params.as_ref().unwrap(),
+                &["A".to_string(), "B".to_string()]
+            );
         }
         other => panic!("expected Class, got {other:?}"),
     }
@@ -1131,7 +1170,12 @@ fn parses_generic_function() {
         Stmt::Let { name, value, .. } => {
             assert_eq!(name, "identity");
             match value {
-                Expr::Lambda { generic_params, params, ret_type, .. } => {
+                Expr::Lambda {
+                    generic_params,
+                    params,
+                    ret_type,
+                    ..
+                } => {
                     assert_eq!(generic_params.as_ref().unwrap(), &["T".to_string()]);
                     assert_eq!(params.len(), 1);
                     assert_eq!(params[0].1, Type::TypeVar("T".into()));
@@ -1150,7 +1194,10 @@ fn parses_generic_function_multi_params() {
     match &m.body[0] {
         Stmt::Let { value, .. } => match value {
             Expr::Lambda { generic_params, .. } => {
-                assert_eq!(generic_params.as_ref().unwrap(), &["T".to_string(), "U".to_string()]);
+                assert_eq!(
+                    generic_params.as_ref().unwrap(),
+                    &["T".to_string(), "U".to_string()]
+                );
             }
             other => panic!("expected Lambda, got {other:?}"),
         },
@@ -1181,7 +1228,9 @@ fn parses_typevar_in_generic_context() {
     let m = parse_ok("def id[T](x: T) -> T\n  x\n");
     match &m.body[0] {
         Stmt::Let { value, .. } => match value {
-            Expr::Lambda { params, ret_type, .. } => {
+            Expr::Lambda {
+                params, ret_type, ..
+            } => {
                 assert_eq!(params[0].1, Type::TypeVar("T".into()));
                 assert_eq!(*ret_type, Type::TypeVar("T".into()));
             }
@@ -1198,7 +1247,12 @@ fn parses_trait_with_required_method() {
     let src = "trait Printable\n  def to_string() -> String\n";
     let m = parse_ok(src);
     match &m.body[0] {
-        Stmt::Trait { name, methods, is_public, .. } => {
+        Stmt::Trait {
+            name,
+            methods,
+            is_public,
+            ..
+        } => {
             assert_eq!(name, "Printable");
             assert!(!is_public);
             assert_eq!(methods.len(), 1);
@@ -1212,7 +1266,9 @@ fn parses_pub_trait() {
     let src = "pub trait Printable\n  def to_string() -> String\n";
     let m = parse_ok(src);
     match &m.body[0] {
-        Stmt::Trait { name, is_public, .. } => {
+        Stmt::Trait {
+            name, is_public, ..
+        } => {
             assert_eq!(name, "Printable");
             assert!(is_public);
         }
@@ -1281,7 +1337,12 @@ fn parses_pub_class_with_includes() {
     let src = "pub class User includes Printable\n  name: String\n";
     let m = parse_ok(src);
     match &m.body[0] {
-        Stmt::Class { name, is_public, includes, .. } => {
+        Stmt::Class {
+            name,
+            is_public,
+            includes,
+            ..
+        } => {
             assert_eq!(name, "User");
             assert!(is_public);
             assert_eq!(includes.as_ref().unwrap(), &["Printable".to_string()]);
@@ -1297,7 +1358,12 @@ fn parses_generic_class_with_includes() {
     let src = "class Container[T] includes Printable\n  item: T\n";
     let m = parse_ok(src);
     match &m.body[0] {
-        Stmt::Class { name, generic_params, includes, .. } => {
+        Stmt::Class {
+            name,
+            generic_params,
+            includes,
+            ..
+        } => {
             assert_eq!(name, "Container");
             assert_eq!(generic_params.as_ref().unwrap(), &["T".to_string()]);
             assert_eq!(includes.as_ref().unwrap(), &["Printable".to_string()]);

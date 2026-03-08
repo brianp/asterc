@@ -42,7 +42,10 @@ impl TypeChecker {
         if let Some(trait_names) = includes {
             for trait_name in trait_names {
                 let trait_info = self.env.get_trait(trait_name).ok_or_else(|| {
-                    format!("Unknown trait '{}' in includes for class '{}'", trait_name, name)
+                    format!(
+                        "Unknown trait '{}' in includes for class '{}'",
+                        trait_name, name
+                    )
                 })?;
                 // Check that the class implements all required (abstract) trait methods
                 for method_name in &trait_info.required_methods {
@@ -50,7 +53,9 @@ impl TypeChecker {
                         // Compare signatures using unification (handles TypeVars)
                         if let Some(trait_method_ty) = trait_info.methods.get(method_name) {
                             let mut bindings = HashMap::new();
-                            if Self::unify_type(trait_method_ty, class_method_ty, &mut bindings).is_err() {
+                            if Self::unify_type(trait_method_ty, class_method_ty, &mut bindings)
+                                .is_err()
+                            {
                                 return Err(format!(
                                     "Method '{}' in class '{}' has signature {:?}, but trait '{}' requires {:?}",
                                     method_name, name, class_method_ty, trait_name, trait_method_ty
@@ -96,7 +101,10 @@ impl TypeChecker {
                         name, cname
                     ));
                 }
-                current = self.env.get_class(cname).and_then(|info| info.extends.clone());
+                current = self
+                    .env
+                    .get_class(cname)
+                    .and_then(|info| info.extends.clone());
             }
         }
 
