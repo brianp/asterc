@@ -111,7 +111,9 @@ impl Parser {
                 Pub => {
                     self.advance();
                     match &self.peek().kind {
-                        Def | Async => methods.push(self.parse_def_as_let(Some(name.clone()), true)?),
+                        Def | Async => {
+                            methods.push(self.parse_def_as_let(Some(name.clone()), true)?)
+                        }
                         _ => return Err("Expected def or async after 'pub' in class".to_string()),
                     }
                 }
@@ -169,11 +171,18 @@ impl Parser {
                 Pub => {
                     self.advance();
                     match &self.peek().kind {
-                        Def | Async => methods.push(self.parse_def_as_let(Some(name.clone()), true)?),
+                        Def | Async => {
+                            methods.push(self.parse_def_as_let(Some(name.clone()), true)?)
+                        }
                         _ => return Err("Expected def or async after 'pub' in trait".to_string()),
                     }
                 }
-                _ => return Err(format!("Expected method definition in trait, got {:?}", self.peek().kind)),
+                _ => {
+                    return Err(format!(
+                        "Expected method definition in trait, got {:?}",
+                        self.peek().kind
+                    ));
+                }
             }
             self.consume_newlines();
         }
@@ -186,7 +195,11 @@ impl Parser {
         })
     }
 
-    pub(crate) fn parse_def_as_let(&mut self, receiver: Option<String>, is_public: bool) -> Result<Stmt, String> {
+    pub(crate) fn parse_def_as_let(
+        &mut self,
+        receiver: Option<String>,
+        is_public: bool,
+    ) -> Result<Stmt, String> {
         use TokenKind::*;
         let mut is_async = false;
         if self.at(&Async) {

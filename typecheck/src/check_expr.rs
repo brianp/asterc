@@ -71,8 +71,11 @@ impl TypeChecker {
             // Validate return statements against declared return type
             if let ast::Stmt::Return(expr) = s {
                 let ret_val_ty = sub.check_expr(expr)?;
-                if *ret_type != Type::Void && ret_val_ty != *ret_type && ret_val_ty != Type::Never
-                    && !Self::is_nullable_compatible(ret_type, &ret_val_ty) {
+                if *ret_type != Type::Void
+                    && ret_val_ty != *ret_type
+                    && ret_val_ty != Type::Never
+                    && !Self::is_nullable_compatible(ret_type, &ret_val_ty)
+                {
                     return Err(format!(
                         "Return type mismatch: expected {:?}, got {:?}",
                         ret_type, ret_val_ty
@@ -137,17 +140,14 @@ impl TypeChecker {
                     )),
                 }
             }
-            BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => {
-                match (&lt, &rt) {
-                    (Type::Int, Type::Int) | (Type::Float, Type::Float)
-                    | (Type::Int, Type::Float) | (Type::Float, Type::Int)
-                    | (Type::String, Type::String) => Ok(Type::Bool),
-                    _ => Err(format!(
-                        "Cannot order {:?} and {:?} with {:?}",
-                        lt, rt, op
-                    )),
-                }
-            }
+            BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => match (&lt, &rt) {
+                (Type::Int, Type::Int)
+                | (Type::Float, Type::Float)
+                | (Type::Int, Type::Float)
+                | (Type::Float, Type::Int)
+                | (Type::String, Type::String) => Ok(Type::Bool),
+                _ => Err(format!("Cannot order {:?} and {:?} with {:?}", lt, rt, op)),
+            },
             BinOp::And | BinOp::Or => {
                 if lt == Type::Bool && rt == Type::Bool {
                     Ok(Type::Bool)
@@ -231,9 +231,15 @@ impl TypeChecker {
             let mut current_class = Some(class_name.clone());
             while let Some(ref cname) = current_class {
                 if let Some(info) = self.env.get_class(cname) {
-                    let bindings: HashMap<String, Type> = info.generic_params
+                    let bindings: HashMap<String, Type> = info
+                        .generic_params
                         .as_ref()
-                        .map(|gp| gp.iter().zip(type_args.iter()).map(|(p, t)| (p.clone(), t.clone())).collect())
+                        .map(|gp| {
+                            gp.iter()
+                                .zip(type_args.iter())
+                                .map(|(p, t)| (p.clone(), t.clone()))
+                                .collect()
+                        })
                         .unwrap_or_default();
                     if let Some(t) = info.fields.get(field) {
                         let resolved = Self::substitute_typevars(t, &bindings);
@@ -303,12 +309,18 @@ impl TypeChecker {
         }
 
         // Exhaustiveness check
-        let has_catchall = arms.iter().any(|(p, _)| matches!(p, MatchPattern::Wildcard | MatchPattern::Ident(_)));
+        let has_catchall = arms
+            .iter()
+            .any(|(p, _)| matches!(p, MatchPattern::Wildcard | MatchPattern::Ident(_)));
         if !has_catchall {
             match &scrutinee_ty {
                 Type::Bool => {
-                    let has_true = arms.iter().any(|(p, _)| matches!(p, MatchPattern::Literal(Expr::Bool(true))));
-                    let has_false = arms.iter().any(|(p, _)| matches!(p, MatchPattern::Literal(Expr::Bool(false))));
+                    let has_true = arms
+                        .iter()
+                        .any(|(p, _)| matches!(p, MatchPattern::Literal(Expr::Bool(true))));
+                    let has_false = arms
+                        .iter()
+                        .any(|(p, _)| matches!(p, MatchPattern::Literal(Expr::Bool(false))));
                     if !has_true || !has_false {
                         return Err("Non-exhaustive match: Bool match must cover both true and false, or include a wildcard".to_string());
                     }

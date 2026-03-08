@@ -29,14 +29,39 @@ fn lex_string(
             Some('\\') => {
                 col += 1;
                 match chars.next() {
-                    Some('n') => { s.push('\n'); col += 1; }
-                    Some('t') => { s.push('\t'); col += 1; }
-                    Some('\\') => { s.push('\\'); col += 1; }
-                    Some('"') => { s.push('"'); col += 1; }
-                    Some('r') => { s.push('\r'); col += 1; }
-                    Some('0') => { s.push('\0'); col += 1; }
-                    Some(c) => return Err(format!("Unknown escape sequence '\\{}' at line {}", c, line_no)),
-                    None => return Err(format!("Unterminated escape sequence at line {}", line_no)),
+                    Some('n') => {
+                        s.push('\n');
+                        col += 1;
+                    }
+                    Some('t') => {
+                        s.push('\t');
+                        col += 1;
+                    }
+                    Some('\\') => {
+                        s.push('\\');
+                        col += 1;
+                    }
+                    Some('"') => {
+                        s.push('"');
+                        col += 1;
+                    }
+                    Some('r') => {
+                        s.push('\r');
+                        col += 1;
+                    }
+                    Some('0') => {
+                        s.push('\0');
+                        col += 1;
+                    }
+                    Some(c) => {
+                        return Err(format!(
+                            "Unknown escape sequence '\\{}' at line {}",
+                            c, line_no
+                        ));
+                    }
+                    None => {
+                        return Err(format!("Unterminated escape sequence at line {}", line_no));
+                    }
                 }
             }
             Some(c) => {
@@ -96,7 +121,10 @@ fn lex_number(
         let v = num.parse::<i64>().map_err(|e| {
             let msg = e.to_string();
             if msg.contains("too large") || msg.contains("too small") || msg.contains("overflow") {
-                format!("Integer literal '{}' overflows i64 range at line {}", num, line_no)
+                format!(
+                    "Integer literal '{}' overflows i64 range at line {}",
+                    num, line_no
+                )
             } else {
                 format!("Invalid integer literal '{}' at line {}", num, line_no)
             }
@@ -124,39 +152,39 @@ fn lex_ident_or_keyword(
         }
     }
     let kind = match word.as_str() {
-        "def"      => Def,
-        "class"    => Class,
-        "async"    => Async,
-        "return"   => Return,
-        "if"       => If,
-        "else"     => Else,
-        "true"     => True,
-        "false"    => False,
-        "nil"      => Nil,
-        "let"      => Let,
-        "elif"     => Elif,
-        "while"    => While,
-        "for"      => For,
-        "in"       => In,
-        "break"    => Break,
+        "def" => Def,
+        "class" => Class,
+        "async" => Async,
+        "return" => Return,
+        "if" => If,
+        "else" => Else,
+        "true" => True,
+        "false" => False,
+        "nil" => Nil,
+        "let" => Let,
+        "elif" => Elif,
+        "while" => While,
+        "for" => For,
+        "in" => In,
+        "break" => Break,
         "continue" => Continue,
-        "and"      => And,
-        "or"       => Or,
-        "not"      => Not,
-        "use"      => Use,
-        "as"       => As,
-        "pub"      => Pub,
-        "trait"    => Trait,
+        "and" => And,
+        "or" => Or,
+        "not" => Not,
+        "use" => Use,
+        "as" => As,
+        "pub" => Pub,
+        "trait" => Trait,
         "includes" => Includes,
-        "extends"  => Extends,
-        "throw"    => Throw,
-        "throws"   => Throws,
-        "match"    => Match,
-        "catch"    => Catch,
-        "resolve"  => Resolve,
+        "extends" => Extends,
+        "throw" => Throw,
+        "throws" => Throws,
+        "match" => Match,
+        "catch" => Catch,
+        "resolve" => Resolve,
         "detached" => Detached,
-        "scope"    => Scope,
-        _          => Ident(word),
+        "scope" => Scope,
+        _ => Ident(word),
     };
     (kind, col)
 }
@@ -185,11 +213,16 @@ pub fn lex(input: &str) -> Result<Vec<Token>, String> {
         let line_no = line_idx + 1;
 
         // Reject tab indentation.
-        if raw.starts_with('\t') || (raw.starts_with(' ') && raw.contains('\t') && {
-            let leading: String = raw.chars().take_while(|c| c.is_whitespace()).collect();
-            leading.contains('\t')
-        }) {
-            return Err(format!("Tab indentation is not allowed at line {}", line_no));
+        if raw.starts_with('\t')
+            || (raw.starts_with(' ') && raw.contains('\t') && {
+                let leading: String = raw.chars().take_while(|c| c.is_whitespace()).collect();
+                leading.contains('\t')
+            })
+        {
+            return Err(format!(
+                "Tab indentation is not allowed at line {}",
+                line_no
+            ));
         }
 
         let indent_width = raw.chars().take_while(|c| *c == ' ').count();
@@ -197,7 +230,11 @@ pub fn lex(input: &str) -> Result<Vec<Token>, String> {
         let rest = trimmed.trim_start();
 
         if rest.is_empty() || rest.starts_with('#') {
-            tokens.push(Token { kind: Newline, line: line_no, col: 0 });
+            tokens.push(Token {
+                kind: Newline,
+                line: line_no,
+                col: 0,
+            });
             continue;
         }
 
@@ -205,12 +242,20 @@ pub fn lex(input: &str) -> Result<Vec<Token>, String> {
         let prev = indent_stack.last().copied().unwrap_or(0);
         if indent_width > prev {
             indent_stack.push(indent_width);
-            tokens.push(Token { kind: Indent, line: line_no, col: 1 });
+            tokens.push(Token {
+                kind: Indent,
+                line: line_no,
+                col: 1,
+            });
         } else if indent_width < prev {
             while let Some(&top) = indent_stack.last() {
                 if indent_width < top {
                     indent_stack.pop();
-                    tokens.push(Token { kind: Dedent, line: line_no, col: 1 });
+                    tokens.push(Token {
+                        kind: Dedent,
+                        line: line_no,
+                        col: 1,
+                    });
                 } else {
                     break;
                 }
@@ -230,7 +275,11 @@ pub fn lex(input: &str) -> Result<Vec<Token>, String> {
             // D1: push a token at the current position.
             macro_rules! push {
                 ($kind:expr) => {
-                    tokens.push(Token { kind: $kind, line: line_no, col })
+                    tokens.push(Token {
+                        kind: $kind,
+                        line: line_no,
+                        col,
+                    })
                 };
             }
 
@@ -264,10 +313,10 @@ pub fn lex(input: &str) -> Result<Vec<Token>, String> {
                 '%' => push!(Percent),
                 '?' => push!(Question),
 
-                '-' => try_two_char!('>', Arrow,        Minus),
-                '*' => try_two_char!('*', StarStar,     Star),
-                '!' => try_two_char!('=', BangEqual,    Bang),
-                '<' => try_two_char!('=', LessEqual,    Less),
+                '-' => try_two_char!('>', Arrow, Minus),
+                '*' => try_two_char!('*', StarStar, Star),
+                '!' => try_two_char!('=', BangEqual, Bang),
+                '<' => try_two_char!('=', LessEqual, Less),
                 '>' => try_two_char!('=', GreaterEqual, Greater),
 
                 // `=` can become `==` or `=>` or stay as `=`.
@@ -288,32 +337,56 @@ pub fn lex(input: &str) -> Result<Vec<Token>, String> {
                 '"' => {
                     let (s, new_col) = lex_string(&mut chars, col, line_no)?;
                     col = new_col;
-                    tokens.push(Token { kind: Str(s), line: line_no, col });
+                    tokens.push(Token {
+                        kind: Str(s),
+                        line: line_no,
+                        col,
+                    });
                 }
 
                 '0'..='9' => {
                     let (kind, new_col) = lex_number(&mut chars, ch, col, line_no)?;
                     col = new_col;
-                    tokens.push(Token { kind, line: line_no, col });
+                    tokens.push(Token {
+                        kind,
+                        line: line_no,
+                        col,
+                    });
                 }
 
                 _ if ch.is_ascii_alphabetic() || ch == '_' => {
                     let (kind, new_col) = lex_ident_or_keyword(&mut chars, ch, col);
                     col = new_col;
-                    tokens.push(Token { kind, line: line_no, col });
+                    tokens.push(Token {
+                        kind,
+                        line: line_no,
+                        col,
+                    });
                 }
 
                 _ => return Err(format!("Unexpected character '{}' at line {}", ch, line_no)),
             }
         }
 
-        tokens.push(Token { kind: Newline, line: line_no, col });
+        tokens.push(Token {
+            kind: Newline,
+            line: line_no,
+            col,
+        });
     }
 
     while indent_stack.len() > 1 {
         indent_stack.pop();
-        tokens.push(Token { kind: TokenKind::Dedent, line: total_lines, col: 0 });
+        tokens.push(Token {
+            kind: TokenKind::Dedent,
+            line: total_lines,
+            col: 0,
+        });
     }
-    tokens.push(Token { kind: TokenKind::EOF, line: total_lines + 1, col: 0 });
+    tokens.push(Token {
+        kind: TokenKind::EOF,
+        line: total_lines + 1,
+        col: 0,
+    });
     Ok(tokens)
 }

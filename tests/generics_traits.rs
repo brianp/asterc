@@ -24,23 +24,27 @@ fn integration_pub_trait() {
 
 #[test]
 fn integration_trait_with_default_method() {
-    common::check_ok(r#"trait Printable
+    common::check_ok(
+        r#"trait Printable
   def to_str() -> String
   def print()
     log("hello")
-"#);
+"#,
+    );
 }
 
 #[test]
 fn integration_class_includes_trait() {
-    common::check_ok(r#"trait Printable
+    common::check_ok(
+        r#"trait Printable
   def to_str() -> String
 
 class User includes Printable
   name: String
   def to_str() -> String
     "user"
-"#);
+"#,
+    );
 }
 
 #[test]
@@ -51,18 +55,21 @@ fn integration_class_includes_unknown_trait_error() {
 
 #[test]
 fn integration_class_missing_trait_method_error() {
-    let err = common::check_err(r#"trait Printable
+    let err = common::check_err(
+        r#"trait Printable
   def to_str() -> String
 
 class User includes Printable
   name: String
-"#);
+"#,
+    );
     assert!(err.contains("to_str") || err.contains("implement") || err.contains("missing"));
 }
 
 #[test]
 fn integration_class_includes_multiple_traits() {
-    common::check_ok(r#"trait Printable
+    common::check_ok(
+        r#"trait Printable
   def to_str() -> String
 
 trait Greetable
@@ -74,19 +81,22 @@ class User includes Printable, Greetable
     "user"
   def greet() -> String
     "hello"
-"#);
+"#,
+    );
 }
 
 #[test]
 fn integration_generic_class_with_includes() {
-    common::check_ok(r#"trait Printable
+    common::check_ok(
+        r#"trait Printable
   def to_str() -> String
 
 class Container[T] includes Printable
   value: Int
   def to_str() -> String
     "container"
-"#);
+"#,
+    );
 }
 
 // ─── Fix #1: Generic function call-site unification ─────────────────
@@ -110,13 +120,15 @@ fn integration_generic_multi_param_call() {
 
 #[test]
 fn integration_trait_signature_mismatch_error() {
-    let err = common::check_err(r#"trait Displayable
+    let err = common::check_err(
+        r#"trait Displayable
   def display() -> String
 
 class Item includes Displayable
   def display() -> Int
     0
-"#);
+"#,
+    );
     assert!(err.contains("signature") || err.contains("mismatch") || err.contains("display"));
 }
 
@@ -124,11 +136,13 @@ class Item includes Displayable
 
 #[test]
 fn integration_member_method_access() {
-    common::check_ok(r#"class Greeter
+    common::check_ok(
+        r#"class Greeter
   name: String
   def greet() -> String
     "hello"
-"#);
+"#,
+    );
 }
 
 // ─── Fix #7: Return type validation ─────────────────────────────────

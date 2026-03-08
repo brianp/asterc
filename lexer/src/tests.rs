@@ -491,7 +491,10 @@ fn hyphen_emits_minus_or_arrow() {
 fn huge_integer_triggers_parse_error() {
     let src = "9999999999999999999999999999999999999999999";
     let err = lex(src).unwrap_err();
-    assert!(err.contains("overflows i64 range") || err.contains("bad int"), "unexpected error: {err}");
+    assert!(
+        err.contains("overflows i64 range") || err.contains("bad int"),
+        "unexpected error: {err}"
+    );
 }
 
 // ─── Phase 2: Control Flow tokens ───────────────────────────────────
@@ -570,7 +573,11 @@ fn lexes_use_not_confused_with_ident() {
     let toks = lex("use_thing user useful").expect("lex ok");
     let ks = kinds(&toks);
     for k in &ks[..3] {
-        assert!(matches!(k, TokenKind::Ident(_)), "expected Ident, got {:?}", k);
+        assert!(
+            matches!(k, TokenKind::Ident(_)),
+            "expected Ident, got {:?}",
+            k
+        );
     }
 }
 
@@ -579,7 +586,11 @@ fn lexes_pub_not_confused_with_ident() {
     let toks = lex("public publisher").expect("lex ok");
     let ks = kinds(&toks);
     for k in &ks[..2] {
-        assert!(matches!(k, TokenKind::Ident(_)), "expected Ident, got {:?}", k);
+        assert!(
+            matches!(k, TokenKind::Ident(_)),
+            "expected Ident, got {:?}",
+            k
+        );
     }
 }
 
@@ -646,7 +657,10 @@ class Foo
 "#;
     let toks = lex(src).expect("lex ok");
     assert!(toks.iter().any(|t| matches!(t.kind, TokenKind::Class)));
-    assert!(toks.iter().any(|t| matches!(&t.kind, TokenKind::Ident(w) if w == "field")));
+    assert!(
+        toks.iter()
+            .any(|t| matches!(&t.kind, TokenKind::Ident(w) if w == "field"))
+    );
     assert!(toks.iter().any(|t| matches!(t.kind, TokenKind::Def)));
     assert!(toks.iter().any(|t| matches!(t.kind, TokenKind::If)));
     assert!(toks.iter().any(|t| matches!(t.kind, TokenKind::Else)));
@@ -679,7 +693,11 @@ fn lexes_trait_not_confused_with_ident() {
     let toks = lex("trait_impl traits").expect("lex ok");
     let ks = kinds(&toks);
     for k in &ks[..2] {
-        assert!(matches!(k, TokenKind::Ident(_)), "expected Ident, got {:?}", k);
+        assert!(
+            matches!(k, TokenKind::Ident(_)),
+            "expected Ident, got {:?}",
+            k
+        );
     }
 }
 
@@ -688,7 +706,11 @@ fn lexes_includes_not_confused_with_ident() {
     let toks = lex("includes_all including").expect("lex ok");
     let ks = kinds(&toks);
     for k in &ks[..2] {
-        assert!(matches!(k, TokenKind::Ident(_)), "expected Ident, got {:?}", k);
+        assert!(
+            matches!(k, TokenKind::Ident(_)),
+            "expected Ident, got {:?}",
+            k
+        );
     }
 }
 

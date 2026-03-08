@@ -1,7 +1,6 @@
 use ast::{ClassInfo, Expr, MatchPattern, Stmt, TraitInfo, Type, TypeEnv};
 use std::collections::HashMap;
 
-
 pub struct TypeChecker {
     pub env: TypeEnv,
     pub is_async_context: bool,
@@ -146,10 +145,7 @@ impl TypeChecker {
                     }
                     // Nil cannot be assigned to non-nullable types
                     if ty == Type::Nil && !matches!(ann, Type::Nil) {
-                        return Err(format!(
-                            "Cannot assign nil to non-nullable type {:?}",
-                            ann
-                        ));
+                        return Err(format!("Cannot assign nil to non-nullable type {:?}", ann));
                     }
                     if *ann != ty {
                         return Err(format!(
@@ -170,11 +166,7 @@ impl TypeChecker {
                 includes,
                 ..
             } => self.check_class_stmt(name, fields, methods, generic_params, extends, includes),
-            Stmt::Trait {
-                name,
-                methods,
-                ..
-            } => {
+            Stmt::Trait { name, methods, .. } => {
                 let mut method_map = HashMap::new();
                 let mut required_methods = Vec::new();
                 for m in methods {
@@ -184,7 +176,8 @@ impl TypeChecker {
                     {
                         let mty = self.check_expr(value)?;
                         // Store with unqualified name for trait matching
-                        let short_name = mname.strip_prefix(&format!("{}.", name))
+                        let short_name = mname
+                            .strip_prefix(&format!("{}.", name))
                             .unwrap_or(mname)
                             .to_string();
                         // Check if this is an abstract method (empty body)
@@ -405,7 +398,11 @@ impl TypeChecker {
         Ok(last)
     }
 
-    pub(crate) fn check_match_pattern(&self, pattern: &MatchPattern, scrutinee_ty: &Type) -> Result<(), String> {
+    pub(crate) fn check_match_pattern(
+        &self,
+        pattern: &MatchPattern,
+        scrutinee_ty: &Type,
+    ) -> Result<(), String> {
         match pattern {
             MatchPattern::Wildcard | MatchPattern::Ident(_) => Ok(()),
             MatchPattern::Literal(expr) => {

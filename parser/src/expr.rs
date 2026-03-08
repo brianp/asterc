@@ -1,13 +1,16 @@
 use ast::{BinOp, Expr, MatchPattern, UnaryOp};
 use lexer::TokenKind;
 
-use crate::{Parser, MAX_NESTING_DEPTH, MAX_COLLECTION_SIZE};
+use crate::{MAX_COLLECTION_SIZE, MAX_NESTING_DEPTH, Parser};
 
 impl Parser {
     pub(crate) fn parse_expr(&mut self) -> Result<Expr, String> {
         self.depth += 1;
         if self.depth > MAX_NESTING_DEPTH {
-            return Err(format!("Nesting depth exceeds maximum of {}", MAX_NESTING_DEPTH));
+            return Err(format!(
+                "Nesting depth exceeds maximum of {}",
+                MAX_NESTING_DEPTH
+            ));
         }
         while self.at(&TokenKind::Newline) {
             self.advance();
@@ -47,14 +50,20 @@ impl Parser {
     const BINOP_TABLE: &[&[(TokenKind, BinOp)]] = &[
         &[(TokenKind::Or, BinOp::Or)],
         &[(TokenKind::And, BinOp::And)],
-        &[(TokenKind::EqualEqual, BinOp::Eq), (TokenKind::BangEqual, BinOp::Neq)],
+        &[
+            (TokenKind::EqualEqual, BinOp::Eq),
+            (TokenKind::BangEqual, BinOp::Neq),
+        ],
         &[
             (TokenKind::Less, BinOp::Lt),
             (TokenKind::Greater, BinOp::Gt),
             (TokenKind::LessEqual, BinOp::Lte),
             (TokenKind::GreaterEqual, BinOp::Gte),
         ],
-        &[(TokenKind::Plus, BinOp::Add), (TokenKind::Minus, BinOp::Sub)],
+        &[
+            (TokenKind::Plus, BinOp::Add),
+            (TokenKind::Minus, BinOp::Sub),
+        ],
         &[
             (TokenKind::Star, BinOp::Mul),
             (TokenKind::Slash, BinOp::Div),
@@ -80,7 +89,10 @@ impl Parser {
     fn parse_unary(&mut self) -> Result<Expr, String> {
         self.depth += 1;
         if self.depth > MAX_NESTING_DEPTH {
-            return Err(format!("Nesting depth exceeds maximum of {}", MAX_NESTING_DEPTH));
+            return Err(format!(
+                "Nesting depth exceeds maximum of {}",
+                MAX_NESTING_DEPTH
+            ));
         }
         let result = self.parse_unary_inner();
         self.depth -= 1;
@@ -117,7 +129,10 @@ impl Parser {
                     loop {
                         args.push(self.parse_expr()?);
                         if args.len() > MAX_COLLECTION_SIZE {
-                            return Err(format!("Function call exceeds maximum of {} arguments", MAX_COLLECTION_SIZE));
+                            return Err(format!(
+                                "Function call exceeds maximum of {} arguments",
+                                MAX_COLLECTION_SIZE
+                            ));
                         }
                         if self.at(&TokenKind::Comma) {
                             self.advance();
@@ -205,8 +220,8 @@ impl Parser {
     }
 
     fn parse_error_catch(&mut self, call_expr: Expr) -> Result<Expr, String> {
-        use ast::ErrorCatchPattern;
         use TokenKind::*;
+        use ast::ErrorCatchPattern;
         self.consume_newlines();
         self.expect(Indent)?;
         let mut arms = Vec::new();
@@ -225,11 +240,24 @@ impl Parser {
                     self.advance();
                     let var = match &self.advance().kind {
                         Ident(v) => v.clone(),
-                        t => return Err(format!("Expected variable name after error type '{}', got {:?}", tname, t)),
+                        t => {
+                            return Err(format!(
+                                "Expected variable name after error type '{}', got {:?}",
+                                tname, t
+                            ));
+                        }
                     };
-                    ErrorCatchPattern::Typed { error_type: tname, var }
+                    ErrorCatchPattern::Typed {
+                        error_type: tname,
+                        var,
+                    }
                 }
-                t => return Err(format!("Expected error type or '_' in catch arm, got {:?}", t)),
+                t => {
+                    return Err(format!(
+                        "Expected error type or '_' in catch arm, got {:?}",
+                        t
+                    ));
+                }
             };
             self.expect(Arrow)?;
             let value = self.parse_expr()?;
@@ -329,7 +357,10 @@ impl Parser {
             }
             LParen => {
                 if self.depth >= MAX_NESTING_DEPTH {
-                    return Err(format!("Nesting depth exceeds maximum of {}", MAX_NESTING_DEPTH));
+                    return Err(format!(
+                        "Nesting depth exceeds maximum of {}",
+                        MAX_NESTING_DEPTH
+                    ));
                 }
                 self.advance();
                 let expr = self.parse_expr()?;
@@ -346,7 +377,10 @@ impl Parser {
                         }
                         elems.push(self.parse_expr()?);
                         if elems.len() > MAX_COLLECTION_SIZE {
-                            return Err(format!("List literal exceeds maximum of {} elements", MAX_COLLECTION_SIZE));
+                            return Err(format!(
+                                "List literal exceeds maximum of {} elements",
+                                MAX_COLLECTION_SIZE
+                            ));
                         }
                         if self.at(&Comma) {
                             self.advance();

@@ -6,7 +6,11 @@ impl TypeChecker {
     pub(crate) fn check_propagate(&mut self, inner: &Expr) -> Result<Type, String> {
         if let Expr::Call { func, args } = inner {
             let fn_ty = self.resolve_func_type(func)?;
-            if let Type::Function { throws: Some(ref err_ty), .. } = fn_ty {
+            if let Type::Function {
+                throws: Some(ref err_ty),
+                ..
+            } = fn_ty
+            {
                 let caller_throws = self.throws_type.as_ref().ok_or_else(|| {
                     "Cannot use '!' to propagate errors outside of a function that declares 'throws'".to_string()
                 })?;
@@ -26,7 +30,11 @@ impl TypeChecker {
         self.check_error_recovery(expr, default, "!.or() default")
     }
 
-    pub(crate) fn check_error_or_else(&mut self, expr: &Expr, handler: &Expr) -> Result<Type, String> {
+    pub(crate) fn check_error_or_else(
+        &mut self,
+        expr: &Expr,
+        handler: &Expr,
+    ) -> Result<Type, String> {
         self.check_error_recovery(expr, handler, "!.or_else() handler")
     }
 
@@ -50,11 +58,19 @@ impl TypeChecker {
         Ok(ret_ty)
     }
 
-    pub(crate) fn check_error_catch(&mut self, expr: &Expr, arms: &[(ast::ErrorCatchPattern, Expr)]) -> Result<Type, String> {
+    pub(crate) fn check_error_catch(
+        &mut self,
+        expr: &Expr,
+        arms: &[(ast::ErrorCatchPattern, Expr)],
+    ) -> Result<Type, String> {
         // Resolve the throws type for catch arm validation
         let throws_ty = if let Expr::Call { func, .. } = expr {
             let fn_ty = self.resolve_func_type(func)?;
-            if let Type::Function { throws: Some(ref err_ty), .. } = fn_ty {
+            if let Type::Function {
+                throws: Some(ref err_ty),
+                ..
+            } = fn_ty
+            {
                 Some(err_ty.clone())
             } else {
                 None
@@ -85,12 +101,11 @@ impl TypeChecker {
                         }
                     }
                     let mut sub = self.child_checker();
-                    sub.env.set_var(var.clone(), Type::Custom(error_type.clone(), Vec::new()));
+                    sub.env
+                        .set_var(var.clone(), Type::Custom(error_type.clone(), Vec::new()));
                     sub.check_expr(value)?
                 }
-                ast::ErrorCatchPattern::Wildcard => {
-                    self.check_expr(value)?
-                }
+                ast::ErrorCatchPattern::Wildcard => self.check_expr(value)?,
             };
             if arm_ty == Type::Never {
                 continue; // Diverging arms are compatible with anything
@@ -114,11 +129,17 @@ impl TypeChecker {
     pub(crate) fn check_throwing_call_expr(&mut self, expr: &Expr) -> Result<Type, String> {
         if let Expr::Call { func, args } = expr {
             let fn_ty = self.resolve_func_type(func)?;
-            if let Type::Function { throws: Some(_), .. } = &fn_ty {
+            if let Type::Function {
+                throws: Some(_), ..
+            } = &fn_ty
+            {
                 return self.check_call_inner_throws_ok(func, args, false);
             }
         }
-        Err("!.or(), !.or_else(), and !.catch require a call to a function that declares 'throws'".to_string())
+        Err(
+            "!.or(), !.or_else(), and !.catch require a call to a function that declares 'throws'"
+                .to_string(),
+        )
     }
 
     pub(crate) fn check_throw(&mut self, value: &Expr) -> Result<Type, String> {

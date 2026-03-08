@@ -72,7 +72,10 @@ impl Parser {
     pub(crate) fn parse_block(&mut self) -> Result<Vec<Stmt>, String> {
         self.depth += 1;
         if self.depth > MAX_NESTING_DEPTH {
-            return Err(format!("Nesting depth exceeds maximum of {}", MAX_NESTING_DEPTH));
+            return Err(format!(
+                "Nesting depth exceeds maximum of {}",
+                MAX_NESTING_DEPTH
+            ));
         }
         let result = self.parse_block_inner();
         self.depth -= 1;
@@ -118,7 +121,8 @@ impl Parser {
                 // Peek ahead to decide
                 if self.tokens.get(self.pos + 1).map(|t| &t.kind) == Some(&TokenKind::Def) {
                     self.parse_def_as_let(None, false)
-                } else if self.tokens.get(self.pos + 1).map(|t| &t.kind) == Some(&TokenKind::Scope) {
+                } else if self.tokens.get(self.pos + 1).map(|t| &t.kind) == Some(&TokenKind::Scope)
+                {
                     // async scope block
                     self.advance(); // consume async
                     self.advance(); // consume scope
@@ -233,7 +237,10 @@ impl Parser {
             TokenKind::Class => self.parse_class(true),
             TokenKind::Trait => self.parse_trait(true),
             TokenKind::Let => self.parse_let(true),
-            t => Err(format!("Expected def, class, trait, or let after 'pub', got {:?}", t)),
+            t => Err(format!(
+                "Expected def, class, trait, or let after 'pub', got {:?}",
+                t
+            )),
         }
     }
 

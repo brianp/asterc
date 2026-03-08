@@ -40,7 +40,8 @@ impl TypeChecker {
                         let arg_ty = self.check_expr(&args[0])?;
                         // Must be in a throws context
                         let throws_ty = self.throws_type.as_ref().ok_or_else(|| {
-                            ".or_throw() can only be used in a function that declares 'throws'".to_string()
+                            ".or_throw() can only be used in a function that declares 'throws'"
+                                .to_string()
                         })?;
                         if !self.is_error_subtype(&arg_ty, throws_ty) {
                             return Err(format!(
@@ -62,15 +63,31 @@ impl TypeChecker {
         self.check_call_inner(func, args, false)
     }
 
-    pub(crate) fn check_call_inner(&mut self, func: &Expr, args: &[Expr], bypass_async_check: bool) -> Result<Type, String> {
+    pub(crate) fn check_call_inner(
+        &mut self,
+        func: &Expr,
+        args: &[Expr],
+        bypass_async_check: bool,
+    ) -> Result<Type, String> {
         self.check_call_inner_impl(func, args, bypass_async_check, false)
     }
 
-    pub(crate) fn check_call_inner_throws_ok(&mut self, func: &Expr, args: &[Expr], bypass_async_check: bool) -> Result<Type, String> {
+    pub(crate) fn check_call_inner_throws_ok(
+        &mut self,
+        func: &Expr,
+        args: &[Expr],
+        bypass_async_check: bool,
+    ) -> Result<Type, String> {
         self.check_call_inner_impl(func, args, bypass_async_check, true)
     }
 
-    fn check_call_inner_impl(&mut self, func: &Expr, args: &[Expr], bypass_async_check: bool, bypass_throws_check: bool) -> Result<Type, String> {
+    fn check_call_inner_impl(
+        &mut self,
+        func: &Expr,
+        args: &[Expr],
+        bypass_async_check: bool,
+        bypass_throws_check: bool,
+    ) -> Result<Type, String> {
         // Handle polymorphic builtins that can't be expressed in the type system yet
         if let Expr::Ident(name) = func {
             match name.as_str() {
@@ -91,13 +108,13 @@ impl TypeChecker {
                     let aty = self.check_expr(&args[0])?;
                     match aty {
                         Type::Int | Type::Float | Type::Bool | Type::String => {
-                            return Ok(Type::String)
+                            return Ok(Type::String);
                         }
                         _ => {
                             return Err(format!(
                                 "to_string() expects Int, Float, Bool, or String, got {:?}",
                                 aty
-                            ))
+                            ));
                         }
                     }
                 }
@@ -106,7 +123,13 @@ impl TypeChecker {
         }
 
         let fty = self.check_expr(func)?;
-        if let Type::Function { params, ret, is_async: fn_is_async, throws: fn_throws } = fty {
+        if let Type::Function {
+            params,
+            ret,
+            is_async: fn_is_async,
+            throws: fn_throws,
+        } = fty
+        {
             // Sync call to an async function is an error (unless bypassed by blocking/detached)
             if fn_is_async && !bypass_async_check && !self.is_in_async_context() {
                 return Err(
@@ -185,13 +208,22 @@ impl TypeChecker {
                 Ok(())
             }
             (
-                Type::Function { params: ep, ret: er, .. },
-                Type::Function { params: ap, ret: ar, .. },
+                Type::Function {
+                    params: ep,
+                    ret: er,
+                    ..
+                },
+                Type::Function {
+                    params: ap,
+                    ret: ar,
+                    ..
+                },
             ) => {
                 if ep.len() != ap.len() {
                     return Err(format!(
                         "Function arity mismatch: expected {} params, got {}",
-                        ep.len(), ap.len()
+                        ep.len(),
+                        ap.len()
                     ));
                 }
                 for (e, a) in ep.iter().zip(ap.iter()) {
@@ -232,12 +264,19 @@ impl TypeChecker {
                     .collect(),
                 ret: Box::new(Self::substitute_typevars(ret, bindings)),
                 is_async: *is_async,
-                throws: throws.as_ref().map(|t| Box::new(Self::substitute_typevars(t, bindings))),
+                throws: throws
+                    .as_ref()
+                    .map(|t| Box::new(Self::substitute_typevars(t, bindings))),
             },
             Type::Task(inner) => Type::Task(Box::new(Self::substitute_typevars(inner, bindings))),
-            Type::Nullable(inner) => Type::Nullable(Box::new(Self::substitute_typevars(inner, bindings))),
+            Type::Nullable(inner) => {
+                Type::Nullable(Box::new(Self::substitute_typevars(inner, bindings)))
+            }
             Type::Custom(name, args) => {
-                let new_args = args.iter().map(|a| Self::substitute_typevars(a, bindings)).collect();
+                let new_args = args
+                    .iter()
+                    .map(|a| Self::substitute_typevars(a, bindings))
+                    .collect();
                 Type::Custom(name.clone(), new_args)
             }
             _ => ty.clone(),
@@ -250,7 +289,10 @@ impl TypeChecker {
                 // Check polymorphic builtins
                 match name.as_str() {
                     "len" | "to_string" => Ok(Type::Void), // Not a throws function
-                    _ => self.env.get_var(name).ok_or_else(|| format!("Unknown identifier '{}'", name)),
+                    _ => self
+                        .env
+                        .get_var(name)
+                        .ok_or_else(|| format!("Unknown identifier '{}'", name)),
                 }
             }
             Expr::Member { object, field } => self.check_member(object, field),
