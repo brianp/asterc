@@ -8,6 +8,7 @@ lexer = { path = "lexer" }
 ast = { path = "ast" }
 parser = { path = "parser" }
 typecheck = { path = "typecheck" }
+ariadne = "0.4"
 
 [workspace]
 members = [
@@ -20,3 +21,4 @@ members = [
 resolver = "2"
 
 [dev-dependencies]
+serde_json = "1"

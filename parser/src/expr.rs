@@ -1,16 +1,17 @@
-use ast::{BinOp, Expr, MatchPattern, UnaryOp};
+use ast::{BinOp, Diagnostic, Expr, MatchPattern, UnaryOp};
 use lexer::TokenKind;
 
 use crate::{MAX_COLLECTION_SIZE, MAX_NESTING_DEPTH, Parser};
 
 impl Parser {
-    pub(crate) fn parse_expr(&mut self) -> Result<Expr, String> {
+    pub(crate) fn parse_expr(&mut self) -> Result<Expr, Diagnostic> {
         self.depth += 1;
         if self.depth > MAX_NESTING_DEPTH {
-            return Err(format!(
+            return Err(Diagnostic::error(format!(
                 "Nesting depth exceeds maximum of {}",
                 MAX_NESTING_DEPTH
-            ));
+            ))
+            .with_code("P002"));
         }
         while self.at(&TokenKind::Newline) {
             self.advance();
@@ -20,16 +21,17 @@ impl Parser {
         result
     }
 
-    fn parse_or(&mut self) -> Result<Expr, String> {
+    fn parse_or(&mut self) -> Result<Expr, Diagnostic> {
         self.parse_binop(0)
     }
 
     /// Table-driven precedence parser for left-associative binary operators.
     /// Levels: 0=Or, 1=And, 2=Equality, 3=Comparison, 4=Additive, 5=Multiplicative
-    fn parse_binop(&mut self, level: usize) -> Result<Expr, String> {
+    fn parse_binop(&mut self, level: usize) -> Result<Expr, Diagnostic> {
         if level >= Self::BINOP_TABLE.len() {
             return self.parse_exponent();
         }
+        let start = self.start_span();
         let mut left = self.parse_binop(level + 1)?;
         loop {
             let op = Self::BINOP_TABLE[level]
@@ -42,6 +44,7 @@ impl Parser {
                 left: Box::new(left),
                 op,
                 right: Box::new(right),
+                span: self.span_from(start),
             };
         }
         Ok(left)
@@ -71,7 +74,8 @@ impl Parser {
         ],
     ];
 
-    fn parse_exponent(&mut self) -> Result<Expr, String> {
+    fn parse_exponent(&mut self) -> Result<Expr, Diagnostic> {
+        let start = self.start_span();
         let base = self.parse_unary()?;
         if self.at(&TokenKind::StarStar) {
             self.advance();
@@ -80,32 +84,36 @@ impl Parser {
                 left: Box::new(base),
                 op: BinOp::Pow,
                 right: Box::new(exp),
+                span: self.span_from(start),
             })
         } else {
             Ok(base)
         }
     }
 
-    fn parse_unary(&mut self) -> Result<Expr, String> {
+    fn parse_unary(&mut self) -> Result<Expr, Diagnostic> {
         self.depth += 1;
         if self.depth > MAX_NESTING_DEPTH {
-            return Err(format!(
+            return Err(Diagnostic::error(format!(
                 "Nesting depth exceeds maximum of {}",
                 MAX_NESTING_DEPTH
-            ));
+            ))
+            .with_code("P002"));
         }
         let result = self.parse_unary_inner();
         self.depth -= 1;
         result
     }
 
-    fn parse_unary_inner(&mut self) -> Result<Expr, String> {
+    fn parse_unary_inner(&mut self) -> Result<Expr, Diagnostic> {
+        let start = self.start_span();
         if self.at(&TokenKind::Minus) {
             self.advance();
             let operand = self.parse_unary()?;
             return Ok(Expr::UnaryOp {
                 op: UnaryOp::Neg,
                 operand: Box::new(operand),
+                span: self.span_from(start),
             });
         }
         if self.at(&TokenKind::Not) {
@@ -114,12 +122,14 @@ impl Parser {
             return Ok(Expr::UnaryOp {
                 op: UnaryOp::Not,
                 operand: Box::new(operand),
+                span: self.span_from(start),
             });
         }
         self.parse_postfix()
     }
 
-    fn parse_postfix(&mut self) -> Result<Expr, String> {
+    fn parse_postfix(&mut self) -> Result<Expr, Diagnostic> {
+        let start = self.start_span();
         let mut expr = self.parse_primary()?;
         loop {
             if self.at(&TokenKind::LParen) {
@@ -129,10 +139,11 @@ impl Parser {
                     loop {
                         args.push(self.parse_expr()?);
                         if args.len() > MAX_COLLECTION_SIZE {
-                            return Err(format!(
+                            return Err(Diagnostic::error(format!(
                                 "Function call exceeds maximum of {} arguments",
                                 MAX_COLLECTION_SIZE
-                            ));
+                            ))
+                            .with_code("P001"));
                         }
                         if self.at(&TokenKind::Comma) {
                             self.advance();
@@ -145,6 +156,7 @@ impl Parser {
                 expr = Expr::Call {
                     func: Box::new(expr),
                     args,
+                    span: self.span_from(start),
                 };
             } else if self.at(&TokenKind::LBracket) {
                 self.advance();
@@ -153,6 +165,7 @@ impl Parser {
                 expr = Expr::Index {
                     object: Box::new(expr),
                     index: Box::new(index),
+                    span: self.span_from(start),
                 };
             } else if self.at(&TokenKind::Bang) {
                 self.advance();
@@ -166,16 +179,13 @@ impl Parser {
                     if is_or {
                         self.advance(); // consume .
                         self.advance(); // consume "or"
-                        // Could be !.or(...) or !.or_else(...)
-                        // Check if next is _else to distinguish
-                        // Actually "or" is a keyword token, "or_else" is an ident
-                        // So this is !.or(default)
                         self.expect(TokenKind::LParen)?;
                         let default = self.parse_expr()?;
                         self.expect(TokenKind::RParen)?;
                         expr = Expr::ErrorOr {
                             expr: Box::new(expr),
                             default: Box::new(default),
+                            span: self.span_from(start),
                         };
                     } else if is_or_else {
                         self.advance(); // consume .
@@ -187,17 +197,18 @@ impl Parser {
                         expr = Expr::ErrorOrElse {
                             expr: Box::new(expr),
                             handler: Box::new(handler),
+                            span: self.span_from(start),
                         };
                     } else if is_catch {
                         self.advance(); // consume .
                         self.advance(); // consume "catch"
-                        expr = self.parse_error_catch(expr)?;
+                        expr = self.parse_error_catch(expr, start)?;
                     } else {
                         // Plain ! propagation
-                        expr = Expr::Propagate(Box::new(expr));
+                        expr = Expr::Propagate(Box::new(expr), self.span_from(start));
                     }
                 } else {
-                    expr = Expr::Propagate(Box::new(expr));
+                    expr = Expr::Propagate(Box::new(expr), self.span_from(start));
                 }
             } else if self.at(&TokenKind::Dot) {
                 self.advance();
@@ -206,11 +217,18 @@ impl Parser {
                     TokenKind::Ident(n) => n.clone(),
                     TokenKind::Or => "or".to_string(),
                     TokenKind::Catch => "catch".to_string(),
-                    t => return Err(format!("Expected field name after '.', got {:?}", t)),
+                    t => {
+                        return Err(Diagnostic::error(format!(
+                            "Expected field name after '.', got {:?}",
+                            t
+                        ))
+                        .with_code("P001"));
+                    }
                 };
                 expr = Expr::Member {
                     object: Box::new(expr),
                     field,
+                    span: self.span_from(start),
                 };
             } else {
                 break;
@@ -219,7 +237,7 @@ impl Parser {
         Ok(expr)
     }
 
-    fn parse_error_catch(&mut self, call_expr: Expr) -> Result<Expr, String> {
+    fn parse_error_catch(&mut self, call_expr: Expr, start: usize) -> Result<Expr, Diagnostic> {
         use TokenKind::*;
         use ast::ErrorCatchPattern;
         self.consume_newlines();
@@ -230,10 +248,11 @@ impl Parser {
             if self.at(&Dedent) || self.at(&EOF) {
                 break;
             }
+            let arm_start = self.start_span();
             let pattern = match &self.peek().kind {
                 Ident(name) if name == "_" => {
                     self.advance();
-                    ErrorCatchPattern::Wildcard
+                    ErrorCatchPattern::Wildcard(self.span_from(arm_start))
                 }
                 Ident(type_name) => {
                     let tname = type_name.clone();
@@ -241,22 +260,25 @@ impl Parser {
                     let var = match &self.advance().kind {
                         Ident(v) => v.clone(),
                         t => {
-                            return Err(format!(
+                            return Err(Diagnostic::error(format!(
                                 "Expected variable name after error type '{}', got {:?}",
                                 tname, t
-                            ));
+                            ))
+                            .with_code("P001"));
                         }
                     };
                     ErrorCatchPattern::Typed {
                         error_type: tname,
                         var,
+                        span: self.span_from(arm_start),
                     }
                 }
                 t => {
-                    return Err(format!(
+                    return Err(Diagnostic::error(format!(
                         "Expected error type or '_' in catch arm, got {:?}",
                         t
-                    ));
+                    ))
+                    .with_code("P001"));
                 }
             };
             self.expect(Arrow)?;
@@ -268,54 +290,66 @@ impl Parser {
         Ok(Expr::ErrorCatch {
             expr: Box::new(call_expr),
             arms,
+            span: self.span_from(start),
         })
     }
 
-    fn parse_match_pattern(&mut self) -> Result<MatchPattern, String> {
+    fn parse_match_pattern(&mut self) -> Result<MatchPattern, Diagnostic> {
         use TokenKind::*;
+        let start = self.start_span();
         match &self.peek().kind {
             Int(v) => {
                 let val = *v;
                 self.advance();
-                Ok(MatchPattern::Literal(Expr::Int(val)))
+                let span = self.span_from(start);
+                Ok(MatchPattern::Literal(Expr::Int(val, span), span))
             }
             Float(v) => {
                 let val = *v;
                 self.advance();
-                Ok(MatchPattern::Literal(Expr::Float(val)))
+                let span = self.span_from(start);
+                Ok(MatchPattern::Literal(Expr::Float(val, span), span))
             }
             Str(s) => {
                 let lit = s.clone();
                 self.advance();
-                Ok(MatchPattern::Literal(Expr::Str(lit)))
+                let span = self.span_from(start);
+                Ok(MatchPattern::Literal(Expr::Str(lit, span), span))
             }
             True => {
                 self.advance();
-                Ok(MatchPattern::Literal(Expr::Bool(true)))
+                let span = self.span_from(start);
+                Ok(MatchPattern::Literal(Expr::Bool(true, span), span))
             }
             False => {
                 self.advance();
-                Ok(MatchPattern::Literal(Expr::Bool(false)))
+                let span = self.span_from(start);
+                Ok(MatchPattern::Literal(Expr::Bool(false, span), span))
             }
             Nil => {
                 self.advance();
-                Ok(MatchPattern::Literal(Expr::Nil))
+                let span = self.span_from(start);
+                Ok(MatchPattern::Literal(Expr::Nil(span), span))
             }
             Ident(n) => {
                 let name = n.clone();
                 self.advance();
+                let span = self.span_from(start);
                 if name == "_" {
-                    Ok(MatchPattern::Wildcard)
+                    Ok(MatchPattern::Wildcard(span))
                 } else {
-                    Ok(MatchPattern::Ident(name))
+                    Ok(MatchPattern::Ident(name, span))
                 }
             }
-            t => Err(format!("Expected match pattern, got {:?}", t)),
+            t => Err(
+                Diagnostic::error(format!("Expected match pattern, got {:?}", t)).with_code("P001"),
+            ),
         }
     }
 
-    fn parse_primary(&mut self) -> Result<Expr, String> {
+    fn parse_primary(&mut self) -> Result<Expr, Diagnostic> {
         use TokenKind::*;
+        let start = self.start_span();
         // -> expr shorthand for zero-arg lambda (used in .or_else())
         if self.at(&Arrow) {
             self.advance();
@@ -326,41 +360,42 @@ impl Parser {
             Ident(n) => {
                 let name = n.clone();
                 self.advance();
-                Ok(Expr::Ident(name))
+                Ok(Expr::Ident(name, self.span_from(start)))
             }
             Str(s) => {
                 let lit = s.clone();
                 self.advance();
-                Ok(Expr::Str(lit))
+                Ok(Expr::Str(lit, self.span_from(start)))
             }
             Int(v) => {
                 let val = *v;
                 self.advance();
-                Ok(Expr::Int(val))
+                Ok(Expr::Int(val, self.span_from(start)))
             }
             Float(v) => {
                 let val = *v;
                 self.advance();
-                Ok(Expr::Float(val))
+                Ok(Expr::Float(val, self.span_from(start)))
             }
             True => {
                 self.advance();
-                Ok(Expr::Bool(true))
+                Ok(Expr::Bool(true, self.span_from(start)))
             }
             False => {
                 self.advance();
-                Ok(Expr::Bool(false))
+                Ok(Expr::Bool(false, self.span_from(start)))
             }
             Nil => {
                 self.advance();
-                Ok(Expr::Nil)
+                Ok(Expr::Nil(self.span_from(start)))
             }
             LParen => {
                 if self.depth >= MAX_NESTING_DEPTH {
-                    return Err(format!(
+                    return Err(Diagnostic::error(format!(
                         "Nesting depth exceeds maximum of {}",
                         MAX_NESTING_DEPTH
-                    ));
+                    ))
+                    .with_code("P002"));
                 }
                 self.advance();
                 let expr = self.parse_expr()?;
@@ -377,10 +412,11 @@ impl Parser {
                         }
                         elems.push(self.parse_expr()?);
                         if elems.len() > MAX_COLLECTION_SIZE {
-                            return Err(format!(
+                            return Err(Diagnostic::error(format!(
                                 "List literal exceeds maximum of {} elements",
                                 MAX_COLLECTION_SIZE
-                            ));
+                            ))
+                            .with_code("P001"));
                         }
                         if self.at(&Comma) {
                             self.advance();
@@ -390,7 +426,7 @@ impl Parser {
                     }
                 }
                 self.expect(RBracket)?;
-                Ok(Expr::ListLiteral(elems))
+                Ok(Expr::ListLiteral(elems, self.span_from(start)))
             }
             Match => {
                 self.advance();
@@ -413,42 +449,67 @@ impl Parser {
                 Ok(Expr::Match {
                     scrutinee: Box::new(scrutinee),
                     arms,
+                    span: self.span_from(start),
                 })
             }
             Resolve => {
                 self.advance();
                 let func_expr = self.parse_postfix()?;
                 match func_expr {
-                    Expr::Call { func, args } => Ok(Expr::ResolveCall { func, args }),
-                    _ => Err("Expected function call after 'resolve'".to_string()),
+                    Expr::Call { func, args, .. } => Ok(Expr::ResolveCall {
+                        func,
+                        args,
+                        span: self.span_from(start),
+                    }),
+                    _ => Err(Diagnostic::error("Expected function call after 'resolve'")
+                        .with_code("P001")),
                 }
             }
             Async => {
                 self.advance();
                 let func_expr = self.parse_postfix()?;
                 match func_expr {
-                    Expr::Call { func, args } => Ok(Expr::AsyncCall { func, args }),
-                    _ => Err("Expected function call after 'async'".to_string()),
+                    Expr::Call { func, args, .. } => Ok(Expr::AsyncCall {
+                        func,
+                        args,
+                        span: self.span_from(start),
+                    }),
+                    _ => {
+                        Err(Diagnostic::error("Expected function call after 'async'")
+                            .with_code("P001"))
+                    }
                 }
             }
             Detached => {
                 self.advance();
                 if !self.at(&Async) {
-                    return Err("Expected 'async' after 'detached'".to_string());
+                    return Err(
+                        Diagnostic::error("Expected 'async' after 'detached'").with_code("P001")
+                    );
                 }
                 self.advance();
                 let func_expr = self.parse_postfix()?;
                 match func_expr {
-                    Expr::Call { func, args } => Ok(Expr::DetachedCall { func, args }),
-                    _ => Err("Expected function call after 'detached async'".to_string()),
+                    Expr::Call { func, args, .. } => Ok(Expr::DetachedCall {
+                        func,
+                        args,
+                        span: self.span_from(start),
+                    }),
+                    _ => Err(
+                        Diagnostic::error("Expected function call after 'detached async'")
+                            .with_code("P001"),
+                    ),
                 }
             }
             Throw => {
                 self.advance();
                 let expr = self.parse_expr()?;
-                Ok(Expr::Throw(Box::new(expr)))
+                Ok(Expr::Throw(Box::new(expr), self.span_from(start)))
             }
-            t => Err(format!("unexpected token in expression: {:?}", t)),
+            t => Err(
+                Diagnostic::error(format!("unexpected token in expression: {:?}", t))
+                    .with_code("P001"),
+            ),
         }
     }
 }

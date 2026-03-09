@@ -600,6 +600,6 @@ let y = x.name
 fn audit_l4_tab_indentation_error() {
     let result = lexer::lex("def f() -> Int\n\treturn 1\n");
     assert!(result.is_err(), "Tab indentation should be rejected");
-    let err = result.unwrap_err();
+    let err = result.unwrap_err().to_string();
     assert!(err.contains("tab") || err.contains("Tab") || err.contains("indent"));
 }

@@ -1,4 +1,6 @@
-#[derive(Debug, Clone, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Type {
     Int,
     Float,
@@ -7,11 +9,13 @@ pub enum Type {
     Nil,
     Void,
     Never,
+    /// Sentinel for error recovery — compatible with everything to prevent cascading errors.
+    Error,
     List(Box<Type>),
     /// Map type scaffolding — parser support exists but no literal syntax or runtime yet.
     Map(Box<Type>, Box<Type>),
-    Custom(String, Vec<Type>),
-    TypeVar(String),
+    Custom(std::string::String, Vec<Type>),
+    TypeVar(std::string::String),
     Function {
         params: Vec<Type>,
         ret: Box<Type>,
@@ -34,5 +38,10 @@ impl Type {
             "Never" => Type::Never,
             _ => Type::Custom(name.to_string(), Vec::new()),
         }
+    }
+
+    /// Returns true if this type is the error recovery sentinel.
+    pub fn is_error(&self) -> bool {
+        matches!(self, Type::Error)
     }
 }

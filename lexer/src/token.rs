@@ -1,4 +1,6 @@
-#[derive(Debug, Clone, PartialEq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TokenKind {
     // keywords
     Def,
@@ -72,9 +74,13 @@ pub enum TokenKind {
     Ident(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Token {
     pub kind: TokenKind,
     pub line: usize,
     pub col: usize,
+    /// Byte offset of the first character of this token in the source.
+    pub start: usize,
+    /// Byte offset one past the last character of this token in the source.
+    pub end: usize,
 }

@@ -242,9 +242,10 @@ fn lexes_strings_including_empty_and_reports_unterminated() {
 
     let bad = "\"unterminated\nnext";
     let err = lex(bad).unwrap_err();
+    let msg = err.to_string();
     assert!(
-        err.contains("Unterminated string at line 1"),
-        "unexpected error: {err}"
+        msg.contains("Unterminated string at line 1"),
+        "unexpected error: {msg}"
     );
 }
 
@@ -445,9 +446,10 @@ def x
   two
 ";
     let err = lex(src).unwrap_err();
+    let msg = err.to_string();
     assert!(
-        err.contains("Indentation error at line 3"),
-        "unexpected error: {err}"
+        msg.contains("Indentation error at line 3"),
+        "unexpected error: {msg}"
     );
 }
 
@@ -491,9 +493,10 @@ fn hyphen_emits_minus_or_arrow() {
 fn huge_integer_triggers_parse_error() {
     let src = "9999999999999999999999999999999999999999999";
     let err = lex(src).unwrap_err();
+    let msg = err.to_string();
     assert!(
-        err.contains("overflows i64 range") || err.contains("bad int"),
-        "unexpected error: {err}"
+        msg.contains("overflows i64 range") || msg.contains("bad int"),
+        "unexpected error: {msg}"
     );
 }
 

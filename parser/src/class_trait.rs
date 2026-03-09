@@ -1,4 +1,4 @@
-use ast::{Expr, Stmt, Type};
+use ast::{Diagnostic, Expr, Stmt, Type};
 use lexer::TokenKind;
 
 use crate::Parser;
@@ -6,12 +6,21 @@ use crate::Parser;
 impl Parser {
     /// Parse a comma-separated list of identifiers inside brackets: `[A, B, C]`.
     /// The opening `[` must already be consumed. Returns the list of names.
-    pub(crate) fn parse_bracketed_idents(&mut self, context: &str) -> Result<Vec<String>, String> {
+    pub(crate) fn parse_bracketed_idents(
+        &mut self,
+        context: &str,
+    ) -> Result<Vec<String>, Diagnostic> {
         let mut names = Vec::new();
         loop {
             let name = match &self.advance().kind {
                 TokenKind::Ident(n) => n.clone(),
-                t => return Err(format!("Expected {} name, got {:?}", context, t)),
+                t => {
+                    return Err(Diagnostic::error(format!(
+                        "Expected {} name, got {:?}",
+                        context, t
+                    ))
+                    .with_code("P001"));
+                }
             };
             names.push(name);
             if self.at(&TokenKind::Comma) {
@@ -25,12 +34,18 @@ impl Parser {
     }
 
     /// Parse comma-separated identifiers (no brackets). Used for `includes Trait1, Trait2`.
-    pub(crate) fn parse_ident_list(&mut self, context: &str) -> Result<Vec<String>, String> {
+    pub(crate) fn parse_ident_list(&mut self, context: &str) -> Result<Vec<String>, Diagnostic> {
         let mut names = Vec::new();
         loop {
             let name = match &self.advance().kind {
                 TokenKind::Ident(n) => n.clone(),
-                t => return Err(format!("Expected {} name, got {:?}", context, t)),
+                t => {
+                    return Err(Diagnostic::error(format!(
+                        "Expected {} name, got {:?}",
+                        context, t
+                    ))
+                    .with_code("P001"));
+                }
             };
             names.push(name);
             if self.at(&TokenKind::Comma) {
@@ -59,12 +74,15 @@ impl Parser {
         }
     }
 
-    pub(crate) fn parse_class(&mut self, is_public: bool) -> Result<Stmt, String> {
+    pub(crate) fn parse_class(&mut self, is_public: bool) -> Result<Stmt, Diagnostic> {
         use TokenKind::*;
+        let start = self.start_span();
         self.expect(Class)?;
         let name = match &self.advance().kind {
             Ident(n) => n.clone(),
-            t => return Err(format!("class name, got {:?}", t)),
+            t => {
+                return Err(Diagnostic::error(format!("class name, got {:?}", t)).with_code("P001"));
+            }
         };
 
         // Optional generic parameters: class Stack[T] or class Pair[A, B]
@@ -80,7 +98,13 @@ impl Parser {
             self.advance();
             let parent = match &self.advance().kind {
                 Ident(n) => n.clone(),
-                t => return Err(format!("Expected class name after 'extends', got {:?}", t)),
+                t => {
+                    return Err(Diagnostic::error(format!(
+                        "Expected class name after 'extends', got {:?}",
+                        t
+                    ))
+                    .with_code("P001"));
+                }
             };
             Some(parent)
         } else {
@@ -114,7 +138,12 @@ impl Parser {
                         Def | Async => {
                             methods.push(self.parse_def_as_let(Some(name.clone()), true)?)
                         }
-                        _ => return Err("Expected def or async after 'pub' in class".to_string()),
+                        _ => {
+                            return Err(Diagnostic::error(
+                                "Expected def or async after 'pub' in class",
+                            )
+                            .with_code("P001"));
+                        }
                     }
                 }
                 Class => {
@@ -123,7 +152,10 @@ impl Parser {
                 _ => {
                     let fname = match &self.advance().kind {
                         Ident(n) => n.clone(),
-                        t => return Err(format!("field name, got {:?}", t)),
+                        t => {
+                            return Err(Diagnostic::error(format!("field name, got {:?}", t))
+                                .with_code("P001"));
+                        }
                     };
                     self.expect(Colon)?;
                     let ftype = self.parse_type()?;
@@ -148,15 +180,22 @@ impl Parser {
             generic_params,
             extends,
             includes,
+            span: self.span_from(start),
         })
     }
 
-    pub(crate) fn parse_trait(&mut self, is_public: bool) -> Result<Stmt, String> {
+    pub(crate) fn parse_trait(&mut self, is_public: bool) -> Result<Stmt, Diagnostic> {
         use TokenKind::*;
+        let start = self.start_span();
         self.expect(Trait)?;
         let name = match &self.advance().kind {
             Ident(n) => n.clone(),
-            t => return Err(format!("Expected trait name, got {:?}", t)),
+            t => {
+                return Err(
+                    Diagnostic::error(format!("Expected trait name, got {:?}", t))
+                        .with_code("P001"),
+                );
+            }
         };
 
         self.consume_newlines();
@@ -174,14 +213,20 @@ impl Parser {
                         Def | Async => {
                             methods.push(self.parse_def_as_let(Some(name.clone()), true)?)
                         }
-                        _ => return Err("Expected def or async after 'pub' in trait".to_string()),
+                        _ => {
+                            return Err(Diagnostic::error(
+                                "Expected def or async after 'pub' in trait",
+                            )
+                            .with_code("P001"));
+                        }
                     }
                 }
                 _ => {
-                    return Err(format!(
+                    return Err(Diagnostic::error(format!(
                         "Expected method definition in trait, got {:?}",
                         self.peek().kind
-                    ));
+                    ))
+                    .with_code("P001"));
                 }
             }
             self.consume_newlines();
@@ -192,6 +237,7 @@ impl Parser {
             name,
             methods,
             is_public,
+            span: self.span_from(start),
         })
     }
 
@@ -199,8 +245,9 @@ impl Parser {
         &mut self,
         receiver: Option<String>,
         is_public: bool,
-    ) -> Result<Stmt, String> {
+    ) -> Result<Stmt, Diagnostic> {
         use TokenKind::*;
+        let start = self.start_span();
         let mut is_async = false;
         if self.at(&Async) {
             is_async = true;
@@ -210,7 +257,7 @@ impl Parser {
         self.expect(Def)?;
         let name = match &self.advance().kind {
             Ident(n) => n.clone(),
-            t => return Err(format!("fn name, got {:?}", t)),
+            t => return Err(Diagnostic::error(format!("fn name, got {:?}", t)).with_code("P001")),
         };
 
         // Optional generic parameters: def identity[T](x: T) -> T
@@ -233,7 +280,10 @@ impl Parser {
                 loop {
                     let pname = match &self.advance().kind {
                         Ident(n) => n.clone(),
-                        t => return Err(format!("param name, got {:?}", t)),
+                        t => {
+                            return Err(Diagnostic::error(format!("param name, got {:?}", t))
+                                .with_code("P001"));
+                        }
                     };
                     self.expect(Colon)?;
                     let ptype = self.parse_type()?;
@@ -275,6 +325,7 @@ impl Parser {
             self.pop_type_params(gp);
         }
 
+        let lambda_span = self.span_from(start);
         let lambda = Expr::Lambda {
             params,
             ret_type: ret,
@@ -282,6 +333,7 @@ impl Parser {
             is_async,
             generic_params,
             throws,
+            span: lambda_span,
         };
 
         let bind = if let Some(ref recv) = receiver {
@@ -295,6 +347,7 @@ impl Parser {
             type_ann: None,
             value: lambda,
             is_public,
+            span: self.span_from(start),
         })
     }
 }

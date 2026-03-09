@@ -7,7 +7,7 @@ mod tests;
 
 use std::collections::HashMap;
 
-use ast::{Expr, Stmt};
+use ast::{Diagnostic, Expr, Span, Stmt};
 use lexer::{Token, TokenKind};
 
 pub struct Parser {
@@ -35,6 +35,8 @@ impl Parser {
             kind: TokenKind::EOF,
             line: 0,
             col: 0,
+            start: 0,
+            end: 0,
         };
         self.tokens.get(self.pos).unwrap_or(&EOF_TOKEN)
     }
@@ -51,15 +53,21 @@ impl Parser {
             kind: TokenKind::EOF,
             line: 0,
             col: 0,
+            start: 0,
+            end: 0,
         })
     }
 
-    pub(crate) fn expect(&mut self, kind: TokenKind) -> Result<(), String> {
+    pub(crate) fn expect(&mut self, kind: TokenKind) -> Result<(), Diagnostic> {
         let token = self.advance();
         if token.kind == kind {
             Ok(())
         } else {
-            Err(format!("Expected {:?}, found {:?}", kind, token.kind))
+            Err(
+                Diagnostic::error(format!("Expected {:?}, found {:?}", kind, token.kind))
+                    .with_code("P001")
+                    .with_label(Span::new(token.start, token.end), "unexpected token"),
+            )
         }
     }
 
@@ -69,20 +77,39 @@ impl Parser {
         }
     }
 
-    pub(crate) fn parse_block(&mut self) -> Result<Vec<Stmt>, String> {
+    /// Byte offset of the current token's start — use to begin a span.
+    pub(crate) fn start_span(&self) -> usize {
+        self.peek().start
+    }
+
+    /// Build a span from `start` to the end of the most recently consumed token.
+    pub(crate) fn span_from(&self, start: usize) -> Span {
+        let end = if self.pos > 0 {
+            self.tokens
+                .get(self.pos - 1)
+                .map(|t| t.end)
+                .unwrap_or(start)
+        } else {
+            start
+        };
+        Span::new(start, end)
+    }
+
+    pub(crate) fn parse_block(&mut self) -> Result<Vec<Stmt>, Diagnostic> {
         self.depth += 1;
         if self.depth > MAX_NESTING_DEPTH {
-            return Err(format!(
+            return Err(Diagnostic::error(format!(
                 "Nesting depth exceeds maximum of {}",
                 MAX_NESTING_DEPTH
-            ));
+            ))
+            .with_code("P002"));
         }
         let result = self.parse_block_inner();
         self.depth -= 1;
         result
     }
 
-    fn parse_block_inner(&mut self) -> Result<Vec<Stmt>, String> {
+    fn parse_block_inner(&mut self) -> Result<Vec<Stmt>, Diagnostic> {
         self.consume_newlines();
         self.expect(TokenKind::Indent)?;
         let mut body = Vec::new();
@@ -94,9 +121,10 @@ impl Parser {
         Ok(body)
     }
 
-    // ─── Module & statements ────────────────────────────────────────
+    // --- Module & statements -------------------------------------------------
 
-    pub fn parse_module(&mut self, name: &str) -> Result<ast::Module, String> {
+    pub fn parse_module(&mut self, name: &str) -> Result<ast::Module, Diagnostic> {
+        let start = self.start_span();
         let mut body = Vec::new();
         while !self.at(&TokenKind::EOF) {
             body.push(self.parse_stmt()?);
@@ -105,11 +133,13 @@ impl Parser {
         Ok(ast::Module {
             name: name.to_string(),
             body,
+            span: self.span_from(start),
         })
     }
 
-    fn parse_stmt(&mut self) -> Result<Stmt, String> {
+    fn parse_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         self.consume_newlines();
+        let start = self.start_span();
         match &self.peek().kind {
             TokenKind::Use => self.parse_use(),
             TokenKind::Pub => self.parse_pub(),
@@ -118,7 +148,6 @@ impl Parser {
             TokenKind::Def => self.parse_def_as_let(None, false),
             TokenKind::Async => {
                 // Could be `async def`, `async scope`, or `async expr()` at statement level
-                // Peek ahead to decide
                 if self.tokens.get(self.pos + 1).map(|t| &t.kind) == Some(&TokenKind::Def) {
                     self.parse_def_as_let(None, false)
                 } else if self.tokens.get(self.pos + 1).map(|t| &t.kind) == Some(&TokenKind::Scope)
@@ -127,16 +156,21 @@ impl Parser {
                     self.advance(); // consume async
                     self.advance(); // consume scope
                     let body = self.parse_block()?;
-                    Ok(Stmt::Expr(Expr::AsyncScope { body }))
+                    let span = self.span_from(start);
+                    Ok(Stmt::Expr(Expr::AsyncScope { body, span }, span))
                 } else {
-                    // async as call-site modifier — parse as expression
+                    // async as call-site modifier -- parse as expression
                     let e = self.parse_expr()?;
                     if self.at(&TokenKind::Equals) {
                         self.advance();
                         let value = self.parse_expr()?;
-                        return Ok(Stmt::Assignment { target: e, value });
+                        return Ok(Stmt::Assignment {
+                            target: e,
+                            value,
+                            span: self.span_from(start),
+                        });
                     }
-                    Ok(Stmt::Expr(e))
+                    Ok(Stmt::Expr(e, self.span_from(start)))
                 }
             }
             TokenKind::If => self.parse_if(),
@@ -146,38 +180,49 @@ impl Parser {
             TokenKind::Return => {
                 self.advance();
                 let expr = self.parse_expr()?;
-                Ok(Stmt::Return(expr))
+                Ok(Stmt::Return(expr, self.span_from(start)))
             }
             TokenKind::Break => {
                 self.advance();
-                Ok(Stmt::Break)
+                Ok(Stmt::Break(self.span_from(start)))
             }
             TokenKind::Continue => {
                 self.advance();
-                Ok(Stmt::Continue)
+                Ok(Stmt::Continue(self.span_from(start)))
             }
-            // Throw, Match, Resolve, Detached all start expressions — fall through
+            // Throw, Match, Resolve, Detached all start expressions -- fall through
             _ => {
                 let e = self.parse_expr()?;
                 // Check for assignment: expr = value
                 if self.at(&TokenKind::Equals) {
                     self.advance();
                     let value = self.parse_expr()?;
-                    return Ok(Stmt::Assignment { target: e, value });
+                    return Ok(Stmt::Assignment {
+                        target: e,
+                        value,
+                        span: self.span_from(start),
+                    });
                 }
-                Ok(Stmt::Expr(e))
+                Ok(Stmt::Expr(e, self.span_from(start)))
             }
         }
     }
 
-    fn parse_use(&mut self) -> Result<Stmt, String> {
+    fn parse_use(&mut self) -> Result<Stmt, Diagnostic> {
+        let start = self.start_span();
         self.expect(TokenKind::Use)?;
         let mut path = Vec::new();
 
         // First segment
         let name = match &self.advance().kind {
             TokenKind::Ident(n) => n.clone(),
-            t => return Err(format!("Expected module name after 'use', got {:?}", t)),
+            t => {
+                return Err(Diagnostic::error(format!(
+                    "Expected module name after 'use', got {:?}",
+                    t
+                ))
+                .with_code("P001"));
+            }
         };
         path.push(name);
 
@@ -186,7 +231,13 @@ impl Parser {
             self.advance();
             let seg = match &self.advance().kind {
                 TokenKind::Ident(n) => n.clone(),
-                t => return Err(format!("Expected module name after '/', got {:?}", t)),
+                t => {
+                    return Err(Diagnostic::error(format!(
+                        "Expected module name after '/', got {:?}",
+                        t
+                    ))
+                    .with_code("P001"));
+                }
             };
             path.push(seg);
         }
@@ -199,7 +250,13 @@ impl Parser {
                 loop {
                     let n = match &self.advance().kind {
                         TokenKind::Ident(n) => n.clone(),
-                        t => return Err(format!("Expected identifier in use list, got {:?}", t)),
+                        t => {
+                            return Err(Diagnostic::error(format!(
+                                "Expected identifier in use list, got {:?}",
+                                t
+                            ))
+                            .with_code("P001"));
+                        }
                     };
                     names.push(n);
                     if self.at(&TokenKind::Comma) {
@@ -220,32 +277,45 @@ impl Parser {
             self.advance();
             let a = match &self.advance().kind {
                 TokenKind::Ident(n) => n.clone(),
-                t => return Err(format!("Expected alias name after 'as', got {:?}", t)),
+                t => {
+                    return Err(Diagnostic::error(format!(
+                        "Expected alias name after 'as', got {:?}",
+                        t
+                    ))
+                    .with_code("P001"));
+                }
             };
             Some(a)
         } else {
             None
         };
 
-        Ok(Stmt::Use { path, names, alias })
+        Ok(Stmt::Use {
+            path,
+            names,
+            alias,
+            span: self.span_from(start),
+        })
     }
 
-    fn parse_pub(&mut self) -> Result<Stmt, String> {
+    fn parse_pub(&mut self) -> Result<Stmt, Diagnostic> {
         self.expect(TokenKind::Pub)?;
         match &self.peek().kind {
             TokenKind::Def | TokenKind::Async => self.parse_def_as_let(None, true),
             TokenKind::Class => self.parse_class(true),
             TokenKind::Trait => self.parse_trait(true),
             TokenKind::Let => self.parse_let(true),
-            t => Err(format!(
+            t => Err(Diagnostic::error(format!(
                 "Expected def, class, trait, or let after 'pub', got {:?}",
                 t
-            )),
+            ))
+            .with_code("P001")),
         }
     }
 
-    fn parse_if(&mut self) -> Result<Stmt, String> {
+    fn parse_if(&mut self) -> Result<Stmt, Diagnostic> {
         use TokenKind::*;
+        let start = self.start_span();
         self.expect(If)?;
         let cond = self.parse_expr()?;
         let then_body = self.parse_block()?;
@@ -269,40 +339,60 @@ impl Parser {
             then_body,
             elif_branches,
             else_body,
+            span: self.span_from(start),
         })
     }
 
-    fn parse_while(&mut self) -> Result<Stmt, String> {
+    fn parse_while(&mut self) -> Result<Stmt, Diagnostic> {
+        let start = self.start_span();
         self.expect(TokenKind::While)?;
         let cond = self.parse_expr()?;
         let body = self.parse_block()?;
-        Ok(Stmt::While { cond, body })
+        Ok(Stmt::While {
+            cond,
+            body,
+            span: self.span_from(start),
+        })
     }
 
-    fn parse_for(&mut self) -> Result<Stmt, String> {
+    fn parse_for(&mut self) -> Result<Stmt, Diagnostic> {
         use TokenKind::*;
+        let start = self.start_span();
         self.expect(For)?;
         let var = match &self.advance().kind {
             Ident(n) => n.clone(),
-            t => return Err(format!("Expected variable name after 'for', got {:?}", t)),
+            t => {
+                return Err(Diagnostic::error(format!(
+                    "Expected variable name after 'for', got {:?}",
+                    t
+                ))
+                .with_code("P001"));
+            }
         };
         self.expect(In)?;
         let iter = self.parse_expr()?;
         let body = self.parse_block()?;
-        Ok(Stmt::For { var, iter, body })
+        Ok(Stmt::For {
+            var,
+            iter,
+            body,
+            span: self.span_from(start),
+        })
     }
 
-    fn parse_let(&mut self, is_public: bool) -> Result<Stmt, String> {
+    fn parse_let(&mut self, is_public: bool) -> Result<Stmt, Diagnostic> {
+        let start = self.start_span();
         self.expect(TokenKind::Let)?;
 
         let name_tok = self.advance();
         let name = if let TokenKind::Ident(s) = name_tok.kind {
             s
         } else {
-            return Err(format!(
+            return Err(Diagnostic::error(format!(
                 "Expected identifier after let at line {}",
                 name_tok.line
-            ));
+            ))
+            .with_code("P001"));
         };
 
         let type_ann = if self.at(&TokenKind::Colon) {
@@ -320,6 +410,66 @@ impl Parser {
             type_ann,
             value,
             is_public,
+            span: self.span_from(start),
         })
+    }
+
+    pub fn parse_module_recovering(&mut self, name: &str) -> ast::ParseResult {
+        let start = self.start_span();
+        let mut body = Vec::new();
+        let mut diagnostics = Vec::new();
+        while !self.at(&TokenKind::EOF) {
+            match self.parse_stmt() {
+                Ok(stmt) => body.push(stmt),
+                Err(diag) => {
+                    diagnostics.push(diag);
+                    // Skip tokens until we find a synchronization point
+                    self.synchronize();
+                }
+            }
+            self.consume_newlines();
+        }
+        ast::ParseResult {
+            module: ast::Module {
+                name: name.to_string(),
+                body,
+                span: self.span_from(start),
+            },
+            diagnostics,
+        }
+    }
+
+    fn synchronize(&mut self) {
+        // Skip tokens until we find a statement boundary
+        loop {
+            match &self.peek().kind {
+                TokenKind::EOF => break,
+                TokenKind::Newline => {
+                    self.advance();
+                    // Check if next token starts a new statement
+                    match &self.peek().kind {
+                        TokenKind::Def
+                        | TokenKind::Let
+                        | TokenKind::Class
+                        | TokenKind::Trait
+                        | TokenKind::If
+                        | TokenKind::While
+                        | TokenKind::For
+                        | TokenKind::Return
+                        | TokenKind::Pub
+                        | TokenKind::Use
+                        | TokenKind::Break
+                        | TokenKind::Continue
+                        | TokenKind::Dedent
+                        | TokenKind::EOF => break,
+                        _ => {}
+                    }
+                }
+                TokenKind::Dedent => break,
+                _ => {
+                    self.advance();
+                }
+            }
+        }
     }
 }

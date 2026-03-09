@@ -1,10 +1,10 @@
-use ast::Type;
+use ast::{Diagnostic, Type};
 use lexer::TokenKind;
 
 use crate::Parser;
 
 impl Parser {
-    pub(crate) fn parse_type(&mut self) -> Result<Type, String> {
+    pub(crate) fn parse_type(&mut self) -> Result<Type, Diagnostic> {
         // Function type: (T, U) -> R
         if self.at(&TokenKind::LParen) {
             self.advance();
@@ -29,7 +29,11 @@ impl Parser {
 
         let name = match &self.advance().kind {
             TokenKind::Ident(n) => n.clone(),
-            t => return Err(format!("Expected type name, got {:?}", t)),
+            t => {
+                return Err(
+                    Diagnostic::error(format!("Expected type name, got {:?}", t)).with_code("P001"),
+                );
+            }
         };
 
         if name == "List" && self.at(&TokenKind::LBracket) {
@@ -55,8 +59,22 @@ impl Parser {
             return self.maybe_nullable(Type::Task(Box::new(inner)));
         }
 
-        if self.type_params.get(&name).map_or(false, |c| *c > 0) {
+        if self.type_params.get(&name).is_some_and(|c| *c > 0) {
             let base = Type::TypeVar(name);
+            return self.maybe_nullable(base);
+        }
+
+        // Generic type arguments for custom types: MyClass[T, U]
+        if self.at(&TokenKind::LBracket) {
+            self.advance();
+            let mut type_args = Vec::new();
+            type_args.push(self.parse_type()?);
+            while self.at(&TokenKind::Comma) {
+                self.advance();
+                type_args.push(self.parse_type()?);
+            }
+            self.expect(TokenKind::RBracket)?;
+            let base = Type::Custom(name, type_args);
             return self.maybe_nullable(base);
         }
 
@@ -64,16 +82,21 @@ impl Parser {
         self.maybe_nullable(base)
     }
 
-    fn maybe_nullable(&mut self, base: Type) -> Result<Type, String> {
+    fn maybe_nullable(&mut self, base: Type) -> Result<Type, Diagnostic> {
         if self.at(&TokenKind::Question) {
             self.advance();
             // No nested nullability: T?? is a compile error
             if self.at(&TokenKind::Question) {
-                return Err("Nested nullable types (T??) are not allowed".to_string());
+                return Err(
+                    Diagnostic::error("Nested nullable types (T??) are not allowed")
+                        .with_code("P001"),
+                );
             }
             // Don't allow Nullable(Nullable(...))
             if matches!(&base, Type::Nullable(_)) {
-                return Err("Nested nullable types are not allowed".to_string());
+                return Err(
+                    Diagnostic::error("Nested nullable types are not allowed").with_code("P001")
+                );
             }
             Ok(Type::Nullable(Box::new(base)))
         } else {

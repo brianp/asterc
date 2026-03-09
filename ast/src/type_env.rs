@@ -1,11 +1,13 @@
 use crate::types::Type;
+use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClassInfo {
     pub ty: Type,
-    pub fields: HashMap<String, Type>,
+    /// Preserves declaration order — critical for deterministic constructor parameter ordering.
+    pub fields: IndexMap<String, Type>,
     pub methods: HashMap<String, Type>,
     pub generic_params: Option<Vec<String>>,
     pub extends: Option<String>,
@@ -88,6 +90,14 @@ impl TypeEnv {
     pub fn set_trait(&mut self, name: String, info: TraitInfo) {
         self.traits.insert(name, info);
     }
+
+    pub fn all_var_names(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self.variables.keys().map(|s| s.as_str()).collect();
+        if let Some(ref parent) = self.parent {
+            names.extend(parent.all_var_names());
+        }
+        names
+    }
 }
 
 #[cfg(test)]
@@ -98,7 +108,7 @@ mod tests {
     fn dummy_class(name: &str) -> ClassInfo {
         ClassInfo {
             ty: Type::Custom(name.to_string(), Vec::new()),
-            fields: HashMap::new(),
+            fields: IndexMap::new(),
             methods: HashMap::new(),
             generic_params: None,
             extends: None,
@@ -169,7 +179,7 @@ mod tests {
 
     #[test]
     fn fields_and_methods_stored_in_classinfo() {
-        let mut fields = HashMap::new();
+        let mut fields = IndexMap::new();
         fields.insert("x".into(), Type::Int);
         let mut methods = HashMap::new();
         methods.insert("m".into(), Type::Void);
