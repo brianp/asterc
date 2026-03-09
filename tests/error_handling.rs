@@ -565,7 +565,7 @@ fn regression_recursion_depth_limit() {
             let mut parser = parser::Parser::new(tokens);
             let result = parser.parse_module("test");
             assert!(result.is_err(), "Expected recursion depth error");
-            let err = result.unwrap_err();
+            let err = result.unwrap_err().to_string();
             assert!(err.contains("depth") || err.contains("nesting") || err.contains("Nesting"));
         })
         .unwrap()

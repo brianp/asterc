@@ -1,4 +1,4 @@
-# Phase 7: Error Handling RFC — throws, throw, !, extends
+# Phase 7: Error Handling RFC - throws, throw, !, extends
 
 # Error hierarchy with extends
 class AppError

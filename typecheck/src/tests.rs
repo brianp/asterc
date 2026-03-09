@@ -1,13 +1,18 @@
 use super::typechecker::TypeChecker;
-use ast::{BinOp, Expr, Stmt, Type, UnaryOp};
+use ast::{BinOp, Expr, Span, Stmt, Type, UnaryOp};
 
 // ─── Helpers ────────────────────────────────────────────────────────
+
+fn s() -> Span {
+    Span::dummy()
+}
 
 fn binop(left: Expr, op: BinOp, right: Expr) -> Expr {
     Expr::BinaryOp {
         left: Box::new(left),
         op,
         right: Box::new(right),
+        span: s(),
     }
 }
 
@@ -15,7 +20,12 @@ fn unop(op: UnaryOp, operand: Expr) -> Expr {
     Expr::UnaryOp {
         op,
         operand: Box::new(operand),
+        span: s(),
     }
+}
+
+fn err_msg(r: Result<Type, ast::Diagnostic>) -> String {
+    r.unwrap_err().to_string()
 }
 
 // ─── Core: let, lambda, call, if, class ─────────────────────────────
@@ -26,8 +36,9 @@ fn let_and_ident_lookup() {
     let stmt = Stmt::Let {
         name: "x".into(),
         type_ann: None,
-        value: Expr::Int(1),
+        value: Expr::Int(1, s()),
         is_public: false,
+        span: s(),
     };
     assert_eq!(tc.check_stmt(&stmt).unwrap(), Type::Int);
     assert_eq!(tc.env.get_var("x"), Some(Type::Int));
@@ -39,10 +50,11 @@ fn lambda_type_check() {
     let lambda = Expr::Lambda {
         params: vec![("a".into(), Type::Int)],
         ret_type: Type::Int,
-        body: vec![Stmt::Expr(Expr::Ident("a".into()))],
+        body: vec![Stmt::Expr(Expr::Ident("a".into(), s()), s())],
         is_async: false,
         generic_params: None,
         throws: None,
+        span: s(),
     };
     let ty = tc.check_expr(&lambda).unwrap();
     match ty {
@@ -66,58 +78,58 @@ fn call_type_check_and_mismatch() {
     let lambda = Expr::Lambda {
         params: vec![("x".into(), Type::Int)],
         ret_type: Type::Int,
-        body: vec![Stmt::Expr(Expr::Ident("x".into()))],
+        body: vec![Stmt::Expr(Expr::Ident("x".into(), s()), s())],
         is_async: false,
         generic_params: None,
         throws: None,
+        span: s(),
     };
     tc.check_stmt(&Stmt::Let {
         name: "f".into(),
         type_ann: None,
         value: lambda,
         is_public: false,
+        span: s(),
     })
     .unwrap();
 
     let call = Expr::Call {
-        func: Box::new(Expr::Ident("f".into())),
-        args: vec![Expr::Int(42)],
+        func: Box::new(Expr::Ident("f".into(), s())),
+        args: vec![Expr::Int(42, s())],
+        span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::Int);
 
     let bad_call = Expr::Call {
-        func: Box::new(Expr::Ident("f".into())),
-        args: vec![Expr::Str("oops".into())],
+        func: Box::new(Expr::Ident("f".into(), s())),
+        args: vec![Expr::Str("oops".into(), s())],
+        span: s(),
     };
-    assert!(
-        tc.check_expr(&bad_call)
-            .unwrap_err()
-            .contains("Argument type mismatch")
-    );
+    let err = err_msg(tc.check_expr(&bad_call));
+    assert!(err.contains("Argument type mismatch"));
 }
 
 #[test]
 fn if_type_check() {
     let mut tc = TypeChecker::new();
     let stmt = Stmt::If {
-        cond: Expr::Bool(true),
-        then_body: vec![Stmt::Expr(Expr::Int(1))],
+        cond: Expr::Bool(true, s()),
+        then_body: vec![Stmt::Expr(Expr::Int(1, s()), s())],
         elif_branches: vec![],
-        else_body: vec![Stmt::Expr(Expr::Int(2))],
+        else_body: vec![Stmt::Expr(Expr::Int(2, s()), s())],
+        span: s(),
     };
     assert_eq!(tc.check_stmt(&stmt).unwrap(), Type::Int);
 
     let bad = Stmt::If {
-        cond: Expr::Int(1),
+        cond: Expr::Int(1, s()),
         then_body: vec![],
         elif_branches: vec![],
         else_body: vec![],
+        span: s(),
     };
-    assert!(
-        tc.check_stmt(&bad)
-            .unwrap_err()
-            .contains("If condition must be Bool")
-    );
+    let err = err_msg(tc.check_stmt(&bad));
+    assert!(err.contains("If condition must be Bool"));
 }
 
 #[test]
@@ -132,31 +144,36 @@ fn class_type_check_and_member_access() {
             value: Expr::Lambda {
                 params: vec![],
                 ret_type: Type::String,
-                body: vec![Stmt::Expr(Expr::Str("ok".into()))],
+                body: vec![Stmt::Expr(Expr::Str("ok".into(), s()), s())],
                 is_async: false,
                 generic_params: None,
                 throws: None,
+                span: s(),
             },
             is_public: false,
+            span: s(),
         }],
         is_public: false,
         generic_params: None,
         extends: None,
         includes: None,
+        span: s(),
     };
     tc.check_stmt(&class_stmt).unwrap();
 
     tc.env
         .set_var("p".into(), Type::Custom("Point".into(), Vec::new()));
     let access = Expr::Member {
-        object: Box::new(Expr::Ident("p".into())),
+        object: Box::new(Expr::Ident("p".into(), s())),
         field: "x".into(),
+        span: s(),
     };
     assert_eq!(tc.check_expr(&access).unwrap(), Type::Int);
 
     let access_m = Expr::Member {
-        object: Box::new(Expr::Ident("p".into())),
+        object: Box::new(Expr::Ident("p".into(), s())),
         field: "show".into(),
+        span: s(),
     };
     assert!(tc.check_expr(&access_m).is_ok());
 }
@@ -164,32 +181,25 @@ fn class_type_check_and_member_access() {
 #[test]
 fn unknowns_and_errors() {
     let mut tc = TypeChecker::new();
-    assert!(
-        tc.check_expr(&Expr::Ident("y".into()))
-            .unwrap_err()
-            .contains("Unknown identifier")
-    );
+    let err = err_msg(tc.check_expr(&Expr::Ident("y".into(), s())));
+    assert!(err.contains("Unknown identifier"));
 
     let call = Expr::Call {
-        func: Box::new(Expr::Int(1)),
+        func: Box::new(Expr::Int(1, s())),
         args: vec![],
+        span: s(),
     };
-    assert!(
-        tc.check_expr(&call)
-            .unwrap_err()
-            .contains("Tried to call non-function")
-    );
+    let err = err_msg(tc.check_expr(&call));
+    assert!(err.contains("Tried to call non-function"));
 
     tc.env.set_var("p".into(), Type::Int);
     let access = Expr::Member {
-        object: Box::new(Expr::Ident("p".into())),
+        object: Box::new(Expr::Ident("p".into(), s())),
         field: "foo".into(),
+        span: s(),
     };
-    assert!(
-        tc.check_expr(&access)
-            .unwrap_err()
-            .contains("Cannot access member")
-    );
+    let err = err_msg(tc.check_expr(&access));
+    assert!(err.contains("Cannot access member"));
 }
 
 // ─── BinaryOp: Arithmetic ──────────────────────────────────────────
@@ -198,7 +208,7 @@ fn unknowns_and_errors() {
 fn binary_add_int_int() {
     let mut tc = TypeChecker::new();
     assert_eq!(
-        tc.check_expr(&binop(Expr::Int(1), BinOp::Add, Expr::Int(2)))
+        tc.check_expr(&binop(Expr::Int(1, s()), BinOp::Add, Expr::Int(2, s())))
             .unwrap(),
         Type::Int
     );
@@ -208,8 +218,12 @@ fn binary_add_int_int() {
 fn binary_add_float_float() {
     let mut tc = TypeChecker::new();
     assert_eq!(
-        tc.check_expr(&binop(Expr::Float(1.0), BinOp::Add, Expr::Float(2.0)))
-            .unwrap(),
+        tc.check_expr(&binop(
+            Expr::Float(1.0, s()),
+            BinOp::Add,
+            Expr::Float(2.0, s())
+        ))
+        .unwrap(),
         Type::Float
     );
 }
@@ -218,7 +232,7 @@ fn binary_add_float_float() {
 fn binary_add_int_float_promotes() {
     let mut tc = TypeChecker::new();
     assert_eq!(
-        tc.check_expr(&binop(Expr::Int(1), BinOp::Add, Expr::Float(2.0)))
+        tc.check_expr(&binop(Expr::Int(1, s()), BinOp::Add, Expr::Float(2.0, s())))
             .unwrap(),
         Type::Float
     );
@@ -228,7 +242,7 @@ fn binary_add_int_float_promotes() {
 fn binary_add_float_int_promotes() {
     let mut tc = TypeChecker::new();
     assert_eq!(
-        tc.check_expr(&binop(Expr::Float(1.0), BinOp::Add, Expr::Int(2)))
+        tc.check_expr(&binop(Expr::Float(1.0, s()), BinOp::Add, Expr::Int(2, s())))
             .unwrap(),
         Type::Float
     );
@@ -239,9 +253,9 @@ fn binary_add_string_string() {
     let mut tc = TypeChecker::new();
     assert_eq!(
         tc.check_expr(&binop(
-            Expr::Str("a".into()),
+            Expr::Str("a".into(), s()),
             BinOp::Add,
-            Expr::Str("b".into())
+            Expr::Str("b".into(), s())
         ))
         .unwrap(),
         Type::String
@@ -252,7 +266,7 @@ fn binary_add_string_string() {
 fn binary_sub_int_int() {
     let mut tc = TypeChecker::new();
     assert_eq!(
-        tc.check_expr(&binop(Expr::Int(5), BinOp::Sub, Expr::Int(3)))
+        tc.check_expr(&binop(Expr::Int(5, s()), BinOp::Sub, Expr::Int(3, s())))
             .unwrap(),
         Type::Int
     );
@@ -262,8 +276,12 @@ fn binary_sub_int_int() {
 fn binary_mul_float_float() {
     let mut tc = TypeChecker::new();
     assert_eq!(
-        tc.check_expr(&binop(Expr::Float(2.0), BinOp::Mul, Expr::Float(3.0)))
-            .unwrap(),
+        tc.check_expr(&binop(
+            Expr::Float(2.0, s()),
+            BinOp::Mul,
+            Expr::Float(3.0, s())
+        ))
+        .unwrap(),
         Type::Float
     );
 }
@@ -272,7 +290,7 @@ fn binary_mul_float_float() {
 fn binary_div_int_int() {
     let mut tc = TypeChecker::new();
     assert_eq!(
-        tc.check_expr(&binop(Expr::Int(10), BinOp::Div, Expr::Int(3)))
+        tc.check_expr(&binop(Expr::Int(10, s()), BinOp::Div, Expr::Int(3, s())))
             .unwrap(),
         Type::Int
     );
@@ -282,7 +300,7 @@ fn binary_div_int_int() {
 fn binary_mod_int_int() {
     let mut tc = TypeChecker::new();
     assert_eq!(
-        tc.check_expr(&binop(Expr::Int(10), BinOp::Mod, Expr::Int(3)))
+        tc.check_expr(&binop(Expr::Int(10, s()), BinOp::Mod, Expr::Int(3, s())))
             .unwrap(),
         Type::Int
     );
@@ -292,7 +310,7 @@ fn binary_mod_int_int() {
 fn binary_pow_int_int() {
     let mut tc = TypeChecker::new();
     assert_eq!(
-        tc.check_expr(&binop(Expr::Int(2), BinOp::Pow, Expr::Int(3)))
+        tc.check_expr(&binop(Expr::Int(2, s()), BinOp::Pow, Expr::Int(3, s())))
             .unwrap(),
         Type::Int
     );
@@ -302,7 +320,7 @@ fn binary_pow_int_int() {
 fn binary_pow_float_int_promotes() {
     let mut tc = TypeChecker::new();
     assert_eq!(
-        tc.check_expr(&binop(Expr::Float(2.0), BinOp::Pow, Expr::Int(3)))
+        tc.check_expr(&binop(Expr::Float(2.0, s()), BinOp::Pow, Expr::Int(3, s())))
             .unwrap(),
         Type::Float
     );
@@ -313,22 +331,18 @@ fn binary_pow_float_int_promotes() {
 #[test]
 fn binary_arithmetic_type_error() {
     let mut tc = TypeChecker::new();
-    let err = tc
-        .check_expr(&binop(Expr::Int(1), BinOp::Add, Expr::Bool(true)))
-        .unwrap_err();
+    let err = err_msg(tc.check_expr(&binop(Expr::Int(1, s()), BinOp::Add, Expr::Bool(true, s()))));
     assert!(err.contains("Cannot apply"));
 }
 
 #[test]
 fn binary_string_mul_error() {
     let mut tc = TypeChecker::new();
-    let err = tc
-        .check_expr(&binop(
-            Expr::Str("a".into()),
-            BinOp::Mul,
-            Expr::Str("b".into()),
-        ))
-        .unwrap_err();
+    let err = err_msg(tc.check_expr(&binop(
+        Expr::Str("a".into(), s()),
+        BinOp::Mul,
+        Expr::Str("b".into(), s()),
+    )));
     assert!(err.contains("Cannot apply"));
 }
 
@@ -338,7 +352,7 @@ fn binary_string_mul_error() {
 fn binary_eq_int_int() {
     let mut tc = TypeChecker::new();
     assert_eq!(
-        tc.check_expr(&binop(Expr::Int(1), BinOp::Eq, Expr::Int(1)))
+        tc.check_expr(&binop(Expr::Int(1, s()), BinOp::Eq, Expr::Int(1, s())))
             .unwrap(),
         Type::Bool
     );
@@ -349,9 +363,9 @@ fn binary_eq_string_string() {
     let mut tc = TypeChecker::new();
     assert_eq!(
         tc.check_expr(&binop(
-            Expr::Str("a".into()),
+            Expr::Str("a".into(), s()),
             BinOp::Eq,
-            Expr::Str("a".into())
+            Expr::Str("a".into(), s())
         ))
         .unwrap(),
         Type::Bool
@@ -362,8 +376,12 @@ fn binary_eq_string_string() {
 fn binary_neq_bool_bool() {
     let mut tc = TypeChecker::new();
     assert_eq!(
-        tc.check_expr(&binop(Expr::Bool(true), BinOp::Neq, Expr::Bool(false)))
-            .unwrap(),
+        tc.check_expr(&binop(
+            Expr::Bool(true, s()),
+            BinOp::Neq,
+            Expr::Bool(false, s())
+        ))
+        .unwrap(),
         Type::Bool
     );
 }
@@ -372,7 +390,7 @@ fn binary_neq_bool_bool() {
 fn binary_lt_int_int() {
     let mut tc = TypeChecker::new();
     assert_eq!(
-        tc.check_expr(&binop(Expr::Int(1), BinOp::Lt, Expr::Int(2)))
+        tc.check_expr(&binop(Expr::Int(1, s()), BinOp::Lt, Expr::Int(2, s())))
             .unwrap(),
         Type::Bool
     );
@@ -381,9 +399,11 @@ fn binary_lt_int_int() {
 #[test]
 fn binary_comparison_type_mismatch() {
     let mut tc = TypeChecker::new();
-    let err = tc
-        .check_expr(&binop(Expr::Int(1), BinOp::Eq, Expr::Str("a".into())))
-        .unwrap_err();
+    let err = err_msg(tc.check_expr(&binop(
+        Expr::Int(1, s()),
+        BinOp::Eq,
+        Expr::Str("a".into(), s()),
+    )));
     assert!(err.contains("Cannot compare"));
 }
 
@@ -393,8 +413,12 @@ fn binary_comparison_type_mismatch() {
 fn binary_and_bool_bool() {
     let mut tc = TypeChecker::new();
     assert_eq!(
-        tc.check_expr(&binop(Expr::Bool(true), BinOp::And, Expr::Bool(false)))
-            .unwrap(),
+        tc.check_expr(&binop(
+            Expr::Bool(true, s()),
+            BinOp::And,
+            Expr::Bool(false, s())
+        ))
+        .unwrap(),
         Type::Bool
     );
 }
@@ -403,8 +427,12 @@ fn binary_and_bool_bool() {
 fn binary_or_bool_bool() {
     let mut tc = TypeChecker::new();
     assert_eq!(
-        tc.check_expr(&binop(Expr::Bool(true), BinOp::Or, Expr::Bool(false)))
-            .unwrap(),
+        tc.check_expr(&binop(
+            Expr::Bool(true, s()),
+            BinOp::Or,
+            Expr::Bool(false, s())
+        ))
+        .unwrap(),
         Type::Bool
     );
 }
@@ -412,9 +440,7 @@ fn binary_or_bool_bool() {
 #[test]
 fn binary_and_non_bool_error() {
     let mut tc = TypeChecker::new();
-    let err = tc
-        .check_expr(&binop(Expr::Int(1), BinOp::And, Expr::Bool(true)))
-        .unwrap_err();
+    let err = err_msg(tc.check_expr(&binop(Expr::Int(1, s()), BinOp::And, Expr::Bool(true, s()))));
     assert!(err.contains("Logical"));
 }
 
@@ -424,7 +450,8 @@ fn binary_and_non_bool_error() {
 fn unary_neg_int() {
     let mut tc = TypeChecker::new();
     assert_eq!(
-        tc.check_expr(&unop(UnaryOp::Neg, Expr::Int(5))).unwrap(),
+        tc.check_expr(&unop(UnaryOp::Neg, Expr::Int(5, s())))
+            .unwrap(),
         Type::Int
     );
 }
@@ -433,7 +460,7 @@ fn unary_neg_int() {
 fn unary_neg_float() {
     let mut tc = TypeChecker::new();
     assert_eq!(
-        tc.check_expr(&unop(UnaryOp::Neg, Expr::Float(1.5)))
+        tc.check_expr(&unop(UnaryOp::Neg, Expr::Float(1.5, s())))
             .unwrap(),
         Type::Float
     );
@@ -442,9 +469,7 @@ fn unary_neg_float() {
 #[test]
 fn unary_neg_string_error() {
     let mut tc = TypeChecker::new();
-    let err = tc
-        .check_expr(&unop(UnaryOp::Neg, Expr::Str("a".into())))
-        .unwrap_err();
+    let err = err_msg(tc.check_expr(&unop(UnaryOp::Neg, Expr::Str("a".into(), s()))));
     assert!(err.contains("Cannot negate"));
 }
 
@@ -452,7 +477,7 @@ fn unary_neg_string_error() {
 fn unary_not_bool() {
     let mut tc = TypeChecker::new();
     assert_eq!(
-        tc.check_expr(&unop(UnaryOp::Not, Expr::Bool(true)))
+        tc.check_expr(&unop(UnaryOp::Not, Expr::Bool(true, s())))
             .unwrap(),
         Type::Bool
     );
@@ -461,9 +486,7 @@ fn unary_not_bool() {
 #[test]
 fn unary_not_int_error() {
     let mut tc = TypeChecker::new();
-    let err = tc
-        .check_expr(&unop(UnaryOp::Not, Expr::Int(1)))
-        .unwrap_err();
+    let err = err_msg(tc.check_expr(&unop(UnaryOp::Not, Expr::Int(1, s()))));
     assert!(err.contains("Cannot apply 'not'"));
 }
 
@@ -477,8 +500,9 @@ fn unary_not_int_error() {
 fn while_bool_cond_ok() {
     let mut tc = TypeChecker::new();
     let stmt = Stmt::While {
-        cond: Expr::Bool(true),
-        body: vec![Stmt::Expr(Expr::Int(1))],
+        cond: Expr::Bool(true, s()),
+        body: vec![Stmt::Expr(Expr::Int(1, s()), s())],
+        span: s(),
     };
     assert!(tc.check_stmt(&stmt).is_ok());
 }
@@ -487,10 +511,11 @@ fn while_bool_cond_ok() {
 fn while_non_bool_cond_error() {
     let mut tc = TypeChecker::new();
     let stmt = Stmt::While {
-        cond: Expr::Int(1),
-        body: vec![Stmt::Expr(Expr::Int(1))],
+        cond: Expr::Int(1, s()),
+        body: vec![Stmt::Expr(Expr::Int(1, s()), s())],
+        span: s(),
     };
-    let err = tc.check_stmt(&stmt).unwrap_err();
+    let err = err_msg(tc.check_stmt(&stmt));
     assert!(err.contains("While condition must be Bool"));
 }
 
@@ -503,8 +528,9 @@ fn for_typechecks_body() {
         .set_var("items".into(), Type::List(Box::new(Type::Int)));
     let stmt = Stmt::For {
         var: "x".into(),
-        iter: Expr::Ident("items".into()),
-        body: vec![Stmt::Expr(Expr::Int(1))],
+        iter: Expr::Ident("items".into(), s()),
+        body: vec![Stmt::Expr(Expr::Int(1, s()), s())],
+        span: s(),
     };
     assert!(tc.check_stmt(&stmt).is_ok());
 }
@@ -516,8 +542,9 @@ fn assignment_type_match_ok() {
     let mut tc = TypeChecker::new();
     tc.env.set_var("x".into(), Type::Int);
     let stmt = Stmt::Assignment {
-        target: Expr::Ident("x".into()),
-        value: Expr::Int(5),
+        target: Expr::Ident("x".into(), s()),
+        value: Expr::Int(5, s()),
+        span: s(),
     };
     assert!(tc.check_stmt(&stmt).is_ok());
 }
@@ -527,10 +554,11 @@ fn assignment_type_mismatch_error() {
     let mut tc = TypeChecker::new();
     tc.env.set_var("x".into(), Type::Int);
     let stmt = Stmt::Assignment {
-        target: Expr::Ident("x".into()),
-        value: Expr::Str("hello".into()),
+        target: Expr::Ident("x".into(), s()),
+        value: Expr::Str("hello".into(), s()),
+        span: s(),
     };
-    let err = tc.check_stmt(&stmt).unwrap_err();
+    let err = err_msg(tc.check_stmt(&stmt));
     assert!(err.contains("type mismatch") || err.contains("Type mismatch"));
 }
 
@@ -538,10 +566,11 @@ fn assignment_type_mismatch_error() {
 fn assignment_to_unknown_var_error() {
     let mut tc = TypeChecker::new();
     let stmt = Stmt::Assignment {
-        target: Expr::Ident("x".into()),
-        value: Expr::Int(5),
+        target: Expr::Ident("x".into(), s()),
+        value: Expr::Int(5, s()),
+        span: s(),
     };
-    let err = tc.check_stmt(&stmt).unwrap_err();
+    let err = err_msg(tc.check_stmt(&stmt));
     assert!(err.contains("Unknown") || err.contains("undefined") || err.contains("undeclared"));
 }
 
@@ -550,14 +579,14 @@ fn assignment_to_unknown_var_error() {
 #[test]
 fn break_outside_loop_error() {
     let mut tc = TypeChecker::new();
-    let err = tc.check_stmt(&Stmt::Break).unwrap_err();
+    let err = err_msg(tc.check_stmt(&Stmt::Break(s())));
     assert!(err.contains("outside of a loop"));
 }
 
 #[test]
 fn continue_outside_loop_error() {
     let mut tc = TypeChecker::new();
-    let err = tc.check_stmt(&Stmt::Continue).unwrap_err();
+    let err = err_msg(tc.check_stmt(&Stmt::Continue(s())));
     assert!(err.contains("outside of a loop"));
 }
 
@@ -565,14 +594,14 @@ fn continue_outside_loop_error() {
 fn break_inside_loop_ok() {
     let mut tc = TypeChecker::new();
     tc.loop_depth = 1;
-    assert!(tc.check_stmt(&Stmt::Break).is_ok());
+    assert!(tc.check_stmt(&Stmt::Break(s())).is_ok());
 }
 
 #[test]
 fn continue_inside_loop_ok() {
     let mut tc = TypeChecker::new();
     tc.loop_depth = 1;
-    assert!(tc.check_stmt(&Stmt::Continue).is_ok());
+    assert!(tc.check_stmt(&Stmt::Continue(s())).is_ok());
 }
 
 // ─── Elif ───────────────────────────────────────────────────────────
@@ -581,10 +610,14 @@ fn continue_inside_loop_ok() {
 fn if_elif_typechecks() {
     let mut tc = TypeChecker::new();
     let stmt = Stmt::If {
-        cond: Expr::Bool(true),
-        then_body: vec![Stmt::Expr(Expr::Int(1))],
-        elif_branches: vec![(Expr::Bool(false), vec![Stmt::Expr(Expr::Int(2))])],
-        else_body: vec![Stmt::Expr(Expr::Int(3))],
+        cond: Expr::Bool(true, s()),
+        then_body: vec![Stmt::Expr(Expr::Int(1, s()), s())],
+        elif_branches: vec![(
+            Expr::Bool(false, s()),
+            vec![Stmt::Expr(Expr::Int(2, s()), s())],
+        )],
+        else_body: vec![Stmt::Expr(Expr::Int(3, s()), s())],
+        span: s(),
     };
     assert!(tc.check_stmt(&stmt).is_ok());
 }
@@ -593,12 +626,13 @@ fn if_elif_typechecks() {
 fn elif_non_bool_cond_error() {
     let mut tc = TypeChecker::new();
     let stmt = Stmt::If {
-        cond: Expr::Bool(true),
-        then_body: vec![Stmt::Expr(Expr::Int(1))],
-        elif_branches: vec![(Expr::Int(1), vec![Stmt::Expr(Expr::Int(2))])],
+        cond: Expr::Bool(true, s()),
+        then_body: vec![Stmt::Expr(Expr::Int(1, s()), s())],
+        elif_branches: vec![(Expr::Int(1, s()), vec![Stmt::Expr(Expr::Int(2, s()), s())])],
         else_body: vec![],
+        span: s(),
     };
-    let err = tc.check_stmt(&stmt).unwrap_err();
+    let err = err_msg(tc.check_stmt(&stmt));
     assert!(err.contains("Bool"));
 }
 
@@ -614,8 +648,9 @@ fn let_with_matching_type_annotation() {
     let stmt = Stmt::Let {
         name: "x".into(),
         type_ann: Some(Type::Int),
-        value: Expr::Int(5),
+        value: Expr::Int(5, s()),
         is_public: false,
+        span: s(),
     };
     assert!(tc.check_stmt(&stmt).is_ok());
     assert_eq!(tc.env.get_var("x"), Some(Type::Int));
@@ -627,10 +662,11 @@ fn let_with_mismatched_type_annotation() {
     let stmt = Stmt::Let {
         name: "x".into(),
         type_ann: Some(Type::Int),
-        value: Expr::Str("hello".into()),
+        value: Expr::Str("hello".into(), s()),
         is_public: false,
+        span: s(),
     };
-    let err = tc.check_stmt(&stmt).unwrap_err();
+    let err = err_msg(tc.check_stmt(&stmt));
     assert!(err.contains("annotation") || err.contains("mismatch"));
 }
 
@@ -640,8 +676,9 @@ fn let_without_type_annotation_still_works() {
     let stmt = Stmt::Let {
         name: "x".into(),
         type_ann: None,
-        value: Expr::Int(5),
+        value: Expr::Int(5, s()),
         is_public: false,
+        span: s(),
     };
     assert!(tc.check_stmt(&stmt).is_ok());
 }
@@ -651,7 +688,10 @@ fn let_without_type_annotation_still_works() {
 #[test]
 fn list_literal_ints() {
     let mut tc = TypeChecker::new();
-    let expr = Expr::ListLiteral(vec![Expr::Int(1), Expr::Int(2), Expr::Int(3)]);
+    let expr = Expr::ListLiteral(
+        vec![Expr::Int(1, s()), Expr::Int(2, s()), Expr::Int(3, s())],
+        s(),
+    );
     assert_eq!(
         tc.check_expr(&expr).unwrap(),
         Type::List(Box::new(Type::Int))
@@ -661,7 +701,10 @@ fn list_literal_ints() {
 #[test]
 fn list_literal_strings() {
     let mut tc = TypeChecker::new();
-    let expr = Expr::ListLiteral(vec![Expr::Str("a".into()), Expr::Str("b".into())]);
+    let expr = Expr::ListLiteral(
+        vec![Expr::Str("a".into(), s()), Expr::Str("b".into(), s())],
+        s(),
+    );
     assert_eq!(
         tc.check_expr(&expr).unwrap(),
         Type::List(Box::new(Type::String))
@@ -671,7 +714,7 @@ fn list_literal_strings() {
 #[test]
 fn list_literal_empty_is_nil_list() {
     let mut tc = TypeChecker::new();
-    let expr = Expr::ListLiteral(vec![]);
+    let expr = Expr::ListLiteral(vec![], s());
     // Empty list without annotation should be List[Nil] or similar
     let ty = tc.check_expr(&expr).unwrap();
     assert!(matches!(ty, Type::List(_)));
@@ -680,8 +723,8 @@ fn list_literal_empty_is_nil_list() {
 #[test]
 fn list_literal_mixed_types_error() {
     let mut tc = TypeChecker::new();
-    let expr = Expr::ListLiteral(vec![Expr::Int(1), Expr::Str("two".into())]);
-    let err = tc.check_expr(&expr).unwrap_err();
+    let expr = Expr::ListLiteral(vec![Expr::Int(1, s()), Expr::Str("two".into(), s())], s());
+    let err = err_msg(tc.check_expr(&expr));
     assert!(err.contains("element") || err.contains("mismatch") || err.contains("consistent"));
 }
 
@@ -692,8 +735,9 @@ fn index_list_of_ints() {
     let mut tc = TypeChecker::new();
     tc.env.set_var("xs".into(), Type::List(Box::new(Type::Int)));
     let expr = Expr::Index {
-        object: Box::new(Expr::Ident("xs".into())),
-        index: Box::new(Expr::Int(0)),
+        object: Box::new(Expr::Ident("xs".into(), s())),
+        index: Box::new(Expr::Int(0, s())),
+        span: s(),
     };
     assert_eq!(tc.check_expr(&expr).unwrap(), Type::Int);
 }
@@ -704,8 +748,9 @@ fn index_list_of_strings() {
     tc.env
         .set_var("xs".into(), Type::List(Box::new(Type::String)));
     let expr = Expr::Index {
-        object: Box::new(Expr::Ident("xs".into())),
-        index: Box::new(Expr::Int(0)),
+        object: Box::new(Expr::Ident("xs".into(), s())),
+        index: Box::new(Expr::Int(0, s())),
+        span: s(),
     };
     assert_eq!(tc.check_expr(&expr).unwrap(), Type::String);
 }
@@ -715,10 +760,11 @@ fn index_non_int_error() {
     let mut tc = TypeChecker::new();
     tc.env.set_var("xs".into(), Type::List(Box::new(Type::Int)));
     let expr = Expr::Index {
-        object: Box::new(Expr::Ident("xs".into())),
-        index: Box::new(Expr::Str("bad".into())),
+        object: Box::new(Expr::Ident("xs".into(), s())),
+        index: Box::new(Expr::Str("bad".into(), s())),
+        span: s(),
     };
-    let err = tc.check_expr(&expr).unwrap_err();
+    let err = err_msg(tc.check_expr(&expr));
     assert!(err.contains("Int") || err.contains("index"));
 }
 
@@ -727,10 +773,11 @@ fn index_non_list_error() {
     let mut tc = TypeChecker::new();
     tc.env.set_var("x".into(), Type::Int);
     let expr = Expr::Index {
-        object: Box::new(Expr::Ident("x".into())),
-        index: Box::new(Expr::Int(0)),
+        object: Box::new(Expr::Ident("x".into(), s())),
+        index: Box::new(Expr::Int(0, s())),
+        span: s(),
     };
-    let err = tc.check_expr(&expr).unwrap_err();
+    let err = err_msg(tc.check_expr(&expr));
     assert!(err.contains("index") || err.contains("List"));
 }
 
@@ -742,12 +789,12 @@ fn for_over_list_binds_element_type() {
     tc.env.set_var("xs".into(), Type::List(Box::new(Type::Int)));
     let stmt = Stmt::For {
         var: "x".into(),
-        iter: Expr::Ident("xs".into()),
-        body: vec![Stmt::Expr(binop(
-            Expr::Ident("x".into()),
-            BinOp::Add,
-            Expr::Int(1),
-        ))],
+        iter: Expr::Ident("xs".into(), s()),
+        body: vec![Stmt::Expr(
+            binop(Expr::Ident("x".into(), s()), BinOp::Add, Expr::Int(1, s())),
+            s(),
+        )],
+        span: s(),
     };
     assert!(tc.check_stmt(&stmt).is_ok());
 }
@@ -758,10 +805,11 @@ fn for_over_non_list_error() {
     tc.env.set_var("x".into(), Type::Int);
     let stmt = Stmt::For {
         var: "i".into(),
-        iter: Expr::Ident("x".into()),
-        body: vec![Stmt::Expr(Expr::Int(1))],
+        iter: Expr::Ident("x".into(), s()),
+        body: vec![Stmt::Expr(Expr::Int(1, s()), s())],
+        span: s(),
     };
-    let err = tc.check_stmt(&stmt).unwrap_err();
+    let err = err_msg(tc.check_stmt(&stmt));
     assert!(err.contains("iterate") || err.contains("List") || err.contains("Iterable"));
 }
 
@@ -773,8 +821,9 @@ fn let_list_type_annotation_match() {
     let stmt = Stmt::Let {
         name: "xs".into(),
         type_ann: Some(Type::List(Box::new(Type::Int))),
-        value: Expr::ListLiteral(vec![Expr::Int(1), Expr::Int(2)]),
+        value: Expr::ListLiteral(vec![Expr::Int(1, s()), Expr::Int(2, s())], s()),
         is_public: false,
+        span: s(),
     };
     assert!(tc.check_stmt(&stmt).is_ok());
 }
@@ -785,10 +834,11 @@ fn let_list_type_annotation_mismatch() {
     let stmt = Stmt::Let {
         name: "xs".into(),
         type_ann: Some(Type::List(Box::new(Type::String))),
-        value: Expr::ListLiteral(vec![Expr::Int(1)]),
+        value: Expr::ListLiteral(vec![Expr::Int(1, s())], s()),
         is_public: false,
+        span: s(),
     };
-    let err = tc.check_stmt(&stmt).unwrap_err();
+    let err = err_msg(tc.check_stmt(&stmt));
     assert!(err.contains("annotation") || err.contains("mismatch"));
 }
 
@@ -798,8 +848,9 @@ fn let_empty_list_with_annotation_gets_annotated_type() {
     let stmt = Stmt::Let {
         name: "xs".into(),
         type_ann: Some(Type::List(Box::new(Type::Int))),
-        value: Expr::ListLiteral(vec![]),
+        value: Expr::ListLiteral(vec![], s()),
         is_public: false,
+        span: s(),
     };
     assert!(tc.check_stmt(&stmt).is_ok());
     assert_eq!(tc.env.get_var("xs"), Some(Type::List(Box::new(Type::Int))));
@@ -811,8 +862,9 @@ fn let_empty_list_with_annotation_gets_annotated_type() {
 fn builtin_log_accepts_string() {
     let mut tc = TypeChecker::new();
     let call = Expr::Call {
-        func: Box::new(Expr::Ident("log".into())),
-        args: vec![Expr::Str("hello".into())],
+        func: Box::new(Expr::Ident("log".into(), s())),
+        args: vec![Expr::Str("hello".into(), s())],
+        span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::Void);
 }
@@ -821,8 +873,9 @@ fn builtin_log_accepts_string() {
 fn builtin_print_accepts_string() {
     let mut tc = TypeChecker::new();
     let call = Expr::Call {
-        func: Box::new(Expr::Ident("print".into())),
-        args: vec![Expr::Str("hello".into())],
+        func: Box::new(Expr::Ident("print".into(), s())),
+        args: vec![Expr::Str("hello".into(), s())],
+        span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::Void);
 }
@@ -832,8 +885,9 @@ fn builtin_len_list_returns_int() {
     let mut tc = TypeChecker::new();
     tc.env.set_var("xs".into(), Type::List(Box::new(Type::Int)));
     let call = Expr::Call {
-        func: Box::new(Expr::Ident("len".into())),
-        args: vec![Expr::Ident("xs".into())],
+        func: Box::new(Expr::Ident("len".into(), s())),
+        args: vec![Expr::Ident("xs".into(), s())],
+        span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::Int);
 }
@@ -842,8 +896,9 @@ fn builtin_len_list_returns_int() {
 fn builtin_len_string_returns_int() {
     let mut tc = TypeChecker::new();
     let call = Expr::Call {
-        func: Box::new(Expr::Ident("len".into())),
-        args: vec![Expr::Str("hello".into())],
+        func: Box::new(Expr::Ident("len".into(), s())),
+        args: vec![Expr::Str("hello".into(), s())],
+        span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::Int);
 }
@@ -852,8 +907,9 @@ fn builtin_len_string_returns_int() {
 fn builtin_to_string_int_returns_string() {
     let mut tc = TypeChecker::new();
     let call = Expr::Call {
-        func: Box::new(Expr::Ident("to_string".into())),
-        args: vec![Expr::Int(42)],
+        func: Box::new(Expr::Ident("to_string".into(), s())),
+        args: vec![Expr::Int(42, s())],
+        span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::String);
 }
@@ -862,8 +918,9 @@ fn builtin_to_string_int_returns_string() {
 fn builtin_to_string_float_returns_string() {
     let mut tc = TypeChecker::new();
     let call = Expr::Call {
-        func: Box::new(Expr::Ident("to_string".into())),
-        args: vec![Expr::Float(3.14)],
+        func: Box::new(Expr::Ident("to_string".into(), s())),
+        args: vec![Expr::Float(3.14, s())],
+        span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::String);
 }
@@ -872,8 +929,9 @@ fn builtin_to_string_float_returns_string() {
 fn builtin_to_string_bool_returns_string() {
     let mut tc = TypeChecker::new();
     let call = Expr::Call {
-        func: Box::new(Expr::Ident("to_string".into())),
-        args: vec![Expr::Bool(true)],
+        func: Box::new(Expr::Ident("to_string".into(), s())),
+        args: vec![Expr::Bool(true, s())],
+        span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::String);
 }
@@ -884,9 +942,9 @@ fn builtin_to_string_bool_returns_string() {
 fn nested_binary_type_propagation() {
     let mut tc = TypeChecker::new();
     let expr = binop(
-        binop(Expr::Int(1), BinOp::Add, Expr::Int(2)),
+        binop(Expr::Int(1, s()), BinOp::Add, Expr::Int(2, s())),
         BinOp::Mul,
-        Expr::Int(3),
+        Expr::Int(3, s()),
     );
     assert_eq!(tc.check_expr(&expr).unwrap(), Type::Int);
 }
@@ -906,14 +964,17 @@ fn trait_definition_registers_trait() {
             value: Expr::Lambda {
                 params: vec![],
                 ret_type: Type::String,
-                body: vec![Stmt::Expr(Expr::Str("".into()))],
+                body: vec![Stmt::Expr(Expr::Str("".into(), s()), s())],
                 is_async: false,
                 generic_params: None,
                 throws: None,
+                span: s(),
             },
             is_public: false,
+            span: s(),
         }],
         is_public: false,
+        span: s(),
     };
     assert!(tc.check_stmt(&trait_stmt).is_ok());
     assert!(tc.env.get_trait("Printable").is_some());
@@ -933,14 +994,17 @@ fn class_includes_trait_gets_methods() {
             value: Expr::Lambda {
                 params: vec![],
                 ret_type: Type::String,
-                body: vec![Stmt::Expr(Expr::Str("".into()))],
+                body: vec![Stmt::Expr(Expr::Str("".into(), s()), s())],
                 is_async: false,
                 generic_params: None,
                 throws: None,
+                span: s(),
             },
             is_public: false,
+            span: s(),
         }],
         is_public: false,
+        span: s(),
     };
     tc.check_stmt(&trait_stmt).unwrap();
 
@@ -954,17 +1018,20 @@ fn class_includes_trait_gets_methods() {
             value: Expr::Lambda {
                 params: vec![],
                 ret_type: Type::String,
-                body: vec![Stmt::Expr(Expr::Str("user".into()))],
+                body: vec![Stmt::Expr(Expr::Str("user".into(), s()), s())],
                 is_async: false,
                 generic_params: None,
                 throws: None,
+                span: s(),
             },
             is_public: false,
+            span: s(),
         }],
         is_public: false,
         generic_params: None,
         extends: None,
         includes: Some(vec!["Printable".into()]),
+        span: s(),
     };
     assert!(tc.check_stmt(&class_stmt).is_ok());
 }
@@ -980,8 +1047,9 @@ fn class_includes_unknown_trait_error() {
         generic_params: None,
         extends: None,
         includes: Some(vec!["NonExistent".into()]),
+        span: s(),
     };
-    let err = tc.check_stmt(&class_stmt).unwrap_err();
+    let err = err_msg(tc.check_stmt(&class_stmt));
     assert!(err.contains("Unknown trait") || err.contains("NonExistent"));
 }
 
@@ -1001,10 +1069,13 @@ fn class_missing_trait_method_error() {
                 is_async: false,
                 generic_params: None,
                 throws: None,
+                span: s(),
             },
             is_public: false,
+            span: s(),
         }],
         is_public: false,
+        span: s(),
     };
     tc.check_stmt(&trait_stmt).unwrap();
 
@@ -1017,8 +1088,9 @@ fn class_missing_trait_method_error() {
         generic_params: None,
         extends: None,
         includes: Some(vec!["Printable".into()]),
+        span: s(),
     };
-    let err = tc.check_stmt(&class_stmt).unwrap_err();
+    let err = err_msg(tc.check_stmt(&class_stmt));
     assert!(err.contains("to_string") || err.contains("missing") || err.contains("implement"));
 }
 
@@ -1035,6 +1107,7 @@ fn generic_class_registers_with_params() {
         generic_params: Some(vec!["T".into()]),
         extends: None,
         includes: None,
+        span: s(),
     };
     assert!(tc.check_stmt(&class_stmt).is_ok());
     let info = tc.env.get_class("Box").unwrap();
@@ -1050,10 +1123,11 @@ fn generic_lambda_typechecks() {
     let lambda = Expr::Lambda {
         params: vec![("x".into(), Type::TypeVar("T".into()))],
         ret_type: Type::TypeVar("T".into()),
-        body: vec![Stmt::Expr(Expr::Ident("x".into()))],
+        body: vec![Stmt::Expr(Expr::Ident("x".into(), s()), s())],
         is_async: false,
         generic_params: Some(vec!["T".into()]),
         throws: None,
+        span: s(),
     };
     let ty = tc.check_expr(&lambda).unwrap();
     match ty {
@@ -1074,23 +1148,26 @@ fn generic_call_unifies_typevar_to_int() {
     let lambda = Expr::Lambda {
         params: vec![("x".into(), Type::TypeVar("T".into()))],
         ret_type: Type::TypeVar("T".into()),
-        body: vec![Stmt::Expr(Expr::Ident("x".into()))],
+        body: vec![Stmt::Expr(Expr::Ident("x".into(), s()), s())],
         is_async: false,
         generic_params: Some(vec!["T".into()]),
         throws: None,
+        span: s(),
     };
     tc.check_stmt(&Stmt::Let {
         name: "identity".into(),
         type_ann: None,
         value: lambda,
         is_public: false,
+        span: s(),
     })
     .unwrap();
 
     // identity(42) should return Int
     let call = Expr::Call {
-        func: Box::new(Expr::Ident("identity".into())),
-        args: vec![Expr::Int(42)],
+        func: Box::new(Expr::Ident("identity".into(), s())),
+        args: vec![Expr::Int(42, s())],
+        span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::Int);
 }
@@ -1101,23 +1178,26 @@ fn generic_call_unifies_typevar_to_string() {
     let lambda = Expr::Lambda {
         params: vec![("x".into(), Type::TypeVar("T".into()))],
         ret_type: Type::TypeVar("T".into()),
-        body: vec![Stmt::Expr(Expr::Ident("x".into()))],
+        body: vec![Stmt::Expr(Expr::Ident("x".into(), s()), s())],
         is_async: false,
         generic_params: Some(vec!["T".into()]),
         throws: None,
+        span: s(),
     };
     tc.check_stmt(&Stmt::Let {
         name: "identity".into(),
         type_ann: None,
         value: lambda,
         is_public: false,
+        span: s(),
     })
     .unwrap();
 
     // identity("hello") should return String
     let call = Expr::Call {
-        func: Box::new(Expr::Ident("identity".into())),
-        args: vec![Expr::Str("hello".into())],
+        func: Box::new(Expr::Ident("identity".into(), s())),
+        args: vec![Expr::Str("hello".into(), s())],
+        span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::String);
 }
@@ -1132,23 +1212,26 @@ fn generic_call_multi_params_unifies() {
             ("b".into(), Type::TypeVar("B".into())),
         ],
         ret_type: Type::TypeVar("A".into()),
-        body: vec![Stmt::Expr(Expr::Ident("a".into()))],
+        body: vec![Stmt::Expr(Expr::Ident("a".into(), s()), s())],
         is_async: false,
         generic_params: Some(vec!["A".into(), "B".into()]),
         throws: None,
+        span: s(),
     };
     tc.check_stmt(&Stmt::Let {
         name: "first".into(),
         type_ann: None,
         value: lambda,
         is_public: false,
+        span: s(),
     })
     .unwrap();
 
     // first(42, "hello") should return Int
     let call = Expr::Call {
-        func: Box::new(Expr::Ident("first".into())),
-        args: vec![Expr::Int(42), Expr::Str("hello".into())],
+        func: Box::new(Expr::Ident("first".into(), s())),
+        args: vec![Expr::Int(42, s()), Expr::Str("hello".into(), s())],
+        span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::Int);
 }
@@ -1171,10 +1254,13 @@ fn class_includes_trait_wrong_signature_error() {
                 is_async: false,
                 generic_params: None,
                 throws: None,
+                span: s(),
             },
             is_public: false,
+            span: s(),
         }],
         is_public: false,
+        span: s(),
     };
     tc.check_stmt(&trait_stmt).unwrap();
 
@@ -1188,19 +1274,22 @@ fn class_includes_trait_wrong_signature_error() {
             value: Expr::Lambda {
                 params: vec![],
                 ret_type: Type::Int,
-                body: vec![Stmt::Expr(Expr::Int(0))],
+                body: vec![Stmt::Expr(Expr::Int(0, s()), s())],
                 is_async: false,
                 generic_params: None,
                 throws: None,
+                span: s(),
             },
             is_public: false,
+            span: s(),
         }],
         is_public: false,
         generic_params: None,
         extends: None,
         includes: Some(vec!["Displayable".into()]),
+        span: s(),
     };
-    let err = tc.check_stmt(&class_stmt).unwrap_err();
+    let err = err_msg(tc.check_stmt(&class_stmt));
     assert!(err.contains("signature") || err.contains("mismatch") || err.contains("display"));
 }
 
@@ -1218,17 +1307,20 @@ fn member_access_finds_method_unqualified() {
             value: Expr::Lambda {
                 params: vec![],
                 ret_type: Type::String,
-                body: vec![Stmt::Expr(Expr::Str("ok".into()))],
+                body: vec![Stmt::Expr(Expr::Str("ok".into(), s()), s())],
                 is_async: false,
                 generic_params: None,
                 throws: None,
+                span: s(),
             },
             is_public: false,
+            span: s(),
         }],
         is_public: false,
         generic_params: None,
         extends: None,
         includes: None,
+        span: s(),
     };
     tc.check_stmt(&class_stmt).unwrap();
 
@@ -1236,8 +1328,9 @@ fn member_access_finds_method_unqualified() {
         .set_var("p".into(), Type::Custom("Point".into(), Vec::new()));
     // Access via p.show (unqualified) should work
     let access = Expr::Member {
-        object: Box::new(Expr::Ident("p".into())),
+        object: Box::new(Expr::Ident("p".into(), s())),
         field: "show".into(),
+        span: s(),
     };
     assert!(tc.check_expr(&access).is_ok());
 }
@@ -1252,12 +1345,13 @@ fn return_type_mismatch_in_function_error() {
     let lambda = Expr::Lambda {
         params: vec![],
         ret_type: Type::Int,
-        body: vec![Stmt::Return(Expr::Str("hello".into()))],
+        body: vec![Stmt::Return(Expr::Str("hello".into(), s()), s())],
         is_async: false,
         generic_params: None,
         throws: None,
+        span: s(),
     };
-    let err = tc.check_expr(&lambda).unwrap_err();
+    let err = err_msg(tc.check_expr(&lambda));
     assert!(err.contains("return") || err.contains("mismatch") || err.contains("Return"));
 }
 
@@ -1271,14 +1365,15 @@ fn return_mid_body_type_mismatch_error() {
         params: vec![],
         ret_type: Type::Int,
         body: vec![
-            Stmt::Return(Expr::Str("hello".into())),
-            Stmt::Expr(Expr::Int(42)),
+            Stmt::Return(Expr::Str("hello".into(), s()), s()),
+            Stmt::Expr(Expr::Int(42, s()), s()),
         ],
         is_async: false,
         generic_params: None,
         throws: None,
+        span: s(),
     };
-    let err = tc.check_expr(&lambda).unwrap_err();
+    let err = err_msg(tc.check_expr(&lambda));
     assert!(err.contains("return") || err.contains("mismatch") || err.contains("Return"));
 }
 
@@ -1288,15 +1383,17 @@ fn return_mid_body_type_mismatch_error() {
 fn if_body_variables_dont_leak() {
     let mut tc = TypeChecker::new();
     let stmt = Stmt::If {
-        cond: Expr::Bool(true),
+        cond: Expr::Bool(true, s()),
         then_body: vec![Stmt::Let {
             name: "inner".into(),
             type_ann: None,
-            value: Expr::Int(1),
+            value: Expr::Int(1, s()),
             is_public: false,
+            span: s(),
         }],
         elif_branches: vec![],
         else_body: vec![],
+        span: s(),
     };
     tc.check_stmt(&stmt).unwrap();
     // "inner" should NOT be visible in outer scope
@@ -1307,16 +1404,18 @@ fn if_body_variables_dont_leak() {
 fn while_body_variables_dont_leak() {
     let mut tc = TypeChecker::new();
     let stmt = Stmt::While {
-        cond: Expr::Bool(true),
+        cond: Expr::Bool(true, s()),
         body: vec![
             Stmt::Let {
                 name: "inner".into(),
                 type_ann: None,
-                value: Expr::Int(1),
+                value: Expr::Int(1, s()),
                 is_public: false,
+                span: s(),
             },
-            Stmt::Break,
+            Stmt::Break(s()),
         ],
+        span: s(),
     };
     tc.check_stmt(&stmt).unwrap();
     assert_eq!(tc.env.get_var("inner"), None);
@@ -1328,13 +1427,15 @@ fn for_body_variables_dont_leak() {
     tc.env.set_var("xs".into(), Type::List(Box::new(Type::Int)));
     let stmt = Stmt::For {
         var: "x".into(),
-        iter: Expr::Ident("xs".into()),
+        iter: Expr::Ident("xs".into(), s()),
         body: vec![Stmt::Let {
             name: "inner".into(),
             type_ann: None,
-            value: Expr::Int(1),
+            value: Expr::Int(1, s()),
             is_public: false,
+            span: s(),
         }],
+        span: s(),
     };
     tc.check_stmt(&stmt).unwrap();
     // Both "inner" and loop var "x" should NOT leak
@@ -1350,10 +1451,11 @@ fn return_correct_type_ok() {
     let lambda = Expr::Lambda {
         params: vec![],
         ret_type: Type::Int,
-        body: vec![Stmt::Return(Expr::Int(42))],
+        body: vec![Stmt::Return(Expr::Int(42, s()), s())],
         is_async: false,
         generic_params: None,
         throws: None,
+        span: s(),
     };
     assert!(tc.check_expr(&lambda).is_ok());
 }
@@ -1368,10 +1470,11 @@ fn generic_lambda_body_type_matches_typevar() {
     let lambda = Expr::Lambda {
         params: vec![("x".into(), Type::TypeVar("T".into()))],
         ret_type: Type::TypeVar("T".into()),
-        body: vec![Stmt::Expr(Expr::Ident("x".into()))],
+        body: vec![Stmt::Expr(Expr::Ident("x".into(), s()), s())],
         is_async: false,
         generic_params: Some(vec!["T".into()]),
         throws: None,
+        span: s(),
     };
     assert!(tc.check_expr(&lambda).is_ok());
 }
@@ -1384,11 +1487,12 @@ fn generic_lambda_body_wrong_typevar_error() {
     let lambda = Expr::Lambda {
         params: vec![("x".into(), Type::TypeVar("T".into()))],
         ret_type: Type::TypeVar("T".into()),
-        body: vec![Stmt::Expr(Expr::Int(42))],
+        body: vec![Stmt::Expr(Expr::Int(42, s()), s())],
         is_async: false,
         generic_params: Some(vec!["T".into()]),
         throws: None,
+        span: s(),
     };
-    let err = tc.check_expr(&lambda).unwrap_err();
+    let err = err_msg(tc.check_expr(&lambda));
     assert!(err.contains("mismatch") || err.contains("TypeVar"));
 }

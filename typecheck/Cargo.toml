@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 ast = { path = "../ast" }
+indexmap = "2.13.0"

@@ -1,4 +1,5 @@
-use ast::{ClassInfo, Expr, MatchPattern, Stmt, TraitInfo, Type, TypeEnv};
+use ast::{ClassInfo, Diagnostic, Expr, MatchPattern, Stmt, TraitInfo, Type, TypeEnv};
+use indexmap::IndexMap;
 use std::collections::HashMap;
 
 pub struct TypeChecker {
@@ -10,6 +11,8 @@ pub struct TypeChecker {
     pub current_function: Option<String>,
     /// The error type this function declares via `throws`.
     pub throws_type: Option<Type>,
+    /// Accumulated diagnostics from error recovery.
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 impl Default for TypeChecker {
@@ -49,7 +52,7 @@ impl TypeChecker {
             "Exception".into(),
             ClassInfo {
                 ty: Type::Custom("Exception".into(), Vec::new()),
-                fields: HashMap::from([("message".into(), Type::String)]),
+                fields: IndexMap::from([("message".into(), Type::String)]),
                 methods: HashMap::new(),
                 generic_params: None,
                 extends: None,
@@ -68,7 +71,7 @@ impl TypeChecker {
             "Error".into(),
             ClassInfo {
                 ty: Type::Custom("Error".into(), Vec::new()),
-                fields: HashMap::new(), // inherits message from Exception
+                fields: IndexMap::new(), // inherits message from Exception
                 methods: HashMap::new(),
                 generic_params: None,
                 extends: Some("Exception".into()),
@@ -90,6 +93,7 @@ impl TypeChecker {
             expected_return_type: None,
             current_function: None,
             throws_type: None,
+            diagnostics: Vec::new(),
         }
     }
 
@@ -102,17 +106,48 @@ impl TypeChecker {
             expected_return_type: self.expected_return_type.clone(),
             current_function: self.current_function.clone(),
             throws_type: self.throws_type.clone(),
+            diagnostics: Vec::new(),
         }
     }
 
-    pub fn check_module(&mut self, m: &ast::Module) -> Result<(), String> {
+    pub fn check_module(&mut self, m: &ast::Module) -> Result<(), Diagnostic> {
         for s in &m.body {
-            self.check_stmt(s)?;
+            match self.check_stmt(s) {
+                Ok(_) => {}
+                Err(diag) => {
+                    self.diagnostics.push(diag);
+                    // For let bindings that failed, assign Type::Error so later code doesn't cascade
+                    if let ast::Stmt::Let { name, .. } = s {
+                        self.env.set_var(name.clone(), Type::Error);
+                    }
+                }
+            }
         }
-        Ok(())
+        if self.diagnostics.is_empty() {
+            Ok(())
+        } else {
+            // Return the first diagnostic for backward compatibility
+            Err(self.diagnostics[0].clone())
+        }
     }
 
-    pub fn check_stmt(&mut self, stmt: &Stmt) -> Result<Type, String> {
+    pub fn check_module_all(&mut self, m: &ast::Module) -> Vec<Diagnostic> {
+        for s in &m.body {
+            match self.check_stmt(s) {
+                Ok(_) => {}
+                Err(diag) => {
+                    self.diagnostics.push(diag);
+                    if let ast::Stmt::Let { name, .. } = s {
+                        self.env.set_var(name.clone(), Type::Error);
+                    }
+                }
+            }
+        }
+        std::mem::take(&mut self.diagnostics)
+    }
+
+    pub fn check_stmt(&mut self, stmt: &Stmt) -> Result<Type, Diagnostic> {
+        let stmt_span = stmt.span();
         match stmt {
             Stmt::Let {
                 name,
@@ -126,6 +161,10 @@ impl TypeChecker {
                 }
                 let ty = self.check_expr(value)?;
                 self.current_function = prev_fn;
+                if ty.is_error() {
+                    self.env.set_var(name.clone(), Type::Error);
+                    return Ok(Type::Error);
+                }
                 if let Some(ann) = type_ann {
                     // Empty list takes on the annotated type
                     if ty == Type::List(Box::new(Type::Nil)) && matches!(ann, Type::List(_)) {
@@ -138,20 +177,29 @@ impl TypeChecker {
                             self.env.set_var(name.clone(), ann.clone());
                             return Ok(ann.clone());
                         }
-                        return Err(format!(
+                        return Err(Diagnostic::error(format!(
                             "Type annotation mismatch for '{}': declared {:?}, got {:?}",
                             name, ann, ty
-                        ));
+                        ))
+                        .with_code("E001")
+                        .with_label(stmt_span, format!("expected {:?}", ann)));
                     }
                     // Nil cannot be assigned to non-nullable types
                     if ty == Type::Nil && !matches!(ann, Type::Nil) {
-                        return Err(format!("Cannot assign nil to non-nullable type {:?}", ann));
+                        return Err(Diagnostic::error(format!(
+                            "Cannot assign nil to non-nullable type {:?}",
+                            ann
+                        ))
+                        .with_code("E001")
+                        .with_label(stmt_span, format!("expected {:?}", ann)));
                     }
                     if *ann != ty {
-                        return Err(format!(
+                        return Err(Diagnostic::error(format!(
                             "Type annotation mismatch for '{}': declared {:?}, got {:?}",
                             name, ann, ty
-                        ));
+                        ))
+                        .with_code("E001")
+                        .with_label(stmt_span, format!("expected {:?}", ann)));
                     }
                 }
                 self.env.set_var(name.clone(), ty.clone());
@@ -181,14 +229,19 @@ impl TypeChecker {
                             .unwrap_or(mname)
                             .to_string();
                         // Check if this is an abstract method (empty body)
-                        if let Expr::Lambda { body, .. } = value {
-                            if body.is_empty() {
-                                required_methods.push(short_name.clone());
-                            }
+                        if let Expr::Lambda { body, .. } = value
+                            && body.is_empty()
+                        {
+                            required_methods.push(short_name.clone());
                         }
                         method_map.insert(short_name, mty);
                     } else {
-                        return Err(format!("Unexpected stmt in trait methods: {:?}", m));
+                        return Err(Diagnostic::error(format!(
+                            "Unexpected stmt in trait methods: {:?}",
+                            m
+                        ))
+                        .with_code("E014")
+                        .with_label(m.span(), "expected method definition"));
                     }
                 }
 
@@ -200,144 +253,237 @@ impl TypeChecker {
                 self.env.set_trait(name.clone(), info);
                 Ok(Type::Void)
             }
-            Stmt::Return(expr) => {
+            Stmt::Return(expr, span) => {
                 let ty = self.check_expr(expr)?;
-                if let Some(expected) = &self.expected_return_type {
-                    if ty != *expected {
-                        let ctx = self.current_function.as_deref().unwrap_or("<anonymous>");
-                        return Err(format!(
-                            "Return type mismatch in '{}': expected {:?}, got {:?}",
-                            ctx, expected, ty
-                        ));
-                    }
+                if ty.is_error() {
+                    return Ok(Type::Error);
+                }
+                if let Some(expected) = &self.expected_return_type
+                    && ty != *expected
+                {
+                    let ctx = self.current_function.as_deref().unwrap_or("<anonymous>");
+                    return Err(Diagnostic::error(format!(
+                        "Return type mismatch in '{}': expected {:?}, got {:?}",
+                        ctx, expected, ty
+                    ))
+                    .with_code("E004")
+                    .with_label(*span, format!("expected {:?}", expected)));
                 }
                 Ok(ty)
             }
-            Stmt::Expr(expr) => self.check_expr(expr),
+            Stmt::Expr(expr, _) => self.check_expr(expr),
             Stmt::If {
                 cond,
                 then_body,
                 elif_branches,
                 else_body,
+                ..
             } => {
                 let cond_ty = self.check_expr(cond)?;
-                if cond_ty != Type::Bool {
-                    return Err(format!("If condition must be Bool, got {:?}", cond_ty));
+                if cond_ty != Type::Bool && !cond_ty.is_error() {
+                    return Err(Diagnostic::error(format!(
+                        "If condition must be Bool, got {:?}",
+                        cond_ty
+                    ))
+                    .with_code("E015")
+                    .with_label(cond.span(), "expected Bool"));
                 }
 
                 self.child_checker().check_body(then_body)?;
                 for (elif_cond, elif_body) in elif_branches {
                     let elif_cond_ty = self.check_expr(elif_cond)?;
-                    if elif_cond_ty != Type::Bool {
-                        return Err(format!(
+                    if elif_cond_ty != Type::Bool && !elif_cond_ty.is_error() {
+                        return Err(Diagnostic::error(format!(
                             "Elif condition must be Bool, got {:?}",
                             elif_cond_ty
-                        ));
+                        ))
+                        .with_code("E015")
+                        .with_label(elif_cond.span(), "expected Bool"));
                     }
                     self.child_checker().check_body(elif_body)?;
                 }
                 self.child_checker().check_body(else_body)
             }
-            Stmt::While { cond, body } => {
+            Stmt::While { cond, body, .. } => {
                 let cond_ty = self.check_expr(cond)?;
-                if cond_ty != Type::Bool {
-                    return Err(format!("While condition must be Bool, got {:?}", cond_ty));
+                if cond_ty != Type::Bool && !cond_ty.is_error() {
+                    return Err(Diagnostic::error(format!(
+                        "While condition must be Bool, got {:?}",
+                        cond_ty
+                    ))
+                    .with_code("E015")
+                    .with_label(cond.span(), "expected Bool"));
                 }
                 let mut sub = self.child_checker();
                 sub.loop_depth += 1;
                 sub.check_body(body)
             }
-            Stmt::For { var, iter, body } => {
+            Stmt::For {
+                var, iter, body, ..
+            } => {
                 let iter_ty = self.check_expr(iter)?;
+                if iter_ty.is_error() {
+                    let mut sub = self.child_checker();
+                    sub.loop_depth += 1;
+                    sub.env.set_var(var.clone(), Type::Error);
+                    sub.check_body(body)?;
+                    return Ok(Type::Void);
+                }
                 let elem_ty = match iter_ty {
                     Type::List(inner) => *inner,
-                    _ => return Err(format!("Cannot iterate over {:?}, expected List", iter_ty)),
+                    _ => {
+                        return Err(Diagnostic::error(format!(
+                            "Cannot iterate over {:?}, expected List",
+                            iter_ty
+                        ))
+                        .with_code("E007")
+                        .with_label(iter.span(), "expected List"));
+                    }
                 };
                 let mut sub = self.child_checker();
                 sub.loop_depth += 1;
                 sub.env.set_var(var.clone(), elem_ty);
                 sub.check_body(body)
             }
-            Stmt::Assignment { target, value } => {
+            Stmt::Assignment { target, value, .. } => {
                 let val_ty = self.check_expr(value)?;
+                if val_ty.is_error() {
+                    return Ok(Type::Error);
+                }
                 match target {
-                    Expr::Ident(name) => {
+                    Expr::Ident(name, ident_span) => {
                         let target_ty = self.env.get_var(name).ok_or_else(|| {
-                            format!("Assignment to undeclared variable '{}'", name)
+                            let mut diag = Diagnostic::error(format!(
+                                "Assignment to undeclared variable '{}'",
+                                name
+                            ))
+                            .with_code("E009")
+                            .with_label(*ident_span, "not found in this scope");
+                            if let Some(suggestion) = self.suggest_similar_name(name) {
+                                diag = diag.with_note(format!("did you mean '{}'?", suggestion));
+                            }
+                            diag
                         })?;
+                        if target_ty.is_error() {
+                            return Ok(Type::Error);
+                        }
                         if target_ty != val_ty {
                             // Nullable auto-wrap: allow T or Nil assigned to T?
-                            if let Type::Nullable(inner) = &target_ty {
-                                if val_ty == **inner || val_ty == Type::Nil {
-                                    return Ok(target_ty);
-                                }
+                            if let Type::Nullable(inner) = &target_ty
+                                && (val_ty == **inner || val_ty == Type::Nil)
+                            {
+                                return Ok(target_ty);
                             }
-                            return Err(format!(
+                            return Err(Diagnostic::error(format!(
                                 "Assignment type mismatch: variable '{}' is {:?}, got {:?}",
                                 name, target_ty, val_ty
-                            ));
+                            ))
+                            .with_code("E001")
+                            .with_label(stmt_span, format!("expected {:?}", target_ty)));
                         }
                         Ok(val_ty)
                     }
-                    Expr::Member { object, field } => {
+                    Expr::Member { object, field, .. } => {
                         let obj_ty = self.check_expr(object)?;
+                        if obj_ty.is_error() {
+                            return Ok(Type::Error);
+                        }
                         if let Type::Custom(class_name, _) = &obj_ty {
                             if let Some(info) = self.env.get_class(class_name) {
                                 if let Some(field_ty) = info.fields.get(field) {
                                     if *field_ty != val_ty {
-                                        return Err(format!(
+                                        return Err(Diagnostic::error(format!(
                                             "Cannot assign {:?} to field '{}' of type {:?}",
                                             val_ty, field, field_ty
+                                        ))
+                                        .with_code("E001")
+                                        .with_label(
+                                            stmt_span,
+                                            format!("expected {:?}", field_ty),
                                         ));
                                     }
                                 } else {
-                                    return Err(format!(
+                                    return Err(Diagnostic::error(format!(
                                         "Class '{}' has no field '{}'",
                                         class_name, field
-                                    ));
+                                    ))
+                                    .with_code("E010")
+                                    .with_label(target.span(), "unknown field"));
                                 }
                             } else {
-                                return Err(format!("Unknown class '{}'", class_name));
+                                return Err(Diagnostic::error(format!(
+                                    "Unknown class '{}'",
+                                    class_name
+                                ))
+                                .with_code("E010")
+                                .with_label(object.span(), "unknown class"));
                             }
                         } else {
-                            return Err(format!(
+                            return Err(Diagnostic::error(format!(
                                 "Cannot assign to member on non-class type {:?}",
                                 obj_ty
-                            ));
+                            ))
+                            .with_code("E010")
+                            .with_label(object.span(), "not a class type"));
                         }
                         Ok(val_ty)
                     }
-                    Expr::Index { object, index } => {
+                    Expr::Index { object, index, .. } => {
                         let obj_ty = self.check_expr(object)?;
                         let idx_ty = self.check_expr(index)?;
+                        if obj_ty.is_error() || idx_ty.is_error() {
+                            return Ok(Type::Error);
+                        }
                         if idx_ty != Type::Int {
-                            return Err(format!("Index must be Int, got {:?}", idx_ty));
+                            return Err(Diagnostic::error(format!(
+                                "Index must be Int, got {:?}",
+                                idx_ty
+                            ))
+                            .with_code("E016")
+                            .with_label(index.span(), "expected Int"));
                         }
                         match &obj_ty {
                             Type::List(inner) => {
                                 if **inner != val_ty {
-                                    return Err(format!(
+                                    return Err(Diagnostic::error(format!(
                                         "Cannot assign {:?} to List[{:?}] element",
                                         val_ty, inner
-                                    ));
+                                    ))
+                                    .with_code("E001")
+                                    .with_label(stmt_span, format!("expected {:?}", inner)));
                                 }
                                 Ok(val_ty)
                             }
-                            _ => Err(format!("Cannot index-assign into {:?}", obj_ty)),
+                            _ => Err(Diagnostic::error(format!(
+                                "Cannot index-assign into {:?}",
+                                obj_ty
+                            ))
+                            .with_code("E016")
+                            .with_label(object.span(), "not a list")),
                         }
                     }
-                    _ => Err("Invalid assignment target".to_string()),
+                    _ => Err(Diagnostic::error("Invalid assignment target".to_string())
+                        .with_code("E008")
+                        .with_label(target.span(), "invalid target")),
                 }
             }
-            Stmt::Break => {
+            Stmt::Break(span) => {
                 if self.loop_depth == 0 {
-                    return Err("'break' used outside of a loop".to_string());
+                    return Err(
+                        Diagnostic::error("'break' used outside of a loop".to_string())
+                            .with_code("E003")
+                            .with_label(*span, "not inside a loop"),
+                    );
                 }
                 Ok(Type::Void)
             }
-            Stmt::Continue => {
+            Stmt::Continue(span) => {
                 if self.loop_depth == 0 {
-                    return Err("'continue' used outside of a loop".to_string());
+                    return Err(
+                        Diagnostic::error("'continue' used outside of a loop".to_string())
+                            .with_code("E003")
+                            .with_label(*span, "not inside a loop"),
+                    );
                 }
                 Ok(Type::Void)
             }
@@ -346,13 +492,10 @@ impl TypeChecker {
     }
 
     /// Check if `child_ty` is a subtype of `parent_ty` via the extends hierarchy.
-    /// Both types must be Custom types (class names). Returns true if they're
-    /// the same type or if child transitively extends parent.
     pub(crate) fn is_error_subtype(&self, child_ty: &Type, parent_ty: &Type) -> bool {
         if child_ty == parent_ty {
             return true;
         }
-        // Both must be Custom types
         let child_name = match child_ty {
             Type::Custom(n, _) => n,
             _ => return false,
@@ -361,12 +504,11 @@ impl TypeChecker {
             Type::Custom(n, _) => n,
             _ => return false,
         };
-        // Walk the extends chain from child up (with cycle protection)
         let mut current = child_name.clone();
         let mut visited = std::collections::HashSet::new();
         loop {
             if !visited.insert(current.clone()) {
-                return false; // cycle detected
+                return false;
             }
             if let Some(info) = self.env.get_class(&current) {
                 if let Some(extends) = &info.extends {
@@ -387,10 +529,7 @@ impl TypeChecker {
         self.is_async_context
     }
 
-    /// Iterate over `body` statements and return the type of the last one
-    /// (or `Type::Void` for an empty body). Operates on `self` directly —
-    /// callers are responsible for creating a child scope when needed.
-    pub(crate) fn check_body(&mut self, body: &[Stmt]) -> Result<Type, String> {
+    pub(crate) fn check_body(&mut self, body: &[Stmt]) -> Result<Type, Diagnostic> {
         let mut last = Type::Void;
         for s in body {
             last = self.check_stmt(s)?;
@@ -402,37 +541,72 @@ impl TypeChecker {
         &self,
         pattern: &MatchPattern,
         scrutinee_ty: &Type,
-    ) -> Result<(), String> {
+    ) -> Result<(), Diagnostic> {
         match pattern {
-            MatchPattern::Wildcard | MatchPattern::Ident(_) => Ok(()),
-            MatchPattern::Literal(expr) => {
+            MatchPattern::Wildcard(_) | MatchPattern::Ident(..) => Ok(()),
+            MatchPattern::Literal(expr, span) => {
                 let pat_ty = match expr {
-                    Expr::Int(_) => Type::Int,
-                    Expr::Float(_) => Type::Float,
-                    Expr::Str(_) => Type::String,
-                    Expr::Bool(_) => Type::Bool,
-                    Expr::Nil => Type::Nil,
-                    _ => return Err("Invalid literal in match pattern".to_string()),
+                    Expr::Int(..) => Type::Int,
+                    Expr::Float(..) => Type::Float,
+                    Expr::Str(..) => Type::String,
+                    Expr::Bool(..) => Type::Bool,
+                    Expr::Nil(_) => Type::Nil,
+                    _ => {
+                        return Err(Diagnostic::error(
+                            "Invalid literal in match pattern".to_string(),
+                        )
+                        .with_code("E001")
+                        .with_label(*span, "invalid pattern"));
+                    }
                 };
-                // Allow nil pattern and inner-type patterns to match nullable types
                 if matches!(scrutinee_ty, Type::Nullable(_)) {
                     if pat_ty == Type::Nil {
                         return Ok(());
                     }
-                    if let Type::Nullable(inner) = scrutinee_ty {
-                        if pat_ty == **inner {
-                            return Ok(());
-                        }
+                    if let Type::Nullable(inner) = scrutinee_ty
+                        && pat_ty == **inner
+                    {
+                        return Ok(());
                     }
                 }
                 if pat_ty != *scrutinee_ty {
-                    return Err(format!(
+                    return Err(Diagnostic::error(format!(
                         "Pattern type {:?} does not match scrutinee type {:?}",
                         pat_ty, scrutinee_ty
-                    ));
+                    ))
+                    .with_code("E001")
+                    .with_label(*span, format!("expected {:?}", scrutinee_ty)));
                 }
                 Ok(())
             }
         }
+    }
+
+    pub(crate) fn suggest_similar_name(&self, name: &str) -> Option<String> {
+        let mut best: Option<(usize, &str)> = None;
+        for known in self.env.all_var_names() {
+            let dist = Self::levenshtein(name, known);
+            if dist <= 2 && dist < name.len() && (best.is_none() || dist < best.unwrap().0) {
+                best = Some((dist, known));
+            }
+        }
+        best.map(|(_, s)| s.to_string())
+    }
+
+    pub(crate) fn levenshtein(a: &str, b: &str) -> usize {
+        let a = a.as_bytes();
+        let b = b.as_bytes();
+        let n = b.len();
+        let mut prev: Vec<usize> = (0..=n).collect();
+        let mut curr = vec![0usize; n + 1];
+        for (i, &a_byte) in a.iter().enumerate() {
+            curr[0] = i + 1;
+            for (j, &b_byte) in b.iter().enumerate() {
+                let cost = if a_byte == b_byte { 0 } else { 1 };
+                curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
+            }
+            std::mem::swap(&mut prev, &mut curr);
+        }
+        prev[n]
     }
 }

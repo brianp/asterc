@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use ast::{Expr, Type};
+use ast::{Diagnostic, Expr, Type};
 
 use crate::typechecker::TypeChecker;
 
@@ -13,49 +13,72 @@ impl TypeChecker {
         }
     }
 
-    pub(crate) fn check_call(&mut self, func: &Expr, args: &[Expr]) -> Result<Type, String> {
+    pub(crate) fn check_call(&mut self, func: &Expr, args: &[Expr]) -> Result<Type, Diagnostic> {
         // Check for nullable method calls: x.or(), x.or_else(), x.or_throw()
-        if let Expr::Member { object, field } = func {
+        if let Expr::Member { object, field, .. } = func {
             let obj_ty = self.check_expr(object)?;
+            if obj_ty.is_error() {
+                return Ok(Type::Error);
+            }
             if let Type::Nullable(inner) = &obj_ty {
                 match field.as_str() {
                     "or" | "or_else" => {
                         if args.len() != 1 {
-                            return Err(format!("T?.{}() takes exactly 1 argument", field));
+                            return Err(Diagnostic::error(format!(
+                                "T?.{}() takes exactly 1 argument",
+                                field
+                            ))
+                            .with_code("E006")
+                            .with_label(func.span(), "expected 1 argument"));
                         }
                         let arg_ty = self.check_expr(&args[0])?;
+                        if arg_ty.is_error() {
+                            return Ok(Type::Error);
+                        }
                         if arg_ty != **inner {
-                            return Err(format!(
+                            return Err(Diagnostic::error(format!(
                                 ".{}() type mismatch: expected {:?}, got {:?}",
                                 field, inner, arg_ty
-                            ));
+                            ))
+                            .with_code("E018")
+                            .with_label(args[0].span(), format!("expected {:?}", inner)));
                         }
                         return Ok(*inner.clone());
                     }
                     "or_throw" => {
                         if args.len() != 1 {
-                            return Err("T?.or_throw() takes exactly 1 argument".to_string());
+                            return Err(Diagnostic::error(
+                                "T?.or_throw() takes exactly 1 argument".to_string(),
+                            )
+                            .with_code("E006")
+                            .with_label(func.span(), "expected 1 argument"));
                         }
-                        // Verify the argument is an error class instance
                         let arg_ty = self.check_expr(&args[0])?;
-                        // Must be in a throws context
                         let throws_ty = self.throws_type.as_ref().ok_or_else(|| {
-                            ".or_throw() can only be used in a function that declares 'throws'"
-                                .to_string()
+                            Diagnostic::error(
+                                ".or_throw() can only be used in a function that declares 'throws'"
+                                    .to_string(),
+                            )
+                            .with_code("E013")
+                            .with_label(func.span(), "requires 'throws' declaration")
                         })?;
                         if !self.is_error_subtype(&arg_ty, throws_ty) {
-                            return Err(format!(
+                            return Err(Diagnostic::error(format!(
                                 ".or_throw() error type {:?} not compatible with throws {:?}",
                                 arg_ty, throws_ty
-                            ));
+                            ))
+                            .with_code("E013")
+                            .with_label(args[0].span(), "incompatible error type"));
                         }
                         return Ok(*inner.clone());
                     }
                     _ => {
-                        return Err(format!(
+                        return Err(Diagnostic::error(format!(
                             "Cannot access '{}' on nullable type {:?}. Resolve with .or(), .or_else(), .or_throw(), or match first",
                             field, obj_ty
-                        ));
+                        ))
+                        .with_code("E018")
+                        .with_label(object.span(), "nullable type"));
                     }
                 }
             }
@@ -68,7 +91,7 @@ impl TypeChecker {
         func: &Expr,
         args: &[Expr],
         bypass_async_check: bool,
-    ) -> Result<Type, String> {
+    ) -> Result<Type, Diagnostic> {
         self.check_call_inner_impl(func, args, bypass_async_check, false)
     }
 
@@ -77,7 +100,7 @@ impl TypeChecker {
         func: &Expr,
         args: &[Expr],
         bypass_async_check: bool,
-    ) -> Result<Type, String> {
+    ) -> Result<Type, Diagnostic> {
         self.check_call_inner_impl(func, args, bypass_async_check, true)
     }
 
@@ -87,34 +110,59 @@ impl TypeChecker {
         args: &[Expr],
         bypass_async_check: bool,
         bypass_throws_check: bool,
-    ) -> Result<Type, String> {
+    ) -> Result<Type, Diagnostic> {
         // Handle polymorphic builtins that can't be expressed in the type system yet
-        if let Expr::Ident(name) = func {
+        if let Expr::Ident(name, _) = func {
             match name.as_str() {
                 "len" => {
                     if args.len() != 1 {
-                        return Err(format!("len() takes 1 argument, got {}", args.len()));
+                        return Err(Diagnostic::error(format!(
+                            "len() takes 1 argument, got {}",
+                            args.len()
+                        ))
+                        .with_code("E006")
+                        .with_label(func.span(), "expected 1 argument"));
                     }
                     let aty = self.check_expr(&args[0])?;
+                    if aty.is_error() {
+                        return Ok(Type::Error);
+                    }
                     match aty {
                         Type::String | Type::List(_) => return Ok(Type::Int),
-                        _ => return Err(format!("len() expects String or List, got {:?}", aty)),
+                        _ => {
+                            return Err(Diagnostic::error(format!(
+                                "len() expects String or List, got {:?}",
+                                aty
+                            ))
+                            .with_code("E005")
+                            .with_label(args[0].span(), "expected String or List"));
+                        }
                     }
                 }
                 "to_string" => {
                     if args.len() != 1 {
-                        return Err(format!("to_string() takes 1 argument, got {}", args.len()));
+                        return Err(Diagnostic::error(format!(
+                            "to_string() takes 1 argument, got {}",
+                            args.len()
+                        ))
+                        .with_code("E006")
+                        .with_label(func.span(), "expected 1 argument"));
                     }
                     let aty = self.check_expr(&args[0])?;
+                    if aty.is_error() {
+                        return Ok(Type::Error);
+                    }
                     match aty {
                         Type::Int | Type::Float | Type::Bool | Type::String => {
                             return Ok(Type::String);
                         }
                         _ => {
-                            return Err(format!(
+                            return Err(Diagnostic::error(format!(
                                 "to_string() expects Int, Float, Bool, or String, got {:?}",
                                 aty
-                            ));
+                            ))
+                            .with_code("E005")
+                            .with_label(args[0].span(), "unsupported type"));
                         }
                     }
                 }
@@ -123,6 +171,9 @@ impl TypeChecker {
         }
 
         let fty = self.check_expr(func)?;
+        if fty.is_error() {
+            return Ok(Type::Error);
+        }
         if let Type::Function {
             params,
             ret,
@@ -130,36 +181,45 @@ impl TypeChecker {
             throws: fn_throws,
         } = fty
         {
-            // Sync call to an async function is an error (unless bypassed by blocking/detached)
             if fn_is_async && !bypass_async_check && !self.is_in_async_context() {
-                return Err(
+                return Err(Diagnostic::error(
                     "Cannot call async function synchronously from sync context. Use 'resolve' or 'async' modifier.".to_string()
-                );
+                )
+                .with_code("E012")
+                .with_label(func.span(), "async function called synchronously"));
             }
-            // Calling a throws function requires error handling (!, !.or(), !.or_else(), !.catch)
             if fn_throws.is_some() && !bypass_throws_check {
-                return Err(
+                return Err(Diagnostic::error(
                     "Cannot call throwing function without error handling. Use !, !.or(), !.or_else(), or !.catch".to_string()
-                );
+                )
+                .with_code("E013")
+                .with_label(func.span(), "throwing function requires error handling"));
             }
             if params.len() != args.len() {
-                return Err(format!(
+                return Err(Diagnostic::error(format!(
                     "Function arity mismatch: expected {}, got {}",
                     params.len(),
                     args.len()
-                ));
+                ))
+                .with_code("E006")
+                .with_label(func.span(), format!("expected {} arguments", params.len())));
             }
-            // Build TypeVar bindings for generic instantiation
             let mut bindings: HashMap<String, Type> = HashMap::new();
             for (a, pty) in args.iter().zip(params.iter()) {
                 let aty = self.check_expr(a)?;
+                if aty.is_error() {
+                    return Ok(Type::Error);
+                }
                 Self::unify_type(pty, &aty, &mut bindings)?;
             }
-            // Substitute TypeVars in return type
             let resolved_ret = Self::substitute_typevars(&ret, &bindings);
             Ok(resolved_ret)
         } else {
-            Err(format!("Tried to call non-function type: {:?}", fty))
+            Err(
+                Diagnostic::error(format!("Tried to call non-function type: {:?}", fty))
+                    .with_code("E005")
+                    .with_label(func.span(), "not a function"),
+            )
         }
     }
 
@@ -167,15 +227,16 @@ impl TypeChecker {
         expected: &Type,
         actual: &Type,
         bindings: &mut HashMap<String, Type>,
-    ) -> Result<(), String> {
+    ) -> Result<(), Diagnostic> {
         match (expected, actual) {
             (Type::TypeVar(tv), _) => {
                 if let Some(bound) = bindings.get(tv) {
                     if *bound != *actual {
-                        return Err(format!(
+                        return Err(Diagnostic::error(format!(
                             "Type parameter '{}' bound to {:?} but got {:?}",
                             tv, bound, actual
-                        ));
+                        ))
+                        .with_code("E001"));
                     }
                 } else {
                     bindings.insert(tv.clone(), actual.clone());
@@ -197,10 +258,11 @@ impl TypeChecker {
             }
             (Type::Custom(en, eargs), Type::Custom(an, aargs)) => {
                 if en != an || eargs.len() != aargs.len() {
-                    return Err(format!(
+                    return Err(Diagnostic::error(format!(
                         "Argument type mismatch: expected {:?}, got {:?}",
                         expected, actual
-                    ));
+                    ))
+                    .with_code("E001"));
                 }
                 for (e, a) in eargs.iter().zip(aargs.iter()) {
                     Self::unify_type(e, a, bindings)?;
@@ -220,11 +282,12 @@ impl TypeChecker {
                 },
             ) => {
                 if ep.len() != ap.len() {
-                    return Err(format!(
+                    return Err(Diagnostic::error(format!(
                         "Function arity mismatch: expected {} params, got {}",
                         ep.len(),
                         ap.len()
-                    ));
+                    ))
+                    .with_code("E006"));
                 }
                 for (e, a) in ep.iter().zip(ap.iter()) {
                     Self::unify_type(e, a, bindings)?;
@@ -233,10 +296,11 @@ impl TypeChecker {
             }
             _ => {
                 if expected != actual {
-                    Err(format!(
+                    Err(Diagnostic::error(format!(
                         "Argument type mismatch: expected {:?}, got {:?}",
                         expected, actual
                     ))
+                    .with_code("E001"))
                 } else {
                     Ok(())
                 }
@@ -283,19 +347,23 @@ impl TypeChecker {
         }
     }
 
-    pub(crate) fn resolve_func_type(&mut self, func: &Expr) -> Result<Type, String> {
+    pub(crate) fn resolve_func_type(&mut self, func: &Expr) -> Result<Type, Diagnostic> {
         match func {
-            Expr::Ident(name) => {
-                // Check polymorphic builtins
+            Expr::Ident(name, span) => {
                 match name.as_str() {
                     "len" | "to_string" => Ok(Type::Void), // Not a throws function
-                    _ => self
-                        .env
-                        .get_var(name)
-                        .ok_or_else(|| format!("Unknown identifier '{}'", name)),
+                    _ => self.env.get_var(name).ok_or_else(|| {
+                        let mut diag = Diagnostic::error(format!("Unknown identifier '{}'", name))
+                            .with_code("E002")
+                            .with_label(*span, "not found in this scope");
+                        if let Some(suggestion) = self.suggest_similar_name(name) {
+                            diag = diag.with_note(format!("did you mean '{}'?", suggestion));
+                        }
+                        diag
+                    }),
                 }
             }
-            Expr::Member { object, field } => self.check_member(object, field),
+            Expr::Member { object, field, .. } => self.check_member(object, field),
             _ => self.check_expr(func),
         }
     }

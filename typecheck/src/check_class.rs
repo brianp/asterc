@@ -1,11 +1,10 @@
-use ast::{ClassInfo, Stmt, Type};
+use ast::{ClassInfo, Diagnostic, Stmt, Type};
+use indexmap::IndexMap;
 use std::collections::HashMap;
 
 use crate::typechecker::TypeChecker;
 
 impl TypeChecker {
-    /// Handle all type-checking logic for a `class` statement.
-    /// Called from the `Stmt::Class` arm of `check_stmt`.
     pub(crate) fn check_class_stmt(
         &mut self,
         name: &str,
@@ -14,9 +13,16 @@ impl TypeChecker {
         generic_params: &Option<Vec<String>>,
         extends: &Option<String>,
         includes: &Option<Vec<String>>,
-    ) -> Result<Type, String> {
-        let mut field_map = HashMap::new();
+    ) -> Result<Type, Diagnostic> {
+        let mut field_map = IndexMap::new();
         for (fname, fty) in fields {
+            if field_map.contains_key(fname) {
+                return Err(Diagnostic::error(format!(
+                    "Duplicate field '{}' in class '{}'",
+                    fname, name
+                ))
+                .with_code("E014"));
+            }
             field_map.insert(fname.clone(), fty.clone());
         }
 
@@ -27,14 +33,26 @@ impl TypeChecker {
             } = m
             {
                 let mty = self.check_expr(value)?;
-                // Store methods with unqualified name for member access lookup
                 let short_name = mname
                     .strip_prefix(&format!("{}.", name))
                     .unwrap_or(mname)
                     .to_string();
+                if method_map.contains_key(&short_name) {
+                    return Err(Diagnostic::error(format!(
+                        "Duplicate method '{}' in class '{}'",
+                        short_name, name
+                    ))
+                    .with_code("E014")
+                    .with_label(m.span(), "duplicate method"));
+                }
                 method_map.insert(short_name, mty);
             } else {
-                return Err(format!("Unexpected stmt in class methods: {:?}", m));
+                return Err(Diagnostic::error(format!(
+                    "Unexpected stmt in class methods: {:?}",
+                    m
+                ))
+                .with_code("E014")
+                .with_label(m.span(), "expected method definition"));
             }
         }
 
@@ -42,37 +60,37 @@ impl TypeChecker {
         if let Some(trait_names) = includes {
             for trait_name in trait_names {
                 let trait_info = self.env.get_trait(trait_name).ok_or_else(|| {
-                    format!(
+                    Diagnostic::error(format!(
                         "Unknown trait '{}' in includes for class '{}'",
                         trait_name, name
-                    )
+                    ))
+                    .with_code("E014")
                 })?;
-                // Check that the class implements all required (abstract) trait methods
                 for method_name in &trait_info.required_methods {
                     if let Some(class_method_ty) = method_map.get(method_name) {
-                        // Compare signatures using unification (handles TypeVars)
                         if let Some(trait_method_ty) = trait_info.methods.get(method_name) {
                             let mut bindings = HashMap::new();
                             if Self::unify_type(trait_method_ty, class_method_ty, &mut bindings)
                                 .is_err()
                             {
-                                return Err(format!(
+                                return Err(Diagnostic::error(format!(
                                     "Method '{}' in class '{}' has signature {:?}, but trait '{}' requires {:?}",
                                     method_name, name, class_method_ty, trait_name, trait_method_ty
-                                ));
+                                ))
+                                .with_code("E014"));
                             }
                         }
                     } else {
-                        return Err(format!(
+                        return Err(Diagnostic::error(format!(
                             "Class '{}' must implement method '{}' from trait '{}'",
                             name, method_name, trait_name
-                        ));
+                        ))
+                        .with_code("E014"));
                     }
                 }
             }
         }
 
-        // Register class first so cycle detection can follow the chain
         let info = ClassInfo {
             ty: Type::Custom(name.to_string(), Vec::new()),
             fields: field_map,
@@ -82,24 +100,25 @@ impl TypeChecker {
         };
         self.env.set_class(name.to_string(), info);
 
-        // Validate extends — parent class must exist, no cycles
+        // Validate extends
         if let Some(parent_name) = extends {
             if self.env.get_class(parent_name).is_none() {
-                return Err(format!(
+                return Err(Diagnostic::error(format!(
                     "Class '{}' extends unknown class '{}'",
                     name, parent_name
-                ));
+                ))
+                .with_code("E014"));
             }
-            // Detect circular inheritance by walking the parent chain
             let mut visited = std::collections::HashSet::new();
             visited.insert(name.to_string());
             let mut current = Some(parent_name.clone());
             while let Some(ref cname) = current {
                 if !visited.insert(cname.clone()) {
-                    return Err(format!(
+                    return Err(Diagnostic::error(format!(
                         "Circular inheritance detected: class '{}' forms a cycle through '{}'",
                         name, cname
-                    ));
+                    ))
+                    .with_code("E014"));
                 }
                 current = self
                     .env
@@ -108,7 +127,7 @@ impl TypeChecker {
             }
         }
 
-        // Check for field shadowing — child cannot redeclare inherited fields
+        // Check for field shadowing
         if let Some(parent_name) = extends {
             let mut inherited_fields = std::collections::HashSet::new();
             let mut current = Some(parent_name.clone());
@@ -124,16 +143,16 @@ impl TypeChecker {
             }
             for (fname, _) in fields {
                 if inherited_fields.contains(fname) {
-                    return Err(format!(
+                    return Err(Diagnostic::error(format!(
                         "Field '{}' in class '{}' shadows inherited field from parent chain",
                         fname, name
-                    ));
+                    ))
+                    .with_code("E014"));
                 }
             }
         }
 
-        // Synthesize constructor: ClassName(parent_fields..., own_fields...) -> Custom(ClassName, [TypeVars])
-        // Collect inherited fields from parent chain (in order)
+        // Synthesize constructor
         let mut inherited_field_types: Vec<Type> = Vec::new();
         if let Some(parent_name) = extends {
             let mut current = Some(parent_name.clone());
@@ -146,9 +165,8 @@ impl TypeChecker {
                     break;
                 }
             }
-            // Reverse so root parent fields come first
             for ancestor in chain.into_iter().rev() {
-                for (_, fty) in &ancestor.fields {
+                for fty in ancestor.fields.values() {
                     inherited_field_types.push(fty.clone());
                 }
             }
