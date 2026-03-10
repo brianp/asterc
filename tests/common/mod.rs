@@ -58,3 +58,16 @@ pub fn parse_with_recovery(src: &str) -> ParseResult {
     let mut parser = Parser::new(tokens);
     parser.parse_module_recovering("test")
 }
+
+pub fn compile_file(path: &str) {
+    let source =
+        std::fs::read_to_string(path).unwrap_or_else(|_| panic!("Could not read {}", path));
+    let tokens = lex(&source).unwrap_or_else(|e| panic!("Lex error in {}: {}", path, e));
+    let mut parser = Parser::new(tokens);
+    let module = parser
+        .parse_module("test")
+        .unwrap_or_else(|e| panic!("Parse error in {}: {}", path, e));
+    let mut tc = TypeChecker::new();
+    tc.check_module(&module)
+        .unwrap_or_else(|e| panic!("Type error in {}: {}", path, e));
+}

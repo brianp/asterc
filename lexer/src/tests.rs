@@ -262,6 +262,7 @@ fn tracks_line_and_col_reasonably() {
             kind: TokenKind::Ident(s),
             line,
             col,
+            ..
         } => {
             assert_eq!(s, "foo");
             assert_eq!(*line, 1);
@@ -329,7 +330,8 @@ fn tracks_line_and_col_reasonably() {
         Token {
             kind: TokenKind::Indent,
             line: 2,
-            col: 1
+            col: 1,
+            ..
         }
     ));
     i += 1;

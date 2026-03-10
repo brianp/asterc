@@ -1,6 +1,6 @@
 def main() -> Void
-  log("Hello")
+  log(message: "Hello")
   if true
-    log("Yes")
+    log(message: "Yes")
   else
-    log("No")
+    log(message: "No")

@@ -51,22 +51,15 @@ fn lambda_type_check() {
         params: vec![("a".into(), Type::Int)],
         ret_type: Type::Int,
         body: vec![Stmt::Expr(Expr::Ident("a".into(), s()), s())],
-        is_async: false,
         generic_params: None,
         throws: None,
         span: s(),
     };
     let ty = tc.check_expr(&lambda).unwrap();
     match ty {
-        Type::Function {
-            params,
-            ret,
-            is_async,
-            ..
-        } => {
+        Type::Function { params, ret, .. } => {
             assert_eq!(params, vec![Type::Int]);
             assert_eq!(*ret, Type::Int);
-            assert!(!is_async);
         }
         _ => panic!("expected function type"),
     }
@@ -79,7 +72,6 @@ fn call_type_check_and_mismatch() {
         params: vec![("x".into(), Type::Int)],
         ret_type: Type::Int,
         body: vec![Stmt::Expr(Expr::Ident("x".into(), s()), s())],
-        is_async: false,
         generic_params: None,
         throws: None,
         span: s(),
@@ -95,14 +87,14 @@ fn call_type_check_and_mismatch() {
 
     let call = Expr::Call {
         func: Box::new(Expr::Ident("f".into(), s())),
-        args: vec![Expr::Int(42, s())],
+        args: vec![("x".into(), Expr::Int(42, s()))],
         span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::Int);
 
     let bad_call = Expr::Call {
         func: Box::new(Expr::Ident("f".into(), s())),
-        args: vec![Expr::Str("oops".into(), s())],
+        args: vec![("x".into(), Expr::Str("oops".into(), s()))],
         span: s(),
     };
     let err = err_msg(tc.check_expr(&bad_call));
@@ -145,7 +137,6 @@ fn class_type_check_and_member_access() {
                 params: vec![],
                 ret_type: Type::String,
                 body: vec![Stmt::Expr(Expr::Str("ok".into(), s()), s())],
-                is_async: false,
                 generic_params: None,
                 throws: None,
                 span: s(),
@@ -863,7 +854,7 @@ fn builtin_log_accepts_string() {
     let mut tc = TypeChecker::new();
     let call = Expr::Call {
         func: Box::new(Expr::Ident("log".into(), s())),
-        args: vec![Expr::Str("hello".into(), s())],
+        args: vec![("message".into(), Expr::Str("hello".into(), s()))],
         span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::Void);
@@ -874,7 +865,7 @@ fn builtin_print_accepts_string() {
     let mut tc = TypeChecker::new();
     let call = Expr::Call {
         func: Box::new(Expr::Ident("print".into(), s())),
-        args: vec![Expr::Str("hello".into(), s())],
+        args: vec![("message".into(), Expr::Str("hello".into(), s()))],
         span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::Void);
@@ -886,7 +877,7 @@ fn builtin_len_list_returns_int() {
     tc.env.set_var("xs".into(), Type::List(Box::new(Type::Int)));
     let call = Expr::Call {
         func: Box::new(Expr::Ident("len".into(), s())),
-        args: vec![Expr::Ident("xs".into(), s())],
+        args: vec![("value".into(), Expr::Ident("xs".into(), s()))],
         span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::Int);
@@ -897,7 +888,7 @@ fn builtin_len_string_returns_int() {
     let mut tc = TypeChecker::new();
     let call = Expr::Call {
         func: Box::new(Expr::Ident("len".into(), s())),
-        args: vec![Expr::Str("hello".into(), s())],
+        args: vec![("value".into(), Expr::Str("hello".into(), s()))],
         span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::Int);
@@ -908,7 +899,7 @@ fn builtin_to_string_int_returns_string() {
     let mut tc = TypeChecker::new();
     let call = Expr::Call {
         func: Box::new(Expr::Ident("to_string".into(), s())),
-        args: vec![Expr::Int(42, s())],
+        args: vec![("value".into(), Expr::Int(42, s()))],
         span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::String);
@@ -919,7 +910,7 @@ fn builtin_to_string_float_returns_string() {
     let mut tc = TypeChecker::new();
     let call = Expr::Call {
         func: Box::new(Expr::Ident("to_string".into(), s())),
-        args: vec![Expr::Float(3.14, s())],
+        args: vec![("value".into(), Expr::Float(3.125, s()))],
         span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::String);
@@ -930,7 +921,7 @@ fn builtin_to_string_bool_returns_string() {
     let mut tc = TypeChecker::new();
     let call = Expr::Call {
         func: Box::new(Expr::Ident("to_string".into(), s())),
-        args: vec![Expr::Bool(true, s())],
+        args: vec![("value".into(), Expr::Bool(true, s()))],
         span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::String);
@@ -965,7 +956,6 @@ fn trait_definition_registers_trait() {
                 params: vec![],
                 ret_type: Type::String,
                 body: vec![Stmt::Expr(Expr::Str("".into(), s()), s())],
-                is_async: false,
                 generic_params: None,
                 throws: None,
                 span: s(),
@@ -995,7 +985,6 @@ fn class_includes_trait_gets_methods() {
                 params: vec![],
                 ret_type: Type::String,
                 body: vec![Stmt::Expr(Expr::Str("".into(), s()), s())],
-                is_async: false,
                 generic_params: None,
                 throws: None,
                 span: s(),
@@ -1019,7 +1008,6 @@ fn class_includes_trait_gets_methods() {
                 params: vec![],
                 ret_type: Type::String,
                 body: vec![Stmt::Expr(Expr::Str("user".into(), s()), s())],
-                is_async: false,
                 generic_params: None,
                 throws: None,
                 span: s(),
@@ -1066,7 +1054,6 @@ fn class_missing_trait_method_error() {
                 params: vec![],
                 ret_type: Type::String,
                 body: vec![],
-                is_async: false,
                 generic_params: None,
                 throws: None,
                 span: s(),
@@ -1115,16 +1102,38 @@ fn generic_class_registers_with_params() {
     assert_eq!(info.generic_params.as_ref().unwrap(), &["T".to_string()]);
 }
 
-// ─── Generic function type checking ─────────────────────────────────
+// ─── Generic function type checking (BC-5: inline generics) ─────────
 
 #[test]
-fn generic_lambda_typechecks() {
+fn generic_lambda_typechecks_inline() {
+    // New style: generic_params=None, Custom types auto-detected as type params
+    let mut tc = TypeChecker::new();
+    let lambda = Expr::Lambda {
+        params: vec![("x".into(), Type::Custom("T".into(), vec![]))],
+        ret_type: Type::Custom("T".into(), vec![]),
+        body: vec![Stmt::Expr(Expr::Ident("x".into(), s()), s())],
+        generic_params: None,
+        throws: None,
+        span: s(),
+    };
+    let ty = tc.check_expr(&lambda).unwrap();
+    match ty {
+        Type::Function { params, ret, .. } => {
+            assert_eq!(params, vec![Type::TypeVar("T".into())]);
+            assert_eq!(*ret, Type::TypeVar("T".into()));
+        }
+        _ => panic!("expected function type"),
+    }
+}
+
+#[test]
+fn generic_lambda_typechecks_explicit() {
+    // Legacy style: explicit generic_params with TypeVar still works
     let mut tc = TypeChecker::new();
     let lambda = Expr::Lambda {
         params: vec![("x".into(), Type::TypeVar("T".into()))],
         ret_type: Type::TypeVar("T".into()),
         body: vec![Stmt::Expr(Expr::Ident("x".into(), s()), s())],
-        is_async: false,
         generic_params: Some(vec!["T".into()]),
         throws: None,
         span: s(),
@@ -1144,13 +1153,12 @@ fn generic_lambda_typechecks() {
 #[test]
 fn generic_call_unifies_typevar_to_int() {
     let mut tc = TypeChecker::new();
-    // def identity[T](x: T) -> T = x
+    // def identity(x: T) -> T = x (inline generic)
     let lambda = Expr::Lambda {
-        params: vec![("x".into(), Type::TypeVar("T".into()))],
-        ret_type: Type::TypeVar("T".into()),
+        params: vec![("x".into(), Type::Custom("T".into(), vec![]))],
+        ret_type: Type::Custom("T".into(), vec![]),
         body: vec![Stmt::Expr(Expr::Ident("x".into(), s()), s())],
-        is_async: false,
-        generic_params: Some(vec!["T".into()]),
+        generic_params: None,
         throws: None,
         span: s(),
     };
@@ -1163,10 +1171,10 @@ fn generic_call_unifies_typevar_to_int() {
     })
     .unwrap();
 
-    // identity(42) should return Int
+    // identity(x: 42) should return Int
     let call = Expr::Call {
         func: Box::new(Expr::Ident("identity".into(), s())),
-        args: vec![Expr::Int(42, s())],
+        args: vec![("x".into(), Expr::Int(42, s()))],
         span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::Int);
@@ -1176,11 +1184,10 @@ fn generic_call_unifies_typevar_to_int() {
 fn generic_call_unifies_typevar_to_string() {
     let mut tc = TypeChecker::new();
     let lambda = Expr::Lambda {
-        params: vec![("x".into(), Type::TypeVar("T".into()))],
-        ret_type: Type::TypeVar("T".into()),
+        params: vec![("x".into(), Type::Custom("T".into(), vec![]))],
+        ret_type: Type::Custom("T".into(), vec![]),
         body: vec![Stmt::Expr(Expr::Ident("x".into(), s()), s())],
-        is_async: false,
-        generic_params: Some(vec!["T".into()]),
+        generic_params: None,
         throws: None,
         span: s(),
     };
@@ -1193,10 +1200,10 @@ fn generic_call_unifies_typevar_to_string() {
     })
     .unwrap();
 
-    // identity("hello") should return String
+    // identity(x: "hello") should return String
     let call = Expr::Call {
         func: Box::new(Expr::Ident("identity".into(), s())),
-        args: vec![Expr::Str("hello".into(), s())],
+        args: vec![("x".into(), Expr::Str("hello".into(), s()))],
         span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::String);
@@ -1205,16 +1212,15 @@ fn generic_call_unifies_typevar_to_string() {
 #[test]
 fn generic_call_multi_params_unifies() {
     let mut tc = TypeChecker::new();
-    // def first[A, B](a: A, b: B) -> A = a
+    // def first(a: A, b: B) -> A = a
     let lambda = Expr::Lambda {
         params: vec![
-            ("a".into(), Type::TypeVar("A".into())),
-            ("b".into(), Type::TypeVar("B".into())),
+            ("a".into(), Type::Custom("A".into(), vec![])),
+            ("b".into(), Type::Custom("B".into(), vec![])),
         ],
-        ret_type: Type::TypeVar("A".into()),
+        ret_type: Type::Custom("A".into(), vec![]),
         body: vec![Stmt::Expr(Expr::Ident("a".into(), s()), s())],
-        is_async: false,
-        generic_params: Some(vec!["A".into(), "B".into()]),
+        generic_params: None,
         throws: None,
         span: s(),
     };
@@ -1227,10 +1233,13 @@ fn generic_call_multi_params_unifies() {
     })
     .unwrap();
 
-    // first(42, "hello") should return Int
+    // first(a: 42, b: "hello") should return Int
     let call = Expr::Call {
         func: Box::new(Expr::Ident("first".into(), s())),
-        args: vec![Expr::Int(42, s()), Expr::Str("hello".into(), s())],
+        args: vec![
+            ("a".into(), Expr::Int(42, s())),
+            ("b".into(), Expr::Str("hello".into(), s())),
+        ],
         span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::Int);
@@ -1251,7 +1260,6 @@ fn class_includes_trait_wrong_signature_error() {
                 params: vec![],
                 ret_type: Type::String,
                 body: vec![],
-                is_async: false,
                 generic_params: None,
                 throws: None,
                 span: s(),
@@ -1275,7 +1283,6 @@ fn class_includes_trait_wrong_signature_error() {
                 params: vec![],
                 ret_type: Type::Int,
                 body: vec![Stmt::Expr(Expr::Int(0, s()), s())],
-                is_async: false,
                 generic_params: None,
                 throws: None,
                 span: s(),
@@ -1308,7 +1315,6 @@ fn member_access_finds_method_unqualified() {
                 params: vec![],
                 ret_type: Type::String,
                 body: vec![Stmt::Expr(Expr::Str("ok".into(), s()), s())],
-                is_async: false,
                 generic_params: None,
                 throws: None,
                 span: s(),
@@ -1346,7 +1352,6 @@ fn return_type_mismatch_in_function_error() {
         params: vec![],
         ret_type: Type::Int,
         body: vec![Stmt::Return(Expr::Str("hello".into(), s()), s())],
-        is_async: false,
         generic_params: None,
         throws: None,
         span: s(),
@@ -1368,7 +1373,6 @@ fn return_mid_body_type_mismatch_error() {
             Stmt::Return(Expr::Str("hello".into(), s()), s()),
             Stmt::Expr(Expr::Int(42, s()), s()),
         ],
-        is_async: false,
         generic_params: None,
         throws: None,
         span: s(),
@@ -1452,7 +1456,6 @@ fn return_correct_type_ok() {
         params: vec![],
         ret_type: Type::Int,
         body: vec![Stmt::Return(Expr::Int(42, s()), s())],
-        is_async: false,
         generic_params: None,
         throws: None,
         span: s(),
@@ -1471,7 +1474,6 @@ fn generic_lambda_body_type_matches_typevar() {
         params: vec![("x".into(), Type::TypeVar("T".into()))],
         ret_type: Type::TypeVar("T".into()),
         body: vec![Stmt::Expr(Expr::Ident("x".into(), s()), s())],
-        is_async: false,
         generic_params: Some(vec!["T".into()]),
         throws: None,
         span: s(),
@@ -1488,7 +1490,6 @@ fn generic_lambda_body_wrong_typevar_error() {
         params: vec![("x".into(), Type::TypeVar("T".into()))],
         ret_type: Type::TypeVar("T".into()),
         body: vec![Stmt::Expr(Expr::Int(42, s()), s())],
-        is_async: false,
         generic_params: Some(vec!["T".into()]),
         throws: None,
         span: s(),

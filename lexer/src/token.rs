@@ -23,6 +23,7 @@ pub enum TokenKind {
     As,
     Pub,
     Trait,
+    Enum,
     Includes,
     Extends,
     Throw,

@@ -66,7 +66,7 @@ fn lex_error_is_diagnostic() {
 #[test]
 fn diagnostic_suggestion_for_unknown_ident() {
     // "prnt" is close to "print" — should suggest
-    let src = "prnt(\"hello\")";
+    let src = "prnt(message: \"hello\")";
     let diag = common::check_err_diagnostic(src);
     assert!(
         diag.notes.iter().any(|n| n.contains("print")),

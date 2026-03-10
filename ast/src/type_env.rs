@@ -11,6 +11,8 @@ pub struct ClassInfo {
     pub methods: HashMap<String, Type>,
     pub generic_params: Option<Vec<String>>,
     pub extends: Option<String>,
+    /// Trait names this class includes (e.g., ["Eq", "Printable"]).
+    pub includes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -21,10 +23,18 @@ pub struct TraitInfo {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct EnumInfo {
+    pub name: String,
+    pub variants: Vec<String>,
+    pub includes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct TypeEnv {
     pub variables: HashMap<String, Type>,
     pub classes: HashMap<String, ClassInfo>,
     pub traits: HashMap<String, TraitInfo>,
+    pub enums: HashMap<String, EnumInfo>,
     pub parent: Option<Rc<TypeEnv>>,
 }
 
@@ -40,6 +50,7 @@ impl TypeEnv {
             variables: HashMap::new(),
             classes: HashMap::new(),
             traits: HashMap::new(),
+            enums: HashMap::new(),
             parent: None,
         }
     }
@@ -54,6 +65,7 @@ impl TypeEnv {
             variables: HashMap::new(),
             classes: HashMap::new(),
             traits: HashMap::new(),
+            enums: HashMap::new(),
             parent: Some(Rc::new(self.clone())),
         }
     }
@@ -91,6 +103,17 @@ impl TypeEnv {
         self.traits.insert(name, info);
     }
 
+    pub fn get_enum(&self, name: &str) -> Option<EnumInfo> {
+        self.enums
+            .get(name)
+            .cloned()
+            .or_else(|| self.parent.as_ref().and_then(|p| p.get_enum(name)))
+    }
+
+    pub fn set_enum(&mut self, name: String, info: EnumInfo) {
+        self.enums.insert(name, info);
+    }
+
     pub fn all_var_names(&self) -> Vec<&str> {
         let mut names: Vec<&str> = self.variables.keys().map(|s| s.as_str()).collect();
         if let Some(ref parent) = self.parent {
@@ -112,6 +135,7 @@ mod tests {
             methods: HashMap::new(),
             generic_params: None,
             extends: None,
+            includes: Vec::new(),
         }
     }
 
@@ -189,6 +213,7 @@ mod tests {
             methods: methods.clone(),
             generic_params: None,
             extends: None,
+            includes: Vec::new(),
         };
         let mut env = TypeEnv::new();
         env.set_class("Point".into(), info.clone());

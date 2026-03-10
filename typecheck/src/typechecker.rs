@@ -1,10 +1,9 @@
-use ast::{ClassInfo, Diagnostic, Expr, MatchPattern, Stmt, TraitInfo, Type, TypeEnv};
+use ast::{ClassInfo, Diagnostic, EnumInfo, Expr, MatchPattern, Stmt, TraitInfo, Type, TypeEnv};
 use indexmap::IndexMap;
 use std::collections::HashMap;
 
 pub struct TypeChecker {
     pub env: TypeEnv,
-    pub is_async_context: bool,
     pub loop_depth: usize,
     pub expected_return_type: Option<Type>,
     /// Current function name for better error messages.
@@ -28,18 +27,18 @@ impl TypeChecker {
         env.set_var(
             "log".into(),
             Type::Function {
+                param_names: vec!["message".into()],
                 params: vec![Type::String],
                 ret: Box::new(Type::Void),
-                is_async: false,
                 throws: None,
             },
         );
         env.set_var(
             "print".into(),
             Type::Function {
+                param_names: vec!["message".into()],
                 params: vec![Type::String],
                 ret: Box::new(Type::Void),
-                is_async: false,
                 throws: None,
             },
         );
@@ -56,14 +55,15 @@ impl TypeChecker {
                 methods: HashMap::new(),
                 generic_params: None,
                 extends: None,
+                includes: Vec::new(),
             },
         );
         env.set_var(
             "Exception".into(),
             Type::Function {
+                param_names: vec!["message".into()],
                 params: vec![Type::String],
                 ret: Box::new(Type::Custom("Exception".into(), Vec::new())),
-                is_async: false,
                 throws: None,
             },
         );
@@ -75,20 +75,89 @@ impl TypeChecker {
                 methods: HashMap::new(),
                 generic_params: None,
                 extends: Some("Exception".into()),
+                includes: Vec::new(),
             },
         );
         env.set_var(
             "Error".into(),
             Type::Function {
-                params: vec![Type::String], // inherited message field
+                param_names: vec!["message".into()], // inherited message field
+                params: vec![Type::String],
                 ret: Box::new(Type::Custom("Error".into(), Vec::new())),
-                is_async: false,
                 throws: None,
             },
         );
+        // Built-in CancelledError for async task cancellation
+        env.set_class(
+            "CancelledError".into(),
+            ClassInfo {
+                ty: Type::Custom("CancelledError".into(), Vec::new()),
+                fields: IndexMap::new(),
+                methods: HashMap::new(),
+                generic_params: None,
+                extends: Some("Error".into()),
+                includes: Vec::new(),
+            },
+        );
+        env.set_var(
+            "CancelledError".into(),
+            Type::Function {
+                param_names: vec!["message".into()],
+                params: vec![Type::String],
+                ret: Box::new(Type::Custom("CancelledError".into(), Vec::new())),
+                throws: None,
+            },
+        );
+
+        // Built-in Ordering enum
+        env.set_enum(
+            "Ordering".into(),
+            EnumInfo {
+                name: "Ordering".into(),
+                variants: vec!["Less".into(), "Equal".into(), "Greater".into()],
+                includes: vec!["Eq".into()],
+            },
+        );
+
+        // Built-in Eq trait: def eq(other: Self) -> Bool
+        env.set_trait(
+            "Eq".into(),
+            TraitInfo {
+                name: "Eq".into(),
+                methods: HashMap::from([(
+                    "eq".into(),
+                    Type::Function {
+                        param_names: vec!["other".into()],
+                        params: vec![Type::Custom("Self".into(), Vec::new())],
+                        ret: Box::new(Type::Bool),
+                        throws: None,
+                    },
+                )]),
+                required_methods: vec!["eq".into()],
+            },
+        );
+
+        // Built-in Ord trait: def cmp(other: Self) -> Ordering
+        // Ord includes Eq — including Ord auto-includes Eq.
+        env.set_trait(
+            "Ord".into(),
+            TraitInfo {
+                name: "Ord".into(),
+                methods: HashMap::from([(
+                    "cmp".into(),
+                    Type::Function {
+                        param_names: vec!["other".into()],
+                        params: vec![Type::Custom("Self".into(), Vec::new())],
+                        ret: Box::new(Type::Custom("Ordering".into(), Vec::new())),
+                        throws: None,
+                    },
+                )]),
+                required_methods: vec!["cmp".into()],
+            },
+        );
+
         Self {
             env,
-            is_async_context: false,
             loop_depth: 0,
             expected_return_type: None,
             current_function: None,
@@ -101,7 +170,6 @@ impl TypeChecker {
     pub(crate) fn child_checker(&self) -> TypeChecker {
         TypeChecker {
             env: self.env.child(),
-            is_async_context: self.is_async_context,
             loop_depth: self.loop_depth,
             expected_return_type: self.expected_return_type.clone(),
             current_function: self.current_function.clone(),
@@ -488,6 +556,33 @@ impl TypeChecker {
                 Ok(Type::Void)
             }
             Stmt::Use { .. } => Ok(Type::Void),
+            Stmt::Enum {
+                name,
+                variants,
+                includes,
+                ..
+            } => {
+                let variant_names: Vec<String> = variants.iter().map(|v| v.name.clone()).collect();
+
+                // Validate includes
+                for trait_name in includes {
+                    if self.env.get_trait(trait_name).is_none() {
+                        return Err(Diagnostic::error(format!(
+                            "Unknown trait '{}' in includes for enum '{}'",
+                            trait_name, name
+                        ))
+                        .with_code("E014"));
+                    }
+                }
+
+                let info = EnumInfo {
+                    name: name.clone(),
+                    variants: variant_names,
+                    includes: includes.clone(),
+                };
+                self.env.set_enum(name.clone(), info);
+                Ok(Type::Void)
+            }
         }
     }
 
@@ -525,10 +620,6 @@ impl TypeChecker {
         }
     }
 
-    pub(crate) fn is_in_async_context(&self) -> bool {
-        self.is_async_context
-    }
-
     pub(crate) fn check_body(&mut self, body: &[Stmt]) -> Result<Type, Diagnostic> {
         let mut last = Type::Void;
         for s in body {
@@ -545,7 +636,7 @@ impl TypeChecker {
         match pattern {
             MatchPattern::Wildcard(_) | MatchPattern::Ident(..) => Ok(()),
             MatchPattern::Literal(expr, span) => {
-                let pat_ty = match expr {
+                let pat_ty = match &**expr {
                     Expr::Int(..) => Type::Int,
                     Expr::Float(..) => Type::Float,
                     Expr::Str(..) => Type::String,

@@ -5,9 +5,9 @@ pub mod type_env;
 pub mod types;
 
 pub use diagnostic::{Diagnostic, Label, Severity};
-pub use expr::{BinOp, ErrorCatchPattern, Expr, MatchPattern, Module, Stmt, UnaryOp};
+pub use expr::{BinOp, EnumVariant, ErrorCatchPattern, Expr, MatchPattern, Module, Stmt, UnaryOp};
 pub use span::Span;
-pub use type_env::{ClassInfo, TraitInfo, TypeEnv};
+pub use type_env::{ClassInfo, EnumInfo, TraitInfo, TypeEnv};
 pub use types::Type;
 
 /// Result of parsing with error recovery — best-effort AST plus all diagnostics.

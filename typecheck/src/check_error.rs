@@ -4,6 +4,41 @@ use crate::typechecker::TypeChecker;
 
 impl TypeChecker {
     pub(crate) fn check_propagate(&mut self, inner: &Expr) -> Result<Type, Diagnostic> {
+        // Handle resolve expr! — resolve on Task[T] propagates CancelledError
+        if let Expr::Resolve { expr, .. } = inner {
+            let ty = self.check_expr(expr)?;
+            if ty.is_error() {
+                return Ok(Type::Error);
+            }
+            if let Type::Task(inner_ty) = ty {
+                // CancelledError is always possible when resolving a task
+                let cancelled_ty = Type::Custom("CancelledError".into(), Vec::new());
+                let caller_throws = self.throws_type.as_ref().ok_or_else(|| {
+                    Diagnostic::error(
+                        "Cannot use '!' to propagate CancelledError outside of a function that declares 'throws'".to_string()
+                    )
+                    .with_code("E013")
+                    .with_label(inner.span(), "propagation requires 'throws' declaration")
+                })?;
+                if !self.is_error_subtype(&cancelled_ty, caller_throws) {
+                    return Err(Diagnostic::error(format!(
+                        "Cannot propagate CancelledError — caller declares 'throws {:?}'",
+                        caller_throws
+                    ))
+                    .with_code("E013")
+                    .with_label(inner.span(), "incompatible error type"));
+                }
+                return Ok(*inner_ty);
+            } else {
+                return Err(Diagnostic::error(format!(
+                    "resolve expects a Task[T] expression, got {:?}",
+                    ty
+                ))
+                .with_code("E012")
+                .with_label(expr.span(), "expected Task[T]"));
+            }
+        }
+
         if let Expr::Call { func, args, .. } = inner {
             let fn_ty = self.resolve_func_type(func)?;
             if let Type::Function {
@@ -26,11 +61,11 @@ impl TypeChecker {
                     .with_code("E013")
                     .with_label(inner.span(), "incompatible error type"));
                 }
-                return self.check_call_inner_throws_ok(func, args, false);
+                return self.check_call_inner(func, args, true);
             }
         }
         Err(Diagnostic::error(
-            "'!' can only be used on calls to functions that declare 'throws'".to_string(),
+            "'!' can only be used on calls to functions that declare 'throws', or on resolve expressions".to_string(),
         )
         .with_code("E013")
         .with_label(inner.span(), "not a throwing call"))
@@ -79,7 +114,11 @@ impl TypeChecker {
         expr: &Expr,
         arms: &[(ast::ErrorCatchPattern, Expr)],
     ) -> Result<Type, Diagnostic> {
-        let throws_ty = if let Expr::Call { func, .. } = expr {
+        let throws_ty = if let Expr::Resolve { .. } = expr {
+            // resolve can throw CancelledError + any error from the original function.
+            // Don't restrict catch arm types — any error type is valid.
+            None
+        } else if let Expr::Call { func, .. } = expr {
             let fn_ty = self.resolve_func_type(func)?;
             if let Type::Function {
                 throws: Some(ref err_ty),
@@ -155,17 +194,35 @@ impl TypeChecker {
     }
 
     pub(crate) fn check_throwing_call_expr(&mut self, expr: &Expr) -> Result<Type, Diagnostic> {
+        // Handle resolve expr for error recovery (e.g., resolve task!.or(default))
+        if let Expr::Resolve { expr: inner, .. } = expr {
+            let ty = self.check_expr(inner)?;
+            if ty.is_error() {
+                return Ok(Type::Error);
+            }
+            if let Type::Task(inner_ty) = ty {
+                return Ok(*inner_ty);
+            } else {
+                return Err(Diagnostic::error(format!(
+                    "resolve expects a Task[T] expression, got {:?}",
+                    ty
+                ))
+                .with_code("E012")
+                .with_label(inner.span(), "expected Task[T]"));
+            }
+        }
+
         if let Expr::Call { func, args, .. } = expr {
             let fn_ty = self.resolve_func_type(func)?;
             if let Type::Function {
                 throws: Some(_), ..
             } = &fn_ty
             {
-                return self.check_call_inner_throws_ok(func, args, false);
+                return self.check_call_inner(func, args, true);
             }
         }
         Err(Diagnostic::error(
-            "!.or(), !.or_else(), and !.catch require a call to a function that declares 'throws'"
+            "!.or(), !.or_else(), and !.catch require a call to a function that declares 'throws' or a resolve expression"
                 .to_string(),
         )
         .with_code("E013")

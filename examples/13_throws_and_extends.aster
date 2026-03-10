@@ -9,16 +9,16 @@ class NetworkError extends AppError
 
 # Function that declares throws
 def fetch(url: String) throws NetworkError -> String
-  throw NetworkError("timeout", url)
+  throw NetworkError(message: "timeout", url: url)
 
 # Propagation with !
 def load(url: String) throws AppError -> String
-  fetch(url)!
+  fetch(url: url)!
 
 # throw with void return
 def validate(x: Int) throws AppError
   if x < 0
-    throw AppError("negative")
+    throw AppError(message: "negative")
 
 # extends with includes
 trait Printable
@@ -29,9 +29,6 @@ class DetailedError extends AppError includes Printable
   def to_str() -> String
     "error"
 
-# resolve (renamed from blocking)
-async def fetch_data() -> String
+# BC-9: Functions are plain def - no async def
+def fetch_data() -> String
   "data"
-
-def get_data() -> String
-  resolve fetch_data()

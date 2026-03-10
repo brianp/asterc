@@ -153,27 +153,16 @@ let y = match x
     );
 }
 
-// ─── 6C. Call-Site Async ─────────────────────────────────────────────
-
-#[test]
-fn integration_resolve_call() {
-    common::check_ok(
-        r#"async def fetch_data() -> String
-  "data"
-
-def main() -> String
-  resolve fetch_data()
-"#,
-    );
-}
+// ─── 6C. Call-Site Async (BC-9: no async def, async works anywhere) ──
 
 #[test]
 fn integration_async_call_returns_task() {
+    // BC-9: functions are plain def, async at call site returns Task[T]
     common::check_ok(
-        r#"async def fetch() -> Int
+        r#"def fetch() -> Int
   42
 
-async def main() -> Void
+def main() -> Void
   let t: Task[Int] = async fetch()
 "#,
     );
@@ -182,25 +171,11 @@ async def main() -> Void
 #[test]
 fn integration_detached_async_call() {
     common::check_ok(
-        r#"async def background_job() -> Void
-  log("working")
+        r#"def background_job() -> Void
+  log(message: "working")
 
-async def main() -> Void
+def main() -> Void
   detached async background_job()
-"#,
-    );
-}
-
-// -- resolve resolves suspension: parent stays sync --
-
-#[test]
-fn integration_resolve_makes_parent_sync() {
-    common::check_ok(
-        r#"async def slow_op() -> Int
-  42
-
-def sync_caller() -> Int
-  resolve slow_op()
 "#,
     );
 }
@@ -210,13 +185,13 @@ def sync_caller() -> Int
 #[test]
 fn integration_async_scope() {
     common::check_ok(
-        r#"async def task_a() -> Int
+        r#"def task_a() -> Int
   1
 
-async def task_b() -> Int
+def task_b() -> Int
   2
 
-async def main() -> Void
+def main() -> Void
   async scope
     let a = async task_a()
     let b = async task_b()
@@ -224,35 +199,18 @@ async def main() -> Void
     );
 }
 
-// -- Error: calling async function synchronously from sync context --
+// -- async call works anywhere (no context restriction) --
 
 #[test]
-fn integration_sync_call_to_async_error() {
-    let err = common::check_err(
-        r#"async def fetch() -> Int
+fn integration_async_call_works_anywhere() {
+    common::check_ok(
+        r#"def fetch() -> Int
   42
 
-def main() -> Int
-  fetch()
-"#,
-    );
-    assert!(err.contains("async") || err.contains("suspend") || err.contains("resolve"));
-}
-
-// -- Error: async call outside async context --
-
-#[test]
-fn integration_async_call_in_sync_context_error() {
-    let err = common::check_err(
-        r#"async def fetch() -> Int
-  42
-
-def main() -> Int
+def main() -> Void
   let t = async fetch()
-  0
 "#,
     );
-    assert!(err.contains("async") || err.contains("context") || err.contains("scope"));
 }
 
 // -- Error: detached without async --
@@ -260,10 +218,10 @@ def main() -> Int
 #[test]
 fn integration_detached_without_async_error() {
     let err = common::check_parse_err(
-        r#"async def fetch() -> Int
+        r#"def fetch() -> Int
   42
 
-async def main() -> Void
+def main() -> Void
   detached fetch()
 "#,
     );
@@ -275,11 +233,144 @@ async def main() -> Void
 #[test]
 fn integration_task_type_annotation() {
     common::check_ok(
-        r#"async def fetch() -> Int
+        r#"def fetch() -> Int
   42
 
-async def main() -> Void
+def main() -> Void
   let t: Task[Int] = async fetch()
+"#,
+    );
+}
+
+// -- resolve on Task[T] requires ! --
+
+#[test]
+fn integration_resolve_without_bang_error() {
+    let err = common::check_err(
+        r#"def fetch() -> Int
+  42
+
+def main() -> Void
+  let t = async fetch()
+  resolve t
+"#,
+    );
+    assert!(err.contains("resolve") || err.contains("!") || err.contains("CancelledError"));
+}
+
+// -- async def is now a parse error --
+
+#[test]
+fn integration_async_def_is_parse_error() {
+    let err = common::check_parse_err(
+        r#"async def fetch() -> Int
+  42
+"#,
+    );
+    assert!(err.contains("async def is not supported"));
+}
+
+// -- resolve on computed expressions (C1 fix) --
+
+#[test]
+fn integration_resolve_member_access() {
+    // resolve works on member access expressions
+    common::check_ok(
+        r#"class TaskHolder
+  task: Task[Int]
+
+def fetch() -> Int
+  42
+
+def main() throws Error -> Void
+  let holder = TaskHolder(task: async fetch())
+  let v = resolve holder.task!
+"#,
+    );
+}
+
+#[test]
+fn integration_resolve_index_access() {
+    // resolve works on index expressions
+    common::check_ok(
+        r#"def fetch() -> Int
+  42
+
+def main() throws Error -> Void
+  let tasks: List[Task[Int]] = [async fetch()]
+  let v = resolve tasks[0]!
+"#,
+    );
+}
+
+// -- async + throws composition (C2 fix) --
+
+#[test]
+fn integration_async_throwing_function() {
+    // async on a throwing function should work — errors handled at resolve
+    common::check_ok(
+        r#"class AppError extends Error
+  code: Int
+
+def risky() throws AppError -> String
+  "data"
+
+def main() throws Error -> Void
+  let task = async risky()
+  let result = resolve task!
+"#,
+    );
+}
+
+#[test]
+fn integration_async_throwing_with_catch() {
+    // async throwing + resolve with catch
+    common::check_ok(
+        r#"class AppError extends Error
+  code: Int
+
+def risky() throws AppError -> String
+  "data"
+
+def main() -> String
+  let task = async risky()
+  resolve task!.catch
+    CancelledError e -> "cancelled"
+    AppError e -> e.message
+    _ -> "unknown"
+"#,
+    );
+}
+
+#[test]
+fn integration_async_throwing_with_or() {
+    // async throwing + resolve with or
+    common::check_ok(
+        r#"class AppError extends Error
+  code: Int
+
+def risky() throws AppError -> String
+  "data"
+
+def main() -> String
+  let task = async risky()
+  resolve task!.or("fallback")
+"#,
+    );
+}
+
+#[test]
+fn integration_detached_async_throwing() {
+    // detached async on throwing functions — errors logged at runtime
+    common::check_ok(
+        r#"class AppError extends Error
+  code: Int
+
+def risky() throws AppError -> Void
+  log(message: "working")
+
+def main() -> Void
+  detached async risky()
 "#,
     );
 }

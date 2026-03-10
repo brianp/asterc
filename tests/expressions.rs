@@ -90,7 +90,7 @@ fn integration_comparison_type_mismatch() {
 
 #[test]
 fn integration_while_loop() {
-    common::check_ok("let x = true\nwhile x\n  log(\"hi\")\n");
+    common::check_ok("let x = true\nwhile x\n  log(message: \"hi\")\n");
 }
 
 #[test]
@@ -101,7 +101,7 @@ fn integration_while_non_bool_error() {
 
 #[test]
 fn integration_for_loop() {
-    common::check_ok("let items = [\"hi\", \"there\"]\nfor x in items\n  log(x)\n");
+    common::check_ok("let items = [\"hi\", \"there\"]\nfor x in items\n  log(message: x)\n");
 }
 
 #[test]
@@ -137,5 +137,5 @@ fn integration_continue_in_while() {
 
 #[test]
 fn integration_log_builtin() {
-    common::check_ok("log(\"hello\")");
+    common::check_ok("log(message: \"hello\")");
 }

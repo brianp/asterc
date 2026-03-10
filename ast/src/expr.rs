@@ -68,6 +68,21 @@ pub enum Stmt {
         alias: Option<String>,
         span: Span,
     },
+    Enum {
+        name: String,
+        variants: Vec<EnumVariant>,
+        methods: Vec<Stmt>,
+        includes: Vec<String>,
+        is_public: bool,
+        span: Span,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EnumVariant {
+    pub name: String,
+    pub fields: Vec<(String, Type)>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -84,7 +99,7 @@ pub enum ErrorCatchPattern {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum MatchPattern {
-    Literal(Expr, Span),
+    Literal(Box<Expr>, Span),
     Ident(String, Span),
     Wildcard(Span),
 }
@@ -130,14 +145,13 @@ pub enum Expr {
         params: Vec<(String, Type)>,
         ret_type: Type,
         body: Vec<Stmt>,
-        is_async: bool,
         generic_params: Option<Vec<String>>,
         throws: Option<Type>,
         span: Span,
     },
     Call {
         func: Box<Expr>,
-        args: Vec<Expr>,
+        args: Vec<(String, Expr)>,
         span: Span,
     },
     BinaryOp {
@@ -164,17 +178,16 @@ pub enum Expr {
     },
     AsyncCall {
         func: Box<Expr>,
-        args: Vec<Expr>,
+        args: Vec<(String, Expr)>,
         span: Span,
     },
-    ResolveCall {
-        func: Box<Expr>,
-        args: Vec<Expr>,
+    Resolve {
+        expr: Box<Expr>,
         span: Span,
     },
     DetachedCall {
         func: Box<Expr>,
-        args: Vec<Expr>,
+        args: Vec<(String, Expr)>,
         span: Span,
     },
     Propagate(Box<Expr>, Span),
@@ -221,7 +234,7 @@ impl Expr {
             Expr::Index { span, .. } => *span,
             Expr::Match { span, .. } => *span,
             Expr::AsyncCall { span, .. } => *span,
-            Expr::ResolveCall { span, .. } => *span,
+            Expr::Resolve { span, .. } => *span,
             Expr::DetachedCall { span, .. } => *span,
             Expr::Propagate(_, s) => *s,
             Expr::Throw(_, s) => *s,
@@ -248,6 +261,7 @@ impl Stmt {
             Stmt::Break(s) => *s,
             Stmt::Continue(s) => *s,
             Stmt::Use { span, .. } => *span,
+            Stmt::Enum { span, .. } => *span,
         }
     }
 }

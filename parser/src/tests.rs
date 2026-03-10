@@ -11,12 +11,17 @@ fn parse_ok(src: &str) -> Module {
 fn parse_err(src: &str) -> String {
     let tokens = lex(src).expect("lex ok");
     let mut parser = Parser::new(tokens);
-    parser.parse_module("test").unwrap_err()
+    parser.parse_module("test").unwrap_err().to_string()
 }
 
 fn extract_binop(m: &Module) -> (&Expr, &BinOp, &Expr) {
     match &m.body[0] {
-        Stmt::Expr(Expr::BinaryOp { left, op, right }) => (left.as_ref(), op, right.as_ref()),
+        Stmt::Expr(
+            Expr::BinaryOp {
+                left, op, right, ..
+            },
+            _,
+        ) => (left.as_ref(), op, right.as_ref()),
         other => panic!("expected BinaryOp expr stmt, got {other:?}"),
     }
 }
@@ -35,7 +40,7 @@ fn parses_simple_expr_stmt() {
     let m = parse_ok("foo");
     assert_eq!(m.body.len(), 1);
     match &m.body[0] {
-        Stmt::Expr(Expr::Ident(s)) => assert_eq!(s, "foo"),
+        Stmt::Expr(Expr::Ident(s, _), _) => assert_eq!(s, "foo"),
         other => panic!("expected expr ident foo, got {other:?}"),
     }
 }
@@ -68,15 +73,13 @@ class Point
                             params,
                             ret_type,
                             body,
-                            is_async,
                             ..
                         } => {
                             assert!(params.is_empty());
                             assert_eq!(*ret_type, Type::String);
                             assert_eq!(body.len(), 1);
-                            assert!(!*is_async);
                             match &body[0] {
-                                Stmt::Expr(Expr::Str(s)) => assert_eq!(s, "ok"),
+                                Stmt::Expr(Expr::Str(s, _), _) => assert_eq!(s, "ok"),
                                 other => panic!("expected string literal expr, got {other:?}"),
                             }
                         }
@@ -91,40 +94,10 @@ class Point
 }
 
 #[test]
-fn parses_async_def_with_params_and_ret() {
-    let src = r#"
-async def add(a: Int, b: Int) -> Int
-  a
-"#;
-    let m = parse_ok(src);
-    assert_eq!(m.body.len(), 1);
-    match &m.body[0] {
-        Stmt::Let { name, value, .. } => {
-            assert_eq!(name, "add");
-            match value {
-                Expr::Lambda {
-                    params,
-                    ret_type,
-                    is_async,
-                    body,
-                    ..
-                } => {
-                    assert_eq!(params.len(), 2);
-                    assert_eq!(params[0], ("a".into(), Type::Int));
-                    assert_eq!(params[1], ("b".into(), Type::Int));
-                    assert_eq!(*ret_type, Type::Int);
-                    assert!(*is_async);
-                    assert_eq!(body.len(), 1);
-                    match &body[0] {
-                        Stmt::Expr(Expr::Ident(s)) => assert_eq!(s, "a"),
-                        other => panic!("expected ident a, got {other:?}"),
-                    }
-                }
-                _ => panic!("expected lambda"),
-            }
-        }
-        _ => panic!("expected let stmt"),
-    }
+fn async_def_is_parse_error() {
+    // BC-9: async def is no longer supported — functions are plain def
+    let err = parse_err("async def add(a: Int, b: Int) -> Int\n  a\n");
+    assert!(err.contains("async def is not supported"));
 }
 
 #[test]
@@ -138,7 +111,7 @@ fn parses_if_else_stmt() {
             else_body,
             ..
         } => {
-            assert_eq!(*cond, Expr::Bool(true));
+            assert!(matches!(cond, Expr::Bool(true, _)));
             assert_eq!(then_body.len(), 1);
             assert_eq!(else_body.len(), 1);
         }
@@ -170,9 +143,9 @@ fn reports_unexpected_expr_token() {
 fn parses_simple_addition() {
     let m = parse_ok("1 + 2");
     let (l, op, r) = extract_binop(&m);
-    assert_eq!(*l, Expr::Int(1));
+    assert!(matches!(*l, Expr::Int(1, _)));
     assert_eq!(*op, BinOp::Add);
-    assert_eq!(*r, Expr::Int(2));
+    assert!(matches!(*r, Expr::Int(2, _)));
 }
 
 #[test]
@@ -204,9 +177,14 @@ fn parses_division_and_modulo() {
 fn parses_power_right_associative() {
     let m = parse_ok("2 ** 3 ** 4");
     match &m.body[0] {
-        Stmt::Expr(Expr::BinaryOp { left, op, right }) => {
+        Stmt::Expr(
+            Expr::BinaryOp {
+                left, op, right, ..
+            },
+            _,
+        ) => {
             assert_eq!(*op, BinOp::Pow);
-            assert_eq!(**left, Expr::Int(2));
+            assert!(matches!(**left, Expr::Int(2, _)));
             match right.as_ref() {
                 Expr::BinaryOp { op: inner_op, .. } => assert_eq!(*inner_op, BinOp::Pow),
                 other => panic!("expected nested Pow, got {other:?}"),
@@ -264,9 +242,9 @@ fn complex_precedence_chain() {
 fn parses_unary_neg() {
     let m = parse_ok("-5");
     match &m.body[0] {
-        Stmt::Expr(Expr::UnaryOp { op, operand }) => {
+        Stmt::Expr(Expr::UnaryOp { op, operand, .. }, _) => {
             assert_eq!(*op, UnaryOp::Neg);
-            assert_eq!(**operand, Expr::Int(5));
+            assert!(matches!(**operand, Expr::Int(5, _)));
         }
         other => panic!("expected UnaryOp, got {other:?}"),
     }
@@ -276,9 +254,9 @@ fn parses_unary_neg() {
 fn parses_unary_not() {
     let m = parse_ok("not true");
     match &m.body[0] {
-        Stmt::Expr(Expr::UnaryOp { op, operand }) => {
+        Stmt::Expr(Expr::UnaryOp { op, operand, .. }, _) => {
             assert_eq!(*op, UnaryOp::Not);
-            assert_eq!(**operand, Expr::Bool(true));
+            assert!(matches!(**operand, Expr::Bool(true, _)));
         }
         other => panic!("expected UnaryOp, got {other:?}"),
     }
@@ -316,7 +294,7 @@ fn unary_not_in_expression() {
 fn double_negation() {
     let m = parse_ok("- -5");
     match &m.body[0] {
-        Stmt::Expr(Expr::UnaryOp { op, operand }) => {
+        Stmt::Expr(Expr::UnaryOp { op, operand, .. }, _) => {
             assert_eq!(*op, UnaryOp::Neg);
             assert!(matches!(
                 operand.as_ref(),
@@ -344,7 +322,7 @@ fn grouped_expression_parens() {
 fn nested_grouped_expressions() {
     let m = parse_ok("((1))");
     match &m.body[0] {
-        Stmt::Expr(Expr::Int(1)) => {}
+        Stmt::Expr(Expr::Int(1, _), _) => {}
         other => panic!("expected Int(1), got {other:?}"),
     }
 }
@@ -353,10 +331,10 @@ fn nested_grouped_expressions() {
 
 #[test]
 fn parses_call_in_expression() {
-    let m = parse_ok("f(1, 2)");
+    let m = parse_ok("f(a: 1, b: 2)");
     match &m.body[0] {
-        Stmt::Expr(Expr::Call { func, args }) => {
-            assert_eq!(**func, Expr::Ident("f".into()));
+        Stmt::Expr(Expr::Call { func, args, .. }, _) => {
+            assert!(matches!(func.as_ref(), Expr::Ident(s, _) if s == "f"));
             assert_eq!(args.len(), 2);
         }
         other => panic!("expected Call, got {other:?}"),
@@ -367,8 +345,8 @@ fn parses_call_in_expression() {
 fn parses_member_in_expression() {
     let m = parse_ok("a.b");
     match &m.body[0] {
-        Stmt::Expr(Expr::Member { object, field }) => {
-            assert_eq!(**object, Expr::Ident("a".into()));
+        Stmt::Expr(Expr::Member { object, field, .. }, _) => {
+            assert!(matches!(object.as_ref(), Expr::Ident(s, _) if s == "a"));
             assert_eq!(field, "b");
         }
         other => panic!("expected Member, got {other:?}"),
@@ -379,7 +357,7 @@ fn parses_member_in_expression() {
 fn parses_chained_member_and_call() {
     let m = parse_ok("a.b().c");
     match &m.body[0] {
-        Stmt::Expr(Expr::Member { object, field }) => {
+        Stmt::Expr(Expr::Member { object, field, .. }, _) => {
             assert_eq!(field, "c");
             match object.as_ref() {
                 Expr::Call { func, .. } => {
@@ -400,7 +378,7 @@ fn parses_return_expression() {
     match &m.body[0] {
         Stmt::Let { value, .. } => match value {
             Expr::Lambda { body, .. } => match &body[0] {
-                Stmt::Return(Expr::Int(42)) => {}
+                Stmt::Return(Expr::Int(42, _), _) => {}
                 other => panic!("expected Return(42), got {other:?}"),
             },
             other => panic!("expected Lambda, got {other:?}"),
@@ -460,8 +438,8 @@ fn if_with_comparison_condition() {
 fn parses_while_loop() {
     let m = parse_ok("while true\n  1\n");
     match &m.body[0] {
-        Stmt::While { cond, body } => {
-            assert_eq!(*cond, Expr::Bool(true));
+        Stmt::While { cond, body, .. } => {
+            assert!(matches!(cond, Expr::Bool(true, _)));
             assert_eq!(body.len(), 1);
         }
         other => panic!("expected While, got {other:?}"),
@@ -494,9 +472,11 @@ fn parses_while_multi_body() {
 fn parses_for_in_loop() {
     let m = parse_ok("for x in items\n  x\n");
     match &m.body[0] {
-        Stmt::For { var, iter, body } => {
+        Stmt::For {
+            var, iter, body, ..
+        } => {
             assert_eq!(var, "x");
-            assert_eq!(*iter, Expr::Ident("items".into()));
+            assert!(matches!(iter, Expr::Ident(s, _) if s == "items"));
             assert_eq!(body.len(), 1);
         }
         other => panic!("expected For, got {other:?}"),
@@ -580,9 +560,9 @@ fn parses_elif_with_comparison_cond() {
 fn parses_assignment() {
     let m = parse_ok("x = 5");
     match &m.body[0] {
-        Stmt::Assignment { target, value } => {
-            assert_eq!(*target, Expr::Ident("x".into()));
-            assert_eq!(*value, Expr::Int(5));
+        Stmt::Assignment { target, value, .. } => {
+            assert!(matches!(target, Expr::Ident(s, _) if s == "x"));
+            assert!(matches!(value, Expr::Int(5, _)));
         }
         other => panic!("expected Assignment, got {other:?}"),
     }
@@ -592,8 +572,8 @@ fn parses_assignment() {
 fn parses_assignment_with_expression() {
     let m = parse_ok("x = 1 + 2");
     match &m.body[0] {
-        Stmt::Assignment { target, value } => {
-            assert_eq!(*target, Expr::Ident("x".into()));
+        Stmt::Assignment { target, value, .. } => {
+            assert!(matches!(target, Expr::Ident(s, _) if s == "x"));
             assert!(matches!(value, Expr::BinaryOp { op: BinOp::Add, .. }));
         }
         other => panic!("expected Assignment, got {other:?}"),
@@ -604,9 +584,9 @@ fn parses_assignment_with_expression() {
 fn parses_member_assignment() {
     let m = parse_ok("a.b = 5");
     match &m.body[0] {
-        Stmt::Assignment { target, value } => {
+        Stmt::Assignment { target, value, .. } => {
             assert!(matches!(target, Expr::Member { .. }));
-            assert_eq!(*value, Expr::Int(5));
+            assert!(matches!(value, Expr::Int(5, _)));
         }
         other => panic!("expected Assignment, got {other:?}"),
     }
@@ -619,7 +599,7 @@ fn parses_break_stmt() {
     let m = parse_ok("while true\n  break\n");
     match &m.body[0] {
         Stmt::While { body, .. } => {
-            assert!(matches!(&body[0], Stmt::Break));
+            assert!(matches!(&body[0], Stmt::Break(_)));
         }
         other => panic!("expected While, got {other:?}"),
     }
@@ -630,7 +610,7 @@ fn parses_continue_stmt() {
     let m = parse_ok("while true\n  continue\n");
     match &m.body[0] {
         Stmt::While { body, .. } => {
-            assert!(matches!(&body[0], Stmt::Continue));
+            assert!(matches!(&body[0], Stmt::Continue(_)));
         }
         other => panic!("expected While, got {other:?}"),
     }
@@ -686,7 +666,7 @@ fn parses_let_with_type_annotation() {
         } => {
             assert_eq!(name, "x");
             assert_eq!(*type_ann, Some(Type::Int));
-            assert_eq!(*value, Expr::Int(5));
+            assert!(matches!(value, Expr::Int(5, _)));
         }
         other => panic!("expected Let, got {other:?}"),
     }
@@ -731,7 +711,7 @@ fn parses_let_with_list_type_annotation() {
 fn parses_empty_list() {
     let m = parse_ok("[]");
     match &m.body[0] {
-        Stmt::Expr(Expr::ListLiteral(elems)) => {
+        Stmt::Expr(Expr::ListLiteral(elems, _), _) => {
             assert!(elems.is_empty());
         }
         other => panic!("expected ListLiteral, got {other:?}"),
@@ -742,11 +722,11 @@ fn parses_empty_list() {
 fn parses_list_with_elements() {
     let m = parse_ok("[1, 2, 3]");
     match &m.body[0] {
-        Stmt::Expr(Expr::ListLiteral(elems)) => {
+        Stmt::Expr(Expr::ListLiteral(elems, _), _) => {
             assert_eq!(elems.len(), 3);
-            assert_eq!(elems[0], Expr::Int(1));
-            assert_eq!(elems[1], Expr::Int(2));
-            assert_eq!(elems[2], Expr::Int(3));
+            assert!(matches!(elems[0], Expr::Int(1, _)));
+            assert!(matches!(elems[1], Expr::Int(2, _)));
+            assert!(matches!(elems[2], Expr::Int(3, _)));
         }
         other => panic!("expected ListLiteral, got {other:?}"),
     }
@@ -756,9 +736,9 @@ fn parses_list_with_elements() {
 fn parses_list_with_single_element() {
     let m = parse_ok("[42]");
     match &m.body[0] {
-        Stmt::Expr(Expr::ListLiteral(elems)) => {
+        Stmt::Expr(Expr::ListLiteral(elems, _), _) => {
             assert_eq!(elems.len(), 1);
-            assert_eq!(elems[0], Expr::Int(42));
+            assert!(matches!(elems[0], Expr::Int(42, _)));
         }
         other => panic!("expected ListLiteral, got {other:?}"),
     }
@@ -768,7 +748,7 @@ fn parses_list_with_single_element() {
 fn parses_list_with_expressions() {
     let m = parse_ok("[1 + 2, 3 * 4]");
     match &m.body[0] {
-        Stmt::Expr(Expr::ListLiteral(elems)) => {
+        Stmt::Expr(Expr::ListLiteral(elems, _), _) => {
             assert_eq!(elems.len(), 2);
             assert!(matches!(&elems[0], Expr::BinaryOp { op: BinOp::Add, .. }));
             assert!(matches!(&elems[1], Expr::BinaryOp { op: BinOp::Mul, .. }));
@@ -781,7 +761,7 @@ fn parses_list_with_expressions() {
 fn parses_list_trailing_comma() {
     let m = parse_ok("[1, 2,]");
     match &m.body[0] {
-        Stmt::Expr(Expr::ListLiteral(elems)) => {
+        Stmt::Expr(Expr::ListLiteral(elems, _), _) => {
             assert_eq!(elems.len(), 2);
         }
         other => panic!("expected ListLiteral, got {other:?}"),
@@ -794,9 +774,9 @@ fn parses_list_trailing_comma() {
 fn parses_index_expression() {
     let m = parse_ok("xs[0]");
     match &m.body[0] {
-        Stmt::Expr(Expr::Index { object, index }) => {
-            assert_eq!(**object, Expr::Ident("xs".into()));
-            assert_eq!(**index, Expr::Int(0));
+        Stmt::Expr(Expr::Index { object, index, .. }, _) => {
+            assert!(matches!(object.as_ref(), Expr::Ident(s, _) if s == "xs"));
+            assert!(matches!(**index, Expr::Int(0, _)));
         }
         other => panic!("expected Index, got {other:?}"),
     }
@@ -806,8 +786,8 @@ fn parses_index_expression() {
 fn parses_index_with_expression() {
     let m = parse_ok("xs[i + 1]");
     match &m.body[0] {
-        Stmt::Expr(Expr::Index { object, index }) => {
-            assert_eq!(**object, Expr::Ident("xs".into()));
+        Stmt::Expr(Expr::Index { object, index, .. }, _) => {
+            assert!(matches!(object.as_ref(), Expr::Ident(s, _) if s == "xs"));
             assert!(matches!(
                 index.as_ref(),
                 Expr::BinaryOp { op: BinOp::Add, .. }
@@ -821,8 +801,8 @@ fn parses_index_with_expression() {
 fn parses_chained_index() {
     let m = parse_ok("xs[0][1]");
     match &m.body[0] {
-        Stmt::Expr(Expr::Index { object, index }) => {
-            assert_eq!(**index, Expr::Int(1));
+        Stmt::Expr(Expr::Index { object, index, .. }, _) => {
+            assert!(matches!(**index, Expr::Int(1, _)));
             assert!(matches!(object.as_ref(), Expr::Index { .. }));
         }
         other => panic!("expected Index, got {other:?}"),
@@ -833,7 +813,7 @@ fn parses_chained_index() {
 fn parses_index_after_call() {
     let m = parse_ok("f()[0]");
     match &m.body[0] {
-        Stmt::Expr(Expr::Index { object, .. }) => {
+        Stmt::Expr(Expr::Index { object, .. }, _) => {
             assert!(matches!(object.as_ref(), Expr::Call { .. }));
         }
         other => panic!("expected Index, got {other:?}"),
@@ -848,7 +828,9 @@ fn parses_index_after_call() {
 fn parses_use_whole_module() {
     let m = parse_ok("use std/http");
     match &m.body[0] {
-        Stmt::Use { path, names, alias } => {
+        Stmt::Use {
+            path, names, alias, ..
+        } => {
             assert_eq!(path, &["std".to_string(), "http".to_string()]);
             assert!(names.is_none());
             assert!(alias.is_none());
@@ -861,7 +843,9 @@ fn parses_use_whole_module() {
 fn parses_use_single_segment() {
     let m = parse_ok("use io");
     match &m.body[0] {
-        Stmt::Use { path, names, alias } => {
+        Stmt::Use {
+            path, names, alias, ..
+        } => {
             assert_eq!(path, &["io".to_string()]);
             assert!(names.is_none());
             assert!(alias.is_none());
@@ -874,7 +858,9 @@ fn parses_use_single_segment() {
 fn parses_use_deep_path() {
     let m = parse_ok("use std/net/tcp");
     match &m.body[0] {
-        Stmt::Use { path, names, alias } => {
+        Stmt::Use {
+            path, names, alias, ..
+        } => {
             assert_eq!(
                 path,
                 &["std".to_string(), "net".to_string(), "tcp".to_string()]
@@ -892,7 +878,9 @@ fn parses_use_deep_path() {
 fn parses_use_selective_single() {
     let m = parse_ok("use std/http { Request }");
     match &m.body[0] {
-        Stmt::Use { path, names, alias } => {
+        Stmt::Use {
+            path, names, alias, ..
+        } => {
             assert_eq!(path, &["std".to_string(), "http".to_string()]);
             assert_eq!(names.as_ref().unwrap(), &["Request".to_string()]);
             assert!(alias.is_none());
@@ -905,7 +893,9 @@ fn parses_use_selective_single() {
 fn parses_use_selective_multiple() {
     let m = parse_ok("use std/http { Request, Response }");
     match &m.body[0] {
-        Stmt::Use { path, names, alias } => {
+        Stmt::Use {
+            path, names, alias, ..
+        } => {
             assert_eq!(path, &["std".to_string(), "http".to_string()]);
             assert_eq!(
                 names.as_ref().unwrap(),
@@ -923,7 +913,9 @@ fn parses_use_selective_multiple() {
 fn parses_use_with_alias() {
     let m = parse_ok("use std/http as h");
     match &m.body[0] {
-        Stmt::Use { path, names, alias } => {
+        Stmt::Use {
+            path, names, alias, ..
+        } => {
             assert_eq!(path, &["std".to_string(), "http".to_string()]);
             assert!(names.is_none());
             assert_eq!(alias.as_deref(), Some("h"));
@@ -936,7 +928,9 @@ fn parses_use_with_alias() {
 fn parses_use_selective_with_alias() {
     let m = parse_ok("use std/http/Security { CSRF, BasicAuth } as hs");
     match &m.body[0] {
-        Stmt::Use { path, names, alias } => {
+        Stmt::Use {
+            path, names, alias, ..
+        } => {
             assert_eq!(
                 path,
                 &[
@@ -965,7 +959,7 @@ fn parses_pub_def() {
             name, is_public, ..
         } => {
             assert_eq!(name, "foo");
-            assert_eq!(*is_public, true);
+            assert!(*is_public);
         }
         other => panic!("expected Let, got {other:?}"),
     }
@@ -976,7 +970,7 @@ fn parses_private_def_by_default() {
     let m = parse_ok("def foo() -> Int\n  42\n");
     match &m.body[0] {
         Stmt::Let { is_public, .. } => {
-            assert_eq!(*is_public, false);
+            assert!(!(*is_public));
         }
         other => panic!("expected Let, got {other:?}"),
     }
@@ -990,7 +984,7 @@ fn parses_pub_class() {
             name, is_public, ..
         } => {
             assert_eq!(name, "Foo");
-            assert_eq!(*is_public, true);
+            assert!(*is_public);
         }
         other => panic!("expected Class, got {other:?}"),
     }
@@ -1001,7 +995,7 @@ fn parses_private_class_by_default() {
     let m = parse_ok("class Foo\n  x: Int\n");
     match &m.body[0] {
         Stmt::Class { is_public, .. } => {
-            assert_eq!(*is_public, false);
+            assert!(!(*is_public));
         }
         other => panic!("expected Class, got {other:?}"),
     }
@@ -1015,7 +1009,7 @@ fn parses_pub_let() {
             name, is_public, ..
         } => {
             assert_eq!(name, "x");
-            assert_eq!(*is_public, true);
+            assert!(*is_public);
         }
         other => panic!("expected Let, got {other:?}"),
     }
@@ -1026,31 +1020,22 @@ fn parses_private_let_by_default() {
     let m = parse_ok("let x = 5");
     match &m.body[0] {
         Stmt::Let { is_public, .. } => {
-            assert_eq!(*is_public, false);
+            assert!(!(*is_public));
         }
         other => panic!("expected Let, got {other:?}"),
     }
 }
 
 #[test]
-fn parses_pub_async_def() {
-    let m = parse_ok("pub async def fetch(url: String) -> String\n  url\n");
-    match &m.body[0] {
-        Stmt::Let {
-            name,
-            is_public,
-            value,
-            ..
-        } => {
-            assert_eq!(name, "fetch");
-            assert_eq!(*is_public, true);
-            match value {
-                Expr::Lambda { is_async, .. } => assert!(*is_async),
-                other => panic!("expected Lambda, got {other:?}"),
-            }
-        }
-        other => panic!("expected Let, got {other:?}"),
-    }
+fn pub_async_def_is_parse_error() {
+    // BC-9: pub async def is no longer valid
+    let err = parse_err("pub async def fetch(url: String) -> String\n  url\n");
+    assert!(
+        err.contains("def")
+            || err.contains("class")
+            || err.contains("trait")
+            || err.contains("let")
+    );
 }
 
 // ─── Use + other stmts together ─────────────────────────────────────
@@ -1161,11 +1146,13 @@ fn parses_class_without_generics_still_works() {
     }
 }
 
-// ─── Generic function parsing ───────────────────────────────────────
+// ─── Generic function parsing (BC-5: inline syntax) ────────────────
 
 #[test]
-fn parses_generic_function() {
-    let m = parse_ok("def identity[T](x: T) -> T\n  x\n");
+fn parses_inline_generic_function() {
+    // New syntax: def identity(x: T) -> T (no [T] bracket)
+    // Parser produces Custom("T", []) — typechecker converts to TypeVar
+    let m = parse_ok("def identity(x: T) -> T\n  x\n");
     match &m.body[0] {
         Stmt::Let { name, value, .. } => {
             assert_eq!(name, "identity");
@@ -1176,10 +1163,10 @@ fn parses_generic_function() {
                     ret_type,
                     ..
                 } => {
-                    assert_eq!(generic_params.as_ref().unwrap(), &["T".to_string()]);
+                    assert!(generic_params.is_none());
                     assert_eq!(params.len(), 1);
-                    assert_eq!(params[0].1, Type::TypeVar("T".into()));
-                    assert_eq!(*ret_type, Type::TypeVar("T".into()));
+                    assert_eq!(params[0].1, Type::Custom("T".into(), vec![]));
+                    assert_eq!(*ret_type, Type::Custom("T".into(), vec![]));
                 }
                 other => panic!("expected Lambda, got {other:?}"),
             }
@@ -1189,20 +1176,31 @@ fn parses_generic_function() {
 }
 
 #[test]
-fn parses_generic_function_multi_params() {
-    let m = parse_ok("def map[T, U](x: T, f: T) -> U\n  x\n");
+fn parses_inline_generic_function_multi_params() {
+    let m = parse_ok("def map(x: T, f: T) -> U\n  x\n");
     match &m.body[0] {
         Stmt::Let { value, .. } => match value {
-            Expr::Lambda { generic_params, .. } => {
-                assert_eq!(
-                    generic_params.as_ref().unwrap(),
-                    &["T".to_string(), "U".to_string()]
-                );
+            Expr::Lambda {
+                generic_params,
+                params,
+                ret_type,
+                ..
+            } => {
+                assert!(generic_params.is_none());
+                assert_eq!(params[0].1, Type::Custom("T".into(), vec![]));
+                assert_eq!(params[1].1, Type::Custom("T".into(), vec![]));
+                assert_eq!(*ret_type, Type::Custom("U".into(), vec![]));
             }
             other => panic!("expected Lambda, got {other:?}"),
         },
         other => panic!("expected Let, got {other:?}"),
     }
+}
+
+#[test]
+fn bracket_generic_on_function_is_parse_error() {
+    // Old [T] syntax on functions is now a parse error
+    parse_err("def identity[T](x: T) -> T\n  x\n");
 }
 
 #[test]
@@ -1219,24 +1217,22 @@ fn parses_function_without_generics_still_works() {
     }
 }
 
-// ─── TypeVar in type parsing ────────────────────────────────────────
+// ─── TypeVar in class generic context ───────────────────────────────
 
 #[test]
-fn parses_typevar_in_generic_context() {
-    // When parsing inside a generic function, single uppercase letters
-    // that aren't known types should become TypeVar
-    let m = parse_ok("def id[T](x: T) -> T\n  x\n");
+fn parses_typevar_in_class_generic_context() {
+    // Class [T] syntax still works — T becomes TypeVar inside class body
+    let m = parse_ok("class Box[T]\n  value: T\n");
     match &m.body[0] {
-        Stmt::Let { value, .. } => match value {
-            Expr::Lambda {
-                params, ret_type, ..
-            } => {
-                assert_eq!(params[0].1, Type::TypeVar("T".into()));
-                assert_eq!(*ret_type, Type::TypeVar("T".into()));
-            }
-            other => panic!("expected Lambda, got {other:?}"),
-        },
-        other => panic!("expected Let, got {other:?}"),
+        Stmt::Class {
+            generic_params,
+            fields,
+            ..
+        } => {
+            assert_eq!(generic_params.as_ref().unwrap(), &["T".to_string()]);
+            assert_eq!(fields[0].1, Type::TypeVar("T".into()));
+        }
+        other => panic!("expected Class, got {other:?}"),
     }
 }
 
@@ -1281,7 +1277,7 @@ fn parses_trait_with_default_method() {
     let src = r#"trait Printable
   def to_string() -> String
   def print()
-    log(to_string())
+    log(msg: to_string())
 "#;
     let m = parse_ok(src);
     match &m.body[0] {

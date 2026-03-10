@@ -1,4 +1,4 @@
-use ast::{Diagnostic, Expr, Stmt, Type};
+use ast::{Diagnostic, EnumVariant, Expr, Stmt, Type};
 use lexer::TokenKind;
 
 use crate::Parser;
@@ -74,6 +74,111 @@ impl Parser {
         }
     }
 
+    pub(crate) fn parse_enum(&mut self, is_public: bool) -> Result<Stmt, Diagnostic> {
+        use TokenKind::*;
+        let start = self.start_span();
+        self.expect(Enum)?;
+        let name = match &self.advance().kind {
+            Ident(n) => n.clone(),
+            t => {
+                return Err(
+                    Diagnostic::error(format!("Expected enum name, got {:?}", t)).with_code("P001"),
+                );
+            }
+        };
+
+        // Optional includes: enum Color includes Eq
+        let includes = if self.at(&Includes) {
+            self.advance();
+            self.parse_ident_list("trait")?
+        } else {
+            Vec::new()
+        };
+
+        self.consume_newlines();
+        self.expect(Indent)?;
+
+        let mut variants = Vec::new();
+        let mut methods = Vec::new();
+        while !self.at(&Dedent) && !self.at(&EOF) {
+            match &self.peek().kind {
+                Def => methods.push(self.parse_def_as_let(Some(name.clone()), false)?),
+                Pub => {
+                    self.advance();
+                    match &self.peek().kind {
+                        Def => methods.push(self.parse_def_as_let(Some(name.clone()), true)?),
+                        _ => {
+                            return Err(Diagnostic::error("Expected def after 'pub' in enum")
+                                .with_code("P001"));
+                        }
+                    }
+                }
+                Ident(_) => {
+                    let vstart = self.start_span();
+                    let vname = match &self.advance().kind {
+                        Ident(n) => n.clone(),
+                        _ => unreachable!(),
+                    };
+                    // Optional fields: Circle(radius: Float)
+                    let fields = if self.at(&LParen) {
+                        self.advance();
+                        let mut fs = Vec::new();
+                        if !self.at(&RParen) {
+                            loop {
+                                let fname = match &self.advance().kind {
+                                    Ident(n) => n.clone(),
+                                    t => {
+                                        return Err(Diagnostic::error(format!(
+                                            "Expected field name in enum variant, got {:?}",
+                                            t
+                                        ))
+                                        .with_code("P001"));
+                                    }
+                                };
+                                self.expect(Colon)?;
+                                let ftype = self.parse_type()?;
+                                fs.push((fname, ftype));
+                                if self.at(&Comma) {
+                                    self.advance();
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                        self.expect(RParen)?;
+                        fs
+                    } else {
+                        Vec::new()
+                    };
+                    variants.push(EnumVariant {
+                        name: vname,
+                        fields,
+                        span: self.span_from(vstart),
+                    });
+                }
+                _ => {
+                    return Err(Diagnostic::error(format!(
+                        "Expected variant name or method in enum, got {:?}",
+                        self.peek().kind
+                    ))
+                    .with_code("P001"));
+                }
+            }
+            self.consume_newlines();
+        }
+
+        self.expect(Dedent)?;
+
+        Ok(Stmt::Enum {
+            name,
+            variants,
+            methods,
+            includes,
+            is_public,
+            span: self.span_from(start),
+        })
+    }
+
     pub(crate) fn parse_class(&mut self, is_public: bool) -> Result<Stmt, Diagnostic> {
         use TokenKind::*;
         let start = self.start_span();
@@ -131,18 +236,14 @@ impl Parser {
         let mut methods = Vec::new();
         while !self.at(&Dedent) && !self.at(&EOF) {
             match &self.peek().kind {
-                Def | Async => methods.push(self.parse_def_as_let(Some(name.clone()), false)?),
+                Def => methods.push(self.parse_def_as_let(Some(name.clone()), false)?),
                 Pub => {
                     self.advance();
                     match &self.peek().kind {
-                        Def | Async => {
-                            methods.push(self.parse_def_as_let(Some(name.clone()), true)?)
-                        }
+                        Def => methods.push(self.parse_def_as_let(Some(name.clone()), true)?),
                         _ => {
-                            return Err(Diagnostic::error(
-                                "Expected def or async after 'pub' in class",
-                            )
-                            .with_code("P001"));
+                            return Err(Diagnostic::error("Expected def after 'pub' in class")
+                                .with_code("P001"));
                         }
                     }
                 }
@@ -204,20 +305,16 @@ impl Parser {
         let mut methods = Vec::new();
         while !self.at(&Dedent) && !self.at(&EOF) {
             match &self.peek().kind {
-                Def | Async => {
+                Def => {
                     methods.push(self.parse_def_as_let(Some(name.clone()), false)?);
                 }
                 Pub => {
                     self.advance();
                     match &self.peek().kind {
-                        Def | Async => {
-                            methods.push(self.parse_def_as_let(Some(name.clone()), true)?)
-                        }
+                        Def => methods.push(self.parse_def_as_let(Some(name.clone()), true)?),
                         _ => {
-                            return Err(Diagnostic::error(
-                                "Expected def or async after 'pub' in trait",
-                            )
-                            .with_code("P001"));
+                            return Err(Diagnostic::error("Expected def after 'pub' in trait")
+                                .with_code("P001"));
                         }
                     }
                 }
@@ -248,10 +345,11 @@ impl Parser {
     ) -> Result<Stmt, Diagnostic> {
         use TokenKind::*;
         let start = self.start_span();
-        let mut is_async = false;
         if self.at(&Async) {
-            is_async = true;
-            self.advance();
+            return Err(Diagnostic::error(
+                "async def is not supported. Functions are plain def — use async f() at the call site"
+            ).with_code("P001")
+            .with_label(self.span_from(start), "remove 'async' keyword"));
         }
 
         self.expect(Def)?;
@@ -260,18 +358,14 @@ impl Parser {
             t => return Err(Diagnostic::error(format!("fn name, got {:?}", t)).with_code("P001")),
         };
 
-        // Optional generic parameters: def identity[T](x: T) -> T
-        let generic_params = if self.at(&LBracket) {
-            self.advance();
-            Some(self.parse_bracketed_idents("type parameter")?)
-        } else {
-            None
-        };
-
-        // Push generic params into scope for type resolution
-        if let Some(ref gp) = generic_params {
-            self.push_type_params(gp);
+        // Generic type parameters are inferred inline from param types (BC-5).
+        // Bracket syntax [T] on functions is no longer supported (use class Box[T] for classes).
+        if self.at(&LBracket) {
+            return Err(Diagnostic::error(
+                "Bracket generic syntax [T] is not supported on functions. Type parameters are inferred inline from parameter types: def f(x: T) -> T"
+            ).with_code("P001"));
         }
+        let generic_params: Option<Vec<String>> = None;
 
         let mut params: Vec<(String, Type)> = Vec::new();
         if self.at(&LParen) {
@@ -320,17 +414,11 @@ impl Parser {
             vec![]
         };
 
-        // Pop generic params from scope
-        if let Some(ref gp) = generic_params {
-            self.pop_type_params(gp);
-        }
-
         let lambda_span = self.span_from(start);
         let lambda = Expr::Lambda {
             params,
             ret_type: ret,
             body,
-            is_async,
             generic_params,
             throws,
             span: lambda_span,

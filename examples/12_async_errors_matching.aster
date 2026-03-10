@@ -20,32 +20,28 @@ class AppError extends Error
 
 def safe_divide(a: Int, b: Int) throws AppError -> Int
   match b
-    0 => throw AppError("division by zero", 0)
+    0 => throw AppError(message: "division by zero", code: 0)
     _ => a
 
 # Error propagation with !
 def chain_divide(x: Int) throws AppError -> Int
-  let result = safe_divide(x, 2)!
+  let result = safe_divide(a: x, b: 2)!
   result + 1
 
-# Async functions
-async def fetch_data() -> String
+# BC-9: Functions are plain def - async at call site
+def fetch_data() -> String
   "data"
 
-# Resolve call from sync context
-def get_data() -> String
-  resolve fetch_data()
-
-# Async call from async context
-async def parallel_work() -> Void
+# Async call returns Task[T]
+def parallel_work() -> Void
   let task = async fetch_data()
 
 # Detached fire-and-forget
-async def background() -> Void
+def background() -> Void
   detached async fetch_data()
 
 # Async scope for structured concurrency
-async def orchestrate() -> Void
+def orchestrate() -> Void
   async scope
     let a = async fetch_data()
     let b = async fetch_data()

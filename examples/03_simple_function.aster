@@ -1,4 +1,4 @@
 def add(a: Int, b: Int) -> Int
   a + b
 
-let z = add(2, 3)
+let z = add(a: 2, b: 3)

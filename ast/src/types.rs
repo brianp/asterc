@@ -17,9 +17,9 @@ pub enum Type {
     Custom(std::string::String, Vec<Type>),
     TypeVar(std::string::String),
     Function {
+        param_names: Vec<std::string::String>,
         params: Vec<Type>,
         ret: Box<Type>,
-        is_async: bool,
         throws: Option<Box<Type>>,
     },
     Task(Box<Type>),

@@ -13,7 +13,11 @@ impl TypeChecker {
         }
     }
 
-    pub(crate) fn check_call(&mut self, func: &Expr, args: &[Expr]) -> Result<Type, Diagnostic> {
+    pub(crate) fn check_call(
+        &mut self,
+        func: &Expr,
+        args: &[(String, Expr)],
+    ) -> Result<Type, Diagnostic> {
         // Check for nullable method calls: x.or(), x.or_else(), x.or_throw()
         if let Expr::Member { object, field, .. } = func {
             let obj_ty = self.check_expr(object)?;
@@ -31,7 +35,7 @@ impl TypeChecker {
                             .with_code("E006")
                             .with_label(func.span(), "expected 1 argument"));
                         }
-                        let arg_ty = self.check_expr(&args[0])?;
+                        let arg_ty = self.check_expr(&args[0].1)?;
                         if arg_ty.is_error() {
                             return Ok(Type::Error);
                         }
@@ -41,7 +45,7 @@ impl TypeChecker {
                                 field, inner, arg_ty
                             ))
                             .with_code("E018")
-                            .with_label(args[0].span(), format!("expected {:?}", inner)));
+                            .with_label(args[0].1.span(), format!("expected {:?}", inner)));
                         }
                         return Ok(*inner.clone());
                     }
@@ -53,7 +57,7 @@ impl TypeChecker {
                             .with_code("E006")
                             .with_label(func.span(), "expected 1 argument"));
                         }
-                        let arg_ty = self.check_expr(&args[0])?;
+                        let arg_ty = self.check_expr(&args[0].1)?;
                         let throws_ty = self.throws_type.as_ref().ok_or_else(|| {
                             Diagnostic::error(
                                 ".or_throw() can only be used in a function that declares 'throws'"
@@ -68,7 +72,7 @@ impl TypeChecker {
                                 arg_ty, throws_ty
                             ))
                             .with_code("E013")
-                            .with_label(args[0].span(), "incompatible error type"));
+                            .with_label(args[0].1.span(), "incompatible error type"));
                         }
                         return Ok(*inner.clone());
                     }
@@ -89,26 +93,7 @@ impl TypeChecker {
     pub(crate) fn check_call_inner(
         &mut self,
         func: &Expr,
-        args: &[Expr],
-        bypass_async_check: bool,
-    ) -> Result<Type, Diagnostic> {
-        self.check_call_inner_impl(func, args, bypass_async_check, false)
-    }
-
-    pub(crate) fn check_call_inner_throws_ok(
-        &mut self,
-        func: &Expr,
-        args: &[Expr],
-        bypass_async_check: bool,
-    ) -> Result<Type, Diagnostic> {
-        self.check_call_inner_impl(func, args, bypass_async_check, true)
-    }
-
-    fn check_call_inner_impl(
-        &mut self,
-        func: &Expr,
-        args: &[Expr],
-        bypass_async_check: bool,
+        args: &[(String, Expr)],
         bypass_throws_check: bool,
     ) -> Result<Type, Diagnostic> {
         // Handle polymorphic builtins that can't be expressed in the type system yet
@@ -123,7 +108,7 @@ impl TypeChecker {
                         .with_code("E006")
                         .with_label(func.span(), "expected 1 argument"));
                     }
-                    let aty = self.check_expr(&args[0])?;
+                    let aty = self.check_expr(&args[0].1)?;
                     if aty.is_error() {
                         return Ok(Type::Error);
                     }
@@ -135,7 +120,7 @@ impl TypeChecker {
                                 aty
                             ))
                             .with_code("E005")
-                            .with_label(args[0].span(), "expected String or List"));
+                            .with_label(args[0].1.span(), "expected String or List"));
                         }
                     }
                 }
@@ -148,7 +133,7 @@ impl TypeChecker {
                         .with_code("E006")
                         .with_label(func.span(), "expected 1 argument"));
                     }
-                    let aty = self.check_expr(&args[0])?;
+                    let aty = self.check_expr(&args[0].1)?;
                     if aty.is_error() {
                         return Ok(Type::Error);
                     }
@@ -162,7 +147,7 @@ impl TypeChecker {
                                 aty
                             ))
                             .with_code("E005")
-                            .with_label(args[0].span(), "unsupported type"));
+                            .with_label(args[0].1.span(), "unsupported type"));
                         }
                     }
                 }
@@ -175,19 +160,12 @@ impl TypeChecker {
             return Ok(Type::Error);
         }
         if let Type::Function {
+            param_names,
             params,
             ret,
-            is_async: fn_is_async,
             throws: fn_throws,
         } = fty
         {
-            if fn_is_async && !bypass_async_check && !self.is_in_async_context() {
-                return Err(Diagnostic::error(
-                    "Cannot call async function synchronously from sync context. Use 'resolve' or 'async' modifier.".to_string()
-                )
-                .with_code("E012")
-                .with_label(func.span(), "async function called synchronously"));
-            }
             if fn_throws.is_some() && !bypass_throws_check {
                 return Err(Diagnostic::error(
                     "Cannot call throwing function without error handling. Use !, !.or(), !.or_else(), or !.catch".to_string()
@@ -196,17 +174,61 @@ impl TypeChecker {
                 .with_label(func.span(), "throwing function requires error handling"));
             }
             if params.len() != args.len() {
-                return Err(Diagnostic::error(format!(
+                // Build a helpful error listing missing/extra args
+                let provided: std::collections::HashSet<&str> =
+                    args.iter().map(|(n, _)| n.as_str()).collect();
+                let expected: std::collections::HashSet<&str> =
+                    param_names.iter().map(|n| n.as_str()).collect();
+                let missing: Vec<&&str> = expected.difference(&provided).collect();
+                let extra: Vec<&&str> = provided.difference(&expected).collect();
+                let mut msg = format!(
                     "Function arity mismatch: expected {}, got {}",
                     params.len(),
                     args.len()
-                ))
-                .with_code("E006")
-                .with_label(func.span(), format!("expected {} arguments", params.len())));
+                );
+                if !missing.is_empty() {
+                    msg.push_str(&format!(
+                        ", missing: {}",
+                        missing
+                            .iter()
+                            .map(|s| format!("'{}'", s))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+                if !extra.is_empty() {
+                    msg.push_str(&format!(
+                        ", unknown: {}",
+                        extra
+                            .iter()
+                            .map(|s| format!("'{}'", s))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+                return Err(Diagnostic::error(msg)
+                    .with_code("E006")
+                    .with_label(func.span(), format!("expected {} arguments", params.len())));
             }
+            // Match args by name, order-independent
             let mut bindings: HashMap<String, Type> = HashMap::new();
-            for (a, pty) in args.iter().zip(params.iter()) {
-                let aty = self.check_expr(a)?;
+            for (arg_name, arg_expr) in args {
+                let param_idx = param_names.iter().position(|n| n == arg_name);
+                let Some(idx) = param_idx else {
+                    return Err(Diagnostic::error(format!(
+                        "Unknown argument '{}'. Expected one of: {}",
+                        arg_name,
+                        param_names
+                            .iter()
+                            .map(|n| format!("'{}'", n))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ))
+                    .with_code("E006")
+                    .with_label(arg_expr.span(), "unknown argument name"));
+                };
+                let pty = &params[idx];
+                let aty = self.check_expr(arg_expr)?;
                 if aty.is_error() {
                     return Ok(Type::Error);
                 }
@@ -317,17 +339,17 @@ impl TypeChecker {
                 Box::new(Self::substitute_typevars(v, bindings)),
             ),
             Type::Function {
+                param_names,
                 params,
                 ret,
-                is_async,
                 throws,
             } => Type::Function {
+                param_names: param_names.clone(),
                 params: params
                     .iter()
                     .map(|p| Self::substitute_typevars(p, bindings))
                     .collect(),
                 ret: Box::new(Self::substitute_typevars(ret, bindings)),
-                is_async: *is_async,
                 throws: throws
                     .as_ref()
                     .map(|t| Box::new(Self::substitute_typevars(t, bindings))),
