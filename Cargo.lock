@@ -161,6 +161,8 @@ version = "0.1.0"
 dependencies = [
  "ast",
  "indexmap",
+ "lexer",
+ "parser",
 ]
 
 [[package]]

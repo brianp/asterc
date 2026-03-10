@@ -142,7 +142,7 @@ impl Parser {
         self.consume_newlines();
         let start = self.start_span();
         match &self.peek().kind {
-            TokenKind::Use => self.parse_use(),
+            TokenKind::Use => self.parse_use(false),
             TokenKind::Pub => self.parse_pub(),
             TokenKind::Enum => self.parse_enum(false),
             TokenKind::Trait => self.parse_trait(false),
@@ -214,7 +214,7 @@ impl Parser {
         }
     }
 
-    fn parse_use(&mut self) -> Result<Stmt, Diagnostic> {
+    fn parse_use(&mut self, is_public: bool) -> Result<Stmt, Diagnostic> {
         let start = self.start_span();
         self.expect(TokenKind::Use)?;
         let mut path = Vec::new();
@@ -300,6 +300,7 @@ impl Parser {
             path,
             names,
             alias,
+            is_public,
             span: self.span_from(start),
         })
     }
@@ -310,9 +311,11 @@ impl Parser {
             TokenKind::Def => self.parse_def_as_let(None, true),
             TokenKind::Class => self.parse_class(true),
             TokenKind::Trait => self.parse_trait(true),
+            TokenKind::Enum => self.parse_enum(true),
             TokenKind::Let => self.parse_let(true),
+            TokenKind::Use => self.parse_use(true),
             t => Err(Diagnostic::error(format!(
-                "Expected def, class, trait, or let after 'pub', got {:?}",
+                "Expected def, class, trait, enum, let, or use after 'pub', got {:?}",
                 t
             ))
             .with_code("P001")),

@@ -1045,10 +1045,11 @@ fn class_includes_unknown_trait_error() {
 fn class_missing_trait_method_error() {
     let mut tc = TypeChecker::new();
     // Define trait with required (abstract) method - empty body
+    // Use "Serializable" instead of "Printable" since Printable is now built-in with auto-derive
     let trait_stmt = Stmt::Trait {
-        name: "Printable".into(),
+        name: "Serializable".into(),
         methods: vec![Stmt::Let {
-            name: "Printable.to_string".into(),
+            name: "Serializable.serialize".into(),
             type_ann: None,
             value: Expr::Lambda {
                 params: vec![],
@@ -1074,11 +1075,13 @@ fn class_missing_trait_method_error() {
         is_public: false,
         generic_params: None,
         extends: None,
-        includes: Some(vec!["Printable".into()]),
+        includes: Some(vec!["Serializable".into()]),
         span: s(),
     };
     let err = err_msg(tc.check_stmt(&class_stmt));
-    assert!(err.contains("to_string") || err.contains("missing") || err.contains("implement"));
+    assert!(
+        err.contains("serialize") || err.contains("missing") || err.contains("implement")
+    );
 }
 
 // ─── Generic class type checking ────────────────────────────────────

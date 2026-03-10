@@ -446,11 +446,10 @@ impl Parser {
     fn parse_primary(&mut self) -> Result<Expr, Diagnostic> {
         use TokenKind::*;
         let start = self.start_span();
-        // -> expr shorthand for zero-arg lambda (used in .or_else())
+        // Inline lambda: -> params: body  OR  -> : body  OR  -> expr (legacy or_else)
         if self.at(&Arrow) {
             self.advance();
-            let body_expr = self.parse_expr()?;
-            return Ok(body_expr);
+            return self.parse_inline_lambda(start);
         }
         match &self.peek().kind {
             Ident(n) => {
@@ -602,5 +601,77 @@ impl Parser {
                     .with_code("P001"),
             ),
         }
+    }
+
+    /// Parse an inline lambda after the `->` has been consumed.
+    ///
+    /// Forms:
+    /// - `-> x: body`        — one param, inferred type
+    /// - `-> a, b: body`     — multiple params, inferred types
+    /// - `-> : body`         — zero params
+    /// - `-> expr`           — legacy form (used in or_else), no lambda created
+    fn parse_inline_lambda(&mut self, start: usize) -> Result<Expr, Diagnostic> {
+        use TokenKind::*;
+
+        // -> : body  (zero-param lambda)
+        if self.at(&Colon) {
+            self.advance();
+            let body_expr = self.parse_expr()?;
+            let span = self.span_from(start);
+            return Ok(Expr::Lambda {
+                params: Vec::new(),
+                ret_type: ast::Type::Inferred,
+                body: vec![ast::Stmt::Expr(body_expr, span)],
+                generic_params: None,
+                throws: None,
+                span,
+            });
+        }
+
+        // Check if this is `-> ident [, ident]* : body` or `-> expr`
+        // Lookahead: if first token is Ident and it's followed by Colon or Comma, it's a lambda
+        let is_lambda = matches!(self.peek().kind, Ident(_))
+            && matches!(
+                self.tokens.get(self.pos + 1).map(|t| &t.kind),
+                Some(Colon) | Some(Comma)
+            );
+
+        if !is_lambda {
+            // Legacy form: -> expr (used in or_else)
+            let body_expr = self.parse_expr()?;
+            return Ok(body_expr);
+        }
+
+        // Parse parameter names
+        let mut params = Vec::new();
+        loop {
+            let pname = match &self.advance().kind {
+                Ident(n) => n.clone(),
+                t => {
+                    return Err(
+                        Diagnostic::error(format!("Expected parameter name, got {:?}", t))
+                            .with_code("P001"),
+                    );
+                }
+            };
+            params.push((pname, ast::Type::Inferred));
+            if self.at(&Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.expect(Colon)?;
+        let body_expr = self.parse_expr()?;
+        let span = self.span_from(start);
+
+        Ok(Expr::Lambda {
+            params,
+            ret_type: ast::Type::Inferred,
+            body: vec![ast::Stmt::Expr(body_expr, span)],
+            generic_params: None,
+            throws: None,
+            span,
+        })
     }
 }

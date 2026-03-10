@@ -127,6 +127,16 @@ impl TypeChecker {
                             throws: None,
                         };
                         method_map.insert("cmp".into(), cmp_method_ty);
+                    } else if trait_name == "Printable" && method_name == "to_string" {
+                        // Auto-derive: verify all fields include Printable
+                        self.check_auto_derive_printable(name, &field_map)?;
+                        let to_string_ty = Type::Function {
+                            param_names: vec![],
+                            params: vec![],
+                            ret: Box::new(Type::String),
+                            throws: None,
+                        };
+                        method_map.insert("to_string".into(), to_string_ty);
                     } else {
                         return Err(Diagnostic::error(format!(
                             "Class '{}' must implement method '{}' from trait '{}'",
@@ -136,6 +146,17 @@ impl TypeChecker {
                     }
                 }
             }
+        }
+
+        // Printable: auto-add debug() defaulting to to_string() signature if not defined
+        if includes_list.contains(&"Printable".to_string()) && !method_map.contains_key("debug") {
+            let debug_ty = Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(Type::String),
+                throws: None,
+            };
+            method_map.insert("debug".into(), debug_ty);
         }
 
         let info = ClassInfo {
@@ -311,6 +332,43 @@ impl TypeChecker {
             }
         }
         Ok(())
+    }
+
+    /// Check that all fields of a class include Printable for auto-derive.
+    fn check_auto_derive_printable(
+        &self,
+        class_name: &str,
+        fields: &IndexMap<String, Type>,
+    ) -> Result<(), Diagnostic> {
+        for (fname, fty) in fields {
+            if !self.type_includes_printable(fty) {
+                return Err(Diagnostic::error(format!(
+                    "Cannot derive Printable for '{}': field '{}' of type {:?} does not include Printable",
+                    class_name, fname, fty
+                ))
+                .with_code("E023"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Check if a type includes Printable (all primitives do, custom types need explicit includes).
+    pub(crate) fn type_includes_printable(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Int | Type::Float | Type::String | Type::Bool | Type::Nil => true,
+            Type::Custom(name, _) => {
+                if let Some(info) = self.env.get_class(name) {
+                    return info.includes.contains(&"Printable".to_string());
+                }
+                if let Some(info) = self.env.get_enum(name) {
+                    return info.includes.contains(&"Printable".to_string());
+                }
+                false
+            }
+            Type::List(inner) => self.type_includes_printable(inner),
+            Type::Error => true,
+            _ => false,
+        }
     }
 
     /// Check if a type includes Eq (primitives do, custom types need explicit includes).
