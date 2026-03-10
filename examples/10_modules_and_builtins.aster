@@ -12,10 +12,10 @@ pub class Config
   debug: Bool
 
 # Builtins
-log("starting up")
-print("hello world")
+log(message: "starting up")
+print(message: "hello world")
 
 let xs = [1, 2, 3]
-let n = len(xs)
-let s = len("hello")
-let num_str = to_string(42)
+let n = len(value: xs)
+let s = len(value: "hello")
+let num_str = to_string(value: 42)

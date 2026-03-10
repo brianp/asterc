@@ -2,11 +2,11 @@
 
 ![aster](aster.png)
 
-Writing code should feel good. Not wrestling-with-the-type-system good. Not finally-got-the-semicolons-right good. Actually good — where you think the thing, write the thing, and the thing works.
+Writing code should feel good. Not wrestling-with-the-type-system good. Not finally-got-the-semicolons-right good. Actually good, where you think the thing, write the thing, and the thing works.
 
 Aster is an opinionated language that gets out of your way. You get safety, strong types, and real error handling without the ceremony that usually comes with them. The syntax is small. The rules are strict but not annoying. There's one way to do most things, and that one way is the obvious one.
 
-It's also built for a world where AI writes code alongside you. The compiler emits structured data — not prose error messages — so when your AI tools try to fix something, they're working with facts instead of guessing from text. Same task, same model, same prompt: Aster should compile on the first try more often than the alternatives.
+It's also built for a world where AI writes code alongside you. The compiler emits structured data, not prose error messages, so when your AI tools try to fix something they're working with facts instead of guessing from text.
 
 ## What it looks like
 
@@ -19,7 +19,7 @@ def main() -> Void
     log("No")
 ```
 
-No braces, no semicolons. Indentation does the work. If you've written Python, this already makes sense.
+No braces, no semicolons. Indentation does the work. If you've written Python or Ruby, this already makes sense.
 
 ```
 class NetworkError extends Error
@@ -57,9 +57,9 @@ The goal is that you spend your time thinking about what the code should do, not
 
 ## Status
 
-Early. The compiler front-end works — lexer, parser, type checker — but there's no codegen yet. It validates your program and tells you if it's correct. That's it for now.
+Early. The compiler front-end works (lexer, parser, type checker) but there's no codegen yet. It validates your program and tells you if it's correct. That's it for now.
 
-188 tests passing, zero warnings.
+212 tests passing, zero warnings.
 
 ```
 cargo run -- examples/hello.aster
@@ -101,21 +101,21 @@ docs/design/ Design RFCs
 - Lists, indexing, `List[T]`
 - Modules (`use`/`pub`), builtins (`log`, `print`, `len`, `to_string`)
 - Control flow: `while`, `for`, `break`, `continue`, `elif`
+- Structured diagnostics with span-based error reporting
 
 ## Design decisions
 
 All the "why" lives in the design RFCs:
 
-- [Language Philosophy](docs/design/language-philosophy.md) — the AI-native thesis
-- [Error Handling](docs/design/error-handling-rfc.md) — `throws`/`!`/`T?`
-- [Async](docs/design/async-rfc.md) — green threads, channels, mutexes
-- [Type System](docs/design/type-system-rfc.md) — inheritance, traits, generics, the 3-arg rule
-- [TOONS](docs/design/toons-rfc.md) — structured compiler output for machines
-- [Introspection](docs/design/introspection-rfc.md) — runtime type info, Ruby-inspired
+- [Language Philosophy](docs/design/language-philosophy.md)
+- [Error Handling](docs/design/error-handling-rfc.md) - `throws`/`!`/`T?`
+- [Async](docs/design/async-rfc.md) - green threads, channels, mutexes
+- [Type System](docs/design/type-system-rfc.md) - inheritance, traits, generics, the 3-arg rule
+- [Introspection](docs/design/introspection-rfc.md) - runtime type info, Ruby-inspired
 
 ## What's next
 
-Codegen with Cranelift, structured diagnostics (TOONS), a REPL, LSP support, an opinionated formatter, and an MCP server that gives AI agents direct access to compiler artifacts.
+Codegen with Cranelift, a REPL, LSP support, an opinionated formatter, and an MCP server that gives AI agents direct access to compiler artifacts.
 
 ## License
 

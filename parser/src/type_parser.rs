@@ -20,9 +20,9 @@ impl Parser {
             self.expect(TokenKind::Arrow)?;
             let ret = self.parse_type()?;
             return Ok(Type::Function {
+                param_names: (0..params.len()).map(|i| format!("_{}", i)).collect(),
                 params,
                 ret: Box::new(ret),
-                is_async: false,
                 throws: None,
             });
         }

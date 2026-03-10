@@ -25,11 +25,10 @@ impl TypeChecker {
                 params,
                 ret_type,
                 body,
-                is_async,
                 generic_params,
                 throws,
                 ..
-            } => self.check_lambda(params, ret_type, body, *is_async, generic_params, throws),
+            } => self.check_lambda(params, ret_type, body, generic_params, throws),
             Expr::Call { func, args, .. } => self.check_call(func, args),
             Expr::BinaryOp {
                 left, op, right, ..
@@ -42,7 +41,7 @@ impl TypeChecker {
                 scrutinee, arms, ..
             } => self.check_match_expr(scrutinee, arms),
             Expr::AsyncCall { func, args, .. } => self.check_async_call(func, args),
-            Expr::ResolveCall { func, args, .. } => self.check_resolve_call(func, args),
+            Expr::Resolve { expr, .. } => self.check_resolve(expr),
             Expr::DetachedCall { func, args, .. } => self.check_detached_call(func, args),
             Expr::Propagate(inner, _) => self.check_propagate(inner),
             Expr::Throw(value, _) => self.check_throw(value),
@@ -58,12 +57,25 @@ impl TypeChecker {
         params: &[(String, Type)],
         ret_type: &Type,
         body: &[ast::Stmt],
-        is_async: bool,
-        _generic_params: &Option<Vec<String>>,
+        generic_params: &Option<Vec<String>>,
         throws: &Option<Type>,
     ) -> Result<Type, Diagnostic> {
+        // Infer type parameters: collect unknown Custom(name, []) names from params.
+        // If generic_params is already set (from [T] syntax on classes), use those.
+        // Otherwise, auto-detect from param types.
+        let inferred_type_params = if generic_params.is_some() {
+            generic_params.clone().unwrap_or_default()
+        } else {
+            let mut type_param_names: Vec<String> = Vec::new();
+            for (_, t) in params {
+                self.collect_unknown_type_names(t, &mut type_param_names);
+            }
+            // Also scan return type for type params already found in params
+            // (RFC rule: return types only reference previously declared type parameters)
+            type_param_names
+        };
+
         let mut sub = self.child_checker();
-        sub.is_async_context = is_async;
         sub.throws_type = throws.clone();
         if *ret_type != Type::Void {
             sub.expected_return_type = Some(ret_type.clone());
@@ -121,12 +133,114 @@ impl TypeChecker {
                 .with_code("E004"));
             }
         }
+
+        // Build the Function type. Convert inferred type params from Custom to TypeVar.
+        let (final_params, final_ret) = if inferred_type_params.is_empty() {
+            (param_types, ret_type.clone())
+        } else {
+            let fp = param_types
+                .iter()
+                .map(|t| Self::replace_custom_with_typevar(t, &inferred_type_params))
+                .collect();
+            let fr = Self::replace_custom_with_typevar(ret_type, &inferred_type_params);
+            (fp, fr)
+        };
+
         Ok(Type::Function {
-            params: param_types,
-            ret: Box::new(ret_type.clone()),
-            is_async,
+            param_names: params.iter().map(|(n, _)| n.clone()).collect(),
+            params: final_params,
+            ret: Box::new(final_ret),
             throws: throws.clone().map(Box::new),
         })
+    }
+
+    /// Collect unknown type names from a type. A Custom(name, []) is "unknown" if
+    /// it doesn't correspond to a known class, trait, or enum in the current environment.
+    fn collect_unknown_type_names(&self, ty: &Type, out: &mut Vec<String>) {
+        match ty {
+            Type::Custom(name, args) if args.is_empty() => {
+                if !self.is_known_type_name(name) && !out.contains(name) {
+                    out.push(name.clone());
+                }
+            }
+            Type::Custom(_, args) => {
+                for a in args {
+                    self.collect_unknown_type_names(a, out);
+                }
+            }
+            Type::List(inner) | Type::Task(inner) | Type::Nullable(inner) => {
+                self.collect_unknown_type_names(inner, out);
+            }
+            Type::Map(k, v) => {
+                self.collect_unknown_type_names(k, out);
+                self.collect_unknown_type_names(v, out);
+            }
+            Type::Function { params, ret, .. } => {
+                for p in params {
+                    self.collect_unknown_type_names(p, out);
+                }
+                self.collect_unknown_type_names(ret, out);
+            }
+            _ => {}
+        }
+    }
+
+    /// Check if a type name is a known class, trait, enum, or "Self".
+    fn is_known_type_name(&self, name: &str) -> bool {
+        self.env.get_class(name).is_some()
+            || self.env.get_trait(name).is_some()
+            || self.env.get_enum(name).is_some()
+            || name == "Self"
+    }
+
+    /// Replace Custom(name, []) with TypeVar(name) for names in the given type param list.
+    fn replace_custom_with_typevar(ty: &Type, type_params: &[String]) -> Type {
+        match ty {
+            Type::Custom(name, args) if args.is_empty() && type_params.contains(name) => {
+                Type::TypeVar(name.clone())
+            }
+            Type::Custom(name, args) => {
+                let new_args = args
+                    .iter()
+                    .map(|a| Self::replace_custom_with_typevar(a, type_params))
+                    .collect();
+                Type::Custom(name.clone(), new_args)
+            }
+            Type::List(inner) => Type::List(Box::new(Self::replace_custom_with_typevar(
+                inner,
+                type_params,
+            ))),
+            Type::Map(k, v) => Type::Map(
+                Box::new(Self::replace_custom_with_typevar(k, type_params)),
+                Box::new(Self::replace_custom_with_typevar(v, type_params)),
+            ),
+            Type::Task(inner) => Type::Task(Box::new(Self::replace_custom_with_typevar(
+                inner,
+                type_params,
+            ))),
+            Type::Nullable(inner) => Type::Nullable(Box::new(Self::replace_custom_with_typevar(
+                inner,
+                type_params,
+            ))),
+            Type::Function {
+                param_names,
+                params,
+                ret,
+                throws,
+            } => Type::Function {
+                param_names: param_names.clone(),
+                params: params
+                    .iter()
+                    .map(|p| Self::replace_custom_with_typevar(p, type_params))
+                    .collect(),
+                ret: Box::new(Self::replace_custom_with_typevar(ret, type_params)),
+                throws: throws
+                    .as_ref()
+                    .map(|t| Box::new(Self::replace_custom_with_typevar(t, type_params))),
+            },
+            Type::TypeVar(_) => ty.clone(),
+            _ => ty.clone(),
+        }
     }
 
     fn check_binary(&mut self, left: &Expr, op: &BinOp, right: &Expr) -> Result<Type, Diagnostic> {
@@ -153,14 +267,25 @@ impl TypeChecker {
                 }
             }
             BinOp::Eq | BinOp::Neq => {
+                if matches!(&lt, Type::Function { .. }) || matches!(&rt, Type::Function { .. }) {
+                    return Err(Diagnostic::error(format!(
+                        "Cannot compare function types with {:?}",
+                        op
+                    ))
+                    .with_code("E019")
+                    .with_label(left.span().merge(right.span()), "function comparison"));
+                }
                 if lt == rt {
-                    if matches!(&lt, Type::Function { .. }) {
+                    // Same type — check if user type includes Eq
+                    if let Type::Custom(ref class_name, _) = lt
+                        && !self.type_includes_eq(&lt)
+                    {
                         return Err(Diagnostic::error(format!(
-                            "Cannot compare function types with {:?}",
-                            op
+                            "'{}' does not include Eq. Add 'includes Eq' to enable == and != comparisons",
+                            class_name
                         ))
                         .with_code("E019")
-                        .with_label(left.span().merge(right.span()), "function comparison"));
+                        .with_label(left.span().merge(right.span()), "type does not include Eq"));
                     }
                     return Ok(Type::Bool);
                 }
@@ -180,6 +305,18 @@ impl TypeChecker {
                 | (Type::Int, Type::Float)
                 | (Type::Float, Type::Int)
                 | (Type::String, Type::String) => Ok(Type::Bool),
+                (Type::Custom(name_l, _), Type::Custom(name_r, _)) if name_l == name_r => {
+                    if self.type_includes_ord(&lt) {
+                        Ok(Type::Bool)
+                    } else {
+                        Err(Diagnostic::error(format!(
+                            "'{}' does not include Ord. Add 'includes Ord' to enable ordering comparisons",
+                            name_l
+                        ))
+                        .with_code("E019")
+                        .with_label(left.span().merge(right.span()), "type does not include Ord"))
+                    }
+                }
                 _ => Err(Diagnostic::error(format!(
                     "Cannot order {:?} and {:?} with {:?}",
                     lt, rt, op
@@ -277,6 +414,24 @@ impl TypeChecker {
 
     pub(crate) fn check_member(&mut self, object: &Expr, field: &str) -> Result<Type, Diagnostic> {
         use std::collections::HashMap;
+
+        // Check for enum variant access: EnumName.VariantName
+        if let Expr::Ident(name, _) = object
+            && let Some(enum_info) = self.env.get_enum(name)
+        {
+            if enum_info.variants.contains(&field.to_string()) {
+                return Ok(Type::Custom(name.clone(), Vec::new()));
+            }
+            return Err(
+                Diagnostic::error(format!("Enum '{}' has no variant '{}'", name, field))
+                    .with_code("E010")
+                    .with_label(
+                        object.span(),
+                        format!("no variant '{}' on this enum", field),
+                    ),
+            );
+        }
+
         let obj_ty = self.check_expr(object)?;
         if obj_ty.is_error() {
             return Ok(Type::Error);
@@ -393,12 +548,12 @@ impl TypeChecker {
         if !has_catchall {
             match &scrutinee_ty {
                 Type::Bool => {
-                    let has_true = arms
-                        .iter()
-                        .any(|(p, _)| matches!(p, MatchPattern::Literal(Expr::Bool(true, _), _)));
-                    let has_false = arms
-                        .iter()
-                        .any(|(p, _)| matches!(p, MatchPattern::Literal(Expr::Bool(false, _), _)));
+                    let has_true = arms.iter().any(|(p, _)| {
+                        matches!(p, MatchPattern::Literal(e, _) if matches!(**e, Expr::Bool(true, _)))
+                    });
+                    let has_false = arms.iter().any(|(p, _)| {
+                        matches!(p, MatchPattern::Literal(e, _) if matches!(**e, Expr::Bool(false, _)))
+                    });
                     if !has_true || !has_false {
                         return Err(Diagnostic::error(
                             "Non-exhaustive match: Bool match must cover both true and false, or include a wildcard".to_string()
@@ -420,30 +575,52 @@ impl TypeChecker {
         Ok(result_ty.unwrap_or(Type::Void))
     }
 
-    fn check_async_call(&mut self, func: &Expr, args: &[Expr]) -> Result<Type, Diagnostic> {
-        if !self.is_in_async_context() {
-            return Err(Diagnostic::error(
-                "Cannot use 'async' call outside of async context".to_string(),
-            )
-            .with_code("E012")
-            .with_label(func.span(), "not in async context"));
-        }
+    fn check_async_call(
+        &mut self,
+        func: &Expr,
+        args: &[(String, Expr)],
+    ) -> Result<Type, Diagnostic> {
+        // Bypass throws check: error handling moves to `resolve task!`
         let ret_ty = self.check_call_inner(func, args, true)?;
         Ok(Type::Task(Box::new(ret_ty)))
     }
 
-    fn check_resolve_call(&mut self, func: &Expr, args: &[Expr]) -> Result<Type, Diagnostic> {
-        self.check_call_inner(func, args, true)
+    fn check_resolve(&mut self, expr: &Expr) -> Result<Type, Diagnostic> {
+        let ty = self.check_expr(expr)?;
+        if ty.is_error() {
+            return Ok(Type::Error);
+        }
+        match ty {
+            Type::Task(_) => {
+                // Bare resolve without ! is an error — CancelledError is always possible
+                Err(Diagnostic::error(
+                    "resolve requires ! — any task can be cancelled (CancelledError). Use resolve expr! to handle CancelledError"
+                        .to_string(),
+                )
+                .with_code("E012")
+                .with_label(expr.span(), "add ! to propagate CancelledError"))
+            }
+            _ => Err(Diagnostic::error(format!(
+                "resolve expects a Task[T] expression, got {:?}",
+                ty
+            ))
+            .with_code("E012")
+            .with_label(expr.span(), "expected Task[T]")),
+        }
     }
 
-    fn check_detached_call(&mut self, func: &Expr, args: &[Expr]) -> Result<Type, Diagnostic> {
+    fn check_detached_call(
+        &mut self,
+        func: &Expr,
+        args: &[(String, Expr)],
+    ) -> Result<Type, Diagnostic> {
+        // Bypass throws check: detached tasks log errors at runtime
         self.check_call_inner(func, args, true)?;
         Ok(Type::Void)
     }
 
     fn check_async_scope(&mut self, body: &[ast::Stmt]) -> Result<Type, Diagnostic> {
         let mut sub = self.child_checker();
-        sub.is_async_context = true;
         sub.loop_depth = 0; // async scope cannot break/continue outer loops
         sub.check_body(body)
     }

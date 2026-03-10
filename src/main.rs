@@ -38,10 +38,7 @@ fn render_diagnostic(source: &str, filename: &str, diag: &Diagnostic) {
         report = report.with_note(note);
     }
 
-    report
-        .finish()
-        .eprint((filename, Source::from(source)))
-        .unwrap();
+    let _ = report.finish().eprint((filename, Source::from(source)));
 }
 
 fn main() {

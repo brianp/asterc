@@ -4,31 +4,29 @@ mod common;
 // Regression tests for audit mitigations
 // ═══════════════════════════════════════════════════════════════════════
 
-// C1: Sentinel variable forgery — user code cannot spoof async context
+// C1: BC-9 removed async context restrictions — async calls work anywhere
+// This test verifies that async f() works from any context (no spoofing needed)
 #[test]
-fn regression_sentinel_forgery_blocked() {
-    let err = common::check_err(
-        r#"async def fetch() -> Int
+fn regression_async_call_works_anywhere() {
+    common::check_ok(
+        r#"def fetch() -> Int
   42
 
-def sneaky() -> Int
-  let __async_context__ = true
-  async fetch()
-  0
+def caller() -> Void
+  let t = async fetch()
 "#,
     );
-    assert!(err.contains("async") || err.contains("context"));
 }
 
 // C2: Structural type unification for generic params in compound types
 #[test]
 fn regression_generic_list_param_unifies() {
     common::check_ok(
-        r#"def first_elem[T](items: List[T]) -> T
+        r#"def first_elem(items: List[T]) -> T
   items[0]
 
 let xs = [1, 2, 3]
-let y = first_elem(xs)
+let y = first_elem(items: xs)
 "#,
     );
 }
@@ -95,7 +93,7 @@ fn regression_generic_class_field_access() {
         r#"class Box[T]
   value: T
 
-let b = Box(42)
+let b = Box(value: 42)
 let v = b.value
 let x: Int = v
 "#,
@@ -109,7 +107,7 @@ fn regression_generic_class_type_distinction() {
         r#"class Box[T]
   value: T
 
-let b = Box(42)
+let b = Box(value: 42)
 let v: String = b.value
 "#,
     );
@@ -119,18 +117,19 @@ let v: String = b.value
 // R2-3: Phantom type parameters (unresolvable) produce an error
 #[test]
 fn regression_phantom_typevar_error() {
+    // T only in return type (not in params) is not a type parameter —
+    // it's an unknown type, causing a return type mismatch
     let err = common::check_err(
-        r#"def phantom[T]() -> T
+        r#"def phantom() -> T
   nil
 
 let x = phantom()
 "#,
     );
     assert!(
-        err.contains("infer")
-            || err.contains("type parameter")
-            || err.contains("TypeVar")
-            || err.contains("unresolved")
+        err.contains("mismatch") || err.contains("Custom"),
+        "got: {}",
+        err
     );
 }
 
@@ -138,13 +137,13 @@ let x = phantom()
 #[test]
 fn regression_higher_order_generic_unification() {
     common::check_ok(
-        r#"def apply[T](f: (T) -> T, x: T) -> T
-  f(x)
+        r#"def apply(f: (T) -> T, x: T) -> T
+  f(_0: x)
 
 def double(n: Int) -> Int
   n + n
 
-let r = apply(double, 5)
+let r = apply(f: double, x: 5)
 "#,
     );
 }
@@ -215,7 +214,7 @@ fn phase7_throw_basic() {
   message: String
 
 def risky() throws AppError -> Int
-  throw AppError("boom")
+  throw AppError(message: "boom")
 "#,
     );
 }
@@ -227,7 +226,7 @@ fn phase7_throw_outside_throws_error() {
   message: String
 
 def safe() -> Int
-  throw AppError("boom")
+  throw AppError(message: "boom")
 "#,
     );
     assert!(err.contains("throw") || err.contains("throws"));
@@ -276,7 +275,7 @@ class NetworkError extends AppError
   url: String
 
 def fetch() throws AppError -> String
-  throw NetworkError("fail", "http://x")
+  throw NetworkError(message: "fail", url: "http://x")
 "#,
     );
 }
@@ -306,7 +305,7 @@ fn phase7_throws_void_return() {
   message: String
 
 def side_effect() throws AppError
-  throw AppError("boom")
+  throw AppError(message: "boom")
 "#,
     );
 }
@@ -438,7 +437,7 @@ fn phase7_nullable_auto_wrap() {
 fn phase7_nullable_or() {
     common::check_ok(
         r#"let x: String? = nil
-let y: String = x.or("default")
+let y: String = x.or(default: "default")
 "#,
     );
 }
@@ -447,7 +446,7 @@ let y: String = x.or("default")
 fn phase7_nullable_or_else() {
     common::check_ok(
         r#"let x: String? = nil
-let y: String = x.or_else(-> "computed")
+let y: String = x.or_else(f: -> "computed")
 "#,
     );
 }
@@ -460,7 +459,7 @@ fn phase7_nullable_or_throw() {
 
 def get_value() throws AppError -> String
   let x: String? = nil
-  x.or_throw(AppError("missing"))
+  x.or_throw(error: AppError(message: "missing"))
 "#,
     );
 }
@@ -480,7 +479,7 @@ let y = match x
 fn phase7_nullable_no_method_access_error() {
     let err = common::check_err(
         r#"let x: String? = "hello"
-let y = len(x)
+let y = len(value: x)
 "#,
     );
     assert!(

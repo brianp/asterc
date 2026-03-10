@@ -216,6 +216,7 @@ fn lex_ident_or_keyword(
         "as" => As,
         "pub" => Pub,
         "trait" => Trait,
+        "enum" => Enum,
         "includes" => Includes,
         "extends" => Extends,
         "throw" => Throw,

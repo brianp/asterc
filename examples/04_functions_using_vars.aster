@@ -3,4 +3,4 @@ let greeting = "Hello"
 def greet(name: String) -> String
   greeting + " " + name
 
-greet("Aster")
+greet(name: "Aster")

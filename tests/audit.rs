@@ -12,11 +12,11 @@ fn audit_f2_nullable_typevar_substitution() {
         r#"class Box[T]
   value: T
 
-def maybe_first[T](xs: List[T]) -> T?
+def maybe_first(xs: List[T]) -> T?
   nil
 
 let items = [1, 2, 3]
-let result: Int? = maybe_first(items)
+let result: Int? = maybe_first(xs: items)
 "#,
     );
 }
@@ -70,18 +70,18 @@ def safe() -> Int
     );
 }
 
-// F4: resolve on throwing async must require error handling
+// F4: calling a throwing function without error handling must be an error
 #[test]
-fn audit_f4_resolve_throwing_async_error() {
+fn audit_f4_throwing_call_without_bang_error() {
     let err = common::check_err(
         r#"class AppError extends Error
   code: Int
 
-async def risky_fetch() throws AppError -> String
+def risky_fetch() throws AppError -> String
   "data"
 
 def main() -> String
-  resolve risky_fetch()
+  risky_fetch()
 "#,
     );
     assert!(err.contains("throws") || err.contains("error handling") || err.contains("!"));
@@ -142,7 +142,7 @@ fn audit_f6_inherited_field_access() {
 class Dog extends Animal
   breed: String
 
-let d = Dog("buddy", "lab")
+let d = Dog(name: "buddy", breed: "lab")
 let n: String = d.name
 "#,
     );
@@ -161,7 +161,7 @@ fn audit_f6b_inherited_method_access() {
 class Child extends Base
   y: Int
 
-let c = Child(1, 2)
+let c = Child(x: 1, y: 2)
 let val: String = c.greet()
 "#,
     );
@@ -395,7 +395,7 @@ fn audit_d3_generic_class_params_parsed() {
 #[test]
 fn audit_d3_generic_function_params_parsed() {
     common::check_ok(
-        r#"def identity[T](x: T) -> T
+        r#"def identity(x: T) -> T
   x
 "#,
     );
@@ -460,7 +460,7 @@ for item in items
 fn audit_d6_nullable_or_returns_inner_type() {
     common::check_ok(
         r#"let x: Int? = 5
-let y: Int = x.or(0)
+let y: Int = x.or(default: 0)
 "#,
     );
 }
@@ -469,7 +469,7 @@ let y: Int = x.or(0)
 fn audit_d6_nullable_or_else_returns_inner_type() {
     common::check_ok(
         r#"let x: Int? = nil
-let y: Int = x.or_else(-> 0)
+let y: Int = x.or_else(f: -> 0)
 "#,
     );
 }
@@ -478,7 +478,7 @@ let y: Int = x.or_else(-> 0)
 fn audit_d6_nullable_or_type_mismatch() {
     let err = common::check_err(
         r#"let x: Int? = 5
-let y: Int = x.or("not_int")
+let y: Int = x.or(default: "not_int")
 "#,
     );
     assert!(
@@ -567,7 +567,7 @@ fn audit_q5_nullable_or_throw_in_throws_context() {
   code: Int
 
 def risky(x: Int?) throws AppError -> Int
-  x.or_throw(AppError("null", 0))
+  x.or_throw(error: AppError(message: "null", code: 0))
 "#,
     );
 }

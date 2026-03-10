@@ -102,22 +102,22 @@ fn integration_pub_let() {
 
 #[test]
 fn integration_builtin_print() {
-    common::check_ok("print(\"hello\")");
+    common::check_ok("print(message: \"hello\")");
 }
 
 #[test]
 fn integration_builtin_len_list() {
-    common::check_ok("let xs = [1, 2, 3]\nlet n = len(xs)");
+    common::check_ok("let xs = [1, 2, 3]\nlet n = len(value: xs)");
 }
 
 #[test]
 fn integration_builtin_len_string() {
-    common::check_ok("let n = len(\"hello\")");
+    common::check_ok("let n = len(value: \"hello\")");
 }
 
 #[test]
 fn integration_builtin_to_string() {
-    common::check_ok("let s = to_string(42)");
+    common::check_ok("let s = to_string(value: 42)");
 }
 
 #[test]
@@ -137,7 +137,7 @@ fn integration_use_selective_with_alias() {
 
 #[test]
 fn integration_use_then_code() {
-    common::check_ok("use io\nlet x = 5\nlog(\"hello\")");
+    common::check_ok("use io\nlet x = 5\nlog(message: \"hello\")");
 }
 
 // ─── List type annotation ───────────────────────────────────────────

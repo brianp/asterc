@@ -9,7 +9,7 @@ fn integration_generic_class() {
 
 #[test]
 fn integration_generic_function() {
-    common::check_ok("def identity[T](x: T) -> T\n  x\n");
+    common::check_ok("def identity(x: T) -> T\n  x\n");
 }
 
 #[test]
@@ -28,7 +28,7 @@ fn integration_trait_with_default_method() {
         r#"trait Printable
   def to_str() -> String
   def print()
-    log("hello")
+    log(message: "hello")
 "#,
     );
 }
@@ -103,17 +103,17 @@ class Container[T] includes Printable
 
 #[test]
 fn integration_generic_function_call() {
-    common::check_ok("def identity[T](x: T) -> T\n  x\nlet y = identity(42)\n");
+    common::check_ok("def identity(x: T) -> T\n  x\nlet y = identity(x: 42)\n");
 }
 
 #[test]
 fn integration_generic_function_call_string() {
-    common::check_ok("def identity[T](x: T) -> T\n  x\nlet y = identity(\"hello\")\n");
+    common::check_ok("def identity(x: T) -> T\n  x\nlet y = identity(x: \"hello\")\n");
 }
 
 #[test]
 fn integration_generic_multi_param_call() {
-    common::check_ok("def first[A, B](a: A, b: B) -> A\n  a\nlet y = first(1, \"hello\")\n");
+    common::check_ok("def first(a: A, b: B) -> A\n  a\nlet y = first(a: 1, b: \"hello\")\n");
 }
 
 // ─── Fix #4: Trait signature mismatch ───────────────────────────────

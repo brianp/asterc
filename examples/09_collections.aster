@@ -24,4 +24,4 @@ for n in nums
   let doubled = n * 2
 
 for word in words
-  log(word)
+  log(message: word)

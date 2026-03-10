@@ -1,12 +1,65 @@
+use std::collections::HashSet;
+
 use ast::{BinOp, Diagnostic, Expr, MatchPattern, UnaryOp};
 use lexer::TokenKind;
 
 use crate::{MAX_COLLECTION_SIZE, MAX_NESTING_DEPTH, Parser};
 
 impl Parser {
+    /// Parse named argument list: `name1: expr1, name2: expr2`.
+    /// The opening `(` must already be consumed. Does NOT consume the closing `)`.
+    pub(crate) fn parse_named_args(&mut self) -> Result<Vec<(String, Expr)>, Diagnostic> {
+        let mut args = Vec::new();
+        let mut seen_names = HashSet::new();
+        if !self.at(&TokenKind::RParen) {
+            loop {
+                let arg_start = self.start_span();
+                let name_tok = self.advance();
+                let name = match name_tok.kind {
+                    TokenKind::Ident(n) => n,
+                    ref t => {
+                        return Err(Diagnostic::error(format!(
+                            "Expected argument name, got {:?}. All arguments must be named (e.g. `name: value`)",
+                            t
+                        ))
+                        .with_code("P001")
+                        .with_label(
+                            ast::Span::new(name_tok.start, name_tok.end),
+                            "expected argument name",
+                        ));
+                    }
+                };
+                if !seen_names.insert(name.clone()) {
+                    return Err(
+                        Diagnostic::error(format!("Duplicate argument name '{}'", name))
+                            .with_code("P001")
+                            .with_label(self.span_from(arg_start), "duplicate argument"),
+                    );
+                }
+                self.expect(TokenKind::Colon)?;
+                let value = self.parse_expr()?;
+                args.push((name, value));
+                if args.len() > MAX_COLLECTION_SIZE {
+                    return Err(Diagnostic::error(format!(
+                        "Function call exceeds maximum of {} arguments",
+                        MAX_COLLECTION_SIZE
+                    ))
+                    .with_code("P001"));
+                }
+                if self.at(&TokenKind::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+        Ok(args)
+    }
+
     pub(crate) fn parse_expr(&mut self) -> Result<Expr, Diagnostic> {
         self.depth += 1;
         if self.depth > MAX_NESTING_DEPTH {
+            self.depth -= 1;
             return Err(Diagnostic::error(format!(
                 "Nesting depth exceeds maximum of {}",
                 MAX_NESTING_DEPTH
@@ -94,6 +147,7 @@ impl Parser {
     fn parse_unary(&mut self) -> Result<Expr, Diagnostic> {
         self.depth += 1;
         if self.depth > MAX_NESTING_DEPTH {
+            self.depth -= 1;
             return Err(Diagnostic::error(format!(
                 "Nesting depth exceeds maximum of {}",
                 MAX_NESTING_DEPTH
@@ -134,24 +188,7 @@ impl Parser {
         loop {
             if self.at(&TokenKind::LParen) {
                 self.advance();
-                let mut args = Vec::new();
-                if !self.at(&TokenKind::RParen) {
-                    loop {
-                        args.push(self.parse_expr()?);
-                        if args.len() > MAX_COLLECTION_SIZE {
-                            return Err(Diagnostic::error(format!(
-                                "Function call exceeds maximum of {} arguments",
-                                MAX_COLLECTION_SIZE
-                            ))
-                            .with_code("P001"));
-                        }
-                        if self.at(&TokenKind::Comma) {
-                            self.advance();
-                        } else {
-                            break;
-                        }
-                    }
-                }
+                let args = self.parse_named_args()?;
                 self.expect(TokenKind::RParen)?;
                 expr = Expr::Call {
                     func: Box::new(expr),
@@ -213,6 +250,56 @@ impl Parser {
             } else if self.at(&TokenKind::Dot) {
                 self.advance();
                 // Accept identifiers and keyword tokens that can be method names
+                let field = match &self.advance().kind {
+                    TokenKind::Ident(n) => n.clone(),
+                    TokenKind::Or => "or".to_string(),
+                    TokenKind::Catch => "catch".to_string(),
+                    t => {
+                        return Err(Diagnostic::error(format!(
+                            "Expected field name after '.', got {:?}",
+                            t
+                        ))
+                        .with_code("P001"));
+                    }
+                };
+                expr = Expr::Member {
+                    object: Box::new(expr),
+                    field,
+                    span: self.span_from(start),
+                };
+            } else {
+                break;
+            }
+        }
+        Ok(expr)
+    }
+
+    /// Like parse_postfix but stops at `!` — used for `resolve expr` so that
+    /// `resolve task!` parses as `Propagate(Resolve(task))` not `Resolve(Propagate(task))`.
+    fn parse_postfix_no_bang(&mut self) -> Result<Expr, Diagnostic> {
+        let start = self.start_span();
+        let mut expr = self.parse_primary()?;
+        loop {
+            if self.at(&TokenKind::LParen) {
+                self.advance();
+                let args = self.parse_named_args()?;
+                self.expect(TokenKind::RParen)?;
+                expr = Expr::Call {
+                    func: Box::new(expr),
+                    args,
+                    span: self.span_from(start),
+                };
+            } else if self.at(&TokenKind::LBracket) {
+                self.advance();
+                let index = self.parse_expr()?;
+                self.expect(TokenKind::RBracket)?;
+                expr = Expr::Index {
+                    object: Box::new(expr),
+                    index: Box::new(index),
+                    span: self.span_from(start),
+                };
+            } else if self.at(&TokenKind::Dot) {
+                self.advance();
                 let field = match &self.advance().kind {
                     TokenKind::Ident(n) => n.clone(),
                     TokenKind::Or => "or".to_string(),
@@ -302,34 +389,43 @@ impl Parser {
                 let val = *v;
                 self.advance();
                 let span = self.span_from(start);
-                Ok(MatchPattern::Literal(Expr::Int(val, span), span))
+                Ok(MatchPattern::Literal(Box::new(Expr::Int(val, span)), span))
             }
             Float(v) => {
                 let val = *v;
                 self.advance();
                 let span = self.span_from(start);
-                Ok(MatchPattern::Literal(Expr::Float(val, span), span))
+                Ok(MatchPattern::Literal(
+                    Box::new(Expr::Float(val, span)),
+                    span,
+                ))
             }
             Str(s) => {
                 let lit = s.clone();
                 self.advance();
                 let span = self.span_from(start);
-                Ok(MatchPattern::Literal(Expr::Str(lit, span), span))
+                Ok(MatchPattern::Literal(Box::new(Expr::Str(lit, span)), span))
             }
             True => {
                 self.advance();
                 let span = self.span_from(start);
-                Ok(MatchPattern::Literal(Expr::Bool(true, span), span))
+                Ok(MatchPattern::Literal(
+                    Box::new(Expr::Bool(true, span)),
+                    span,
+                ))
             }
             False => {
                 self.advance();
                 let span = self.span_from(start);
-                Ok(MatchPattern::Literal(Expr::Bool(false, span), span))
+                Ok(MatchPattern::Literal(
+                    Box::new(Expr::Bool(false, span)),
+                    span,
+                ))
             }
             Nil => {
                 self.advance();
                 let span = self.span_from(start);
-                Ok(MatchPattern::Literal(Expr::Nil(span), span))
+                Ok(MatchPattern::Literal(Box::new(Expr::Nil(span)), span))
             }
             Ident(n) => {
                 let name = n.clone();
@@ -454,16 +550,11 @@ impl Parser {
             }
             Resolve => {
                 self.advance();
-                let func_expr = self.parse_postfix()?;
-                match func_expr {
-                    Expr::Call { func, args, .. } => Ok(Expr::ResolveCall {
-                        func,
-                        args,
-                        span: self.span_from(start),
-                    }),
-                    _ => Err(Diagnostic::error("Expected function call after 'resolve'")
-                        .with_code("P001")),
-                }
+                let expr = self.parse_postfix_no_bang()?;
+                Ok(Expr::Resolve {
+                    expr: Box::new(expr),
+                    span: self.span_from(start),
+                })
             }
             Async => {
                 self.advance();

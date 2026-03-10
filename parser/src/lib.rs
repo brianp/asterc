@@ -98,6 +98,7 @@ impl Parser {
     pub(crate) fn parse_block(&mut self) -> Result<Vec<Stmt>, Diagnostic> {
         self.depth += 1;
         if self.depth > MAX_NESTING_DEPTH {
+            self.depth -= 1;
             return Err(Diagnostic::error(format!(
                 "Nesting depth exceeds maximum of {}",
                 MAX_NESTING_DEPTH
@@ -143,15 +144,20 @@ impl Parser {
         match &self.peek().kind {
             TokenKind::Use => self.parse_use(),
             TokenKind::Pub => self.parse_pub(),
+            TokenKind::Enum => self.parse_enum(false),
             TokenKind::Trait => self.parse_trait(false),
             TokenKind::Class => self.parse_class(false),
             TokenKind::Def => self.parse_def_as_let(None, false),
             TokenKind::Async => {
-                // Could be `async def`, `async scope`, or `async expr()` at statement level
+                // async def is no longer valid — give a clear error
                 if self.tokens.get(self.pos + 1).map(|t| &t.kind) == Some(&TokenKind::Def) {
-                    self.parse_def_as_let(None, false)
-                } else if self.tokens.get(self.pos + 1).map(|t| &t.kind) == Some(&TokenKind::Scope)
-                {
+                    return Err(Diagnostic::error(
+                        "async def is not supported. Functions are plain def — use async f() at the call site"
+                    ).with_code("P001")
+                    .with_label(self.span_from(start), "remove 'async' keyword"));
+                }
+                // Could be `async scope` or `async expr()` at statement level
+                if self.tokens.get(self.pos + 1).map(|t| &t.kind) == Some(&TokenKind::Scope) {
                     // async scope block
                     self.advance(); // consume async
                     self.advance(); // consume scope
@@ -301,7 +307,7 @@ impl Parser {
     fn parse_pub(&mut self) -> Result<Stmt, Diagnostic> {
         self.expect(TokenKind::Pub)?;
         match &self.peek().kind {
-            TokenKind::Def | TokenKind::Async => self.parse_def_as_let(None, true),
+            TokenKind::Def => self.parse_def_as_let(None, true),
             TokenKind::Class => self.parse_class(true),
             TokenKind::Trait => self.parse_trait(true),
             TokenKind::Let => self.parse_let(true),
@@ -452,6 +458,7 @@ impl Parser {
                         | TokenKind::Let
                         | TokenKind::Class
                         | TokenKind::Trait
+                        | TokenKind::Enum
                         | TokenKind::If
                         | TokenKind::While
                         | TokenKind::For
