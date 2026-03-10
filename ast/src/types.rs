@@ -11,6 +11,8 @@ pub enum Type {
     Never,
     /// Sentinel for error recovery — compatible with everything to prevent cascading errors.
     Error,
+    /// Placeholder for lambda parameters whose types will be inferred from call context.
+    Inferred,
     List(Box<Type>),
     /// Map type scaffolding — parser support exists but no literal syntax or runtime yet.
     Map(Box<Type>, Box<Type>),

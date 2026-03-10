@@ -3,6 +3,10 @@
 use ast::{Diagnostic, ParseResult};
 use lexer::lex;
 use parser::Parser;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+use typecheck::module_loader::{ModuleLoader, VirtualResolver};
 use typecheck::typechecker::TypeChecker;
 
 pub fn check_ok(src: &str) {
@@ -57,6 +61,26 @@ pub fn parse_with_recovery(src: &str) -> ParseResult {
     let tokens = lex(src).expect("lex ok");
     let mut parser = Parser::new(tokens);
     parser.parse_module_recovering("test")
+}
+
+pub fn check_ok_with_files(src: &str, files: HashMap<String, String>) {
+    let tokens = lex(src).expect("lex ok");
+    let mut parser = Parser::new(tokens);
+    let module = parser.parse_module("test").expect("parse ok");
+    let resolver = VirtualResolver { files };
+    let loader = Rc::new(RefCell::new(ModuleLoader::new(Box::new(resolver))));
+    let mut tc = TypeChecker::with_loader(loader);
+    tc.check_module(&module).expect("typecheck ok");
+}
+
+pub fn check_err_with_files(src: &str, files: HashMap<String, String>) -> String {
+    let tokens = lex(src).expect("lex ok");
+    let mut parser = Parser::new(tokens);
+    let module = parser.parse_module("test").expect("parse ok");
+    let resolver = VirtualResolver { files };
+    let loader = Rc::new(RefCell::new(ModuleLoader::new(Box::new(resolver))));
+    let mut tc = TypeChecker::with_loader(loader);
+    tc.check_module(&module).unwrap_err().to_string()
 }
 
 pub fn compile_file(path: &str) {

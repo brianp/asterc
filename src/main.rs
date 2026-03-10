@@ -1,11 +1,15 @@
+use std::cell::RefCell;
 use std::env;
 use std::fs;
+use std::path::Path;
+use std::rc::Rc;
 
 use ariadne::{Color, Label, Report, ReportKind, Source};
 
 use ast::{Diagnostic, Severity};
 use lexer::lex;
 use parser::Parser;
+use typecheck::module_loader::{FsResolver, ModuleLoader};
 use typecheck::typechecker::TypeChecker;
 
 fn render_diagnostic(source: &str, filename: &str, diag: &Diagnostic) {
@@ -77,7 +81,13 @@ fn main() {
     };
 
     // 3. Typecheck (accumulate all errors)
-    let mut checker = TypeChecker::new();
+    let root = Path::new(filename)
+        .parent()
+        .unwrap_or(Path::new("."))
+        .to_path_buf();
+    let resolver = FsResolver { root };
+    let loader = Rc::new(RefCell::new(ModuleLoader::new(Box::new(resolver))));
+    let mut checker = TypeChecker::with_loader(loader);
     let diagnostics = checker.check_module_all(&module_ast);
 
     if !diagnostics.is_empty() {

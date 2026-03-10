@@ -19,7 +19,12 @@ impl TypeChecker {
         args: &[(String, Expr)],
     ) -> Result<Type, Diagnostic> {
         // Check for nullable method calls: x.or(), x.or_else(), x.or_throw()
+        // Skip this interception for namespace member access (ns.func())
         if let Expr::Member { object, field, .. } = func {
+            let is_namespace = matches!(object.as_ref(), Expr::Ident(name, _) if self.env.get_namespace(name).is_some());
+            if is_namespace {
+                return self.check_call_inner(func, args, false);
+            }
             let obj_ty = self.check_expr(object)?;
             if obj_ty.is_error() {
                 return Ok(Type::Error);
@@ -228,7 +233,12 @@ impl TypeChecker {
                     .with_label(arg_expr.span(), "unknown argument name"));
                 };
                 let pty = &params[idx];
-                let aty = self.check_expr(arg_expr)?;
+                // If arg is a lambda with Inferred types, resolve them from expected type
+                let aty = if let Expr::Lambda { .. } = arg_expr {
+                    self.check_lambda_with_expected(arg_expr, Some(pty))?
+                } else {
+                    self.check_expr(arg_expr)?
+                };
                 if aty.is_error() {
                     return Ok(Type::Error);
                 }

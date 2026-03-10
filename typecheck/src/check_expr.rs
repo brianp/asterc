@@ -52,6 +52,92 @@ impl TypeChecker {
         }
     }
 
+    /// Check a lambda expression with an optional expected function type for inference.
+    /// If `expected` is Some(Type::Function { .. }), inferred param types are resolved from it.
+    pub(crate) fn check_lambda_with_expected(
+        &mut self,
+        expr: &Expr,
+        expected: Option<&Type>,
+    ) -> Result<Type, Diagnostic> {
+        if let Expr::Lambda {
+            params,
+            ret_type,
+            body,
+            generic_params,
+            throws,
+            ..
+        } = expr
+        {
+            let has_inferred = params.iter().any(|(_, t)| *t == Type::Inferred)
+                || *ret_type == Type::Inferred;
+
+            if has_inferred {
+                if let Some(Type::Function {
+                    params: expected_params,
+                    ret: expected_ret,
+                    throws: expected_throws,
+                    ..
+                }) = expected
+                {
+                    // Resolve inferred types from the expected function type
+                    let resolved_params: Vec<(String, Type)> = params
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (name, ty))| {
+                            if *ty == Type::Inferred {
+                                let resolved = expected_params.get(i).cloned().unwrap_or(Type::Void);
+                                (name.clone(), resolved)
+                            } else {
+                                (name.clone(), ty.clone())
+                            }
+                        })
+                        .collect();
+
+                    if resolved_params.len() != expected_params.len() {
+                        return Err(Diagnostic::error(format!(
+                            "Lambda arity mismatch: expected {} params, got {}",
+                            expected_params.len(),
+                            resolved_params.len()
+                        ))
+                        .with_code("E006")
+                        .with_label(expr.span(), "wrong number of parameters"));
+                    }
+
+                    let resolved_ret = if *ret_type == Type::Inferred {
+                        *expected_ret.clone()
+                    } else {
+                        ret_type.clone()
+                    };
+
+                    let resolved_throws = if throws.is_none() {
+                        expected_throws.as_ref().map(|t| *t.clone())
+                    } else {
+                        throws.clone()
+                    };
+
+                    return self.check_lambda(
+                        &resolved_params,
+                        &resolved_ret,
+                        body,
+                        generic_params,
+                        &resolved_throws,
+                    );
+                } else {
+                    return Err(Diagnostic::error(
+                        "Cannot infer lambda parameter types without a function type context. Add type annotations or pass to a function with known parameter types"
+                            .to_string(),
+                    )
+                    .with_code("E001")
+                    .with_label(expr.span(), "cannot infer types"));
+                }
+            }
+
+            self.check_lambda(params, ret_type, body, generic_params, throws)
+        } else {
+            self.check_expr(expr)
+        }
+    }
+
     fn check_lambda(
         &mut self,
         params: &[(String, Type)],
@@ -75,9 +161,20 @@ impl TypeChecker {
             type_param_names
         };
 
+        // Check for unresolved Inferred types — means no context was available
+        for (n, t) in params {
+            if *t == Type::Inferred {
+                return Err(Diagnostic::error(format!(
+                    "Cannot infer type for parameter '{}'. Add type annotations or pass to a function with known parameter types",
+                    n
+                ))
+                .with_code("E001"));
+            }
+        }
+
         let mut sub = self.child_checker();
         sub.throws_type = throws.clone();
-        if *ret_type != Type::Void {
+        if *ret_type != Type::Void && *ret_type != Type::Inferred {
             sub.expected_return_type = Some(ret_type.clone());
         }
         let mut param_types = Vec::new();
@@ -94,6 +191,7 @@ impl TypeChecker {
             if let ast::Stmt::Return(expr, _) = s {
                 let ret_val_ty = sub.check_expr(expr)?;
                 if *ret_type != Type::Void
+                    && *ret_type != Type::Inferred
                     && ret_val_ty != *ret_type
                     && ret_val_ty != Type::Never
                     && !ret_val_ty.is_error()
@@ -114,6 +212,7 @@ impl TypeChecker {
         if !is_abstract
             && &last != ret_type
             && *ret_type != Type::Void
+            && *ret_type != Type::Inferred
             && last != Type::Never
             && !last.is_error()
         {
@@ -134,15 +233,22 @@ impl TypeChecker {
             }
         }
 
+        // If ret_type is Inferred, use the actual body result type
+        let effective_ret = if *ret_type == Type::Inferred {
+            last.clone()
+        } else {
+            ret_type.clone()
+        };
+
         // Build the Function type. Convert inferred type params from Custom to TypeVar.
         let (final_params, final_ret) = if inferred_type_params.is_empty() {
-            (param_types, ret_type.clone())
+            (param_types, effective_ret)
         } else {
             let fp = param_types
                 .iter()
                 .map(|t| Self::replace_custom_with_typevar(t, &inferred_type_params))
                 .collect();
-            let fr = Self::replace_custom_with_typevar(ret_type, &inferred_type_params);
+            let fr = Self::replace_custom_with_typevar(&effective_ret, &inferred_type_params);
             (fp, fr)
         };
 
@@ -414,6 +520,42 @@ impl TypeChecker {
 
     pub(crate) fn check_member(&mut self, object: &Expr, field: &str) -> Result<Type, Diagnostic> {
         use std::collections::HashMap;
+
+        // Check for namespace member access: ns.ExportedName
+        if let Expr::Ident(name, _) = object
+            && let Some(ns) = self.env.get_namespace(name)
+        {
+            // Try each export category
+            if let Some(info) = ns.classes.get(field) {
+                // Inject class into env so constructor calls and field access work
+                self.env.set_class(field.to_string(), info.clone());
+                // Return the constructor function type
+                if let Some(ty) = ns.variables.get(field) {
+                    self.env.set_var(field.to_string(), ty.clone());
+                    return Ok(ty.clone());
+                }
+                return Ok(info.ty.clone());
+            }
+            if let Some(ty) = ns.variables.get(field) {
+                return Ok(ty.clone());
+            }
+            if let Some(info) = ns.enums.get(field) {
+                // Inject enum into env so EnumName.Variant access works downstream
+                self.env.set_enum(field.to_string(), info.clone());
+                return Ok(Type::Custom(field.to_string(), Vec::new()));
+            }
+            if let Some(info) = ns.traits.get(field) {
+                // Inject trait into env for potential use
+                self.env.set_trait(field.to_string(), info.clone());
+                return Ok(Type::Void);
+            }
+            return Err(Diagnostic::error(format!(
+                "'{}' is not found in namespace '{}'",
+                field, name
+            ))
+            .with_code("M004")
+            .with_label(object.span(), format!("'{}' not exported", field)));
+        }
 
         // Check for enum variant access: EnumName.VariantName
         if let Expr::Ident(name, _) = object

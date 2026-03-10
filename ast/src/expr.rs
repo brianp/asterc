@@ -66,6 +66,7 @@ pub enum Stmt {
         path: Vec<String>,
         names: Option<Vec<String>>,
         alias: Option<String>,
+        is_public: bool,
         span: Span,
     },
     Enum {

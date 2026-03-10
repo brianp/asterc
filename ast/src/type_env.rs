@@ -29,12 +29,22 @@ pub struct EnumInfo {
     pub includes: Vec<String>,
 }
 
+/// Stores the public exports of an imported module namespace.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NamespaceInfo {
+    pub variables: HashMap<String, Type>,
+    pub classes: HashMap<String, ClassInfo>,
+    pub traits: HashMap<String, TraitInfo>,
+    pub enums: HashMap<String, EnumInfo>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeEnv {
     pub variables: HashMap<String, Type>,
     pub classes: HashMap<String, ClassInfo>,
     pub traits: HashMap<String, TraitInfo>,
     pub enums: HashMap<String, EnumInfo>,
+    pub namespaces: HashMap<String, NamespaceInfo>,
     pub parent: Option<Rc<TypeEnv>>,
 }
 
@@ -51,6 +61,7 @@ impl TypeEnv {
             classes: HashMap::new(),
             traits: HashMap::new(),
             enums: HashMap::new(),
+            namespaces: HashMap::new(),
             parent: None,
         }
     }
@@ -66,6 +77,7 @@ impl TypeEnv {
             classes: HashMap::new(),
             traits: HashMap::new(),
             enums: HashMap::new(),
+            namespaces: HashMap::new(),
             parent: Some(Rc::new(self.clone())),
         }
     }
@@ -112,6 +124,17 @@ impl TypeEnv {
 
     pub fn set_enum(&mut self, name: String, info: EnumInfo) {
         self.enums.insert(name, info);
+    }
+
+    pub fn get_namespace(&self, name: &str) -> Option<NamespaceInfo> {
+        self.namespaces
+            .get(name)
+            .cloned()
+            .or_else(|| self.parent.as_ref().and_then(|p| p.get_namespace(name)))
+    }
+
+    pub fn set_namespace(&mut self, name: String, info: NamespaceInfo) {
+        self.namespaces.insert(name, info);
     }
 
     pub fn all_var_names(&self) -> Vec<&str> {

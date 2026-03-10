@@ -1,6 +1,10 @@
 use ast::{ClassInfo, Diagnostic, EnumInfo, Expr, MatchPattern, Stmt, TraitInfo, Type, TypeEnv};
 use indexmap::IndexMap;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
+
+use crate::module_loader::ModuleLoader;
 
 pub struct TypeChecker {
     pub env: TypeEnv,
@@ -12,6 +16,9 @@ pub struct TypeChecker {
     pub throws_type: Option<Type>,
     /// Accumulated diagnostics from error recovery.
     pub diagnostics: Vec<Diagnostic>,
+    /// Optional module loader for resolving `use` imports.
+    /// When None, `use` statements are ignored (backward compatible).
+    pub module_loader: Option<Rc<RefCell<ModuleLoader>>>,
 }
 
 impl Default for TypeChecker {
@@ -156,6 +163,37 @@ impl TypeChecker {
             },
         );
 
+        // Built-in Printable trait: def to_string() -> String, def debug() -> String
+        // to_string() is required (or auto-derived). debug() defaults to to_string().
+        env.set_trait(
+            "Printable".into(),
+            TraitInfo {
+                name: "Printable".into(),
+                methods: HashMap::from([
+                    (
+                        "to_string".into(),
+                        Type::Function {
+                            param_names: vec![],
+                            params: vec![],
+                            ret: Box::new(Type::String),
+                            throws: None,
+                        },
+                    ),
+                    (
+                        "debug".into(),
+                        Type::Function {
+                            param_names: vec![],
+                            params: vec![],
+                            ret: Box::new(Type::String),
+                            throws: None,
+                        },
+                    ),
+                ]),
+                // Only to_string is required — debug has a default (delegates to to_string)
+                required_methods: vec!["to_string".into()],
+            },
+        );
+
         Self {
             env,
             loop_depth: 0,
@@ -163,7 +201,15 @@ impl TypeChecker {
             current_function: None,
             throws_type: None,
             diagnostics: Vec::new(),
+            module_loader: None,
         }
+    }
+
+    /// Create a TypeChecker with a module loader for resolving `use` imports.
+    pub fn with_loader(loader: Rc<RefCell<ModuleLoader>>) -> Self {
+        let mut tc = Self::new();
+        tc.module_loader = Some(loader);
+        tc
     }
 
     /// Create a child TypeChecker that inherits context flags and a child scope.
@@ -175,6 +221,7 @@ impl TypeChecker {
             current_function: self.current_function.clone(),
             throws_type: self.throws_type.clone(),
             diagnostics: Vec::new(),
+            module_loader: self.module_loader.clone(),
         }
     }
 
@@ -227,7 +274,13 @@ impl TypeChecker {
                 if matches!(value, Expr::Lambda { .. }) {
                     self.current_function = Some(name.clone());
                 }
-                let ty = self.check_expr(value)?;
+                // If the value is a lambda with inferred types and we have a type annotation,
+                // propagate the expected type for inference.
+                let ty = if matches!(value, Expr::Lambda { .. }) {
+                    self.check_lambda_with_expected(value, type_ann.as_ref())?
+                } else {
+                    self.check_expr(value)?
+                };
                 self.current_function = prev_fn;
                 if ty.is_error() {
                     self.env.set_var(name.clone(), Type::Error);
@@ -261,7 +314,7 @@ impl TypeChecker {
                         .with_code("E001")
                         .with_label(stmt_span, format!("expected {:?}", ann)));
                     }
-                    if *ann != ty {
+                    if !Self::types_compatible(ann, &ty) {
                         return Err(Diagnostic::error(format!(
                             "Type annotation mismatch for '{}': declared {:?}, got {:?}",
                             name, ann, ty
@@ -555,7 +608,13 @@ impl TypeChecker {
                 }
                 Ok(Type::Void)
             }
-            Stmt::Use { .. } => Ok(Type::Void),
+            Stmt::Use {
+                path,
+                names,
+                alias,
+                span,
+                ..
+            } => self.resolve_use(path, names, alias, span),
             Stmt::Enum {
                 name,
                 variants,
@@ -618,6 +677,122 @@ impl TypeChecker {
                 return false;
             }
         }
+    }
+
+    /// Compare types for compatibility, ignoring param_names on Function types.
+    pub(crate) fn types_compatible(a: &Type, b: &Type) -> bool {
+        match (a, b) {
+            (
+                Type::Function {
+                    params: ap,
+                    ret: ar,
+                    throws: at,
+                    ..
+                },
+                Type::Function {
+                    params: bp,
+                    ret: br,
+                    throws: bt,
+                    ..
+                },
+            ) => ap == bp && ar == br && at == bt,
+            _ => a == b,
+        }
+    }
+
+    /// Resolve a `use` statement by loading the target module and injecting exports.
+    fn resolve_use(
+        &mut self,
+        path: &[String],
+        names: &Option<Vec<String>>,
+        alias: &Option<String>,
+        span: &ast::Span,
+    ) -> Result<Type, Diagnostic> {
+        let loader_rc = match &self.module_loader {
+            Some(loader) => Rc::clone(loader),
+            None => return Ok(Type::Void), // No loader — ignore use (backward compatible)
+        };
+
+        let exports = ModuleLoader::load_module(&loader_rc, path, *span)?;
+        let module_key = path.join("/");
+
+        match (names, alias) {
+            (Some(_), Some(_)) => {
+                // Selective + alias is not allowed
+                return Err(Diagnostic::error(
+                    "Cannot combine selective imports { ... } with 'as' alias".to_string(),
+                )
+                .with_code("M004")
+                .with_label(*span, "use either { names } or 'as alias', not both"));
+            }
+            (Some(selected_names), None) => {
+                // Selective import: use foo { Bar, baz }
+                for name in selected_names {
+                    if !self.inject_export(name, &exports) {
+                        return Err(Diagnostic::error(format!(
+                            "'{}' is not exported by module '{}'",
+                            name, module_key
+                        ))
+                        .with_code("M002")
+                        .with_label(*span, format!("'{}' not found in module", name)));
+                    }
+                }
+            }
+            (None, Some(alias_name)) => {
+                // Namespace import: use foo as ns
+                let ns = ast::NamespaceInfo {
+                    variables: exports.variables.clone(),
+                    classes: exports.classes.clone(),
+                    traits: exports.traits.clone(),
+                    enums: exports.enums.clone(),
+                };
+                self.env.set_namespace(alias_name.clone(), ns);
+            }
+            (None, None) => {
+                // Wildcard import: use foo — import all pub items
+                for (name, ty) in &exports.variables {
+                    self.env.set_var(name.clone(), ty.clone());
+                }
+                for (name, info) in &exports.classes {
+                    self.env.set_class(name.clone(), info.clone());
+                }
+                for (name, info) in &exports.traits {
+                    self.env.set_trait(name.clone(), info.clone());
+                }
+                for (name, info) in &exports.enums {
+                    self.env.set_enum(name.clone(), info.clone());
+                }
+            }
+        }
+
+        Ok(Type::Void)
+    }
+
+    /// Try to inject a single named export into the current environment.
+    /// Returns false if the name wasn't found in any export category.
+    fn inject_export(
+        &mut self,
+        name: &str,
+        exports: &crate::module_loader::ModuleExports,
+    ) -> bool {
+        let mut found = false;
+        if let Some(info) = exports.classes.get(name) {
+            self.env.set_class(name.to_string(), info.clone());
+            found = true;
+        }
+        if let Some(info) = exports.traits.get(name) {
+            self.env.set_trait(name.to_string(), info.clone());
+            found = true;
+        }
+        if let Some(info) = exports.enums.get(name) {
+            self.env.set_enum(name.to_string(), info.clone());
+            found = true;
+        }
+        if let Some(ty) = exports.variables.get(name) {
+            self.env.set_var(name.to_string(), ty.clone());
+            found = true;
+        }
+        found
     }
 
     pub(crate) fn check_body(&mut self, body: &[Stmt]) -> Result<Type, Diagnostic> {
