@@ -190,6 +190,20 @@ impl TypeChecker {
                 result_ty = Some(arm_ty);
             }
         }
+        // Verify catch arm type matches success path type
+        if let Some(ref catch_ty) = result_ty
+            && *catch_ty != ret_ty
+            && !catch_ty.is_error()
+            && !ret_ty.is_error()
+            && *catch_ty != Type::Never
+        {
+            return Err(Diagnostic::error(format!(
+                "!.catch arm type {:?} does not match success type {:?}",
+                catch_ty, ret_ty
+            ))
+            .with_code("E013")
+            .with_label(expr.span(), format!("success path returns {:?}", ret_ty)));
+        }
         Ok(result_ty.unwrap_or(ret_ty))
     }
 

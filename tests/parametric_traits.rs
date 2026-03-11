@@ -426,3 +426,208 @@ class IntToString includes Mapper[String]
     \"mapped\"",
     );
 }
+
+// ============================================================
+// Phase 10: Multiple parametric trait inclusions
+// ============================================================
+
+#[test]
+fn multiple_into_inclusions_different_types() {
+    // A class can include Into[T] multiple times with different T
+    common::check_ok(
+        "\
+class Fahrenheit
+  value: Float
+class Kelvin
+  value: Float
+class Celsius includes Into[Fahrenheit], Into[Kelvin]
+  value: Float
+  def into() -> Fahrenheit
+    Fahrenheit(value: value * 9.0 / 5.0 + 32.0)
+  def into() -> Kelvin
+    Kelvin(value: value + 273.15)",
+    );
+}
+
+#[test]
+fn multiple_from_inclusions_different_types() {
+    // A class can include From[T] multiple times with different T
+    common::check_ok(
+        "\
+class UserId includes From[Int], From[String]
+  id: Int
+  def from(value: Int) -> Self
+    UserId(id: value)
+  def from(value: String) -> Self
+    UserId(id: 0)",
+    );
+}
+
+// ============================================================
+// Phase 11: Expected-type resolution for .into()
+// ============================================================
+
+#[test]
+fn into_resolved_by_let_annotation() {
+    // let x: Fahrenheit = celsius.into() — compiler picks Into[Fahrenheit]
+    common::check_ok(
+        "\
+class Fahrenheit
+  value: Float
+class Kelvin
+  value: Float
+class Celsius includes Into[Fahrenheit], Into[Kelvin]
+  value: Float
+  def into() -> Fahrenheit
+    Fahrenheit(value: value * 9.0 / 5.0 + 32.0)
+  def into() -> Kelvin
+    Kelvin(value: value + 273.15)
+let c = Celsius(value: 100.0)
+let f: Fahrenheit = c.into()",
+    );
+}
+
+#[test]
+fn into_resolved_by_function_arg_type() {
+    // take_fahrenheit(temp: celsius.into()) — compiler picks Into[Fahrenheit]
+    common::check_ok(
+        "\
+class Fahrenheit
+  value: Float
+class Kelvin
+  value: Float
+class Celsius includes Into[Fahrenheit], Into[Kelvin]
+  value: Float
+  def into() -> Fahrenheit
+    Fahrenheit(value: value * 9.0 / 5.0 + 32.0)
+  def into() -> Kelvin
+    Kelvin(value: value + 273.15)
+def take_fahrenheit(temp: Fahrenheit) -> Bool
+  true
+let c = Celsius(value: 100.0)
+let result = take_fahrenheit(temp: c.into())",
+    );
+}
+
+#[test]
+fn into_ambiguous_error_no_expected_type() {
+    // c.into() with no type context — ambiguous, should error
+    let err = common::check_err(
+        "\
+class Fahrenheit
+  value: Float
+class Kelvin
+  value: Float
+class Celsius includes Into[Fahrenheit], Into[Kelvin]
+  value: Float
+  def into() -> Fahrenheit
+    Fahrenheit(value: value * 9.0 / 5.0 + 32.0)
+  def into() -> Kelvin
+    Kelvin(value: value + 273.15)
+let c = Celsius(value: 100.0)
+let x = c.into()",
+    );
+    assert!(
+        err.contains("ambiguous") || err.contains("type annotation"),
+        "expected ambiguity error, got: {}",
+        err
+    );
+}
+
+#[test]
+fn into_single_inclusion_no_annotation_needed() {
+    // Single Into[T] — no annotation needed, unambiguous
+    common::check_ok(
+        "\
+class Fahrenheit
+  value: Float
+class Celsius includes Into[Fahrenheit]
+  value: Float
+  def into() -> Fahrenheit
+    Fahrenheit(value: value * 9.0 / 5.0 + 32.0)
+let c = Celsius(value: 100.0)
+let f = c.into()",
+    );
+}
+
+// ============================================================
+// Phase 12: From/Into auto-reverse
+// ============================================================
+
+#[test]
+fn from_implies_into_with_expected_type() {
+    // User includes From[PgRow], so pg_row.into() works where User is expected
+    common::check_ok(
+        "\
+class PgRow
+  data: String
+class User includes From[PgRow]
+  name: String
+  def from(value: PgRow) -> Self
+    User(name: value.data)
+let row = PgRow(data: \"alice\")
+let user: User = row.into()",
+    );
+}
+
+#[test]
+fn from_implies_into_in_function_arg() {
+    // From[PgRow] auto-reverse: pg_row.into() resolves in function arg context
+    common::check_ok(
+        "\
+class PgRow
+  data: String
+class User includes From[PgRow]
+  name: String
+  def from(value: PgRow) -> Self
+    User(name: value.data)
+def greet(user: User) -> String
+  \"hello\"
+let row = PgRow(data: \"alice\")
+let msg = greet(user: row.into())",
+    );
+}
+
+#[test]
+fn from_implies_into_multiple_from() {
+    // Multiple From[T] on target: into() resolves via expected type
+    common::check_ok(
+        "\
+class PgRow
+  data: String
+class CsvRow
+  data: String
+class User includes From[PgRow], From[CsvRow]
+  name: String
+  def from(value: PgRow) -> Self
+    User(name: value.data)
+  def from(value: CsvRow) -> Self
+    User(name: value.data)
+let row = PgRow(data: \"alice\")
+let user: User = row.into()",
+    );
+}
+
+// ============================================================
+// Phase 13: Expected-type resolution for Type.from() with multiple From
+// ============================================================
+
+#[test]
+fn multiple_from_type_dot_from_selects_by_arg_type() {
+    // User.from(value: pg_row) — selects From[PgRow] by argument type
+    common::check_ok(
+        "\
+class PgRow
+  data: String
+class CsvRow
+  data: String
+class User includes From[PgRow], From[CsvRow]
+  name: String
+  def from(value: PgRow) -> Self
+    User(name: value.data)
+  def from(value: CsvRow) -> Self
+    User(name: value.data)
+let row = PgRow(data: \"alice\")
+let user = User.from(value: row)",
+    );
+}

@@ -449,6 +449,41 @@ let n = nums.count()
 
 // ─── Iterable with explicit type arg is error ────────────────────────
 
+// ─── For-loop over custom Iterable ──────────────────────────────────
+
+#[test]
+fn for_loop_over_custom_iterable() {
+    common::check_ok(
+        r#"class NumberRange includes Iterable
+  start_val: Int
+  end_val: Int
+
+  def each(f: (Int) -> Void) -> Void
+    log(message: "iterating")
+
+for x in NumberRange(start_val: 0, end_val: 10)
+  log(message: "got value")
+"#,
+    );
+}
+
+#[test]
+fn for_loop_over_non_iterable_class_error() {
+    let err = common::check_err(
+        r#"class NotIterable
+  x: Int
+
+for item in NotIterable(x: 1)
+  log(message: "nope")
+"#,
+    );
+    assert!(
+        err.contains("iterate") || err.contains("Iterable") || err.contains("expected"),
+        "Expected iteration error, got: {}",
+        err
+    );
+}
+
 #[test]
 fn iterable_explicit_type_arg_error() {
     let err = common::check_err(

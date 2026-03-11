@@ -25,6 +25,8 @@ impl TypeChecker {
                 generic_params: generic_params.clone(),
                 extends: extends.clone(),
                 includes: Vec::new(),
+                overloaded_methods: HashMap::new(),
+                parametric_includes: Vec::new(),
             },
         );
 
@@ -43,7 +45,17 @@ impl TypeChecker {
         // Pre-register constructor so method bodies can call ClassName(field: val)
         self.register_constructor(name, fields, generic_params, extends);
 
-        let class_type = Type::Custom(name.to_string(), Vec::new());
+        let class_type = Type::Custom(
+            name.to_string(),
+            generic_params
+                .as_ref()
+                .map(|gp| {
+                    gp.iter()
+                        .map(|p| Type::TypeVar(p.clone(), vec![]))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        );
 
         // Create a child checker with class fields in scope for method body checking
         let mut method_checker = self.child_checker();
@@ -51,26 +63,28 @@ impl TypeChecker {
             method_checker.env.set_var(fname.clone(), fty.clone());
         }
         // Also inject inherited fields from parent classes
-        if let Some(parent_name) = extends {
-            let mut current = Some(parent_name.clone());
-            let mut visited = std::collections::HashSet::new();
-            visited.insert(name.to_string());
-            while let Some(ref cname) = current {
-                if !visited.insert(cname.clone()) {
-                    break;
-                }
-                if let Some(ancestor) = self.env.get_class(cname) {
-                    for (fname, fty) in ancestor.fields.iter() {
-                        method_checker.env.set_var(fname.clone(), fty.clone());
-                    }
-                    current = ancestor.extends.clone();
-                } else {
-                    break;
+        if extends.is_some() {
+            for ancestor in self.walk_ancestors(name) {
+                for (fname, fty) in ancestor.fields.iter() {
+                    method_checker.env.set_var(fname.clone(), fty.clone());
                 }
             }
         }
 
+        // Count how many times each parametric trait is included (for allowing method overloads)
+        let parametric_trait_counts: HashMap<String, usize> = {
+            let mut counts = HashMap::new();
+            for (tname, targs) in includes.clone().unwrap_or_default() {
+                if !targs.is_empty() {
+                    *counts.entry(tname).or_insert(0) += 1;
+                }
+            }
+            counts
+        };
+        let has_parametric_overloads = parametric_trait_counts.values().any(|&c| c > 1);
+
         let mut method_map = HashMap::new();
+        let mut overloaded_methods: HashMap<String, Vec<Type>> = HashMap::new();
         for m in methods {
             if let Stmt::Let {
                 name: mname, value, ..
@@ -83,15 +97,36 @@ impl TypeChecker {
                     .strip_prefix(&format!("{}.", name))
                     .unwrap_or(mname)
                     .to_string();
+                #[allow(clippy::map_entry)]
                 if method_map.contains_key(&short_name) {
-                    return Err(Diagnostic::error(format!(
-                        "Duplicate method '{}' in class '{}'",
-                        short_name, name
-                    ))
-                    .with_code("E014")
-                    .with_label(m.span(), "duplicate method"));
+                    // Allow duplicate if class has multiple parametric trait inclusions
+                    // (e.g., Into[Fahrenheit], Into[Kelvin] both produce into())
+                    if has_parametric_overloads {
+                        let existing = method_map
+                            .remove(&short_name)
+                            .expect("invariant: contains_key checked above");
+                        let overloads = overloaded_methods.entry(short_name.clone()).or_default();
+                        if overloads.is_empty() {
+                            overloads.push(existing);
+                        }
+                        overloads.push(mty);
+                    } else {
+                        return Err(Diagnostic::error(format!(
+                            "Duplicate method '{}' in class '{}'",
+                            short_name, name
+                        ))
+                        .with_code("E014")
+                        .with_label(m.span(), "duplicate method"));
+                    }
+                } else if overloaded_methods.contains_key(&short_name) {
+                    // Already moved to overloaded — add another
+                    overloaded_methods
+                        .get_mut(&short_name)
+                        .expect("invariant: contains_key checked above")
+                        .push(mty);
+                } else {
+                    method_map.insert(short_name, mty);
                 }
-                method_map.insert(short_name, mty);
             } else {
                 return Err(Diagnostic::error(format!(
                     "Unexpected stmt in class methods: {:?}",
@@ -156,24 +191,52 @@ impl TypeChecker {
             }
 
             // Inject vocabulary methods (only if not already defined by the class)
-            let elem_ty = iterable_element_type.clone().unwrap();
+            let elem_ty = iterable_element_type
+                .clone()
+                .expect("invariant: set when Iterable detected above");
             self.inject_iterable_vocabulary(&mut method_map, &elem_ty);
         }
 
-        // Build map of trait type args for parametric trait substitution
-        let mut trait_type_args: HashMap<String, Vec<Type>> = HashMap::new();
-        for (tname, targs) in &includes_refs {
-            if !targs.is_empty() {
-                trait_type_args.insert(tname.clone(), targs.clone());
-            }
-        }
+        // Build parametric_includes list preserving duplicates with type args
+        let parametric_includes: Vec<(String, Vec<Type>)> = includes_refs
+            .iter()
+            .filter(|(_, targs)| !targs.is_empty())
+            .cloned()
+            .collect();
+
         // For Iterable, inject inferred type arg so parametric trait validation passes
+        let mut iterable_parametric = parametric_includes.clone();
         if let Some(ref elem_ty) = iterable_element_type {
-            trait_type_args.insert("Iterable".to_string(), vec![elem_ty.clone()]);
+            iterable_parametric.push(("Iterable".to_string(), vec![elem_ty.clone()]));
         }
 
-        // Validate includes — check trait satisfaction with Self + type param substitution
-        for trait_name in &includes_list {
+        // Build set of already-validated trait+args combos to avoid re-validating
+        // when includes_list deduplicates trait names
+        let mut validated_traits: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+
+        // Validate includes — iterate over each (trait_name, type_args) inclusion individually
+        // This handles multiple inclusions of the same parametric trait (e.g., Into[A], Into[B])
+        let all_inclusions: Vec<(String, Vec<Type>)> = {
+            let mut v: Vec<(String, Vec<Type>)> = includes_refs.clone();
+            // Add auto-added Eq if Ord is included
+            if includes_list.contains(&"Eq".to_string())
+                && !includes_refs.iter().any(|(n, _)| n == "Eq")
+            {
+                v.push(("Eq".to_string(), Vec::new()));
+            }
+            // Add inferred Iterable type args
+            if let Some(ref elem_ty) = iterable_element_type {
+                for item in v.iter_mut() {
+                    if item.0 == "Iterable" && item.1.is_empty() {
+                        item.1 = vec![elem_ty.clone()];
+                    }
+                }
+            }
+            v
+        };
+
+        for (trait_name, targs) in &all_inclusions {
             let trait_info = self.env.get_trait(trait_name).ok_or_else(|| {
                 // Check if it's a known stdlib trait — give helpful import suggestion
                 if self.builtin_traits.contains_key(trait_name) {
@@ -199,22 +262,70 @@ impl TypeChecker {
             })?;
 
             // Validate type argument arity for parametric traits
-            if let Some(ref gp) = trait_info.generic_params {
-                let provided = trait_type_args.get(trait_name);
-                let provided_count = provided.map(|v| v.len()).unwrap_or(0);
-                if provided_count != gp.len() {
-                    return Err(Diagnostic::error(format!(
-                        "Trait '{}' expects {} type parameter(s), got {}",
-                        trait_name,
-                        gp.len(),
-                        provided_count
-                    ))
-                    .with_code("E014"));
-                }
+            if let Some(ref gp) = trait_info.generic_params
+                && targs.len() != gp.len()
+            {
+                return Err(Diagnostic::error(format!(
+                    "Trait '{}' expects {} type parameter(s), got {}",
+                    trait_name,
+                    gp.len(),
+                    targs.len()
+                ))
+                .with_code("E014"));
             }
 
             for method_name in &trait_info.required_methods {
-                if let Some(class_method_ty) = method_map.get(method_name) {
+                // For overloaded methods, find the matching overload by return type
+                let class_method_ty = if let Some(overloads) = overloaded_methods.get(method_name) {
+                    // Resolve expected return type from trait + type args
+                    if let Some(trait_method_ty) = trait_info.methods.get(method_name)
+                        && let Some(ref gp) = trait_info.generic_params
+                        && !targs.is_empty()
+                    {
+                        let param_bindings: HashMap<String, Type> = gp
+                            .iter()
+                            .zip(targs.iter())
+                            .map(|(p, t)| (p.clone(), t.clone()))
+                            .collect();
+                        let resolved_trait_ty = Self::substitute_typevars(
+                            &Self::substitute_self(trait_method_ty, &class_type),
+                            &param_bindings,
+                        );
+                        // Find the overload whose signature matches
+                        overloads.iter().find(|oty| {
+                            let oty: &Type = oty;
+                            let mut bindings = HashMap::new();
+                            Self::unify_type(&resolved_trait_ty, oty, &mut bindings).is_ok() || {
+                                // Try ignoring throws
+                                let no_throws = if let Type::Function {
+                                    param_names,
+                                    params,
+                                    ret,
+                                    ..
+                                } = oty
+                                {
+                                    Type::Function {
+                                        param_names: param_names.clone(),
+                                        params: params.clone(),
+                                        ret: ret.clone(),
+                                        throws: None,
+                                    }
+                                } else {
+                                    oty.clone()
+                                };
+                                let mut bindings2 = HashMap::new();
+                                Self::unify_type(&resolved_trait_ty, &no_throws, &mut bindings2)
+                                    .is_ok()
+                            }
+                        })
+                    } else {
+                        overloads.first()
+                    }
+                } else {
+                    method_map.get(method_name)
+                };
+
+                if let Some(class_method_ty) = class_method_ty {
                     if let Some(trait_method_ty) = trait_info.methods.get(method_name) {
                         // Substitute Self -> class type in trait method signature
                         let mut resolved_trait_ty =
@@ -222,7 +333,7 @@ impl TypeChecker {
 
                         // Substitute trait type params -> concrete types
                         if let Some(ref gp) = trait_info.generic_params
-                            && let Some(targs) = trait_type_args.get(trait_name)
+                            && !targs.is_empty()
                         {
                             let param_bindings: HashMap<String, Type> = gp
                                 .iter()
@@ -234,12 +345,10 @@ impl TypeChecker {
                         }
 
                         // Allow throws mismatch: class method may add throws to a non-throws trait method
-                        // Unify ignoring throws on the class side
                         let mut bindings = HashMap::new();
                         if Self::unify_type(&resolved_trait_ty, class_method_ty, &mut bindings)
                             .is_err()
                         {
-                            // Try again ignoring throws (class method may declare throws)
                             let class_no_throws = match class_method_ty {
                                 Type::Function {
                                     param_names,
@@ -272,54 +381,18 @@ impl TypeChecker {
                     }
                 } else {
                     // Method not defined — check if auto-derive applies
-                    if trait_name == "Eq" && method_name == "eq" {
-                        // Auto-derive: verify all fields include Eq
-                        self.check_auto_derive(
-                            name,
-                            &field_map,
-                            "Eq",
-                            "E021",
-                            Self::type_includes_eq,
-                        )?;
-                        let eq_method_ty = Type::Function {
-                            param_names: vec!["other".into()],
-                            params: vec![class_type.clone()],
-                            ret: Box::new(Type::Bool),
-                            throws: None,
-                        };
-                        method_map.insert("eq".into(), eq_method_ty);
-                    } else if trait_name == "Ord" && method_name == "cmp" {
-                        // Auto-derive: verify all fields include Ord
-                        self.check_auto_derive(
-                            name,
-                            &field_map,
-                            "Ord",
-                            "E022",
-                            Self::type_includes_ord,
-                        )?;
-                        let cmp_method_ty = Type::Function {
-                            param_names: vec!["other".into()],
-                            params: vec![class_type.clone()],
-                            ret: Box::new(Type::Custom("Ordering".into(), Vec::new())),
-                            throws: None,
-                        };
-                        method_map.insert("cmp".into(), cmp_method_ty);
-                    } else if trait_name == "Printable" && method_name == "to_string" {
-                        // Auto-derive: verify all fields include Printable
-                        self.check_auto_derive(
-                            name,
-                            &field_map,
-                            "Printable",
-                            "E023",
-                            Self::type_includes_printable,
-                        )?;
-                        let to_string_ty = Type::Function {
-                            param_names: vec![],
-                            params: vec![],
-                            ret: Box::new(Type::String),
-                            throws: None,
-                        };
-                        method_map.insert("to_string".into(), to_string_ty);
+                    // Skip if we already validated this non-parametric trait
+                    if validated_traits.contains(trait_name) {
+                        continue;
+                    }
+                    if let Some((mname, mty)) = self.try_auto_derive_method(
+                        name,
+                        trait_name,
+                        method_name,
+                        &field_map,
+                        &class_type,
+                    )? {
+                        method_map.insert(mname, mty);
                     } else {
                         return Err(Diagnostic::error(format!(
                             "Class '{}' must implement method '{}' from trait '{}'",
@@ -329,6 +402,7 @@ impl TypeChecker {
                     }
                 }
             }
+            validated_traits.insert(trait_name.clone());
         }
 
         // Printable: auto-add debug() defaulting to to_string() signature if not defined
@@ -349,6 +423,8 @@ impl TypeChecker {
             generic_params: generic_params.clone(),
             extends: extends.clone(),
             includes: includes_list,
+            overloaded_methods,
+            parametric_includes,
         };
         self.env.set_class(name.to_string(), info);
 
@@ -361,47 +437,12 @@ impl TypeChecker {
                 ))
                 .with_code("E014"));
             }
-            let mut visited = std::collections::HashSet::new();
-            visited.insert(name.to_string());
-            let mut current = Some(parent_name.clone());
-            while let Some(ref cname) = current {
-                if !visited.insert(cname.clone()) {
-                    return Err(Diagnostic::error(format!(
-                        "Circular inheritance detected: class '{}' forms a cycle through '{}'",
-                        name, cname
-                    ))
-                    .with_code("E014"));
-                }
-                current = self
-                    .env
-                    .get_class(cname)
-                    .and_then(|info| info.extends.clone());
-            }
+            self.validate_circular_inheritance(name)?;
         }
 
         // Check for field shadowing
-        if let Some(parent_name) = extends {
-            let mut inherited_fields = std::collections::HashSet::new();
-            let mut current = Some(parent_name.clone());
-            while let Some(ref cname) = current {
-                if let Some(ancestor) = self.env.get_class(cname) {
-                    for fname in ancestor.fields.keys() {
-                        inherited_fields.insert(fname.clone());
-                    }
-                    current = ancestor.extends.clone();
-                } else {
-                    break;
-                }
-            }
-            for (fname, _) in fields {
-                if inherited_fields.contains(fname) {
-                    return Err(Diagnostic::error(format!(
-                        "Field '{}' in class '{}' shadows inherited field from parent chain",
-                        fname, name
-                    ))
-                    .with_code("E014"));
-                }
-            }
+        if extends.is_some() {
+            self.detect_field_shadowing(name, fields)?;
         }
 
         // Final constructor registration (may differ from pre-registration if
@@ -430,23 +471,9 @@ impl TypeChecker {
         let mut all_field_names: Vec<String> = Vec::new();
         let mut all_field_types: Vec<Type> = Vec::new();
         // Include inherited fields (with cycle detection)
-        if let Some(parent_name) = extends {
-            let mut current = Some(parent_name.clone());
-            let mut chain = Vec::new();
-            let mut visited = std::collections::HashSet::new();
-            visited.insert(name.to_string());
-            while let Some(ref cname) = current {
-                if !visited.insert(cname.clone()) {
-                    break; // Cycle detected, stop traversal
-                }
-                if let Some(parent_info) = self.env.get_class(cname) {
-                    chain.push(parent_info.clone());
-                    current = parent_info.extends.clone();
-                } else {
-                    break;
-                }
-            }
-            for ancestor in chain.into_iter().rev() {
+        if extends.is_some() {
+            let ancestors = self.walk_ancestors(name);
+            for ancestor in ancestors.into_iter().rev() {
                 for (fname, fty) in ancestor.fields.iter() {
                     all_field_names.push(fname.clone());
                     all_field_types.push(fty.clone());
@@ -464,6 +491,112 @@ impl TypeChecker {
                 throws: None,
             },
         );
+    }
+
+    /// Validate that a class does not form a circular inheritance chain.
+    fn validate_circular_inheritance(&self, name: &str) -> Result<(), Diagnostic> {
+        let mut visited = std::collections::HashSet::new();
+        visited.insert(name.to_string());
+        let mut current = self
+            .env
+            .get_class(name)
+            .and_then(|info| info.extends.clone());
+        while let Some(ref cname) = current {
+            if !visited.insert(cname.clone()) {
+                return Err(Diagnostic::error(format!(
+                    "Circular inheritance detected: class '{}' forms a cycle through '{}'",
+                    name, cname
+                ))
+                .with_code("E014"));
+            }
+            current = self
+                .env
+                .get_class(cname)
+                .and_then(|info| info.extends.clone());
+        }
+        Ok(())
+    }
+
+    /// Check that no field in the class shadows an inherited field from the parent chain.
+    fn detect_field_shadowing(
+        &self,
+        name: &str,
+        fields: &[(String, Type)],
+    ) -> Result<(), Diagnostic> {
+        let mut inherited_fields = std::collections::HashSet::new();
+        for ancestor in self.walk_ancestors(name) {
+            for fname in ancestor.fields.keys() {
+                inherited_fields.insert(fname.clone());
+            }
+        }
+        for (fname, _) in fields {
+            if inherited_fields.contains(fname) {
+                return Err(Diagnostic::error(format!(
+                    "Field '{}' in class '{}' shadows inherited field from parent chain",
+                    fname, name
+                ))
+                .with_code("E014"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Try to auto-derive a trait method for a class. Returns `Some((method_name, method_type))`
+    /// if the trait/method combo is auto-derivable (Eq/eq, Ord/cmp, Printable/to_string),
+    /// or `None` if not recognized. Returns `Err` if auto-derive validation fails.
+    fn try_auto_derive_method(
+        &self,
+        class_name: &str,
+        trait_name: &str,
+        method_name: &str,
+        fields: &IndexMap<String, Type>,
+        class_type: &Type,
+    ) -> Result<Option<(String, Type)>, Diagnostic> {
+        match (trait_name, method_name) {
+            ("Eq", "eq") => {
+                self.check_auto_derive(class_name, fields, "Eq", "E021", Self::type_includes_eq)?;
+                Ok(Some((
+                    "eq".into(),
+                    Type::Function {
+                        param_names: vec!["other".into()],
+                        params: vec![class_type.clone()],
+                        ret: Box::new(Type::Bool),
+                        throws: None,
+                    },
+                )))
+            }
+            ("Ord", "cmp") => {
+                self.check_auto_derive(class_name, fields, "Ord", "E022", Self::type_includes_ord)?;
+                Ok(Some((
+                    "cmp".into(),
+                    Type::Function {
+                        param_names: vec!["other".into()],
+                        params: vec![class_type.clone()],
+                        ret: Box::new(Type::Custom("Ordering".into(), Vec::new())),
+                        throws: None,
+                    },
+                )))
+            }
+            ("Printable", "to_string") => {
+                self.check_auto_derive(
+                    class_name,
+                    fields,
+                    "Printable",
+                    "E023",
+                    Self::type_includes_printable,
+                )?;
+                Ok(Some((
+                    "to_string".into(),
+                    Type::Function {
+                        param_names: vec![],
+                        params: vec![],
+                        ret: Box::new(Type::String),
+                        throws: None,
+                    },
+                )))
+            }
+            _ => Ok(None),
+        }
     }
 
     /// Replace Self type in a Lambda expression's type annotations before checking.
@@ -502,41 +635,15 @@ impl TypeChecker {
 
     /// Substitute `Self` (represented as `Type::Custom("Self", [])`) with the concrete class type.
     fn substitute_self(ty: &Type, class_type: &Type) -> Type {
-        match ty {
-            Type::Custom(name, args) if name == "Self" && args.is_empty() => class_type.clone(),
-            Type::Function {
-                param_names,
-                params,
-                ret,
-                throws,
-            } => Type::Function {
-                param_names: param_names.clone(),
-                params: params
-                    .iter()
-                    .map(|t| Self::substitute_self(t, class_type))
-                    .collect(),
-                ret: Box::new(Self::substitute_self(ret, class_type)),
-                throws: throws
-                    .as_ref()
-                    .map(|t| Box::new(Self::substitute_self(t, class_type))),
-            },
-            Type::List(inner) => Type::List(Box::new(Self::substitute_self(inner, class_type))),
-            Type::Map(k, v) => Type::Map(
-                Box::new(Self::substitute_self(k, class_type)),
-                Box::new(Self::substitute_self(v, class_type)),
-            ),
-            Type::Nullable(inner) => {
-                Type::Nullable(Box::new(Self::substitute_self(inner, class_type)))
+        ty.map_type(&|t| {
+            if let Type::Custom(name, args) = t
+                && name == "Self"
+                && args.is_empty()
+            {
+                return Some(class_type.clone());
             }
-            Type::Task(inner) => Type::Task(Box::new(Self::substitute_self(inner, class_type))),
-            Type::Custom(name, args) => Type::Custom(
-                name.clone(),
-                args.iter()
-                    .map(|t| Self::substitute_self(t, class_type))
-                    .collect(),
-            ),
-            other => other.clone(),
-        }
+            None
+        })
     }
 
     /// Check that all fields of a class include a given trait for auto-derive.
@@ -560,47 +667,57 @@ impl TypeChecker {
         Ok(())
     }
 
-    /// Check if a type includes Printable (all primitives do, custom types need explicit includes).
-    pub(crate) fn type_includes_printable(&self, ty: &Type) -> bool {
+    /// Check if a type includes the given protocol.
+    ///
+    /// Primitive types satisfy protocols based on a static mapping:
+    /// - Printable: Int, Float, String, Bool, Nil
+    /// - Eq: Int, Float, String, Bool, Nil (Ord implies Eq)
+    /// - Ord: Int, Float, String, Bool
+    ///
+    /// Custom types satisfy a protocol if their `includes` list contains it
+    /// (checked on both classes and enums). Ord implies Eq.
+    /// List types recurse on the element type. Error is always compatible.
+    pub(crate) fn type_includes_protocol(&self, ty: &Type, protocol: &str) -> bool {
         match ty {
-            Type::Int | Type::Float | Type::String | Type::Bool | Type::Nil => true,
+            Type::Int | Type::Float | Type::String | Type::Bool => true,
+            Type::Nil => matches!(protocol, "Printable" | "Eq"),
             Type::Custom(name, _) => {
+                let traits_to_check: &[&str] = match protocol {
+                    "Eq" => &["Eq", "Ord"],
+                    _ => &[protocol],
+                };
+                let check_includes = |includes: &[String]| {
+                    traits_to_check
+                        .iter()
+                        .any(|t| includes.contains(&t.to_string()))
+                };
                 if let Some(info) = self.env.get_class(name) {
-                    return info.includes.contains(&"Printable".to_string());
+                    return check_includes(&info.includes);
                 }
                 if let Some(info) = self.env.get_enum(name) {
-                    return info.includes.contains(&"Printable".to_string());
+                    return check_includes(&info.includes);
                 }
                 false
             }
-            Type::List(inner) => self.type_includes_printable(inner),
+            Type::List(inner) => self.type_includes_protocol(inner, protocol),
             Type::Error => true,
             _ => false,
         }
     }
 
-    /// Check if a type includes Eq (primitives do, custom types need explicit includes).
-    /// Ord implies Eq, so types including Ord also include Eq.
+    /// Check if a type includes Printable.
+    pub(crate) fn type_includes_printable(&self, ty: &Type) -> bool {
+        self.type_includes_protocol(ty, "Printable")
+    }
+
+    /// Check if a type includes Eq (Ord implies Eq).
     pub(crate) fn type_includes_eq(&self, ty: &Type) -> bool {
-        match ty {
-            Type::Int | Type::Float | Type::String | Type::Bool | Type::Nil => true,
-            Type::Custom(name, _) => {
-                // Check classes
-                if let Some(info) = self.env.get_class(name) {
-                    return info.includes.contains(&"Eq".to_string())
-                        || info.includes.contains(&"Ord".to_string());
-                }
-                // Check enums
-                if let Some(info) = self.env.get_enum(name) {
-                    return info.includes.contains(&"Eq".to_string())
-                        || info.includes.contains(&"Ord".to_string());
-                }
-                false
-            }
-            Type::List(inner) => self.type_includes_eq(inner),
-            Type::Error => true, // error sentinel is compatible with everything
-            _ => false,
-        }
+        self.type_includes_protocol(ty, "Eq")
+    }
+
+    /// Check if a type includes Ord.
+    pub(crate) fn type_includes_ord(&self, ty: &Type) -> bool {
+        self.type_includes_protocol(ty, "Ord")
     }
 
     /// Inject Iterable vocabulary methods into a class's method map.
@@ -608,206 +725,8 @@ impl TypeChecker {
     /// Conditional methods (min, max, sort) are added here;
     /// the Ord check happens at call site in check_member.
     fn inject_iterable_vocabulary(&self, method_map: &mut HashMap<String, Type>, elem_ty: &Type) {
-        // map: (f: (T) -> U) -> List[U]
-        if !method_map.contains_key("map") {
-            method_map.insert(
-                "map".into(),
-                Type::Function {
-                    param_names: vec!["f".into()],
-                    params: vec![Type::Function {
-                        param_names: vec!["_0".into()],
-                        params: vec![elem_ty.clone()],
-                        ret: Box::new(Type::TypeVar("U".into(), vec![])),
-                        throws: None,
-                    }],
-                    ret: Box::new(Type::List(Box::new(Type::TypeVar("U".into(), vec![])))),
-                    throws: None,
-                },
-            );
-        }
-
-        // filter: (f: (T) -> Bool) -> List[T]
-        if !method_map.contains_key("filter") {
-            method_map.insert(
-                "filter".into(),
-                Type::Function {
-                    param_names: vec!["f".into()],
-                    params: vec![Type::Function {
-                        param_names: vec!["_0".into()],
-                        params: vec![elem_ty.clone()],
-                        ret: Box::new(Type::Bool),
-                        throws: None,
-                    }],
-                    ret: Box::new(Type::List(Box::new(elem_ty.clone()))),
-                    throws: None,
-                },
-            );
-        }
-
-        // reduce: (init: U, f: (U, T) -> U) -> U
-        if !method_map.contains_key("reduce") {
-            method_map.insert(
-                "reduce".into(),
-                Type::Function {
-                    param_names: vec!["init".into(), "f".into()],
-                    params: vec![
-                        Type::TypeVar("U".into(), vec![]),
-                        Type::Function {
-                            param_names: vec!["_0".into(), "_1".into()],
-                            params: vec![Type::TypeVar("U".into(), vec![]), elem_ty.clone()],
-                            ret: Box::new(Type::TypeVar("U".into(), vec![])),
-                            throws: None,
-                        },
-                    ],
-                    ret: Box::new(Type::TypeVar("U".into(), vec![])),
-                    throws: None,
-                },
-            );
-        }
-
-        // find: (f: (T) -> Bool) -> T?
-        if !method_map.contains_key("find") {
-            method_map.insert(
-                "find".into(),
-                Type::Function {
-                    param_names: vec!["f".into()],
-                    params: vec![Type::Function {
-                        param_names: vec!["_0".into()],
-                        params: vec![elem_ty.clone()],
-                        ret: Box::new(Type::Bool),
-                        throws: None,
-                    }],
-                    ret: Box::new(Type::Nullable(Box::new(elem_ty.clone()))),
-                    throws: None,
-                },
-            );
-        }
-
-        // any: (f: (T) -> Bool) -> Bool
-        if !method_map.contains_key("any") {
-            method_map.insert(
-                "any".into(),
-                Type::Function {
-                    param_names: vec!["f".into()],
-                    params: vec![Type::Function {
-                        param_names: vec!["_0".into()],
-                        params: vec![elem_ty.clone()],
-                        ret: Box::new(Type::Bool),
-                        throws: None,
-                    }],
-                    ret: Box::new(Type::Bool),
-                    throws: None,
-                },
-            );
-        }
-
-        // all: (f: (T) -> Bool) -> Bool
-        if !method_map.contains_key("all") {
-            method_map.insert(
-                "all".into(),
-                Type::Function {
-                    param_names: vec!["f".into()],
-                    params: vec![Type::Function {
-                        param_names: vec!["_0".into()],
-                        params: vec![elem_ty.clone()],
-                        ret: Box::new(Type::Bool),
-                        throws: None,
-                    }],
-                    ret: Box::new(Type::Bool),
-                    throws: None,
-                },
-            );
-        }
-
-        // count: () -> Int
-        if !method_map.contains_key("count") {
-            method_map.insert(
-                "count".into(),
-                Type::Function {
-                    param_names: vec![],
-                    params: vec![],
-                    ret: Box::new(Type::Int),
-                    throws: None,
-                },
-            );
-        }
-
-        // first: () -> T?
-        if !method_map.contains_key("first") {
-            method_map.insert(
-                "first".into(),
-                Type::Function {
-                    param_names: vec![],
-                    params: vec![],
-                    ret: Box::new(Type::Nullable(Box::new(elem_ty.clone()))),
-                    throws: None,
-                },
-            );
-        }
-
-        // last: () -> T?
-        if !method_map.contains_key("last") {
-            method_map.insert(
-                "last".into(),
-                Type::Function {
-                    param_names: vec![],
-                    params: vec![],
-                    ret: Box::new(Type::Nullable(Box::new(elem_ty.clone()))),
-                    throws: None,
-                },
-            );
-        }
-
-        // to_list: () -> List[T]
-        if !method_map.contains_key("to_list") {
-            method_map.insert(
-                "to_list".into(),
-                Type::Function {
-                    param_names: vec![],
-                    params: vec![],
-                    ret: Box::new(Type::List(Box::new(elem_ty.clone()))),
-                    throws: None,
-                },
-            );
-        }
-
-        // min: () -> T? (requires T includes Ord — checked at call site)
-        if !method_map.contains_key("min") {
-            method_map.insert(
-                "min".into(),
-                Type::Function {
-                    param_names: vec![],
-                    params: vec![],
-                    ret: Box::new(Type::Nullable(Box::new(elem_ty.clone()))),
-                    throws: None,
-                },
-            );
-        }
-
-        // max: () -> T? (requires T includes Ord — checked at call site)
-        if !method_map.contains_key("max") {
-            method_map.insert(
-                "max".into(),
-                Type::Function {
-                    param_names: vec![],
-                    params: vec![],
-                    ret: Box::new(Type::Nullable(Box::new(elem_ty.clone()))),
-                    throws: None,
-                },
-            );
-        }
-
-        // sort: () -> List[T] (requires T includes Ord — checked at call site)
-        if !method_map.contains_key("sort") {
-            method_map.insert(
-                "sort".into(),
-                Type::Function {
-                    param_names: vec![],
-                    params: vec![],
-                    ret: Box::new(Type::List(Box::new(elem_ty.clone()))),
-                    throws: None,
-                },
-            );
+        for (name, ty) in iterable_vocabulary_methods(elem_ty) {
+            method_map.entry(name).or_insert(ty);
         }
     }
 
@@ -822,21 +741,162 @@ impl TypeChecker {
         }
         None
     }
+}
 
-    /// Check if a type includes Ord (primitives do, custom types need explicit includes).
-    pub(crate) fn type_includes_ord(&self, ty: &Type) -> bool {
-        match ty {
-            Type::Int | Type::Float | Type::String | Type::Bool => true,
-            Type::Custom(name, _) => {
-                if let Some(info) = self.env.get_class(name) {
-                    info.includes.contains(&"Ord".to_string())
-                } else {
-                    false
-                }
-            }
-            Type::List(inner) => self.type_includes_ord(inner),
-            Type::Error => true,
-            _ => false,
-        }
-    }
+/// Returns the 13 Iterable vocabulary method signatures for a given element type.
+/// Used by both List[T] builtins and classes that include Iterable.
+pub(crate) fn iterable_vocabulary_methods(elem_ty: &Type) -> Vec<(String, Type)> {
+    let u_var = || Type::TypeVar("U".into(), vec![]);
+    let callback_predicate = || Type::Function {
+        param_names: vec!["_0".into()],
+        params: vec![elem_ty.clone()],
+        ret: Box::new(Type::Bool),
+        throws: None,
+    };
+
+    vec![
+        // map: (f: (T) -> U) -> List[U]
+        (
+            "map".into(),
+            Type::Function {
+                param_names: vec!["f".into()],
+                params: vec![Type::Function {
+                    param_names: vec!["_0".into()],
+                    params: vec![elem_ty.clone()],
+                    ret: Box::new(u_var()),
+                    throws: None,
+                }],
+                ret: Box::new(Type::List(Box::new(u_var()))),
+                throws: None,
+            },
+        ),
+        // filter: (f: (T) -> Bool) -> List[T]
+        (
+            "filter".into(),
+            Type::Function {
+                param_names: vec!["f".into()],
+                params: vec![callback_predicate()],
+                ret: Box::new(Type::List(Box::new(elem_ty.clone()))),
+                throws: None,
+            },
+        ),
+        // reduce: (init: U, f: (U, T) -> U) -> U
+        (
+            "reduce".into(),
+            Type::Function {
+                param_names: vec!["init".into(), "f".into()],
+                params: vec![
+                    u_var(),
+                    Type::Function {
+                        param_names: vec!["_0".into(), "_1".into()],
+                        params: vec![u_var(), elem_ty.clone()],
+                        ret: Box::new(u_var()),
+                        throws: None,
+                    },
+                ],
+                ret: Box::new(u_var()),
+                throws: None,
+            },
+        ),
+        // find: (f: (T) -> Bool) -> T?
+        (
+            "find".into(),
+            Type::Function {
+                param_names: vec!["f".into()],
+                params: vec![callback_predicate()],
+                ret: Box::new(Type::Nullable(Box::new(elem_ty.clone()))),
+                throws: None,
+            },
+        ),
+        // any: (f: (T) -> Bool) -> Bool
+        (
+            "any".into(),
+            Type::Function {
+                param_names: vec!["f".into()],
+                params: vec![callback_predicate()],
+                ret: Box::new(Type::Bool),
+                throws: None,
+            },
+        ),
+        // all: (f: (T) -> Bool) -> Bool
+        (
+            "all".into(),
+            Type::Function {
+                param_names: vec!["f".into()],
+                params: vec![callback_predicate()],
+                ret: Box::new(Type::Bool),
+                throws: None,
+            },
+        ),
+        // count: () -> Int
+        (
+            "count".into(),
+            Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(Type::Int),
+                throws: None,
+            },
+        ),
+        // first: () -> T?
+        (
+            "first".into(),
+            Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(Type::Nullable(Box::new(elem_ty.clone()))),
+                throws: None,
+            },
+        ),
+        // last: () -> T?
+        (
+            "last".into(),
+            Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(Type::Nullable(Box::new(elem_ty.clone()))),
+                throws: None,
+            },
+        ),
+        // to_list: () -> List[T]
+        (
+            "to_list".into(),
+            Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(Type::List(Box::new(elem_ty.clone()))),
+                throws: None,
+            },
+        ),
+        // min: () -> T? (requires T includes Ord -- checked at call site)
+        (
+            "min".into(),
+            Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(Type::Nullable(Box::new(elem_ty.clone()))),
+                throws: None,
+            },
+        ),
+        // max: () -> T? (requires T includes Ord -- checked at call site)
+        (
+            "max".into(),
+            Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(Type::Nullable(Box::new(elem_ty.clone()))),
+                throws: None,
+            },
+        ),
+        // sort: () -> List[T] (requires T includes Ord -- checked at call site)
+        (
+            "sort".into(),
+            Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(Type::List(Box::new(elem_ty.clone()))),
+                throws: None,
+            },
+        ),
+    ]
 }

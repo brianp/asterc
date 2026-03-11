@@ -276,6 +276,8 @@ impl TypeChecker {
                     generic_params: None,
                     extends,
                     includes,
+                    overloaded_methods: std::collections::HashMap::new(),
+                    parametric_includes: Vec::new(),
                 },
             );
         }
@@ -372,31 +374,17 @@ impl TypeChecker {
     /// Collect unknown type names from a type. A Custom(name, []) is "unknown" if
     /// it doesn't correspond to a known class, trait, or enum in the current environment.
     fn collect_unknown_type_names(&self, ty: &Type, out: &mut Vec<String>) {
-        match ty {
-            Type::Custom(name, args) if args.is_empty() => {
-                if !self.is_known_type_name(name) && !out.contains(name) {
-                    out.push(name.clone());
-                }
+        let mut collected = Vec::new();
+        ty.collect_types(
+            &|t| matches!(t, Type::Custom(name, args) if args.is_empty() && !self.is_known_type_name(name)),
+            &mut collected,
+        );
+        for t in collected {
+            if let Type::Custom(name, _) = t
+                && !out.contains(&name)
+            {
+                out.push(name);
             }
-            Type::Custom(_, args) => {
-                for a in args {
-                    self.collect_unknown_type_names(a, out);
-                }
-            }
-            Type::List(inner) | Type::Task(inner) | Type::Nullable(inner) => {
-                self.collect_unknown_type_names(inner, out);
-            }
-            Type::Map(k, v) => {
-                self.collect_unknown_type_names(k, out);
-                self.collect_unknown_type_names(v, out);
-            }
-            Type::Function { params, ret, .. } => {
-                for p in params {
-                    self.collect_unknown_type_names(p, out);
-                }
-                self.collect_unknown_type_names(ret, out);
-            }
-            _ => {}
         }
     }
 
@@ -414,76 +402,20 @@ impl TypeChecker {
         type_params: &[String],
         type_constraints: &[(String, Vec<ast::TypeConstraint>)],
     ) -> Type {
-        match ty {
-            Type::Custom(name, args) if args.is_empty() && type_params.contains(name) => {
+        ty.map_type(&|t| {
+            if let Type::Custom(name, args) = t
+                && args.is_empty()
+                && type_params.contains(name)
+            {
                 let constraints = type_constraints
                     .iter()
                     .find(|(n, _)| n == name)
                     .map(|(_, c)| c.clone())
                     .unwrap_or_default();
-                Type::TypeVar(name.clone(), constraints)
+                return Some(Type::TypeVar(name.clone(), constraints));
             }
-            Type::Custom(name, args) => {
-                let new_args = args
-                    .iter()
-                    .map(|a| Self::replace_custom_with_typevar(a, type_params, type_constraints))
-                    .collect();
-                Type::Custom(name.clone(), new_args)
-            }
-            Type::List(inner) => Type::List(Box::new(Self::replace_custom_with_typevar(
-                inner,
-                type_params,
-                type_constraints,
-            ))),
-            Type::Map(k, v) => Type::Map(
-                Box::new(Self::replace_custom_with_typevar(
-                    k,
-                    type_params,
-                    type_constraints,
-                )),
-                Box::new(Self::replace_custom_with_typevar(
-                    v,
-                    type_params,
-                    type_constraints,
-                )),
-            ),
-            Type::Task(inner) => Type::Task(Box::new(Self::replace_custom_with_typevar(
-                inner,
-                type_params,
-                type_constraints,
-            ))),
-            Type::Nullable(inner) => Type::Nullable(Box::new(Self::replace_custom_with_typevar(
-                inner,
-                type_params,
-                type_constraints,
-            ))),
-            Type::Function {
-                param_names,
-                params,
-                ret,
-                throws,
-            } => Type::Function {
-                param_names: param_names.clone(),
-                params: params
-                    .iter()
-                    .map(|p| Self::replace_custom_with_typevar(p, type_params, type_constraints))
-                    .collect(),
-                ret: Box::new(Self::replace_custom_with_typevar(
-                    ret,
-                    type_params,
-                    type_constraints,
-                )),
-                throws: throws.as_ref().map(|t| {
-                    Box::new(Self::replace_custom_with_typevar(
-                        t,
-                        type_params,
-                        type_constraints,
-                    ))
-                }),
-            },
-            Type::TypeVar(..) => ty.clone(),
-            _ => ty.clone(),
-        }
+            None
+        })
     }
 
     fn check_binary(&mut self, left: &Expr, op: &BinOp, right: &Expr) -> Result<Type, Diagnostic> {
@@ -769,6 +701,25 @@ impl TypeChecker {
                         let resolved = Self::substitute_typevars(t, &bindings);
                         return Ok(resolved);
                     }
+                    // Check overloaded methods (from multiple parametric trait inclusions)
+                    if let Some(overloads) = info.overloaded_methods.get(field) {
+                        return self.resolve_overloaded_method(
+                            &class_name,
+                            field,
+                            overloads,
+                            object,
+                        );
+                    }
+                    // Check From/Into auto-reverse: .into() on source when target has From[Source]
+                    if field == "into"
+                        && !info.includes.contains(&"Into".to_string())
+                        && let Some(resolved) = self.resolve_into_via_from_reverse(&Type::Custom(
+                            class_name.clone(),
+                            type_args.clone(),
+                        ))
+                    {
+                        return Ok(resolved);
+                    }
                     current_class = info.extends.clone();
                 } else {
                     return Err(Diagnostic::error(format!("Unknown class '{}'", cname))
@@ -791,151 +742,143 @@ impl TypeChecker {
         }
     }
 
-    /// Handle member access on List[T] — built-in methods plus Iterable vocabulary.
+    /// Resolve an overloaded method (e.g., multiple into() from Into[A], Into[B])
+    /// using expected_type context to disambiguate.
+    fn resolve_overloaded_method(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        overloads: &[Type],
+        object: &Expr,
+    ) -> Result<Type, Diagnostic> {
+        // If only one overload, use it directly
+        if overloads.len() == 1 {
+            return Ok(overloads[0].clone());
+        }
+        // Try to disambiguate using expected type
+        if let Some(ref expected) = self.expected_type {
+            // For .into(), the expected type is the return type
+            let matching: Vec<&Type> = overloads
+                .iter()
+                .filter(|oty| {
+                    if let Type::Function { ret, .. } = oty {
+                        let mut bindings = std::collections::HashMap::new();
+                        Self::unify_type(expected, ret, &mut bindings).is_ok()
+                    } else {
+                        false
+                    }
+                })
+                .collect();
+            if matching.len() == 1 {
+                return Ok(matching[0].clone());
+            }
+        }
+        // Ambiguous — error with guidance
+        let return_types: Vec<String> = overloads
+            .iter()
+            .filter_map(|oty| {
+                if let Type::Function { ret, .. } = oty {
+                    Some(format!("{:?}", ret))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        Err(Diagnostic::error(format!(
+            "Ambiguous call to '{}()' on '{}': multiple overloads available ({}). Add a type annotation to disambiguate",
+            method_name, class_name, return_types.join(", ")
+        ))
+        .with_code("E014")
+        .with_label(object.span(), "ambiguous method call"))
+    }
+
+    /// Resolve .into() via From/Into auto-reverse: if expected type's class includes From[SourceType],
+    /// synthesize the appropriate into() return type.
+    fn resolve_into_via_from_reverse(&self, source_type: &Type) -> Option<Type> {
+        let expected = self.expected_type.as_ref()?;
+        let target_name = match expected {
+            Type::Custom(name, _) => name,
+            _ => return None,
+        };
+        let target_info = self.env.get_class(target_name)?;
+        // Check if target includes From[SourceType]
+        for (trait_name, trait_args) in &target_info.parametric_includes {
+            if trait_name == "From" && trait_args.len() == 1 && &trait_args[0] == source_type {
+                // Target includes From[SourceType] — synthesize into() -> TargetType
+                return Some(Type::Function {
+                    param_names: vec![],
+                    params: vec![],
+                    ret: Box::new(expected.clone()),
+                    throws: None,
+                });
+            }
+        }
+        None
+    }
+
+    /// Handle member access on List[T] -- built-in methods plus Iterable vocabulary.
     fn check_list_member(
         &self,
         field: &str,
         inner: &Type,
         object: &Expr,
     ) -> Result<Type, Diagnostic> {
+        // List-specific methods (not part of Iterable vocabulary)
         match field {
-            "len" => Ok(Type::Function {
-                param_names: vec![],
-                params: vec![],
-                ret: Box::new(Type::Int),
-                throws: None,
-            }),
-            "each" => Ok(Type::Function {
-                param_names: vec!["f".into()],
-                params: vec![Type::Function {
-                    param_names: vec!["_0".into()],
+            "len" => {
+                return Ok(Type::Function {
+                    param_names: vec![],
+                    params: vec![],
+                    ret: Box::new(Type::Int),
+                    throws: None,
+                });
+            }
+            "each" => {
+                return Ok(Type::Function {
+                    param_names: vec!["f".into()],
+                    params: vec![Type::Function {
+                        param_names: vec!["_0".into()],
+                        params: vec![inner.clone()],
+                        ret: Box::new(Type::Void),
+                        throws: None,
+                    }],
+                    ret: Box::new(Type::Void),
+                    throws: None,
+                });
+            }
+            "push" => {
+                return Ok(Type::Function {
+                    param_names: vec!["item".into()],
                     params: vec![inner.clone()],
                     ret: Box::new(Type::Void),
                     throws: None,
-                }],
-                ret: Box::new(Type::Void),
-                throws: None,
-            }),
-            "push" => Ok(Type::Function {
-                param_names: vec!["item".into()],
-                params: vec![inner.clone()],
-                ret: Box::new(Type::Void),
-                throws: None,
-            }),
-            "map" => Ok(Type::Function {
-                param_names: vec!["f".into()],
-                params: vec![Type::Function {
-                    param_names: vec!["_0".into()],
-                    params: vec![inner.clone()],
-                    ret: Box::new(Type::TypeVar("U".into(), vec![])),
-                    throws: None,
-                }],
-                ret: Box::new(Type::List(Box::new(Type::TypeVar("U".into(), vec![])))),
-                throws: None,
-            }),
-            "filter" => Ok(Type::Function {
-                param_names: vec!["f".into()],
-                params: vec![Type::Function {
-                    param_names: vec!["_0".into()],
-                    params: vec![inner.clone()],
-                    ret: Box::new(Type::Bool),
-                    throws: None,
-                }],
-                ret: Box::new(Type::List(Box::new(inner.clone()))),
-                throws: None,
-            }),
-            "reduce" => Ok(Type::Function {
-                param_names: vec!["init".into(), "f".into()],
-                params: vec![
-                    Type::TypeVar("U".into(), vec![]),
-                    Type::Function {
-                        param_names: vec!["_0".into(), "_1".into()],
-                        params: vec![Type::TypeVar("U".into(), vec![]), inner.clone()],
-                        ret: Box::new(Type::TypeVar("U".into(), vec![])),
-                        throws: None,
-                    },
-                ],
-                ret: Box::new(Type::TypeVar("U".into(), vec![])),
-                throws: None,
-            }),
-            "find" => Ok(Type::Function {
-                param_names: vec!["f".into()],
-                params: vec![Type::Function {
-                    param_names: vec!["_0".into()],
-                    params: vec![inner.clone()],
-                    ret: Box::new(Type::Bool),
-                    throws: None,
-                }],
-                ret: Box::new(Type::Nullable(Box::new(inner.clone()))),
-                throws: None,
-            }),
-            "any" | "all" => Ok(Type::Function {
-                param_names: vec!["f".into()],
-                params: vec![Type::Function {
-                    param_names: vec!["_0".into()],
-                    params: vec![inner.clone()],
-                    ret: Box::new(Type::Bool),
-                    throws: None,
-                }],
-                ret: Box::new(Type::Bool),
-                throws: None,
-            }),
-            "count" => Ok(Type::Function {
-                param_names: vec![],
-                params: vec![],
-                ret: Box::new(Type::Int),
-                throws: None,
-            }),
-            "first" | "last" => Ok(Type::Function {
-                param_names: vec![],
-                params: vec![],
-                ret: Box::new(Type::Nullable(Box::new(inner.clone()))),
-                throws: None,
-            }),
-            "to_list" => Ok(Type::Function {
-                param_names: vec![],
-                params: vec![],
-                ret: Box::new(Type::List(Box::new(inner.clone()))),
-                throws: None,
-            }),
-            "min" | "max" => {
-                if !self.type_includes_ord(inner) {
-                    return Err(Diagnostic::error(format!(
-                        "Cannot call '{}()': element type {:?} does not include Ord. \
-                         Add 'includes Ord' to the element type to enable {}",
-                        field, inner, field
-                    ))
-                    .with_code("E025")
-                    .with_label(object.span(), format!("{} requires Ord", field)));
-                }
-                Ok(Type::Function {
-                    param_names: vec![],
-                    params: vec![],
-                    ret: Box::new(Type::Nullable(Box::new(inner.clone()))),
-                    throws: None,
-                })
+                });
             }
-            "sort" => {
-                if !self.type_includes_ord(inner) {
-                    return Err(Diagnostic::error(format!(
-                        "Cannot call 'sort()': element type {:?} does not include Ord. \
-                         Add 'includes Ord' to the element type to enable sort",
-                        inner
-                    ))
-                    .with_code("E025")
-                    .with_label(object.span(), "sort requires Ord"));
-                }
-                Ok(Type::Function {
-                    param_names: vec![],
-                    params: vec![],
-                    ret: Box::new(Type::List(Box::new(inner.clone()))),
-                    throws: None,
-                })
-            }
-            _ => Err(Diagnostic::error(format!("List has no method '{}'", field))
-                .with_code("E010")
-                .with_label(object.span(), format!("no member '{}' on List", field))),
+            _ => {}
         }
+
+        // Ord-gated methods: check constraint before returning type
+        if matches!(field, "min" | "max" | "sort") && !self.type_includes_ord(inner) {
+            return Err(Diagnostic::error(format!(
+                "Cannot call '{}()': element type {:?} does not include Ord. \
+                 Add 'includes Ord' to the element type to enable {}",
+                field, inner, field
+            ))
+            .with_code("E025")
+            .with_label(object.span(), format!("{} requires Ord", field)));
+        }
+
+        // Look up from shared Iterable vocabulary definitions
+        let vocab = crate::check_class::iterable_vocabulary_methods(inner);
+        for (name, ty) in &vocab {
+            if name == field {
+                return Ok(ty.clone());
+            }
+        }
+
+        Err(Diagnostic::error(format!("List has no method '{}'", field))
+            .with_code("E010")
+            .with_label(object.span(), format!("no member '{}' on List", field)))
     }
 
     fn check_match_expr(
@@ -955,12 +898,25 @@ impl TypeChecker {
             .with_label(scrutinee.span(), "match has no arms"));
         }
         let mut result_ty: Option<Type> = None;
+        let mut has_nil_arm = false;
         for (pattern, value) in arms {
             self.check_match_pattern(pattern, &scrutinee_ty)?;
+            // Track nil literal arms so we know if nullable unwrapping is safe
+            if let MatchPattern::Literal(expr, _) = pattern
+                && matches!(**expr, Expr::Nil(_))
+            {
+                has_nil_arm = true;
+            }
             let arm_ty = if let MatchPattern::Ident(name, _) = pattern {
                 let mut sub = self.child_checker();
+                // Only unwrap T? to T if a nil arm exists (meaning this arm only matches non-nil).
+                // Without a nil arm, the catch-all also matches nil, so bind as T? to prevent unsoundness.
                 let bind_ty = if let Type::Nullable(inner) = &scrutinee_ty {
-                    *inner.clone()
+                    if has_nil_arm {
+                        *inner.clone()
+                    } else {
+                        scrutinee_ty.clone()
+                    }
                 } else {
                     scrutinee_ty.clone()
                 };
@@ -1004,6 +960,41 @@ impl TypeChecker {
                     if !has_true || !has_false {
                         return Err(Diagnostic::error(
                             "Non-exhaustive match: Bool match must cover both true and false, or include a wildcard".to_string()
+                        )
+                        .with_code("E011")
+                        .with_label(scrutinee.span(), "non-exhaustive patterns"));
+                    }
+                }
+                Type::Custom(name, _) => {
+                    // Check if this is an enum with all variants covered
+                    if let Some(enum_info) = self.env.get_enum(name) {
+                        let covered: std::collections::HashSet<&str> = arms
+                            .iter()
+                            .filter_map(|(p, _)| {
+                                if let MatchPattern::EnumVariant { variant, .. } = p {
+                                    Some(variant.as_str())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        let missing: Vec<&str> = enum_info
+                            .variants
+                            .iter()
+                            .filter(|v| !covered.contains(v.as_str()))
+                            .map(|v| v.as_str())
+                            .collect();
+                        if !missing.is_empty() {
+                            return Err(Diagnostic::error(format!(
+                                "Non-exhaustive match: missing variants: {}",
+                                missing.join(", ")
+                            ))
+                            .with_code("E011")
+                            .with_label(scrutinee.span(), "non-exhaustive patterns"));
+                        }
+                    } else {
+                        return Err(Diagnostic::error(
+                            "Non-exhaustive match: must include a wildcard '_' or variable pattern as catch-all".to_string()
                         )
                         .with_code("E011")
                         .with_label(scrutinee.span(), "non-exhaustive patterns"));
