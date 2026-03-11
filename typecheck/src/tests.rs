@@ -53,6 +53,7 @@ fn lambda_type_check() {
         body: vec![Stmt::Expr(Expr::Ident("a".into(), s()), s())],
         generic_params: None,
         throws: None,
+        type_constraints: vec![],
         span: s(),
     };
     let ty = tc.check_expr(&lambda).unwrap();
@@ -74,6 +75,7 @@ fn call_type_check_and_mismatch() {
         body: vec![Stmt::Expr(Expr::Ident("x".into(), s()), s())],
         generic_params: None,
         throws: None,
+        type_constraints: vec![],
         span: s(),
     };
     tc.check_stmt(&Stmt::Let {
@@ -139,6 +141,7 @@ fn class_type_check_and_member_access() {
                 body: vec![Stmt::Expr(Expr::Str("ok".into(), s()), s())],
                 generic_params: None,
                 throws: None,
+                type_constraints: vec![],
                 span: s(),
             },
             is_public: false,
@@ -958,12 +961,14 @@ fn trait_definition_registers_trait() {
                 body: vec![Stmt::Expr(Expr::Str("".into(), s()), s())],
                 generic_params: None,
                 throws: None,
+                type_constraints: vec![],
                 span: s(),
             },
             is_public: false,
             span: s(),
         }],
         is_public: false,
+        generic_params: None,
         span: s(),
     };
     assert!(tc.check_stmt(&trait_stmt).is_ok());
@@ -987,12 +992,14 @@ fn class_includes_trait_gets_methods() {
                 body: vec![Stmt::Expr(Expr::Str("".into(), s()), s())],
                 generic_params: None,
                 throws: None,
+                type_constraints: vec![],
                 span: s(),
             },
             is_public: false,
             span: s(),
         }],
         is_public: false,
+        generic_params: None,
         span: s(),
     };
     tc.check_stmt(&trait_stmt).unwrap();
@@ -1010,6 +1017,7 @@ fn class_includes_trait_gets_methods() {
                 body: vec![Stmt::Expr(Expr::Str("user".into(), s()), s())],
                 generic_params: None,
                 throws: None,
+                type_constraints: vec![],
                 span: s(),
             },
             is_public: false,
@@ -1018,7 +1026,7 @@ fn class_includes_trait_gets_methods() {
         is_public: false,
         generic_params: None,
         extends: None,
-        includes: Some(vec!["Printable".into()]),
+        includes: Some(vec![("Printable".to_string(), vec![])]),
         span: s(),
     };
     assert!(tc.check_stmt(&class_stmt).is_ok());
@@ -1034,7 +1042,7 @@ fn class_includes_unknown_trait_error() {
         is_public: false,
         generic_params: None,
         extends: None,
-        includes: Some(vec!["NonExistent".into()]),
+        includes: Some(vec![("NonExistent".to_string(), vec![])]),
         span: s(),
     };
     let err = err_msg(tc.check_stmt(&class_stmt));
@@ -1057,12 +1065,14 @@ fn class_missing_trait_method_error() {
                 body: vec![],
                 generic_params: None,
                 throws: None,
+                type_constraints: vec![],
                 span: s(),
             },
             is_public: false,
             span: s(),
         }],
         is_public: false,
+        generic_params: None,
         span: s(),
     };
     tc.check_stmt(&trait_stmt).unwrap();
@@ -1075,13 +1085,11 @@ fn class_missing_trait_method_error() {
         is_public: false,
         generic_params: None,
         extends: None,
-        includes: Some(vec!["Serializable".into()]),
+        includes: Some(vec![("Serializable".to_string(), vec![])]),
         span: s(),
     };
     let err = err_msg(tc.check_stmt(&class_stmt));
-    assert!(
-        err.contains("serialize") || err.contains("missing") || err.contains("implement")
-    );
+    assert!(err.contains("serialize") || err.contains("missing") || err.contains("implement"));
 }
 
 // ─── Generic class type checking ────────────────────────────────────
@@ -1091,7 +1099,7 @@ fn generic_class_registers_with_params() {
     let mut tc = TypeChecker::new();
     let class_stmt = Stmt::Class {
         name: "Box".into(),
-        fields: vec![("value".into(), Type::TypeVar("T".into()))],
+        fields: vec![("value".into(), Type::TypeVar("T".into(), vec![]))],
         methods: vec![],
         is_public: false,
         generic_params: Some(vec!["T".into()]),
@@ -1117,13 +1125,14 @@ fn generic_lambda_typechecks_inline() {
         body: vec![Stmt::Expr(Expr::Ident("x".into(), s()), s())],
         generic_params: None,
         throws: None,
+        type_constraints: vec![],
         span: s(),
     };
     let ty = tc.check_expr(&lambda).unwrap();
     match ty {
         Type::Function { params, ret, .. } => {
-            assert_eq!(params, vec![Type::TypeVar("T".into())]);
-            assert_eq!(*ret, Type::TypeVar("T".into()));
+            assert_eq!(params, vec![Type::TypeVar("T".into(), vec![])]);
+            assert_eq!(*ret, Type::TypeVar("T".into(), vec![]));
         }
         _ => panic!("expected function type"),
     }
@@ -1134,18 +1143,19 @@ fn generic_lambda_typechecks_explicit() {
     // Legacy style: explicit generic_params with TypeVar still works
     let mut tc = TypeChecker::new();
     let lambda = Expr::Lambda {
-        params: vec![("x".into(), Type::TypeVar("T".into()))],
-        ret_type: Type::TypeVar("T".into()),
+        params: vec![("x".into(), Type::TypeVar("T".into(), vec![]))],
+        ret_type: Type::TypeVar("T".into(), vec![]),
         body: vec![Stmt::Expr(Expr::Ident("x".into(), s()), s())],
         generic_params: Some(vec!["T".into()]),
         throws: None,
+        type_constraints: vec![],
         span: s(),
     };
     let ty = tc.check_expr(&lambda).unwrap();
     match ty {
         Type::Function { params, ret, .. } => {
-            assert_eq!(params, vec![Type::TypeVar("T".into())]);
-            assert_eq!(*ret, Type::TypeVar("T".into()));
+            assert_eq!(params, vec![Type::TypeVar("T".into(), vec![])]);
+            assert_eq!(*ret, Type::TypeVar("T".into(), vec![]));
         }
         _ => panic!("expected function type"),
     }
@@ -1163,6 +1173,7 @@ fn generic_call_unifies_typevar_to_int() {
         body: vec![Stmt::Expr(Expr::Ident("x".into(), s()), s())],
         generic_params: None,
         throws: None,
+        type_constraints: vec![],
         span: s(),
     };
     tc.check_stmt(&Stmt::Let {
@@ -1192,6 +1203,7 @@ fn generic_call_unifies_typevar_to_string() {
         body: vec![Stmt::Expr(Expr::Ident("x".into(), s()), s())],
         generic_params: None,
         throws: None,
+        type_constraints: vec![],
         span: s(),
     };
     tc.check_stmt(&Stmt::Let {
@@ -1225,6 +1237,7 @@ fn generic_call_multi_params_unifies() {
         body: vec![Stmt::Expr(Expr::Ident("a".into(), s()), s())],
         generic_params: None,
         throws: None,
+        type_constraints: vec![],
         span: s(),
     };
     tc.check_stmt(&Stmt::Let {
@@ -1265,12 +1278,14 @@ fn class_includes_trait_wrong_signature_error() {
                 body: vec![],
                 generic_params: None,
                 throws: None,
+                type_constraints: vec![],
                 span: s(),
             },
             is_public: false,
             span: s(),
         }],
         is_public: false,
+        generic_params: None,
         span: s(),
     };
     tc.check_stmt(&trait_stmt).unwrap();
@@ -1288,6 +1303,7 @@ fn class_includes_trait_wrong_signature_error() {
                 body: vec![Stmt::Expr(Expr::Int(0, s()), s())],
                 generic_params: None,
                 throws: None,
+                type_constraints: vec![],
                 span: s(),
             },
             is_public: false,
@@ -1296,7 +1312,7 @@ fn class_includes_trait_wrong_signature_error() {
         is_public: false,
         generic_params: None,
         extends: None,
-        includes: Some(vec!["Displayable".into()]),
+        includes: Some(vec![("Displayable".to_string(), vec![])]),
         span: s(),
     };
     let err = err_msg(tc.check_stmt(&class_stmt));
@@ -1320,6 +1336,7 @@ fn member_access_finds_method_unqualified() {
                 body: vec![Stmt::Expr(Expr::Str("ok".into(), s()), s())],
                 generic_params: None,
                 throws: None,
+                type_constraints: vec![],
                 span: s(),
             },
             is_public: false,
@@ -1357,6 +1374,7 @@ fn return_type_mismatch_in_function_error() {
         body: vec![Stmt::Return(Expr::Str("hello".into(), s()), s())],
         generic_params: None,
         throws: None,
+        type_constraints: vec![],
         span: s(),
     };
     let err = err_msg(tc.check_expr(&lambda));
@@ -1378,6 +1396,7 @@ fn return_mid_body_type_mismatch_error() {
         ],
         generic_params: None,
         throws: None,
+        type_constraints: vec![],
         span: s(),
     };
     let err = err_msg(tc.check_expr(&lambda));
@@ -1461,6 +1480,7 @@ fn return_correct_type_ok() {
         body: vec![Stmt::Return(Expr::Int(42, s()), s())],
         generic_params: None,
         throws: None,
+        type_constraints: vec![],
         span: s(),
     };
     assert!(tc.check_expr(&lambda).is_ok());
@@ -1474,11 +1494,12 @@ fn generic_lambda_body_type_matches_typevar() {
     // def identity[T](x: T) -> T
     //   x    # body returns the TypeVar param — should be OK
     let lambda = Expr::Lambda {
-        params: vec![("x".into(), Type::TypeVar("T".into()))],
-        ret_type: Type::TypeVar("T".into()),
+        params: vec![("x".into(), Type::TypeVar("T".into(), vec![]))],
+        ret_type: Type::TypeVar("T".into(), vec![]),
         body: vec![Stmt::Expr(Expr::Ident("x".into(), s()), s())],
         generic_params: Some(vec!["T".into()]),
         throws: None,
+        type_constraints: vec![],
         span: s(),
     };
     assert!(tc.check_expr(&lambda).is_ok());
@@ -1490,11 +1511,12 @@ fn generic_lambda_body_wrong_typevar_error() {
     // def bad[T](x: T) -> T
     //   42    # body returns Int, not TypeVar("T") — should error
     let lambda = Expr::Lambda {
-        params: vec![("x".into(), Type::TypeVar("T".into()))],
-        ret_type: Type::TypeVar("T".into()),
+        params: vec![("x".into(), Type::TypeVar("T".into(), vec![]))],
+        ret_type: Type::TypeVar("T".into(), vec![]),
         body: vec![Stmt::Expr(Expr::Int(42, s()), s())],
         generic_params: Some(vec!["T".into()]),
         throws: None,
+        type_constraints: vec![],
         span: s(),
     };
     let err = err_msg(tc.check_expr(&lambda));

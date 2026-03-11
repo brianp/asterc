@@ -1230,7 +1230,7 @@ fn parses_typevar_in_class_generic_context() {
             ..
         } => {
             assert_eq!(generic_params.as_ref().unwrap(), &["T".to_string()]);
-            assert_eq!(fields[0].1, Type::TypeVar("T".into()));
+            assert_eq!(fields[0].1, Type::TypeVar("T".into(), vec![]));
         }
         other => panic!("expected Class, got {other:?}"),
     }
@@ -1298,7 +1298,10 @@ fn parses_class_with_single_include() {
     match &m.body[0] {
         Stmt::Class { name, includes, .. } => {
             assert_eq!(name, "User");
-            assert_eq!(includes.as_ref().unwrap(), &["Printable".to_string()]);
+            assert_eq!(
+                includes.as_ref().unwrap(),
+                &[("Printable".to_string(), vec![])]
+            );
         }
         other => panic!("expected Class, got {other:?}"),
     }
@@ -1311,7 +1314,13 @@ fn parses_class_with_multiple_includes() {
     match &m.body[0] {
         Stmt::Class { includes, .. } => {
             let inc = includes.as_ref().unwrap();
-            assert_eq!(inc, &["Printable".to_string(), "Serializable".to_string()]);
+            assert_eq!(
+                inc,
+                &[
+                    ("Printable".to_string(), vec![]),
+                    ("Serializable".to_string(), vec![])
+                ]
+            );
         }
         other => panic!("expected Class, got {other:?}"),
     }
@@ -1341,7 +1350,10 @@ fn parses_pub_class_with_includes() {
         } => {
             assert_eq!(name, "User");
             assert!(is_public);
-            assert_eq!(includes.as_ref().unwrap(), &["Printable".to_string()]);
+            assert_eq!(
+                includes.as_ref().unwrap(),
+                &[("Printable".to_string(), vec![])]
+            );
         }
         other => panic!("expected Class, got {other:?}"),
     }
@@ -1362,7 +1374,10 @@ fn parses_generic_class_with_includes() {
         } => {
             assert_eq!(name, "Container");
             assert_eq!(generic_params.as_ref().unwrap(), &["T".to_string()]);
-            assert_eq!(includes.as_ref().unwrap(), &["Printable".to_string()]);
+            assert_eq!(
+                includes.as_ref().unwrap(),
+                &[("Printable".to_string(), vec![])]
+            );
         }
         other => panic!("expected Class, got {other:?}"),
     }

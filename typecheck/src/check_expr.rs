@@ -27,8 +27,16 @@ impl TypeChecker {
                 body,
                 generic_params,
                 throws,
+                type_constraints,
                 ..
-            } => self.check_lambda(params, ret_type, body, generic_params, throws),
+            } => self.check_lambda(
+                params,
+                ret_type,
+                body,
+                generic_params,
+                throws,
+                type_constraints,
+            ),
             Expr::Call { func, args, .. } => self.check_call(func, args),
             Expr::BinaryOp {
                 left, op, right, ..
@@ -65,11 +73,12 @@ impl TypeChecker {
             body,
             generic_params,
             throws,
+            type_constraints,
             ..
         } = expr
         {
-            let has_inferred = params.iter().any(|(_, t)| *t == Type::Inferred)
-                || *ret_type == Type::Inferred;
+            let has_inferred =
+                params.iter().any(|(_, t)| *t == Type::Inferred) || *ret_type == Type::Inferred;
 
             if has_inferred {
                 if let Some(Type::Function {
@@ -85,7 +94,8 @@ impl TypeChecker {
                         .enumerate()
                         .map(|(i, (name, ty))| {
                             if *ty == Type::Inferred {
-                                let resolved = expected_params.get(i).cloned().unwrap_or(Type::Void);
+                                let resolved =
+                                    expected_params.get(i).cloned().unwrap_or(Type::Void);
                                 (name.clone(), resolved)
                             } else {
                                 (name.clone(), ty.clone())
@@ -104,7 +114,12 @@ impl TypeChecker {
                     }
 
                     let resolved_ret = if *ret_type == Type::Inferred {
-                        *expected_ret.clone()
+                        // TypeVars resolve during unification, not lambda body checking
+                        if matches!(**expected_ret, Type::TypeVar(..)) {
+                            Type::Inferred
+                        } else {
+                            *expected_ret.clone()
+                        }
                     } else {
                         ret_type.clone()
                     };
@@ -121,6 +136,7 @@ impl TypeChecker {
                         body,
                         generic_params,
                         &resolved_throws,
+                        type_constraints,
                     );
                 } else {
                     return Err(Diagnostic::error(
@@ -132,7 +148,14 @@ impl TypeChecker {
                 }
             }
 
-            self.check_lambda(params, ret_type, body, generic_params, throws)
+            self.check_lambda(
+                params,
+                ret_type,
+                body,
+                generic_params,
+                throws,
+                type_constraints,
+            )
         } else {
             self.check_expr(expr)
         }
@@ -145,7 +168,34 @@ impl TypeChecker {
         body: &[ast::Stmt],
         generic_params: &Option<Vec<String>>,
         throws: &Option<Type>,
+        type_constraints: &[(String, Vec<ast::TypeConstraint>)],
     ) -> Result<Type, Diagnostic> {
+        // Validate constraint targets exist before proceeding
+        for (_, constraints) in type_constraints {
+            for c in constraints {
+                match c {
+                    ast::TypeConstraint::Extends(class_name) => {
+                        if self.env.get_class(class_name).is_none() {
+                            return Err(Diagnostic::error(format!(
+                                "Unknown class '{}' in extends constraint",
+                                class_name
+                            ))
+                            .with_code("E024"));
+                        }
+                    }
+                    ast::TypeConstraint::Includes(trait_name, _) => {
+                        if self.env.get_trait(trait_name).is_none() {
+                            return Err(Diagnostic::error(format!(
+                                "Unknown trait '{}' in includes constraint",
+                                trait_name
+                            ))
+                            .with_code("E024"));
+                        }
+                    }
+                }
+            }
+        }
+
         // Infer type parameters: collect unknown Custom(name, []) names from params.
         // If generic_params is already set (from [T] syntax on classes), use those.
         // Otherwise, auto-detect from param types.
@@ -177,6 +227,59 @@ impl TypeChecker {
         if *ret_type != Type::Void && *ret_type != Type::Inferred {
             sub.expected_return_type = Some(ret_type.clone());
         }
+
+        // Register virtual ClassInfo for constrained type parameters so that
+        // operations like `==`, `>`, `.to_string()` work on them inside the body.
+        for (type_param_name, constraints) in type_constraints {
+            let mut includes = Vec::new();
+            let mut extends = None;
+            let mut methods = std::collections::HashMap::new();
+            for c in constraints {
+                match c {
+                    ast::TypeConstraint::Extends(class_name) => {
+                        extends = Some(class_name.clone());
+                        // Inherit methods and includes from parent class
+                        if let Some(parent_info) = self.env.get_class(class_name) {
+                            for (mname, mty) in &parent_info.methods {
+                                methods.insert(mname.clone(), mty.clone());
+                            }
+                            for inc in &parent_info.includes {
+                                if !includes.contains(inc) {
+                                    includes.push(inc.clone());
+                                }
+                            }
+                        }
+                    }
+                    ast::TypeConstraint::Includes(trait_name, _) => {
+                        if !includes.contains(trait_name) {
+                            includes.push(trait_name.clone());
+                        }
+                        // Add trait methods to the virtual class
+                        if let Some(trait_info) = self.env.get_trait(trait_name) {
+                            for (mname, mty) in &trait_info.methods {
+                                methods.insert(mname.clone(), mty.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            // Ord includes Eq
+            if includes.contains(&"Ord".to_string()) && !includes.contains(&"Eq".to_string()) {
+                includes.push("Eq".to_string());
+            }
+            sub.env.set_class(
+                type_param_name.clone(),
+                ast::ClassInfo {
+                    ty: Type::Custom(type_param_name.clone(), vec![]),
+                    fields: indexmap::IndexMap::new(),
+                    methods,
+                    generic_params: None,
+                    extends,
+                    includes,
+                },
+            );
+        }
+
         let mut param_types = Vec::new();
         for (n, t) in params {
             sub.env.set_var(n.clone(), t.clone());
@@ -246,9 +349,15 @@ impl TypeChecker {
         } else {
             let fp = param_types
                 .iter()
-                .map(|t| Self::replace_custom_with_typevar(t, &inferred_type_params))
+                .map(|t| {
+                    Self::replace_custom_with_typevar(t, &inferred_type_params, type_constraints)
+                })
                 .collect();
-            let fr = Self::replace_custom_with_typevar(&effective_ret, &inferred_type_params);
+            let fr = Self::replace_custom_with_typevar(
+                &effective_ret,
+                &inferred_type_params,
+                type_constraints,
+            );
             (fp, fr)
         };
 
@@ -299,34 +408,54 @@ impl TypeChecker {
             || name == "Self"
     }
 
-    /// Replace Custom(name, []) with TypeVar(name) for names in the given type param list.
-    fn replace_custom_with_typevar(ty: &Type, type_params: &[String]) -> Type {
+    /// Replace Custom(name, []) with TypeVar(name, constraints) for names in the given type param list.
+    fn replace_custom_with_typevar(
+        ty: &Type,
+        type_params: &[String],
+        type_constraints: &[(String, Vec<ast::TypeConstraint>)],
+    ) -> Type {
         match ty {
             Type::Custom(name, args) if args.is_empty() && type_params.contains(name) => {
-                Type::TypeVar(name.clone())
+                let constraints = type_constraints
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, c)| c.clone())
+                    .unwrap_or_default();
+                Type::TypeVar(name.clone(), constraints)
             }
             Type::Custom(name, args) => {
                 let new_args = args
                     .iter()
-                    .map(|a| Self::replace_custom_with_typevar(a, type_params))
+                    .map(|a| Self::replace_custom_with_typevar(a, type_params, type_constraints))
                     .collect();
                 Type::Custom(name.clone(), new_args)
             }
             Type::List(inner) => Type::List(Box::new(Self::replace_custom_with_typevar(
                 inner,
                 type_params,
+                type_constraints,
             ))),
             Type::Map(k, v) => Type::Map(
-                Box::new(Self::replace_custom_with_typevar(k, type_params)),
-                Box::new(Self::replace_custom_with_typevar(v, type_params)),
+                Box::new(Self::replace_custom_with_typevar(
+                    k,
+                    type_params,
+                    type_constraints,
+                )),
+                Box::new(Self::replace_custom_with_typevar(
+                    v,
+                    type_params,
+                    type_constraints,
+                )),
             ),
             Type::Task(inner) => Type::Task(Box::new(Self::replace_custom_with_typevar(
                 inner,
                 type_params,
+                type_constraints,
             ))),
             Type::Nullable(inner) => Type::Nullable(Box::new(Self::replace_custom_with_typevar(
                 inner,
                 type_params,
+                type_constraints,
             ))),
             Type::Function {
                 param_names,
@@ -337,14 +466,22 @@ impl TypeChecker {
                 param_names: param_names.clone(),
                 params: params
                     .iter()
-                    .map(|p| Self::replace_custom_with_typevar(p, type_params))
+                    .map(|p| Self::replace_custom_with_typevar(p, type_params, type_constraints))
                     .collect(),
-                ret: Box::new(Self::replace_custom_with_typevar(ret, type_params)),
-                throws: throws
-                    .as_ref()
-                    .map(|t| Box::new(Self::replace_custom_with_typevar(t, type_params))),
+                ret: Box::new(Self::replace_custom_with_typevar(
+                    ret,
+                    type_params,
+                    type_constraints,
+                )),
+                throws: throws.as_ref().map(|t| {
+                    Box::new(Self::replace_custom_with_typevar(
+                        t,
+                        type_params,
+                        type_constraints,
+                    ))
+                }),
             },
-            Type::TypeVar(_) => ty.clone(),
+            Type::TypeVar(..) => ty.clone(),
             _ => ty.clone(),
         }
     }
@@ -589,6 +726,10 @@ impl TypeChecker {
             .with_code("E018")
             .with_label(object.span(), "nullable type"));
         }
+        // Handle List built-in methods (List implicitly includes Iterable)
+        if let Type::List(ref inner) = obj_ty {
+            return self.check_list_member(field, inner, object);
+        }
         if let Type::Custom(class_name, type_args) = obj_ty {
             let mut current_class = Some(class_name.clone());
             while let Some(ref cname) = current_class {
@@ -608,6 +749,23 @@ impl TypeChecker {
                         return Ok(resolved);
                     }
                     if let Some(t) = info.methods.get(field) {
+                        // Check Ord constraint for conditional Iterable methods
+                        if (field == "min" || field == "max" || field == "sort")
+                            && info.includes.contains(&"Iterable".to_string())
+                            && let Some(elem_ty) = Self::get_iterable_element_type_from_class(&info)
+                            && !self.type_includes_ord(&elem_ty)
+                        {
+                            return Err(Diagnostic::error(format!(
+                                        "Cannot call '{}()' on '{}': element type {:?} does not include Ord. \
+                                         Add 'includes Ord' to the element type to enable {}",
+                                        field, class_name, elem_ty, field
+                                    ))
+                                    .with_code("E025")
+                                    .with_label(
+                                        object.span(),
+                                        format!("{} requires element type to include Ord", field),
+                                    ));
+                        }
                         let resolved = Self::substitute_typevars(t, &bindings);
                         return Ok(resolved);
                     }
@@ -630,6 +788,153 @@ impl TypeChecker {
                     .with_code("E010")
                     .with_label(object.span(), "not a class type"),
             )
+        }
+    }
+
+    /// Handle member access on List[T] — built-in methods plus Iterable vocabulary.
+    fn check_list_member(
+        &self,
+        field: &str,
+        inner: &Type,
+        object: &Expr,
+    ) -> Result<Type, Diagnostic> {
+        match field {
+            "len" => Ok(Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(Type::Int),
+                throws: None,
+            }),
+            "each" => Ok(Type::Function {
+                param_names: vec!["f".into()],
+                params: vec![Type::Function {
+                    param_names: vec!["_0".into()],
+                    params: vec![inner.clone()],
+                    ret: Box::new(Type::Void),
+                    throws: None,
+                }],
+                ret: Box::new(Type::Void),
+                throws: None,
+            }),
+            "push" => Ok(Type::Function {
+                param_names: vec!["item".into()],
+                params: vec![inner.clone()],
+                ret: Box::new(Type::Void),
+                throws: None,
+            }),
+            "map" => Ok(Type::Function {
+                param_names: vec!["f".into()],
+                params: vec![Type::Function {
+                    param_names: vec!["_0".into()],
+                    params: vec![inner.clone()],
+                    ret: Box::new(Type::TypeVar("U".into(), vec![])),
+                    throws: None,
+                }],
+                ret: Box::new(Type::List(Box::new(Type::TypeVar("U".into(), vec![])))),
+                throws: None,
+            }),
+            "filter" => Ok(Type::Function {
+                param_names: vec!["f".into()],
+                params: vec![Type::Function {
+                    param_names: vec!["_0".into()],
+                    params: vec![inner.clone()],
+                    ret: Box::new(Type::Bool),
+                    throws: None,
+                }],
+                ret: Box::new(Type::List(Box::new(inner.clone()))),
+                throws: None,
+            }),
+            "reduce" => Ok(Type::Function {
+                param_names: vec!["init".into(), "f".into()],
+                params: vec![
+                    Type::TypeVar("U".into(), vec![]),
+                    Type::Function {
+                        param_names: vec!["_0".into(), "_1".into()],
+                        params: vec![Type::TypeVar("U".into(), vec![]), inner.clone()],
+                        ret: Box::new(Type::TypeVar("U".into(), vec![])),
+                        throws: None,
+                    },
+                ],
+                ret: Box::new(Type::TypeVar("U".into(), vec![])),
+                throws: None,
+            }),
+            "find" => Ok(Type::Function {
+                param_names: vec!["f".into()],
+                params: vec![Type::Function {
+                    param_names: vec!["_0".into()],
+                    params: vec![inner.clone()],
+                    ret: Box::new(Type::Bool),
+                    throws: None,
+                }],
+                ret: Box::new(Type::Nullable(Box::new(inner.clone()))),
+                throws: None,
+            }),
+            "any" | "all" => Ok(Type::Function {
+                param_names: vec!["f".into()],
+                params: vec![Type::Function {
+                    param_names: vec!["_0".into()],
+                    params: vec![inner.clone()],
+                    ret: Box::new(Type::Bool),
+                    throws: None,
+                }],
+                ret: Box::new(Type::Bool),
+                throws: None,
+            }),
+            "count" => Ok(Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(Type::Int),
+                throws: None,
+            }),
+            "first" | "last" => Ok(Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(Type::Nullable(Box::new(inner.clone()))),
+                throws: None,
+            }),
+            "to_list" => Ok(Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(Type::List(Box::new(inner.clone()))),
+                throws: None,
+            }),
+            "min" | "max" => {
+                if !self.type_includes_ord(inner) {
+                    return Err(Diagnostic::error(format!(
+                        "Cannot call '{}()': element type {:?} does not include Ord. \
+                         Add 'includes Ord' to the element type to enable {}",
+                        field, inner, field
+                    ))
+                    .with_code("E025")
+                    .with_label(object.span(), format!("{} requires Ord", field)));
+                }
+                Ok(Type::Function {
+                    param_names: vec![],
+                    params: vec![],
+                    ret: Box::new(Type::Nullable(Box::new(inner.clone()))),
+                    throws: None,
+                })
+            }
+            "sort" => {
+                if !self.type_includes_ord(inner) {
+                    return Err(Diagnostic::error(format!(
+                        "Cannot call 'sort()': element type {:?} does not include Ord. \
+                         Add 'includes Ord' to the element type to enable sort",
+                        inner
+                    ))
+                    .with_code("E025")
+                    .with_label(object.span(), "sort requires Ord"));
+                }
+                Ok(Type::Function {
+                    param_names: vec![],
+                    params: vec![],
+                    ret: Box::new(Type::List(Box::new(inner.clone()))),
+                    throws: None,
+                })
+            }
+            _ => Err(Diagnostic::error(format!("List has no method '{}'", field))
+                .with_code("E010")
+                .with_label(object.span(), format!("no member '{}' on List", field))),
         }
     }
 

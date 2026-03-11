@@ -254,7 +254,9 @@ let s = p.to_string()
 ",
     );
     assert!(
-        err.contains("no field or method") || err.contains("to_string") || err.contains("no member"),
+        err.contains("no field or method")
+            || err.contains("to_string")
+            || err.contains("no member"),
         "got: {}",
         err
     );

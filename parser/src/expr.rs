@@ -624,6 +624,7 @@ impl Parser {
                 body: vec![ast::Stmt::Expr(body_expr, span)],
                 generic_params: None,
                 throws: None,
+                type_constraints: vec![],
                 span,
             });
         }
@@ -671,6 +672,7 @@ impl Parser {
             body: vec![ast::Stmt::Expr(body_expr, span)],
             generic_params: None,
             throws: None,
+            type_constraints: vec![],
             span,
         })
     }

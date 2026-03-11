@@ -30,10 +30,7 @@ fn import_pub_function_from_module() {
         "utils".to_string(),
         "pub def double(n: Int) -> Int\n  n * 2\n".to_string(),
     );
-    common::check_ok_with_files(
-        "use utils { double }\nlet x = double(n: 4)\n",
-        files,
-    );
+    common::check_ok_with_files("use utils { double }\nlet x = double(n: 4)\n", files);
 }
 
 #[test]
@@ -57,23 +54,14 @@ fn import_pub_enum_from_module() {
         "types/color".to_string(),
         "pub enum Color\n  Red\n  Green\n  Blue\n".to_string(),
     );
-    common::check_ok_with_files(
-        "use types/color { Color }\nlet c = Color.Red\n",
-        files,
-    );
+    common::check_ok_with_files("use types/color { Color }\nlet c = Color.Red\n", files);
 }
 
 #[test]
 fn import_pub_let_binding_from_module() {
     let mut files = HashMap::new();
-    files.insert(
-        "config".to_string(),
-        "pub let VERSION = 42\n".to_string(),
-    );
-    common::check_ok_with_files(
-        "use config { VERSION }\nlet v: Int = VERSION\n",
-        files,
-    );
+    files.insert("config".to_string(), "pub let VERSION = 42\n".to_string());
+    common::check_ok_with_files("use config { VERSION }\nlet v: Int = VERSION\n", files);
 }
 
 // --- Selective import tests ---
@@ -86,10 +74,7 @@ fn selective_import_only_imports_named_items() {
         "pub class Foo\n  x: Int\npub class Bar\n  y: Int\n".to_string(),
     );
     // Import only Foo, Bar should NOT be visible
-    let err = common::check_err_with_files(
-        "use stuff { Foo }\nlet b = Bar(y: 1)\n",
-        files,
-    );
+    let err = common::check_err_with_files("use stuff { Foo }\nlet b = Bar(y: 1)\n", files);
     assert!(err.contains("Bar"), "should report Bar as unknown: {}", err);
 }
 
@@ -101,10 +86,7 @@ fn wildcard_import_imports_all_pub_names() {
         "pub class Foo\n  x: Int\npub class Bar\n  y: Int\n".to_string(),
     );
     // use without { } imports everything public
-    common::check_ok_with_files(
-        "use stuff\nlet f = Foo(x: 1)\nlet b = Bar(y: 2)\n",
-        files,
-    );
+    common::check_ok_with_files("use stuff\nlet f = Foo(x: 1)\nlet b = Bar(y: 2)\n", files);
 }
 
 // --- Visibility enforcement ---
@@ -116,11 +98,12 @@ fn private_class_not_importable() {
         "secret".to_string(),
         "class Hidden\n  x: Int\npub class Visible\n  y: Int\n".to_string(),
     );
-    let err = common::check_err_with_files(
-        "use secret { Hidden }\n",
-        files,
+    let err = common::check_err_with_files("use secret { Hidden }\n", files);
+    assert!(
+        err.contains("M002") || err.contains("not exported"),
+        "should be not-exported error: {}",
+        err
     );
-    assert!(err.contains("M002") || err.contains("not exported"), "should be not-exported error: {}", err);
 }
 
 #[test]
@@ -130,11 +113,12 @@ fn private_function_not_importable() {
         "secret".to_string(),
         "def internal() -> Int\n  42\npub def public_fn() -> Int\n  1\n".to_string(),
     );
-    let err = common::check_err_with_files(
-        "use secret { internal }\n",
-        files,
+    let err = common::check_err_with_files("use secret { internal }\n", files);
+    assert!(
+        err.contains("M002") || err.contains("not exported"),
+        "should be not-exported error: {}",
+        err
     );
-    assert!(err.contains("M002") || err.contains("not exported"), "should be not-exported error: {}", err);
 }
 
 #[test]
@@ -145,11 +129,12 @@ fn wildcard_import_skips_private_items() {
         "class Private\n  x: Int\npub class Public\n  y: Int\n".to_string(),
     );
     // Wildcard should import Public but not Private
-    let err = common::check_err_with_files(
-        "use mixed\nlet p = Private(x: 1)\n",
-        files,
+    let err = common::check_err_with_files("use mixed\nlet p = Private(x: 1)\n", files);
+    assert!(
+        err.contains("Private"),
+        "Private should not be visible: {}",
+        err
     );
-    assert!(err.contains("Private"), "Private should not be visible: {}", err);
 }
 
 // --- Error cases ---
@@ -157,25 +142,24 @@ fn wildcard_import_skips_private_items() {
 #[test]
 fn module_not_found() {
     let files = HashMap::new();
-    let err = common::check_err_with_files(
-        "use nonexistent/module { Foo }\n",
-        files,
+    let err = common::check_err_with_files("use nonexistent/module { Foo }\n", files);
+    assert!(
+        err.contains("M001") || err.contains("not found"),
+        "should be module-not-found error: {}",
+        err
     );
-    assert!(err.contains("M001") || err.contains("not found"), "should be module-not-found error: {}", err);
 }
 
 #[test]
 fn name_not_in_module() {
     let mut files = HashMap::new();
-    files.insert(
-        "stuff".to_string(),
-        "pub class Foo\n  x: Int\n".to_string(),
+    files.insert("stuff".to_string(), "pub class Foo\n  x: Int\n".to_string());
+    let err = common::check_err_with_files("use stuff { DoesNotExist }\n", files);
+    assert!(
+        err.contains("M002") || err.contains("not exported"),
+        "should report name not found: {}",
+        err
     );
-    let err = common::check_err_with_files(
-        "use stuff { DoesNotExist }\n",
-        files,
-    );
-    assert!(err.contains("M002") || err.contains("not exported"), "should report name not found: {}", err);
 }
 
 #[test]
@@ -190,11 +174,12 @@ fn circular_import_detected() {
         "b".to_string(),
         "use a { X }\npub class Y\n  val: Int\n".to_string(),
     );
-    let err = common::check_err_with_files(
-        "use a { X }\nlet x = X(val: 1)\n",
-        files,
+    let err = common::check_err_with_files("use a { X }\nlet x = X(val: 1)\n", files);
+    assert!(
+        err.contains("M003") || err.contains("ircular"),
+        "should detect circular import: {}",
+        err
     );
-    assert!(err.contains("M003") || err.contains("ircular"), "should detect circular import: {}", err);
 }
 
 // --- Transitive / diamond imports ---
@@ -267,7 +252,7 @@ fn imported_class_with_eq_supports_equality() {
     let mut files = HashMap::new();
     files.insert(
         "types/token".to_string(),
-        "pub class Token includes Eq\n  val: Int\n".to_string(),
+        "use std/cmp { Eq }\npub class Token includes Eq\n  val: Int\n".to_string(),
     );
     common::check_ok_with_files(
         "use types/token { Token }\n\
@@ -283,7 +268,8 @@ fn multiple_selective_imports_from_same_module() {
     let mut files = HashMap::new();
     files.insert(
         "shapes".to_string(),
-        "pub class Circle\n  r: Int\npub class Square\n  s: Int\npub class Triangle\n  b: Int\n".to_string(),
+        "pub class Circle\n  r: Int\npub class Square\n  s: Int\npub class Triangle\n  b: Int\n"
+            .to_string(),
     );
     common::check_ok_with_files(
         "use shapes { Circle, Square }\nlet c = Circle(r: 5)\nlet s = Square(s: 3)\n",
@@ -342,23 +328,14 @@ fn namespace_import_call_function() {
         "utils".to_string(),
         "pub def double(n: Int) -> Int\n  n * 2\n".to_string(),
     );
-    common::check_ok_with_files(
-        "use utils as u\nlet x = u.double(n: 5)\n",
-        files,
-    );
+    common::check_ok_with_files("use utils as u\nlet x = u.double(n: 5)\n", files);
 }
 
 #[test]
 fn namespace_import_access_variable() {
     let mut files = HashMap::new();
-    files.insert(
-        "config".to_string(),
-        "pub let VERSION = 42\n".to_string(),
-    );
-    common::check_ok_with_files(
-        "use config as cfg\nlet v: Int = cfg.VERSION\n",
-        files,
-    );
+    files.insert("config".to_string(), "pub let VERSION = 42\n".to_string());
+    common::check_ok_with_files("use config as cfg\nlet v: Int = cfg.VERSION\n", files);
 }
 
 #[test]
@@ -409,14 +386,8 @@ fn namespace_import_without_alias_uses_last_segment() {
 #[test]
 fn namespace_member_not_exported() {
     let mut files = HashMap::new();
-    files.insert(
-        "stuff".to_string(),
-        "pub class Foo\n  x: Int\n".to_string(),
-    );
-    let err = common::check_err_with_files(
-        "use stuff as s\nlet b = s.Bar(x: 1)\n",
-        files,
-    );
+    files.insert("stuff".to_string(), "pub class Foo\n  x: Int\n".to_string());
+    let err = common::check_err_with_files("use stuff as s\nlet b = s.Bar(x: 1)\n", files);
     assert!(
         err.contains("M004") || err.contains("not found in namespace") || err.contains("Bar"),
         "should report member not found in namespace: {}",
@@ -431,10 +402,7 @@ fn namespace_private_member_not_accessible() {
         "mixed".to_string(),
         "class Hidden\n  x: Int\npub class Visible\n  y: Int\n".to_string(),
     );
-    let err = common::check_err_with_files(
-        "use mixed as m\nlet h = m.Hidden(x: 1)\n",
-        files,
-    );
+    let err = common::check_err_with_files("use mixed as m\nlet h = m.Hidden(x: 1)\n", files);
     assert!(
         err.contains("M004") || err.contains("not found in namespace") || err.contains("Hidden"),
         "private items should not be accessible via namespace: {}",
@@ -445,14 +413,8 @@ fn namespace_private_member_not_accessible() {
 #[test]
 fn selective_with_alias_is_error() {
     let mut files = HashMap::new();
-    files.insert(
-        "stuff".to_string(),
-        "pub class Foo\n  x: Int\n".to_string(),
-    );
-    let err = common::check_err_with_files(
-        "use stuff { Foo } as s\n",
-        files,
-    );
+    files.insert("stuff".to_string(), "pub class Foo\n  x: Int\n".to_string());
+    let err = common::check_err_with_files("use stuff { Foo } as s\n", files);
     assert!(
         err.contains("Cannot combine") || err.contains("P001") || err.contains("alias"),
         "selective + alias should error: {}",
@@ -465,16 +427,14 @@ fn selective_with_alias_is_error() {
 #[test]
 fn namespace_import_does_not_pollute_scope() {
     let mut files = HashMap::new();
-    files.insert(
-        "stuff".to_string(),
-        "pub class Foo\n  x: Int\n".to_string(),
-    );
+    files.insert("stuff".to_string(), "pub class Foo\n  x: Int\n".to_string());
     // Foo should NOT be directly accessible — only via s.Foo
-    let err = common::check_err_with_files(
-        "use stuff as s\nlet f = Foo(x: 1)\n",
-        files,
+    let err = common::check_err_with_files("use stuff as s\nlet f = Foo(x: 1)\n", files);
+    assert!(
+        err.contains("Foo"),
+        "Foo should not be in global scope: {}",
+        err
     );
-    assert!(err.contains("Foo"), "Foo should not be in global scope: {}", err);
 }
 
 // --- Namespace import with protocol metadata ---
@@ -484,7 +444,7 @@ fn namespace_class_with_eq_supports_equality() {
     let mut files = HashMap::new();
     files.insert(
         "types/token".to_string(),
-        "pub class Token includes Eq\n  val: Int\n".to_string(),
+        "use std/cmp { Eq }\n\npub class Token includes Eq\n  val: Int\n".to_string(),
     );
     common::check_ok_with_files(
         "use types/token as t\n\
@@ -511,10 +471,7 @@ fn pub_use_reexports_class() {
         "pub use internal/user { User }\n".to_string(),
     );
     // Consumer imports from models, which re-exports User from internal/user
-    common::check_ok_with_files(
-        "use models { User }\nlet u = User(name: \"Jo\")\n",
-        files,
-    );
+    common::check_ok_with_files("use models { User }\nlet u = User(name: \"Jo\")\n", files);
 }
 
 #[test]
@@ -528,10 +485,7 @@ fn pub_use_reexports_function() {
         "math".to_string(),
         "pub use internal/math { double }\n".to_string(),
     );
-    common::check_ok_with_files(
-        "use math { double }\nlet x = double(n: 5)\n",
-        files,
-    );
+    common::check_ok_with_files("use math { double }\nlet x = double(n: 5)\n", files);
 }
 
 #[test]
@@ -563,10 +517,7 @@ fn pub_use_reexports_enum() {
         "types".to_string(),
         "pub use internal/types { Color }\n".to_string(),
     );
-    common::check_ok_with_files(
-        "use types { Color }\nlet c = Color.Red\n",
-        files,
-    );
+    common::check_ok_with_files("use types { Color }\nlet c = Color.Red\n", files);
 }
 
 #[test]
@@ -580,10 +531,7 @@ fn pub_use_reexports_variable() {
         "config".to_string(),
         "pub use internal/config { VERSION }\n".to_string(),
     );
-    common::check_ok_with_files(
-        "use config { VERSION }\nlet v: Int = VERSION\n",
-        files,
-    );
+    common::check_ok_with_files("use config { VERSION }\nlet v: Int = VERSION\n", files);
 }
 
 // --- Wildcard re-export ---
@@ -595,14 +543,8 @@ fn pub_use_wildcard_reexports_all() {
         "internal/stuff".to_string(),
         "pub class Foo\n  x: Int\npub class Bar\n  y: Int\n".to_string(),
     );
-    files.insert(
-        "stuff".to_string(),
-        "pub use internal/stuff\n".to_string(),
-    );
-    common::check_ok_with_files(
-        "use stuff\nlet f = Foo(x: 1)\nlet b = Bar(y: 2)\n",
-        files,
-    );
+    files.insert("stuff".to_string(), "pub use internal/stuff\n".to_string());
+    common::check_ok_with_files("use stuff\nlet f = Foo(x: 1)\nlet b = Bar(y: 2)\n", files);
 }
 
 // --- Re-export doesn't expose private items from source ---
@@ -614,15 +556,9 @@ fn pub_use_only_reexports_pub_items_from_source() {
         "internal/mixed".to_string(),
         "class Private\n  x: Int\npub class Public\n  y: Int\n".to_string(),
     );
-    files.insert(
-        "facade".to_string(),
-        "pub use internal/mixed\n".to_string(),
-    );
+    files.insert("facade".to_string(), "pub use internal/mixed\n".to_string());
     // Private should not be re-exported through facade
-    let err = common::check_err_with_files(
-        "use facade { Private }\n",
-        files,
-    );
+    let err = common::check_err_with_files("use facade { Private }\n", files);
     assert!(
         err.contains("M002") || err.contains("not exported"),
         "Private should not be re-exportable: {}",
@@ -642,13 +578,11 @@ fn non_pub_use_does_not_reexport() {
     // Regular use (not pub use) — imports for local use only
     files.insert(
         "facade".to_string(),
-        "use internal/user { User }\npub def make_user(name: String) -> User\n  User(name: name)\n".to_string(),
+        "use internal/user { User }\npub def make_user(name: String) -> User\n  User(name: name)\n"
+            .to_string(),
     );
     // User should NOT be accessible through facade (it was imported, not re-exported)
-    let err = common::check_err_with_files(
-        "use facade { User }\n",
-        files,
-    );
+    let err = common::check_err_with_files("use facade { User }\n", files);
     assert!(
         err.contains("M002") || err.contains("not exported"),
         "Non-pub use should not re-export: {}",
@@ -693,15 +627,9 @@ fn chained_reexports() {
         "mid".to_string(),
         "pub use deep/core { Widget }\n".to_string(),
     );
-    files.insert(
-        "top".to_string(),
-        "pub use mid { Widget }\n".to_string(),
-    );
+    files.insert("top".to_string(), "pub use mid { Widget }\n".to_string());
     // Widget re-exported through two layers
-    common::check_ok_with_files(
-        "use top { Widget }\nlet w = Widget(id: 42)\n",
-        files,
-    );
+    common::check_ok_with_files("use top { Widget }\nlet w = Widget(id: 42)\n", files);
 }
 
 // --- Re-export with protocol metadata ---
@@ -711,7 +639,7 @@ fn reexported_class_preserves_eq() {
     let mut files = HashMap::new();
     files.insert(
         "internal/token".to_string(),
-        "pub class Token includes Eq\n  val: Int\n".to_string(),
+        "use std/cmp { Eq }\n\npub class Token includes Eq\n  val: Int\n".to_string(),
     );
     files.insert(
         "tokens".to_string(),
@@ -737,10 +665,7 @@ fn pub_use_accessible_via_namespace() {
         "models".to_string(),
         "pub use internal/user { User }\n".to_string(),
     );
-    common::check_ok_with_files(
-        "use models as m\nlet u = m.User(name: \"Jo\")\n",
-        files,
-    );
+    common::check_ok_with_files("use models as m\nlet u = m.User(name: \"Jo\")\n", files);
 }
 
 // --- Import class with inheritance ---
@@ -750,7 +675,8 @@ fn import_class_hierarchy() {
     let mut files = HashMap::new();
     files.insert(
         "animals".to_string(),
-        "pub class Animal\n  name: String\npub class Dog extends Animal\n  breed: String\n".to_string(),
+        "pub class Animal\n  name: String\npub class Dog extends Animal\n  breed: String\n"
+            .to_string(),
     );
     common::check_ok_with_files(
         "use animals { Animal, Dog }\nlet d = Dog(name: \"Rex\", breed: \"Lab\")\n",

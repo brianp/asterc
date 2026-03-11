@@ -1,5 +1,14 @@
 use serde::{Deserialize, Serialize};
 
+/// Constraint on a generic type parameter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TypeConstraint {
+    /// T extends ClassName — must be a subclass of the named class.
+    Extends(String),
+    /// T includes TraitName[Args] — must include the named trait.
+    Includes(String, Vec<Type>),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Type {
     Int,
@@ -17,7 +26,7 @@ pub enum Type {
     /// Map type scaffolding — parser support exists but no literal syntax or runtime yet.
     Map(Box<Type>, Box<Type>),
     Custom(std::string::String, Vec<Type>),
-    TypeVar(std::string::String),
+    TypeVar(std::string::String, Vec<TypeConstraint>),
     Function {
         param_names: Vec<std::string::String>,
         params: Vec<Type>,

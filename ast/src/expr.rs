@@ -26,13 +26,14 @@ pub enum Stmt {
         is_public: bool,
         generic_params: Option<Vec<String>>,
         extends: Option<String>,
-        includes: Option<Vec<String>>,
+        includes: Option<Vec<(String, Vec<Type>)>>,
         span: Span,
     },
     Trait {
         name: String,
         methods: Vec<Stmt>,
         is_public: bool,
+        generic_params: Option<Vec<String>>,
         span: Span,
     },
     Return(Expr, Span),
@@ -73,7 +74,7 @@ pub enum Stmt {
         name: String,
         variants: Vec<EnumVariant>,
         methods: Vec<Stmt>,
-        includes: Vec<String>,
+        includes: Vec<(String, Vec<Type>)>,
         is_public: bool,
         span: Span,
     },
@@ -148,6 +149,8 @@ pub enum Expr {
         body: Vec<Stmt>,
         generic_params: Option<Vec<String>>,
         throws: Option<Type>,
+        /// Generic type parameter constraints: `T extends Foo includes Bar`.
+        type_constraints: Vec<(String, Vec<crate::types::TypeConstraint>)>,
         span: Span,
     },
     Call {
