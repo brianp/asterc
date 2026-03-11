@@ -147,10 +147,7 @@ impl ModuleLoader {
 
         // Cache
         {
-            loader_rc
-                .borrow_mut()
-                .cache
-                .insert(key, exports.clone());
+            loader_rc.borrow_mut().cache.insert(key, exports.clone());
         }
 
         Ok(exports)
@@ -158,10 +155,7 @@ impl ModuleLoader {
 }
 
 /// Extract public exports from a typechecked module.
-fn extract_exports(
-    module: &ast::Module,
-    tc: &crate::typechecker::TypeChecker,
-) -> ModuleExports {
+fn extract_exports(module: &ast::Module, tc: &crate::typechecker::TypeChecker) -> ModuleExports {
     let mut exports = ModuleExports {
         variables: HashMap::new(),
         classes: HashMap::new(),

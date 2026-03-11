@@ -19,6 +19,11 @@ pub struct TypeChecker {
     /// Optional module loader for resolving `use` imports.
     /// When None, `use` statements are ignored (backward compatible).
     pub module_loader: Option<Rc<RefCell<ModuleLoader>>>,
+    /// Built-in protocol traits (Eq, Ord, Printable, etc.) — source of truth for `use std`.
+    /// In prelude mode (no loader), these are also copied to env.
+    pub(crate) builtin_traits: HashMap<String, TraitInfo>,
+    /// Built-in enum types (Ordering) — source of truth for `use std`.
+    pub(crate) builtin_enums: HashMap<String, EnumInfo>,
 }
 
 impl Default for TypeChecker {
@@ -116,8 +121,12 @@ impl TypeChecker {
             },
         );
 
-        // Built-in Ordering enum
-        env.set_enum(
+        // Build protocol traits and supporting enums — stored in builtin maps.
+        // In prelude mode (no loader), also installed in env.
+        let mut builtin_traits: HashMap<String, TraitInfo> = HashMap::new();
+        let mut builtin_enums: HashMap<String, EnumInfo> = HashMap::new();
+
+        builtin_enums.insert(
             "Ordering".into(),
             EnumInfo {
                 name: "Ordering".into(),
@@ -126,8 +135,7 @@ impl TypeChecker {
             },
         );
 
-        // Built-in Eq trait: def eq(other: Self) -> Bool
-        env.set_trait(
+        builtin_traits.insert(
             "Eq".into(),
             TraitInfo {
                 name: "Eq".into(),
@@ -141,12 +149,11 @@ impl TypeChecker {
                     },
                 )]),
                 required_methods: vec!["eq".into()],
+                generic_params: None,
             },
         );
 
-        // Built-in Ord trait: def cmp(other: Self) -> Ordering
-        // Ord includes Eq — including Ord auto-includes Eq.
-        env.set_trait(
+        builtin_traits.insert(
             "Ord".into(),
             TraitInfo {
                 name: "Ord".into(),
@@ -160,12 +167,11 @@ impl TypeChecker {
                     },
                 )]),
                 required_methods: vec!["cmp".into()],
+                generic_params: None,
             },
         );
 
-        // Built-in Printable trait: def to_string() -> String, def debug() -> String
-        // to_string() is required (or auto-derived). debug() defaults to to_string().
-        env.set_trait(
+        builtin_traits.insert(
             "Printable".into(),
             TraitInfo {
                 name: "Printable".into(),
@@ -189,10 +195,77 @@ impl TypeChecker {
                         },
                     ),
                 ]),
-                // Only to_string is required — debug has a default (delegates to to_string)
                 required_methods: vec!["to_string".into()],
+                generic_params: None,
             },
         );
+
+        builtin_traits.insert(
+            "From".into(),
+            TraitInfo {
+                name: "From".into(),
+                methods: HashMap::from([(
+                    "from".into(),
+                    Type::Function {
+                        param_names: vec!["value".into()],
+                        params: vec![Type::TypeVar("T".into(), vec![])],
+                        ret: Box::new(Type::Custom("Self".into(), Vec::new())),
+                        throws: None,
+                    },
+                )]),
+                required_methods: vec!["from".into()],
+                generic_params: Some(vec!["T".into()]),
+            },
+        );
+
+        builtin_traits.insert(
+            "Into".into(),
+            TraitInfo {
+                name: "Into".into(),
+                methods: HashMap::from([(
+                    "into".into(),
+                    Type::Function {
+                        param_names: vec![],
+                        params: vec![],
+                        ret: Box::new(Type::TypeVar("T".into(), vec![])),
+                        throws: None,
+                    },
+                )]),
+                required_methods: vec!["into".into()],
+                generic_params: Some(vec!["T".into()]),
+            },
+        );
+
+        builtin_traits.insert(
+            "Iterable".into(),
+            TraitInfo {
+                name: "Iterable".into(),
+                methods: HashMap::from([(
+                    "each".into(),
+                    Type::Function {
+                        param_names: vec!["f".into()],
+                        params: vec![Type::Function {
+                            param_names: vec!["_0".into()],
+                            params: vec![Type::TypeVar("T".into(), vec![])],
+                            ret: Box::new(Type::Void),
+                            throws: None,
+                        }],
+                        ret: Box::new(Type::Void),
+                        throws: None,
+                    },
+                )]),
+                required_methods: vec!["each".into()],
+                generic_params: Some(vec!["T".into()]),
+            },
+        );
+
+        // Prelude mode: install all protocol traits and enums in env
+        for (name, info) in &builtin_traits {
+            env.set_trait(name.clone(), info.clone());
+        }
+        for (name, info) in &builtin_enums {
+            env.set_enum(name.clone(), info.clone());
+        }
 
         Self {
             env,
@@ -202,13 +275,24 @@ impl TypeChecker {
             throws_type: None,
             diagnostics: Vec::new(),
             module_loader: None,
+            builtin_traits,
+            builtin_enums,
         }
     }
 
     /// Create a TypeChecker with a module loader for resolving `use` imports.
+    /// Protocol traits are NOT in scope — they must be imported via `use std { ... }`.
     pub fn with_loader(loader: Rc<RefCell<ModuleLoader>>) -> Self {
         let mut tc = Self::new();
         tc.module_loader = Some(loader);
+        // Remove protocol traits from env — require `use std { ... }` import
+        for name in ["Eq", "Ord", "Printable", "From", "Into", "Iterable"] {
+            tc.env.traits.remove(name);
+        }
+        {
+            let name = "Ordering";
+            tc.env.enums.remove(name);
+        }
         tc
     }
 
@@ -222,6 +306,8 @@ impl TypeChecker {
             throws_type: self.throws_type.clone(),
             diagnostics: Vec::new(),
             module_loader: self.module_loader.clone(),
+            builtin_traits: self.builtin_traits.clone(),
+            builtin_enums: self.builtin_enums.clone(),
         }
     }
 
@@ -335,7 +421,22 @@ impl TypeChecker {
                 includes,
                 ..
             } => self.check_class_stmt(name, fields, methods, generic_params, extends, includes),
-            Stmt::Trait { name, methods, .. } => {
+            Stmt::Trait {
+                name,
+                methods,
+                generic_params,
+                ..
+            } => {
+                // Push type params into scope so method types can reference them
+                if let Some(gp) = generic_params {
+                    for p in gp {
+                        self.env.set_var(
+                            format!("__type_param_{}", p),
+                            Type::TypeVar(p.clone(), vec![]),
+                        );
+                    }
+                }
+
                 let mut method_map = HashMap::new();
                 let mut required_methods = Vec::new();
                 for m in methods {
@@ -370,6 +471,7 @@ impl TypeChecker {
                     name: name.clone(),
                     methods: method_map,
                     required_methods,
+                    generic_params: generic_params.clone(),
                 };
                 self.env.set_trait(name.clone(), info);
                 Ok(Type::Void)
@@ -623,21 +725,35 @@ impl TypeChecker {
             } => {
                 let variant_names: Vec<String> = variants.iter().map(|v| v.name.clone()).collect();
 
-                // Validate includes
-                for trait_name in includes {
-                    if self.env.get_trait(trait_name).is_none() {
-                        return Err(Diagnostic::error(format!(
+                // Validate includes — extract base trait names
+                let mut include_names = Vec::new();
+                for (trait_name, type_args) in includes {
+                    let trait_info = self.env.get_trait(trait_name).ok_or_else(|| {
+                        Diagnostic::error(format!(
                             "Unknown trait '{}' in includes for enum '{}'",
                             trait_name, name
                         ))
+                        .with_code("E014")
+                    })?;
+                    // Validate type argument arity for parametric traits
+                    if let Some(ref gp) = trait_info.generic_params
+                        && type_args.len() != gp.len()
+                    {
+                        return Err(Diagnostic::error(format!(
+                            "Trait '{}' expects {} type parameter(s), got {}",
+                            trait_name,
+                            gp.len(),
+                            type_args.len()
+                        ))
                         .with_code("E014"));
                     }
+                    include_names.push(trait_name.clone());
                 }
 
                 let info = EnumInfo {
                     name: name.clone(),
                     variants: variant_names,
-                    includes: includes.clone(),
+                    includes: include_names,
                 };
                 self.env.set_enum(name.clone(), info);
                 Ok(Type::Void)
@@ -700,6 +816,74 @@ impl TypeChecker {
         }
     }
 
+    /// Build exports for a std submodule. Returns None if submodule name is unknown.
+    fn builtin_std_submodule_exports(
+        &self,
+        submodule: &str,
+    ) -> Option<crate::module_loader::ModuleExports> {
+        use crate::module_loader::ModuleExports;
+        let empty = || ModuleExports {
+            variables: HashMap::new(),
+            classes: HashMap::new(),
+            traits: HashMap::new(),
+            enums: HashMap::new(),
+        };
+        match submodule {
+            "cmp" => {
+                let mut exports = empty();
+                for name in ["Eq", "Ord"] {
+                    if let Some(t) = self.builtin_traits.get(name) {
+                        exports.traits.insert(name.to_string(), t.clone());
+                    }
+                }
+                for name in ["Ordering"] {
+                    if let Some(e) = self.builtin_enums.get(name) {
+                        exports.enums.insert(name.to_string(), e.clone());
+                    }
+                }
+                Some(exports)
+            }
+            "fmt" => {
+                let mut exports = empty();
+                for name in ["Printable"] {
+                    if let Some(t) = self.builtin_traits.get(name) {
+                        exports.traits.insert(name.to_string(), t.clone());
+                    }
+                }
+                Some(exports)
+            }
+            "collections" => {
+                let mut exports = empty();
+                for name in ["Iterable"] {
+                    if let Some(t) = self.builtin_traits.get(name) {
+                        exports.traits.insert(name.to_string(), t.clone());
+                    }
+                }
+                Some(exports)
+            }
+            "convert" => {
+                let mut exports = empty();
+                for name in ["From", "Into"] {
+                    if let Some(t) = self.builtin_traits.get(name) {
+                        exports.traits.insert(name.to_string(), t.clone());
+                    }
+                }
+                Some(exports)
+            }
+            _ => None,
+        }
+    }
+
+    /// Build exports for the entire "std" module (all submodules merged).
+    fn builtin_std_exports(&self) -> crate::module_loader::ModuleExports {
+        crate::module_loader::ModuleExports {
+            variables: HashMap::new(),
+            classes: HashMap::new(),
+            traits: self.builtin_traits.clone(),
+            enums: self.builtin_enums.clone(),
+        }
+    }
+
     /// Resolve a `use` statement by loading the target module and injecting exports.
     fn resolve_use(
         &mut self,
@@ -708,6 +892,24 @@ impl TypeChecker {
         alias: &Option<String>,
         span: &ast::Span,
     ) -> Result<Type, Diagnostic> {
+        // Handle built-in std modules — always available, no module loader needed
+        if !path.is_empty() && path[0] == "std" {
+            if path.len() == 1 {
+                // `use std` or `use std { ... }` — all submodules merged
+                let exports = self.builtin_std_exports();
+                return self.apply_imports(&exports, "std", names, alias, span);
+            }
+            if path.len() == 2 {
+                // `use std/cmp { Eq }` etc.
+                let submodule = &path[1];
+                if let Some(exports) = self.builtin_std_submodule_exports(submodule) {
+                    let module_key = format!("std/{}", submodule);
+                    return self.apply_imports(&exports, &module_key, names, alias, span);
+                }
+                // Unknown std submodule — fall through to module loader
+            }
+        }
+
         let loader_rc = match &self.module_loader {
             Some(loader) => Rc::clone(loader),
             None => return Ok(Type::Void), // No loader — ignore use (backward compatible)
@@ -715,20 +917,31 @@ impl TypeChecker {
 
         let exports = ModuleLoader::load_module(&loader_rc, path, *span)?;
         let module_key = path.join("/");
+        self.apply_imports(&exports, &module_key, names, alias, span)
+    }
 
+    /// Apply imports from a ModuleExports into the current environment.
+    fn apply_imports(
+        &mut self,
+        exports: &crate::module_loader::ModuleExports,
+        module_key: &str,
+        names: &Option<Vec<String>>,
+        alias: &Option<String>,
+        span: &ast::Span,
+    ) -> Result<Type, Diagnostic> {
         match (names, alias) {
             (Some(_), Some(_)) => {
                 // Selective + alias is not allowed
-                return Err(Diagnostic::error(
+                Err(Diagnostic::error(
                     "Cannot combine selective imports { ... } with 'as' alias".to_string(),
                 )
                 .with_code("M004")
-                .with_label(*span, "use either { names } or 'as alias', not both"));
+                .with_label(*span, "use either { names } or 'as alias', not both"))
             }
             (Some(selected_names), None) => {
                 // Selective import: use foo { Bar, baz }
                 for name in selected_names {
-                    if !self.inject_export(name, &exports) {
+                    if !self.inject_export(name, exports) {
                         return Err(Diagnostic::error(format!(
                             "'{}' is not exported by module '{}'",
                             name, module_key
@@ -737,6 +950,7 @@ impl TypeChecker {
                         .with_label(*span, format!("'{}' not found in module", name)));
                     }
                 }
+                Ok(Type::Void)
             }
             (None, Some(alias_name)) => {
                 // Namespace import: use foo as ns
@@ -747,6 +961,7 @@ impl TypeChecker {
                     enums: exports.enums.clone(),
                 };
                 self.env.set_namespace(alias_name.clone(), ns);
+                Ok(Type::Void)
             }
             (None, None) => {
                 // Wildcard import: use foo — import all pub items
@@ -762,19 +977,14 @@ impl TypeChecker {
                 for (name, info) in &exports.enums {
                     self.env.set_enum(name.clone(), info.clone());
                 }
+                Ok(Type::Void)
             }
         }
-
-        Ok(Type::Void)
     }
 
     /// Try to inject a single named export into the current environment.
     /// Returns false if the name wasn't found in any export category.
-    fn inject_export(
-        &mut self,
-        name: &str,
-        exports: &crate::module_loader::ModuleExports,
-    ) -> bool {
+    fn inject_export(&mut self, name: &str, exports: &crate::module_loader::ModuleExports) -> bool {
         let mut found = false;
         if let Some(info) = exports.classes.get(name) {
             self.env.set_class(name.to_string(), info.clone());

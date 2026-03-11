@@ -60,7 +60,7 @@ impl Parser {
         }
 
         if self.type_params.get(&name).is_some_and(|c| *c > 0) {
-            let base = Type::TypeVar(name);
+            let base = Type::TypeVar(name, vec![]);
             return self.maybe_nullable(base);
         }
 

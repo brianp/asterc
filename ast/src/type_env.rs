@@ -20,6 +20,7 @@ pub struct TraitInfo {
     pub name: String,
     pub methods: HashMap<String, Type>,
     pub required_methods: Vec<String>,
+    pub generic_params: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

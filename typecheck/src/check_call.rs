@@ -160,6 +160,58 @@ impl TypeChecker {
             }
         }
 
+        // Handle Type.from() intrinsic for From[T] protocol
+        if let Expr::Member { object, field, .. } = func
+            && field == "from"
+            && let Expr::Ident(type_name, _) = object.as_ref()
+            && let Some(class_info) = self.env.get_class(type_name)
+            && class_info.includes.contains(&"From".to_string())
+            && let Some(Type::Function {
+                param_names,
+                params,
+                ret: _,
+                throws: fn_throws,
+            }) = class_info.methods.get("from")
+        {
+            if fn_throws.is_some() && !bypass_throws_check {
+                return Err(Diagnostic::error(
+                    "Cannot call throwing function without error handling. Use !, !.or(), !.or_else(), or !.catch".to_string()
+                )
+                .with_code("E013")
+                .with_label(func.span(), "throwing function requires error handling"));
+            }
+            if params.len() != args.len() {
+                return Err(Diagnostic::error(format!(
+                    "{}.from() expects {} argument(s), got {}",
+                    type_name,
+                    params.len(),
+                    args.len()
+                ))
+                .with_code("E006")
+                .with_label(func.span(), "wrong number of arguments"));
+            }
+            for (arg_name, arg_expr) in args {
+                let param_idx = param_names.iter().position(|n| n == arg_name);
+                if let Some(idx) = param_idx {
+                    let pty = &params[idx];
+                    let aty = self.check_expr(arg_expr)?;
+                    if aty.is_error() {
+                        return Ok(Type::Error);
+                    }
+                    let mut bindings = HashMap::new();
+                    Self::unify_type(pty, &aty, &mut bindings)?;
+                } else {
+                    return Err(Diagnostic::error(format!(
+                        "Unknown argument '{}' in {}.from()",
+                        arg_name, type_name
+                    ))
+                    .with_code("E006")
+                    .with_label(arg_expr.span(), "unknown argument name"));
+                }
+            }
+            return Ok(Type::Custom(type_name.clone(), Vec::new()));
+        }
+
         let fty = self.check_expr(func)?;
         if fty.is_error() {
             return Ok(Type::Error);
@@ -233,9 +285,11 @@ impl TypeChecker {
                     .with_label(arg_expr.span(), "unknown argument name"));
                 };
                 let pty = &params[idx];
+                // Substitute already-known bindings so lambda inference sees concrete types
+                let resolved_pty = Self::substitute_typevars(pty, &bindings);
                 // If arg is a lambda with Inferred types, resolve them from expected type
                 let aty = if let Expr::Lambda { .. } = arg_expr {
-                    self.check_lambda_with_expected(arg_expr, Some(pty))?
+                    self.check_lambda_with_expected(arg_expr, Some(&resolved_pty))?
                 } else {
                     self.check_expr(arg_expr)?
                 };
@@ -244,6 +298,8 @@ impl TypeChecker {
                 }
                 Self::unify_type(pty, &aty, &mut bindings)?;
             }
+            // Validate generic constraints after all bindings are established
+            self.check_typevar_constraints(&params, &bindings)?;
             let resolved_ret = Self::substitute_typevars(&ret, &bindings);
             Ok(resolved_ret)
         } else {
@@ -261,7 +317,7 @@ impl TypeChecker {
         bindings: &mut HashMap<String, Type>,
     ) -> Result<(), Diagnostic> {
         match (expected, actual) {
-            (Type::TypeVar(tv), _) => {
+            (Type::TypeVar(tv, _constraints), _) => {
                 if let Some(bound) = bindings.get(tv) {
                     if *bound != *actual {
                         return Err(Diagnostic::error(format!(
@@ -271,11 +327,23 @@ impl TypeChecker {
                         .with_code("E001"));
                     }
                 } else {
+                    // Occurs check: prevent infinite types like T = List[T]
+                    if Self::type_contains_var(actual, tv) {
+                        return Err(Diagnostic::error(format!(
+                            "Type parameter '{}' occurs in {:?}, creating an infinite type",
+                            tv, actual
+                        ))
+                        .with_code("E001"));
+                    }
                     bindings.insert(tv.clone(), actual.clone());
                 }
                 Ok(())
             }
             (Type::List(e_inner), Type::List(a_inner)) => {
+                // Empty list (List[Nil]) is compatible with any List[T]
+                if **a_inner == Type::Nil {
+                    return Ok(());
+                }
                 Self::unify_type(e_inner, a_inner, bindings)
             }
             (Type::Map(ek, ev), Type::Map(ak, av)) => {
@@ -342,7 +410,7 @@ impl TypeChecker {
 
     pub(crate) fn substitute_typevars(ty: &Type, bindings: &HashMap<String, Type>) -> Type {
         match ty {
-            Type::TypeVar(tv) => bindings.get(tv).cloned().unwrap_or_else(|| ty.clone()),
+            Type::TypeVar(tv, _) => bindings.get(tv).cloned().unwrap_or_else(|| ty.clone()),
             Type::List(inner) => Type::List(Box::new(Self::substitute_typevars(inner, bindings))),
             Type::Map(k, v) => Type::Map(
                 Box::new(Self::substitute_typevars(k, bindings)),
@@ -376,6 +444,150 @@ impl TypeChecker {
                 Type::Custom(name.clone(), new_args)
             }
             _ => ty.clone(),
+        }
+    }
+
+    /// Check if a type contains a reference to the given type variable (occurs check).
+    fn type_contains_var(ty: &Type, var: &str) -> bool {
+        match ty {
+            Type::TypeVar(tv, _) => tv == var,
+            Type::List(inner) | Type::Task(inner) | Type::Nullable(inner) => {
+                Self::type_contains_var(inner, var)
+            }
+            Type::Map(k, v) => Self::type_contains_var(k, var) || Self::type_contains_var(v, var),
+            Type::Custom(_, args) => args.iter().any(|a| Self::type_contains_var(a, var)),
+            Type::Function {
+                params,
+                ret,
+                throws,
+                ..
+            } => {
+                params.iter().any(|p| Self::type_contains_var(p, var))
+                    || Self::type_contains_var(ret, var)
+                    || throws
+                        .as_ref()
+                        .is_some_and(|t| Self::type_contains_var(t, var))
+            }
+            _ => false,
+        }
+    }
+
+    /// Validate that all TypeVar bindings satisfy their constraints.
+    fn check_typevar_constraints(
+        &self,
+        params: &[Type],
+        bindings: &HashMap<String, Type>,
+    ) -> Result<(), Diagnostic> {
+        // Collect constraints from TypeVars in the function params
+        let mut checked = std::collections::HashSet::new();
+        for p in params {
+            self.collect_typevar_constraints(p, bindings, &mut checked)?;
+        }
+        Ok(())
+    }
+
+    fn collect_typevar_constraints(
+        &self,
+        ty: &Type,
+        bindings: &HashMap<String, Type>,
+        checked: &mut std::collections::HashSet<String>,
+    ) -> Result<(), Diagnostic> {
+        match ty {
+            Type::TypeVar(name, constraints) if !constraints.is_empty() => {
+                if !checked.insert(name.clone()) {
+                    return Ok(()); // Already checked this TypeVar
+                }
+                if let Some(actual) = bindings.get(name) {
+                    for c in constraints {
+                        self.validate_constraint(name, actual, c)?;
+                    }
+                }
+                Ok(())
+            }
+            Type::List(inner) | Type::Task(inner) | Type::Nullable(inner) => {
+                self.collect_typevar_constraints(inner, bindings, checked)
+            }
+            Type::Map(k, v) => {
+                self.collect_typevar_constraints(k, bindings, checked)?;
+                self.collect_typevar_constraints(v, bindings, checked)
+            }
+            Type::Function { params, ret, .. } => {
+                for p in params {
+                    self.collect_typevar_constraints(p, bindings, checked)?;
+                }
+                self.collect_typevar_constraints(ret, bindings, checked)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn validate_constraint(
+        &self,
+        type_param: &str,
+        actual: &Type,
+        constraint: &ast::TypeConstraint,
+    ) -> Result<(), Diagnostic> {
+        match constraint {
+            ast::TypeConstraint::Extends(class_name) => {
+                let expected_ty = Type::Custom(class_name.clone(), vec![]);
+                // actual must be the class itself or a subclass
+                let is_same = match actual {
+                    Type::Custom(name, _) => name == class_name,
+                    _ => false,
+                };
+                if !is_same && !self.is_error_subtype(actual, &expected_ty) {
+                    return Err(Diagnostic::error(format!(
+                        "Type {:?} does not satisfy constraint '{} extends {}': \
+                         {:?} is not a subclass of {}",
+                        actual, type_param, class_name, actual, class_name
+                    ))
+                    .with_code("E024"));
+                }
+            }
+            ast::TypeConstraint::Includes(trait_name, _trait_args) => {
+                if !self.type_includes_trait(actual, trait_name) {
+                    return Err(Diagnostic::error(format!(
+                        "Type {:?} does not satisfy constraint '{} includes {}': \
+                         {:?} does not include {}",
+                        actual, type_param, trait_name, actual, trait_name
+                    ))
+                    .with_code("E024"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Check if a type includes a given trait.
+    fn type_includes_trait(&self, ty: &Type, trait_name: &str) -> bool {
+        match ty {
+            // Primitives include Eq, Ord, and Printable
+            Type::Int | Type::Float | Type::String | Type::Bool => {
+                matches!(trait_name, "Eq" | "Ord" | "Printable")
+            }
+            Type::Nil => matches!(trait_name, "Eq" | "Printable"),
+            Type::Custom(name, _) => {
+                if let Some(info) = self.env.get_class(name) {
+                    if info.includes.contains(&trait_name.to_string()) {
+                        return true;
+                    }
+                    // Ord includes Eq
+                    if trait_name == "Eq" && info.includes.contains(&"Ord".to_string()) {
+                        return true;
+                    }
+                }
+                if let Some(info) = self.env.get_enum(name) {
+                    if info.includes.contains(&trait_name.to_string()) {
+                        return true;
+                    }
+                    if trait_name == "Eq" && info.includes.contains(&"Ord".to_string()) {
+                        return true;
+                    }
+                }
+                false
+            }
+            Type::Error => true, // error sentinel compatible with everything
+            _ => false,
         }
     }
 

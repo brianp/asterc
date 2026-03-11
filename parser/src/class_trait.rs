@@ -1,4 +1,4 @@
-use ast::{Diagnostic, EnumVariant, Expr, Stmt, Type};
+use ast::{Diagnostic, EnumVariant, Expr, Stmt, Type, TypeConstraint};
 use lexer::TokenKind;
 
 use crate::Parser;
@@ -33,28 +33,48 @@ impl Parser {
         Ok(names)
     }
 
-    /// Parse comma-separated identifiers (no brackets). Used for `includes Trait1, Trait2`.
-    pub(crate) fn parse_ident_list(&mut self, context: &str) -> Result<Vec<String>, Diagnostic> {
-        let mut names = Vec::new();
+    /// Parse comma-separated trait references with optional type arguments.
+    /// Used for `includes Eq, From[Int], Into[String]`.
+    pub(crate) fn parse_trait_ref_list(
+        &mut self,
+    ) -> Result<Vec<(String, Vec<ast::Type>)>, Diagnostic> {
+        let mut refs = Vec::new();
         loop {
             let name = match &self.advance().kind {
                 TokenKind::Ident(n) => n.clone(),
                 t => {
-                    return Err(Diagnostic::error(format!(
-                        "Expected {} name, got {:?}",
-                        context, t
-                    ))
-                    .with_code("P001"));
+                    return Err(
+                        Diagnostic::error(format!("Expected trait name, got {:?}", t))
+                            .with_code("P001"),
+                    );
                 }
             };
-            names.push(name);
+            // Optional type arguments: From[Int] or Convert[A, B]
+            let type_args = if self.at(&TokenKind::LBracket) {
+                self.advance();
+                let mut args = Vec::new();
+                loop {
+                    let ty = self.parse_type()?;
+                    args.push(ty);
+                    if self.at(&TokenKind::Comma) {
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+                self.expect(TokenKind::RBracket)?;
+                args
+            } else {
+                Vec::new()
+            };
+            refs.push((name, type_args));
             if self.at(&TokenKind::Comma) {
                 self.advance();
             } else {
                 break;
             }
         }
-        Ok(names)
+        Ok(refs)
     }
 
     pub(crate) fn push_type_params(&mut self, params: &[String]) {
@@ -90,7 +110,7 @@ impl Parser {
         // Optional includes: enum Color includes Eq
         let includes = if self.at(&Includes) {
             self.advance();
-            self.parse_ident_list("trait")?
+            self.parse_trait_ref_list()?
         } else {
             Vec::new()
         };
@@ -216,10 +236,10 @@ impl Parser {
             None
         };
 
-        // Optional includes: class User includes Printable, Serializable
+        // Optional includes: class User includes Printable, From[Int]
         let includes = if self.at(&Includes) {
             self.advance();
-            Some(self.parse_ident_list("trait")?)
+            Some(self.parse_trait_ref_list()?)
         } else {
             None
         };
@@ -299,6 +319,19 @@ impl Parser {
             }
         };
 
+        // Optional generic parameters: trait From[T] or trait Convert[A, B]
+        let generic_params = if self.at(&LBracket) {
+            self.advance();
+            Some(self.parse_bracketed_idents("type parameter")?)
+        } else {
+            None
+        };
+
+        // Push generic params into scope for method type resolution
+        if let Some(ref gp) = generic_params {
+            self.push_type_params(gp);
+        }
+
         self.consume_newlines();
         self.expect(Indent)?;
 
@@ -330,10 +363,17 @@ impl Parser {
         }
 
         self.expect(Dedent)?;
+
+        // Pop generic params from scope
+        if let Some(ref gp) = generic_params {
+            self.pop_type_params(gp);
+        }
+
         Ok(Stmt::Trait {
             name,
             methods,
             is_public,
+            generic_params,
             span: self.span_from(start),
         })
     }
@@ -368,6 +408,7 @@ impl Parser {
         let generic_params: Option<Vec<String>> = None;
 
         let mut params: Vec<(String, Type)> = Vec::new();
+        let mut type_constraints: Vec<(String, Vec<TypeConstraint>)> = Vec::new();
         if self.at(&LParen) {
             self.advance();
             if !self.at(&RParen) {
@@ -381,6 +422,65 @@ impl Parser {
                     };
                     self.expect(Colon)?;
                     let ptype = self.parse_type()?;
+
+                    // Parse optional generic constraints: T extends Foo includes Bar
+                    let mut constraints = Vec::new();
+                    if self.at(&Extends) {
+                        self.advance();
+                        let class_name = match &self.advance().kind {
+                            Ident(n) => n.clone(),
+                            t => {
+                                return Err(Diagnostic::error(format!(
+                                    "Expected class name after 'extends', got {:?}",
+                                    t
+                                ))
+                                .with_code("P001"));
+                            }
+                        };
+                        constraints.push(TypeConstraint::Extends(class_name));
+                    }
+                    if self.at(&Includes) {
+                        self.advance();
+                        let trait_name = match &self.advance().kind {
+                            Ident(n) => n.clone(),
+                            t => {
+                                return Err(Diagnostic::error(format!(
+                                    "Expected trait name after 'includes', got {:?}",
+                                    t
+                                ))
+                                .with_code("P001"));
+                            }
+                        };
+                        // Optional type args: includes From[Float]
+                        let trait_args = if self.at(&LBracket) {
+                            self.advance();
+                            let mut args = Vec::new();
+                            args.push(self.parse_type()?);
+                            while self.at(&Comma) {
+                                self.advance();
+                                args.push(self.parse_type()?);
+                            }
+                            self.expect(RBracket)?;
+                            args
+                        } else {
+                            vec![]
+                        };
+                        constraints.push(TypeConstraint::Includes(trait_name, trait_args));
+                    }
+                    if !constraints.is_empty() {
+                        // Extract the type param name from the Custom type
+                        let type_param_name = match &ptype {
+                            Type::Custom(name, args) if args.is_empty() => name.clone(),
+                            _ => {
+                                return Err(Diagnostic::error(
+                                    "Generic constraints can only be applied to type parameters (e.g. T extends Foo)",
+                                )
+                                .with_code("P001"));
+                            }
+                        };
+                        type_constraints.push((type_param_name, constraints));
+                    }
+
                     params.push((pname, ptype));
                     if self.at(&Comma) {
                         self.advance();
@@ -421,6 +521,7 @@ impl Parser {
             body,
             generic_params,
             throws,
+            type_constraints,
             span: lambda_span,
         };
 
