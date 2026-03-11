@@ -1,0 +1,5 @@
+# Our workspace crate "lexer" (v0.1.0) shares its name with a published
+# crate on crates.io that has RUSTSEC-2020-0138.  We don't depend on that
+# external crate — this is a name collision, not a real vulnerability.
+[advisories]
+ignore = ["RUSTSEC-2020-0138"]
