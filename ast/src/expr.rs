@@ -104,6 +104,11 @@ pub enum MatchPattern {
     Literal(Box<Expr>, Span),
     Ident(String, Span),
     Wildcard(Span),
+    EnumVariant {
+        enum_name: String,
+        variant: String,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

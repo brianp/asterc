@@ -374,3 +374,177 @@ def main() -> Void
 "#,
     );
 }
+
+// ─── Soundness: S1 — Nullable match catch-all must not silently unwrap ───
+
+#[test]
+fn soundness_nullable_match_catchall_without_nil_arm_binds_nullable() {
+    // Without a nil arm, catch-all should bind as T? (not T)
+    // So v + 1 should fail because v is Int?, not Int
+    let err = common::check_err(
+        r#"let x: Int? = nil
+let y = match x
+  v => v + 1
+"#,
+    );
+    assert!(
+        err.contains("mismatch") || err.contains("Nullable") || err.contains("Int?"),
+        "Expected type error because v should be Int?, got: {}",
+        err
+    );
+}
+
+#[test]
+fn soundness_nullable_match_with_nil_arm_then_catchall_unwraps() {
+    // With a nil arm before the catch-all, v is safely unwrapped to T
+    common::check_ok(
+        r#"let x: Int? = nil
+let y = match x
+  nil => 0
+  v => v + 1
+"#,
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// S5: Enum variant match patterns
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn enum_variant_match_pattern_basic() {
+    common::check_ok(
+        r#"enum Color
+  Red
+  Green
+  Blue
+
+let c = Color.Red
+let name = match c
+  Color.Red => "red"
+  Color.Green => "green"
+  Color.Blue => "blue"
+"#,
+    );
+}
+
+#[test]
+fn enum_variant_match_pattern_with_wildcard() {
+    common::check_ok(
+        r#"enum Color
+  Red
+  Green
+  Blue
+
+let c = Color.Red
+let name = match c
+  Color.Red => "red"
+  _ => "other"
+"#,
+    );
+}
+
+#[test]
+fn enum_variant_match_wrong_enum_type() {
+    let err = common::check_err(
+        r#"enum Color
+  Red
+  Green
+  Blue
+
+enum Size
+  Small
+  Large
+
+let c = Color.Red
+let name = match c
+  Size.Small => "small"
+  _ => "other"
+"#,
+    );
+    assert!(err.contains("mismatch") || err.contains("Color") || err.contains("Size"));
+}
+
+#[test]
+fn enum_variant_match_unknown_variant() {
+    let err = common::check_err(
+        r#"enum Color
+  Red
+  Green
+  Blue
+
+let c = Color.Red
+let name = match c
+  Color.Purple => "purple"
+  _ => "other"
+"#,
+    );
+    assert!(err.contains("Purple") || err.contains("variant") || err.contains("unknown"));
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// S1: Enum exhaustiveness checking
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn enum_exhaustive_match_no_wildcard_needed() {
+    common::check_ok(
+        r#"enum Direction
+  North
+  South
+  East
+  West
+
+let d = Direction.North
+let name = match d
+  Direction.North => "n"
+  Direction.South => "s"
+  Direction.East => "e"
+  Direction.West => "w"
+"#,
+    );
+}
+
+#[test]
+fn enum_non_exhaustive_match_error() {
+    let err = common::check_err(
+        r#"enum Direction
+  North
+  South
+  East
+  West
+
+let d = Direction.North
+let name = match d
+  Direction.North => "n"
+  Direction.South => "s"
+"#,
+    );
+    assert!(
+        err.contains("exhaustive")
+            || err.contains("East")
+            || err.contains("West")
+            || err.contains("missing")
+    );
+}
+
+#[test]
+fn enum_match_with_ordering_builtin() {
+    common::check_ok(
+        r#"class Point includes Ord
+  x: Int
+
+  def cmp(other: Point) -> Ordering
+    match true
+      true => Ordering.Equal
+      false => Ordering.Less
+
+let p1 = Point(x: 1)
+let p2 = Point(x: 2)
+let result = p1.cmp(other: p2)
+let name = match result
+  Ordering.Less => "less"
+  Ordering.Equal => "equal"
+  Ordering.Greater => "greater"
+"#,
+    );
+}

@@ -183,6 +183,16 @@ impl Parser {
     }
 
     fn parse_postfix(&mut self) -> Result<Expr, Diagnostic> {
+        self.parse_postfix_impl(true)
+    }
+
+    /// Like parse_postfix but stops at `!` — used for `resolve expr` so that
+    /// `resolve task!` parses as `Propagate(Resolve(task))` not `Resolve(Propagate(task))`.
+    fn parse_postfix_no_bang(&mut self) -> Result<Expr, Diagnostic> {
+        self.parse_postfix_impl(false)
+    }
+
+    fn parse_postfix_impl(&mut self, allow_bang: bool) -> Result<Expr, Diagnostic> {
         let start = self.start_span();
         let mut expr = self.parse_primary()?;
         loop {
@@ -204,7 +214,7 @@ impl Parser {
                     index: Box::new(index),
                     span: self.span_from(start),
                 };
-            } else if self.at(&TokenKind::Bang) {
+            } else if allow_bang && self.at(&TokenKind::Bang) {
                 self.advance();
                 // Check for !.or(), !.or_else(), !.catch
                 if self.at(&TokenKind::Dot) {
@@ -250,56 +260,6 @@ impl Parser {
             } else if self.at(&TokenKind::Dot) {
                 self.advance();
                 // Accept identifiers and keyword tokens that can be method names
-                let field = match &self.advance().kind {
-                    TokenKind::Ident(n) => n.clone(),
-                    TokenKind::Or => "or".to_string(),
-                    TokenKind::Catch => "catch".to_string(),
-                    t => {
-                        return Err(Diagnostic::error(format!(
-                            "Expected field name after '.', got {:?}",
-                            t
-                        ))
-                        .with_code("P001"));
-                    }
-                };
-                expr = Expr::Member {
-                    object: Box::new(expr),
-                    field,
-                    span: self.span_from(start),
-                };
-            } else {
-                break;
-            }
-        }
-        Ok(expr)
-    }
-
-    /// Like parse_postfix but stops at `!` — used for `resolve expr` so that
-    /// `resolve task!` parses as `Propagate(Resolve(task))` not `Resolve(Propagate(task))`.
-    fn parse_postfix_no_bang(&mut self) -> Result<Expr, Diagnostic> {
-        let start = self.start_span();
-        let mut expr = self.parse_primary()?;
-        loop {
-            if self.at(&TokenKind::LParen) {
-                self.advance();
-                let args = self.parse_named_args()?;
-                self.expect(TokenKind::RParen)?;
-                expr = Expr::Call {
-                    func: Box::new(expr),
-                    args,
-                    span: self.span_from(start),
-                };
-            } else if self.at(&TokenKind::LBracket) {
-                self.advance();
-                let index = self.parse_expr()?;
-                self.expect(TokenKind::RBracket)?;
-                expr = Expr::Index {
-                    object: Box::new(expr),
-                    index: Box::new(index),
-                    span: self.span_from(start),
-                };
-            } else if self.at(&TokenKind::Dot) {
-                self.advance();
                 let field = match &self.advance().kind {
                     TokenKind::Ident(n) => n.clone(),
                     TokenKind::Or => "or".to_string(),
@@ -430,6 +390,25 @@ impl Parser {
             Ident(n) => {
                 let name = n.clone();
                 self.advance();
+                // Check for enum variant pattern: EnumName.Variant
+                if self.at(&Dot) {
+                    self.advance();
+                    if let Ident(v) = &self.peek().kind {
+                        let variant = v.clone();
+                        self.advance();
+                        let span = self.span_from(start);
+                        return Ok(MatchPattern::EnumVariant {
+                            enum_name: name,
+                            variant,
+                            span,
+                        });
+                    } else {
+                        return Err(Diagnostic::error(
+                            "Expected variant name after '.' in enum pattern".to_string(),
+                        )
+                        .with_code("P001"));
+                    }
+                }
                 let span = self.span_from(start);
                 if name == "_" {
                     Ok(MatchPattern::Wildcard(span))

@@ -13,6 +13,12 @@ pub struct ClassInfo {
     pub extends: Option<String>,
     /// Trait names this class includes (e.g., ["Eq", "Printable"]).
     pub includes: Vec<String>,
+    /// Methods with multiple signatures from parametric trait inclusions.
+    /// Maps method name → Vec of function types (e.g., multiple `into()` overloads).
+    pub overloaded_methods: HashMap<String, Vec<Type>>,
+    /// Parametric trait inclusions with type args: [(trait_name, [type_args])].
+    /// Preserves multiple inclusions of the same trait with different args.
+    pub parametric_includes: Vec<(String, Vec<Type>)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -160,6 +166,8 @@ mod tests {
             generic_params: None,
             extends: None,
             includes: Vec::new(),
+            overloaded_methods: HashMap::new(),
+            parametric_includes: Vec::new(),
         }
     }
 
@@ -238,6 +246,8 @@ mod tests {
             generic_params: None,
             extends: None,
             includes: Vec::new(),
+            overloaded_methods: HashMap::new(),
+            parametric_includes: Vec::new(),
         };
         let mut env = TypeEnv::new();
         env.set_class("Point".into(), info.clone());

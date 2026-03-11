@@ -55,4 +55,105 @@ impl Type {
     pub fn is_error(&self) -> bool {
         matches!(self, Type::Error)
     }
+
+    /// Recursively transform a type by applying `f` to each node bottom-up.
+    /// The closure receives each type after its children have been transformed.
+    /// Leaf types (Int, Float, Bool, etc.) are passed through unchanged unless `f` transforms them.
+    pub fn map_type<F>(&self, f: &F) -> Type
+    where
+        F: Fn(&Type) -> Option<Type>,
+    {
+        // First, try the custom transformation
+        if let Some(result) = f(self) {
+            return result;
+        }
+        // Otherwise, recurse into children
+        match self {
+            Type::List(inner) => Type::List(Box::new(inner.map_type(f))),
+            Type::Map(k, v) => Type::Map(Box::new(k.map_type(f)), Box::new(v.map_type(f))),
+            Type::Nullable(inner) => Type::Nullable(Box::new(inner.map_type(f))),
+            Type::Task(inner) => Type::Task(Box::new(inner.map_type(f))),
+            Type::Function {
+                param_names,
+                params,
+                ret,
+                throws,
+            } => Type::Function {
+                param_names: param_names.clone(),
+                params: params.iter().map(|p| p.map_type(f)).collect(),
+                ret: Box::new(ret.map_type(f)),
+                throws: throws.as_ref().map(|t| Box::new(t.map_type(f))),
+            },
+            Type::Custom(name, args) => {
+                Type::Custom(name.clone(), args.iter().map(|a| a.map_type(f)).collect())
+            }
+            // Leaf types and TypeVar — return as-is
+            _ => self.clone(),
+        }
+    }
+
+    /// Check if a predicate holds for any node in the type tree.
+    pub fn any_type<F>(&self, f: &F) -> bool
+    where
+        F: Fn(&Type) -> bool,
+    {
+        if f(self) {
+            return true;
+        }
+        match self {
+            Type::List(inner) | Type::Nullable(inner) | Type::Task(inner) => inner.any_type(f),
+            Type::Map(k, v) => k.any_type(f) || v.any_type(f),
+            Type::Function {
+                params,
+                ret,
+                throws,
+                ..
+            } => {
+                params.iter().any(|p| p.any_type(f))
+                    || ret.any_type(f)
+                    || throws.as_ref().is_some_and(|t| t.any_type(f))
+            }
+            Type::Custom(_, args) => args.iter().any(|a| a.any_type(f)),
+            _ => false,
+        }
+    }
+
+    /// Collect all items matching a predicate from the type tree.
+    pub fn collect_types<F>(&self, f: &F, results: &mut Vec<Type>)
+    where
+        F: Fn(&Type) -> bool,
+    {
+        if f(self) {
+            results.push(self.clone());
+        }
+        match self {
+            Type::List(inner) | Type::Nullable(inner) | Type::Task(inner) => {
+                inner.collect_types(f, results)
+            }
+            Type::Map(k, v) => {
+                k.collect_types(f, results);
+                v.collect_types(f, results);
+            }
+            Type::Function {
+                params,
+                ret,
+                throws,
+                ..
+            } => {
+                for p in params {
+                    p.collect_types(f, results);
+                }
+                ret.collect_types(f, results);
+                if let Some(t) = throws {
+                    t.collect_types(f, results);
+                }
+            }
+            Type::Custom(_, args) => {
+                for a in args {
+                    a.collect_types(f, results);
+                }
+            }
+            _ => {}
+        }
+    }
 }

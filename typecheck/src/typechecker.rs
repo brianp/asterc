@@ -21,9 +21,14 @@ pub struct TypeChecker {
     pub module_loader: Option<Rc<RefCell<ModuleLoader>>>,
     /// Built-in protocol traits (Eq, Ord, Printable, etc.) — source of truth for `use std`.
     /// In prelude mode (no loader), these are also copied to env.
-    pub(crate) builtin_traits: HashMap<String, TraitInfo>,
+    /// Wrapped in Rc since these are read-only after initialization; avoids cloning on every child scope.
+    pub(crate) builtin_traits: Rc<HashMap<String, TraitInfo>>,
     /// Built-in enum types (Ordering) — source of truth for `use std`.
-    pub(crate) builtin_enums: HashMap<String, EnumInfo>,
+    /// Wrapped in Rc since these are read-only after initialization.
+    pub(crate) builtin_enums: Rc<HashMap<String, EnumInfo>>,
+    /// Expected type from context (e.g., let binding type annotation, function arg type).
+    /// Used to resolve ambiguous parametric trait methods like `.into()`.
+    pub(crate) expected_type: Option<Type>,
 }
 
 impl Default for TypeChecker {
@@ -68,6 +73,8 @@ impl TypeChecker {
                 generic_params: None,
                 extends: None,
                 includes: Vec::new(),
+                overloaded_methods: HashMap::new(),
+                parametric_includes: Vec::new(),
             },
         );
         env.set_var(
@@ -88,6 +95,8 @@ impl TypeChecker {
                 generic_params: None,
                 extends: Some("Exception".into()),
                 includes: Vec::new(),
+                overloaded_methods: HashMap::new(),
+                parametric_includes: Vec::new(),
             },
         );
         env.set_var(
@@ -109,6 +118,8 @@ impl TypeChecker {
                 generic_params: None,
                 extends: Some("Error".into()),
                 includes: Vec::new(),
+                overloaded_methods: HashMap::new(),
+                parametric_includes: Vec::new(),
             },
         );
         env.set_var(
@@ -275,8 +286,9 @@ impl TypeChecker {
             throws_type: None,
             diagnostics: Vec::new(),
             module_loader: None,
-            builtin_traits,
-            builtin_enums,
+            builtin_traits: Rc::new(builtin_traits),
+            builtin_enums: Rc::new(builtin_enums),
+            expected_type: None,
         }
     }
 
@@ -308,27 +320,17 @@ impl TypeChecker {
             module_loader: self.module_loader.clone(),
             builtin_traits: self.builtin_traits.clone(),
             builtin_enums: self.builtin_enums.clone(),
+            expected_type: self.expected_type.clone(),
         }
     }
 
     pub fn check_module(&mut self, m: &ast::Module) -> Result<(), Diagnostic> {
-        for s in &m.body {
-            match self.check_stmt(s) {
-                Ok(_) => {}
-                Err(diag) => {
-                    self.diagnostics.push(diag);
-                    // For let bindings that failed, assign Type::Error so later code doesn't cascade
-                    if let ast::Stmt::Let { name, .. } = s {
-                        self.env.set_var(name.clone(), Type::Error);
-                    }
-                }
-            }
-        }
-        if self.diagnostics.is_empty() {
+        let diags = self.check_module_all(m);
+        if diags.is_empty() {
             Ok(())
         } else {
             // Return the first diagnostic for backward compatibility
-            Err(self.diagnostics[0].clone())
+            Err(diags[0].clone())
         }
     }
 
@@ -338,6 +340,7 @@ impl TypeChecker {
                 Ok(_) => {}
                 Err(diag) => {
                     self.diagnostics.push(diag);
+                    // For let bindings that failed, assign Type::Error so later code doesn't cascade
                     if let ast::Stmt::Let { name, .. } = s {
                         self.env.set_var(name.clone(), Type::Error);
                     }
@@ -362,11 +365,17 @@ impl TypeChecker {
                 }
                 // If the value is a lambda with inferred types and we have a type annotation,
                 // propagate the expected type for inference.
+                // Also set expected_type for parametric trait resolution (e.g., .into())
+                let prev_expected = self.expected_type.take();
+                if let Some(ann) = type_ann {
+                    self.expected_type = Some(ann.clone());
+                }
                 let ty = if matches!(value, Expr::Lambda { .. }) {
                     self.check_lambda_with_expected(value, type_ann.as_ref())?
                 } else {
                     self.check_expr(value)?
                 };
+                self.expected_type = prev_expected;
                 self.current_function = prev_fn;
                 if ty.is_error() {
                     self.env.set_var(name.clone(), Type::Error);
@@ -400,7 +409,7 @@ impl TypeChecker {
                         .with_code("E001")
                         .with_label(stmt_span, format!("expected {:?}", ann)));
                     }
-                    if !Self::types_compatible(ann, &ty) {
+                    if !Self::types_compatible_with_env(ann, &ty, &self.env) {
                         return Err(Diagnostic::error(format!(
                             "Type annotation mismatch for '{}': declared {:?}, got {:?}",
                             name, ann, ty
@@ -554,13 +563,42 @@ impl TypeChecker {
                 }
                 let elem_ty = match iter_ty {
                     Type::List(inner) => *inner,
+                    Type::Custom(ref class_name, _) => {
+                        if let Some(class_info) = self.env.get_class(class_name) {
+                            if class_info.includes.contains(&"Iterable".to_string()) {
+                                Self::get_iterable_element_type_from_class(&class_info)
+                                    .ok_or_else(|| {
+                                        Diagnostic::error(format!(
+                                            "Class '{}' includes Iterable but has no valid each() method",
+                                            class_name
+                                        ))
+                                        .with_code("E007")
+                                        .with_label(iter.span(), "missing each() method")
+                                    })?
+                            } else {
+                                return Err(Diagnostic::error(format!(
+                                    "Cannot iterate over '{}': class does not include Iterable",
+                                    class_name
+                                ))
+                                .with_code("E007")
+                                .with_label(iter.span(), "does not include Iterable"));
+                            }
+                        } else {
+                            return Err(Diagnostic::error(format!(
+                                "Cannot iterate over {:?}, expected List or Iterable class",
+                                iter_ty
+                            ))
+                            .with_code("E007")
+                            .with_label(iter.span(), "expected List or Iterable"));
+                        }
+                    }
                     _ => {
                         return Err(Diagnostic::error(format!(
-                            "Cannot iterate over {:?}, expected List",
+                            "Cannot iterate over {:?}, expected List or Iterable class",
                             iter_ty
                         ))
                         .with_code("E007")
-                        .with_label(iter.span(), "expected List"));
+                        .with_label(iter.span(), "expected List or Iterable"));
                     }
                 };
                 let mut sub = self.child_checker();
@@ -761,6 +799,31 @@ impl TypeChecker {
         }
     }
 
+    /// Walk the ancestor chain for a class, returning ClassInfos in order (parent first).
+    /// Stops on cycle detection. Does NOT include the class itself.
+    pub(crate) fn walk_ancestors(&self, start_class: &str) -> Vec<ClassInfo> {
+        let mut result = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        visited.insert(start_class.to_string());
+        let mut current_name = self
+            .env
+            .get_class(start_class)
+            .and_then(|info| info.extends.clone());
+        while let Some(ref cname) = current_name {
+            if !visited.insert(cname.clone()) {
+                break; // cycle
+            }
+            if let Some(ancestor) = self.env.get_class(cname) {
+                let next = ancestor.extends.clone();
+                result.push(ancestor);
+                current_name = next;
+            } else {
+                break;
+            }
+        }
+        result
+    }
+
     /// Check if `child_ty` is a subtype of `parent_ty` via the extends hierarchy.
     pub(crate) fn is_error_subtype(&self, child_ty: &Type, parent_ty: &Type) -> bool {
         if child_ty == parent_ty {
@@ -774,29 +837,18 @@ impl TypeChecker {
             Type::Custom(n, _) => n,
             _ => return false,
         };
-        let mut current = child_name.clone();
-        let mut visited = std::collections::HashSet::new();
-        loop {
-            if !visited.insert(current.clone()) {
-                return false;
-            }
-            if let Some(info) = self.env.get_class(&current) {
-                if let Some(extends) = &info.extends {
-                    if extends == parent_name {
-                        return true;
-                    }
-                    current = extends.clone();
-                } else {
-                    return false;
-                }
-            } else {
-                return false;
+        for ancestor in self.walk_ancestors(child_name) {
+            if let Type::Custom(ref n, _) = ancestor.ty
+                && n == parent_name
+            {
+                return true;
             }
         }
+        false
     }
 
     /// Compare types for compatibility, ignoring param_names on Function types.
-    pub(crate) fn types_compatible(a: &Type, b: &Type) -> bool {
+    pub(crate) fn types_compatible_with_env(a: &Type, b: &Type, env: &TypeEnv) -> bool {
         match (a, b) {
             (
                 Type::Function {
@@ -812,6 +864,10 @@ impl TypeChecker {
                     ..
                 },
             ) => ap == bp && ar == br && at == bt,
+            // S3: Check subtype relationship for Custom types
+            (Type::Custom(an, _), Type::Custom(bn, _)) if an != bn => {
+                Self::is_subtype_of(bn, an, env)
+            }
             _ => a == b,
         }
     }
@@ -879,8 +935,8 @@ impl TypeChecker {
         crate::module_loader::ModuleExports {
             variables: HashMap::new(),
             classes: HashMap::new(),
-            traits: self.builtin_traits.clone(),
-            enums: self.builtin_enums.clone(),
+            traits: (*self.builtin_traits).clone(),
+            enums: (*self.builtin_enums).clone(),
         }
     }
 
@@ -1049,6 +1105,38 @@ impl TypeChecker {
                     return Err(Diagnostic::error(format!(
                         "Pattern type {:?} does not match scrutinee type {:?}",
                         pat_ty, scrutinee_ty
+                    ))
+                    .with_code("E001")
+                    .with_label(*span, format!("expected {:?}", scrutinee_ty)));
+                }
+                Ok(())
+            }
+            MatchPattern::EnumVariant {
+                enum_name,
+                variant,
+                span,
+            } => {
+                // Check the enum exists
+                let enum_info = self.env.get_enum(enum_name).ok_or_else(|| {
+                    Diagnostic::error(format!("Unknown enum '{}'", enum_name))
+                        .with_code("E001")
+                        .with_label(*span, "unknown enum")
+                })?;
+                // Check the variant exists
+                if !enum_info.variants.contains(&variant.to_string()) {
+                    return Err(Diagnostic::error(format!(
+                        "Unknown variant '{}' on enum '{}'",
+                        variant, enum_name
+                    ))
+                    .with_code("E001")
+                    .with_label(*span, format!("unknown variant on {}", enum_name)));
+                }
+                // Check enum type matches scrutinee type
+                let expected_enum_ty = Type::Custom(enum_name.clone(), Vec::new());
+                if *scrutinee_ty != expected_enum_ty {
+                    return Err(Diagnostic::error(format!(
+                        "Pattern type mismatch: expected {:?}, got {}",
+                        scrutinee_ty, enum_name
                     ))
                     .with_code("E001")
                     .with_label(*span, format!("expected {:?}", scrutinee_ty)));

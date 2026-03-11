@@ -571,3 +571,46 @@ fn regression_recursion_depth_limit() {
         .join();
     assert!(result.is_ok(), "Thread panicked");
 }
+
+// ─── Soundness: S2 — catch arm type must match success path type ───
+
+#[test]
+fn soundness_catch_arm_type_must_match_success_type() {
+    // risky() returns Int on success, but catch arms return String — must be an error
+    let err = common::check_err(
+        r#"class AppError extends Error
+  code: Int
+
+def risky() throws AppError -> Int
+  42
+
+def caller() throws Error -> String
+  risky()!.catch
+    AppError e -> "oops"
+    _ -> "default"
+"#,
+    );
+    assert!(
+        err.contains("does not match") || err.contains("mismatch") || err.contains("E013"),
+        "Expected catch arm type mismatch error, got: {}",
+        err
+    );
+}
+
+#[test]
+fn soundness_catch_arm_same_type_as_success_is_ok() {
+    // catch arms return Int, same as success path — should be fine
+    common::check_ok(
+        r#"class AppError extends Error
+  code: Int
+
+def risky() throws AppError -> Int
+  42
+
+def caller() throws Error -> Int
+  risky()!.catch
+    AppError e -> 0
+    _ -> -1
+"#,
+    );
+}
