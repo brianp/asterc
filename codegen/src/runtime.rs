@@ -284,8 +284,13 @@ unsafe fn string_eq(a: *const u8, b: *const u8) -> bool {
         return false;
     }
     unsafe {
-        let a_len = *(a as *const i64) as usize;
-        let b_len = *(b as *const i64) as usize;
+        let a_raw = *(a as *const i64);
+        let b_raw = *(b as *const i64);
+        if a_raw < 0 || b_raw < 0 {
+            return false;
+        }
+        let a_len = a_raw as usize;
+        let b_len = b_raw as usize;
         if a_len != b_len {
             return false;
         }
