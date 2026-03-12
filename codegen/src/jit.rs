@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::types;
-use cranelift_codegen::ir::{self, AbiParam, InstBuilder};
+use cranelift_codegen::ir::{AbiParam, InstBuilder};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
@@ -122,72 +122,13 @@ impl CraneliftJIT {
     }
 
     fn declare_runtime_functions(&mut self) -> Result<(), String> {
-        let common: Vec<(&str, Vec<ir::Type>, Option<ir::Type>)> = vec![
-            ("aster_alloc", vec![types::I64], Some(types::I64)),
-            ("aster_print_str", vec![types::I64], None),
-            ("aster_print_int", vec![types::I64], None),
-            ("aster_print_float", vec![types::F64], None),
-            ("aster_print_bool", vec![types::I8], None),
-            (
-                "aster_string_new",
-                vec![types::I64, types::I64],
-                Some(types::I64),
-            ),
-            (
-                "aster_string_concat",
-                vec![types::I64, types::I64],
-                Some(types::I64),
-            ),
-            ("aster_string_len", vec![types::I64], Some(types::I64)),
-            ("aster_list_new", vec![types::I64], Some(types::I64)),
-            (
-                "aster_list_get",
-                vec![types::I64, types::I64],
-                Some(types::I64),
-            ),
-            (
-                "aster_list_set",
-                vec![types::I64, types::I64, types::I64],
-                None,
-            ),
-            (
-                "aster_list_push",
-                vec![types::I64, types::I64],
-                Some(types::I64),
-            ),
-            ("aster_list_len", vec![types::I64], Some(types::I64)),
-            ("aster_class_alloc", vec![types::I64], Some(types::I64)),
-            (
-                "aster_pow_int",
-                vec![types::I64, types::I64],
-                Some(types::I64),
-            ),
-            ("aster_int_to_string", vec![types::I64], Some(types::I64)),
-            ("aster_float_to_string", vec![types::F64], Some(types::I64)),
-            ("aster_bool_to_string", vec![types::I8], Some(types::I64)),
-            ("aster_map_new", vec![types::I64], Some(types::I64)),
-            (
-                "aster_map_set",
-                vec![types::I64, types::I64, types::I64],
-                Some(types::I64),
-            ),
-            (
-                "aster_map_get",
-                vec![types::I64, types::I64],
-                Some(types::I64),
-            ),
-            ("aster_error_set", vec![], None),
-            ("aster_error_check", vec![], Some(types::I8)),
-            ("aster_panic", vec![], None),
-        ];
-
-        for (name, params, ret) in &common {
+        for &(name, params, ret) in crate::runtime_sigs::RUNTIME_SIGS {
             let mut sig = self.module.make_signature();
             for &p in params {
                 sig.params.push(AbiParam::new(p));
             }
             if let Some(r) = ret {
-                sig.returns.push(AbiParam::new(*r));
+                sig.returns.push(AbiParam::new(r));
             }
 
             let func_id = self

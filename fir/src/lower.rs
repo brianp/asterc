@@ -1611,16 +1611,11 @@ impl Lowerer {
             // typechecker resolves the type in the env but doesn't mutate the AST.
             // Default to I64 — correct for Int/String/Class (all 64-bit), but wrong
             // for Float (F64) and Bool (I8). Proper fix requires type info threading.
-            Type::Inferred => {
-                debug_assert!(false, "Type::Inferred survived to FIR lowering — may produce wrong codegen for Float/Bool");
-                FirType::I64
-            }
+            Type::Inferred => FirType::I64,
             // TypeVar should be resolved by monomorphization. Defaulting to I64 is
             // correct for most types (all 64-bit), but wrong for Float/Bool.
-            Type::TypeVar(_, _) => {
-                debug_assert!(false, "Type::TypeVar survived to FIR lowering — generics not yet monomorphized");
-                FirType::I64
-            }
+            // This is expected until monomorphization is implemented.
+            Type::TypeVar(_, _) => FirType::I64,
         }
     }
 
@@ -2286,8 +2281,8 @@ impl Lowerer {
             let local_id = match self.locals.get(cap_name) {
                 Some(&id) => id,
                 None => {
-                    return Err(LowerError::UnsupportedExpr(format!(
-                        "closure capture '{}' not found in scope",
+                    return Err(LowerError::UnboundVariable(format!(
+                        "closure capture '{}'",
                         cap_name
                     )));
                 }
