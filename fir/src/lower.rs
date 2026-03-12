@@ -319,6 +319,7 @@ impl Lowerer {
             // If the last statement is an Expr (not Return), make it a Return
             if matches!(last, FirStmt::Expr(_))
                 && *ret_type != Type::Void
+                && *ret_type != Type::Inferred
                 && let Some(FirStmt::Expr(expr)) = fir_body.pop()
             {
                 fir_body.push(FirStmt::Return(expr));
@@ -1115,7 +1116,13 @@ impl Lowerer {
             Type::Function { .. } => FirType::Ptr, // function pointers
             Type::Task(_) => FirType::Ptr,
             Type::Map(_, _) => FirType::Ptr,
-            Type::Error | Type::Inferred => FirType::Void, // shouldn't appear after typechecking
+            Type::Error | Type::Inferred => {
+                debug_assert!(
+                    false,
+                    "Type::Error/Inferred should not survive past typechecking"
+                );
+                FirType::Void
+            }
             Type::TypeVar(_, _) => FirType::Void, // shouldn't appear after monomorphization
         }
     }

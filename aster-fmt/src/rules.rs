@@ -9,11 +9,12 @@ use crate::config::FormatConfig;
 use crate::doc::*;
 
 /// Classify an import path into one of three groups.
+/// Group 0: stdlib (`std` or `std/...`), Group 1: third-party, Group 2: app/relative.
 fn import_group(path: &[String]) -> u8 {
     match path.first().map(|s| s.as_str()) {
-        Some("std") => 0,                                      // stdlib
-        Some(p) if p.contains('/') || p.starts_with('.') => 2, // app/relative
-        _ => 1,                                                // third-party (or unknown)
+        Some("std") => 0,                   // stdlib (including std/cmp, std/fmt, etc.)
+        Some(p) if p.starts_with('.') => 2, // relative paths
+        _ => 1,                             // third-party (or unknown)
     }
 }
 
@@ -919,7 +920,6 @@ fn pack_items_str(items: &[String], align_col: usize, config: &FormatConfig) -> 
 
     let max_width = config.line_width;
     let two_thirds = max_width * 2 / 3;
-    let align_spaces: String = " ".repeat(align_col);
 
     let mut lines: Vec<String> = Vec::new();
     let mut line_buf = items[0].clone();
@@ -945,6 +945,7 @@ fn pack_items_str(items: &[String], align_col: usize, config: &FormatConfig) -> 
     if lines.len() == 1 {
         lines[0].clone()
     } else {
+        let align_spaces: String = " ".repeat(align_col);
         lines.join(&format!("\n{}", align_spaces))
     }
 }
