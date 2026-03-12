@@ -827,7 +827,7 @@ def main() -> Int
 
 #[test]
 fn nullable_return_value() {
-    // Nullable Int? return — check that wrapping a value works
+    // Nullable Int? return — value is boxed (heap pointer), non-zero
     let src = "\
 def f() -> Int?
   return 42
@@ -835,8 +835,12 @@ def f() -> Int?
     let fir = compile_and_run(src);
     let jit = jit_compile(&fir);
     let result = jit.call_i64(FunctionId(0));
-    // Value should be non-zero (wrapped 42)
-    assert_eq!(result, 42);
+    // Value should be a non-zero heap pointer (boxed 42)
+    assert_ne!(result, 0, "Some(42) should be non-zero (boxed pointer)");
+    // Verify the boxed value by reading from the pointer
+    let ptr = result as *const i64;
+    let unboxed = unsafe { *ptr };
+    assert_eq!(unboxed, 42);
 }
 
 #[test]
@@ -2068,7 +2072,123 @@ def main() -> Int
 }
 
 // ===========================================================================
-// MILESTONE 17: Default parameter values
+// MILESTONE 17: Nullable values and Iterator[T] codegen
+// ===========================================================================
+
+#[test]
+fn nullable_return_nil_is_zero() {
+    // A function returning T? that returns nil should produce 0 (null pointer)
+    let src = "\
+def maybe() -> Int?
+  return nil
+
+def main() -> Int
+  let x: Int? = maybe()
+  return 0
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 0);
+}
+
+#[test]
+fn nullable_return_some_value_is_nonzero() {
+    // A function returning T? with a value should produce a non-zero boxed pointer
+    let src = "\
+def maybe() -> Int?
+  return 42
+
+def main() -> Int
+  let x: Int? = maybe()
+  return 1
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 1);
+}
+
+#[test]
+fn iterator_for_loop_sums_range() {
+    // Iterator[Int] for-loop that sums values 0..5
+    let src = "\
+class Counter includes Iterator[Int]
+  current: Int
+  max: Int
+
+  def next() -> Int?
+    if current >= max
+      return nil
+    let val: Int = current
+    current = current + 1
+    return val
+
+def main() -> Int
+  let c: Counter = Counter(current: 0, max: 5)
+  let total: Int = 0
+  for x in c
+    total = total + x
+  return total
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    // 0 + 1 + 2 + 3 + 4 = 10
+    assert_eq!(result, 10);
+}
+
+#[test]
+fn iterator_for_loop_counts_elements() {
+    // Iterator that produces 3 elements, count them
+    let src = "\
+class ThreeItems includes Iterator[Int]
+  pos: Int
+
+  def next() -> Int?
+    if pos >= 3
+      return nil
+    pos = pos + 1
+    return pos
+
+def main() -> Int
+  let it: ThreeItems = ThreeItems(pos: 0)
+  let count: Int = 0
+  for x in it
+    count = count + 1
+  return count
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 3);
+}
+
+#[test]
+fn iterator_for_loop_empty() {
+    // Iterator that immediately returns nil — loop body never executes
+    let src = "\
+class Empty includes Iterator[Int]
+  done: Int
+
+  def next() -> Int?
+    return nil
+
+def main() -> Int
+  let it: Empty = Empty(done: 0)
+  let count: Int = 0
+  for x in it
+    count = count + 1
+  return count
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 0);
+}
+
+// ===========================================================================
+// MILESTONE 18: Default parameter values
 // ===========================================================================
 
 #[test]

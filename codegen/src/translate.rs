@@ -380,9 +380,46 @@ fn translate_expr(
             val
         }
 
-        FirExpr::TagWrap { value, .. } => translate_expr(builder, state, value),
-        FirExpr::TagUnwrap { value, .. } => translate_expr(builder, state, value),
-        FirExpr::TagCheck { .. } => builder.ins().iconst(types::I8, 1),
+        FirExpr::TagWrap { tag, value, .. } => {
+            if *tag == 1 {
+                // Nil: return null pointer (0)
+                builder.ins().iconst(types::I64, 0)
+            } else {
+                // Some(value): box the value — allocate 8 bytes, store, return ptr
+                let inner_val = translate_expr(builder, state, value);
+                if let Some(&alloc_ref) = state.runtime_refs.get("aster_class_alloc") {
+                    let size = builder.ins().iconst(types::I64, 8);
+                    let ptr = builder.ins().call(alloc_ref, &[size]);
+                    let ptr_val = builder.inst_results(ptr)[0];
+                    builder
+                        .ins()
+                        .store(ir::MemFlags::new(), inner_val, ptr_val, Offset32::new(0));
+                    ptr_val
+                } else {
+                    // Fallback if runtime not available: just pass through
+                    inner_val
+                }
+            }
+        }
+        FirExpr::TagUnwrap { value, .. } => {
+            // Unwrap: load the boxed value from ptr+0
+            let ptr_val = translate_expr(builder, state, value);
+            builder
+                .ins()
+                .load(types::I64, ir::MemFlags::new(), ptr_val, Offset32::new(0))
+        }
+        FirExpr::TagCheck { value, tag } => {
+            // Check if nullable is nil (tag=1) or has value (tag=0)
+            let ptr_val = translate_expr(builder, state, value);
+            let zero = builder.ins().iconst(types::I64, 0);
+            if *tag == 1 {
+                // IsNil: ptr == 0
+                builder.ins().icmp(IntCC::Equal, ptr_val, zero)
+            } else {
+                // IsSome: ptr != 0
+                builder.ins().icmp(IntCC::NotEqual, ptr_val, zero)
+            }
+        }
 
         FirExpr::ClosureCreate { func, env, .. } => {
             // Allocate closure struct: [func_ptr: i64][env_ptr: i64]

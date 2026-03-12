@@ -62,6 +62,9 @@ pub struct Lowerer {
     /// Used to fill in missing arguments at call sites.
     #[allow(clippy::type_complexity)]
     function_defaults: HashMap<String, Vec<(String, Option<Expr>)>>,
+    /// The AST return type of the function currently being lowered.
+    /// Used to wrap return values in TagWrap for nullable return types.
+    current_return_type: Option<Type>,
 }
 
 impl Lowerer {
@@ -84,6 +87,7 @@ impl Lowerer {
             next_class: 0,
             pending_stmts: Vec::new(),
             function_defaults: HashMap::new(),
+            current_return_type: None,
         }
     }
 
@@ -297,7 +301,9 @@ impl Lowerer {
         let saved_local_ast_types = std::mem::take(&mut self.local_ast_types);
         let saved_closure_info = std::mem::take(&mut self.closure_info);
         let saved_next_local = self.next_local;
+        let saved_return_type = self.current_return_type.take();
         self.next_local = 0;
+        self.current_return_type = Some(ret_type.clone());
 
         // Allocate parameters as locals FIRST (codegen expects params at LocalId(0..N))
         let mut fir_params = Vec::new();
@@ -379,6 +385,7 @@ impl Lowerer {
         self.local_ast_types = saved_local_ast_types;
         self.closure_info = saved_closure_info;
         self.next_local = saved_next_local;
+        self.current_return_type = saved_return_type;
 
         Ok(id)
     }
@@ -575,7 +582,9 @@ impl Lowerer {
             }
             Stmt::Return(expr, _) => {
                 let fir_expr = self.lower_expr(expr)?;
-                Ok(FirStmt::Return(fir_expr))
+                // Wrap return value in TagWrap for nullable return types
+                let wrapped = self.maybe_wrap_nullable_return(fir_expr, expr);
+                Ok(FirStmt::Return(wrapped))
             }
             Stmt::If {
                 cond,
@@ -1194,6 +1203,32 @@ impl Lowerer {
         )))
     }
 
+    /// Wrap a return value in TagWrap if the current function returns a nullable type.
+    /// `return nil` → TagWrap(tag=1, NilLit)  [nil]
+    /// `return expr` → TagWrap(tag=0, expr)    [Some(value)]
+    fn maybe_wrap_nullable_return(&self, fir_expr: FirExpr, ast_expr: &Expr) -> FirExpr {
+        if let Some(Type::Nullable(inner)) = &self.current_return_type {
+            let result_ty = self.lower_type(inner);
+            if matches!(ast_expr, Expr::Nil(_)) {
+                // return nil → TagWrap(1, nil)
+                FirExpr::TagWrap {
+                    tag: 1,
+                    value: Box::new(FirExpr::NilLit),
+                    ty: FirType::Ptr,
+                }
+            } else {
+                // return value → TagWrap(0, value)
+                FirExpr::TagWrap {
+                    tag: 0,
+                    value: Box::new(fir_expr),
+                    ty: result_ty,
+                }
+            }
+        } else {
+            fir_expr
+        }
+    }
+
     /// Lower call arguments, filling in default values for any missing named parameters.
     /// If the function has no defaults or all args are provided, this just lowers args in order.
     fn lower_call_args_with_defaults(
@@ -1224,15 +1259,21 @@ impl Lowerer {
         }
     }
 
-    /// Lower `for var in iter: body` → index-based while loop.
-    /// Desugars to: let __iter = iter; let __len = len(__iter); let __idx = 0;
-    /// while __idx < __len: let var = get(__iter, __idx); body; __idx += 1
+    /// Lower `for var in iter: body`.
+    /// For List types: index-based while loop (aster_list_len/aster_list_get).
+    /// For Iterator classes: next()-based loop with nullable check.
     fn lower_for_loop(
         &mut self,
         var: &str,
         iter: &Expr,
         body: &[Stmt],
     ) -> Result<FirStmt, LowerError> {
+        // Check if iterating over an Iterator class
+        if let Some(class_name) = self.resolve_iterator_class(iter) {
+            return self.lower_iterator_for_loop(var, iter, body, &class_name);
+        }
+
+        // Default: list-based iteration
         // Lower the iterable expression
         let fir_iter = self.lower_expr(iter)?;
 
@@ -1349,11 +1390,136 @@ impl Lowerer {
         })
     }
 
+    /// Check if the iterable expression refers to a class that includes Iterator.
+    /// Returns the class name if so.
+    fn resolve_iterator_class(&self, iter: &Expr) -> Option<String> {
+        if let Expr::Ident(name, _) = iter
+            && let Some(Type::Custom(class_name, _)) = self.local_ast_types.get(name.as_str())
+            && let Some(class_info) = self.type_env.get_class(class_name)
+            && class_info.includes.contains(&"Iterator".to_string())
+        {
+            return Some(class_name.clone());
+        }
+        None
+    }
+
+    /// Lower `for var in iter: body` for Iterator classes.
+    /// Desugars to:
+    ///   let __iter = iter
+    ///   while true:
+    ///     let __next = __iter.next()   // returns nullable (Ptr: 0=nil, non-zero=boxed value)
+    ///     if __next == 0: break        // nil → done
+    ///     let var = *__next            // unwrap boxed value
+    ///     body...
+    fn lower_iterator_for_loop(
+        &mut self,
+        var: &str,
+        iter: &Expr,
+        body: &[Stmt],
+        class_name: &str,
+    ) -> Result<FirStmt, LowerError> {
+        let fir_iter = self.lower_expr(iter)?;
+        let uid = self.next_local;
+
+        // let __iter = <iterable>
+        let iter_id = self.alloc_local();
+        self.locals.insert(format!("__iter_{}", uid), iter_id);
+        self.local_types.insert(iter_id, FirType::Ptr);
+
+        // Resolve the next() method
+        let next_name = format!("{}.next", class_name);
+        let next_func_id = self.functions.get(&next_name).copied().ok_or_else(|| {
+            LowerError::UnsupportedFeature(format!(
+                "Iterator class '{}' has no next() method in FIR",
+                class_name
+            ))
+        })?;
+
+        // let __next (will be reassigned each iteration)
+        let next_id = self.alloc_local();
+        self.locals.insert(format!("__next_{}", uid), next_id);
+        self.local_types.insert(next_id, FirType::Ptr); // nullable = Ptr (0=nil, non-zero=boxed)
+
+        // let var (the loop variable, unwrapped value)
+        let var_id = self.alloc_local();
+        self.locals.insert(var.to_string(), var_id);
+        self.local_types.insert(var_id, FirType::I64);
+
+        // Build while(true) loop body:
+        let mut while_body = Vec::new();
+
+        // let __next = __iter.next()
+        while_body.push(FirStmt::Let {
+            name: next_id,
+            ty: FirType::Ptr,
+            value: FirExpr::Call {
+                func: next_func_id,
+                args: vec![FirExpr::LocalVar(iter_id, FirType::Ptr)], // self arg
+                ret_ty: FirType::Ptr,
+            },
+        });
+
+        // if __next == nil (0): break
+        while_body.push(FirStmt::If {
+            cond: FirExpr::TagCheck {
+                value: Box::new(FirExpr::LocalVar(next_id, FirType::Ptr)),
+                tag: 1, // check for nil
+            },
+            then_body: vec![FirStmt::Break],
+            else_body: vec![],
+        });
+
+        // let var = unwrap(__next) — load boxed value
+        while_body.push(FirStmt::Let {
+            name: var_id,
+            ty: FirType::I64,
+            value: FirExpr::TagUnwrap {
+                value: Box::new(FirExpr::LocalVar(next_id, FirType::Ptr)),
+                expected_tag: 0,
+                ty: FirType::I64,
+            },
+        });
+
+        // Lower user's loop body
+        for stmt in body {
+            while_body.push(self.lower_stmt_inner(stmt)?);
+        }
+
+        // Setup: let __iter = iterable, then while(true) { ... }
+        let setup_and_loop = vec![
+            FirStmt::Let {
+                name: iter_id,
+                ty: FirType::Ptr,
+                value: fir_iter,
+            },
+            FirStmt::While {
+                cond: FirExpr::BoolLit(true),
+                body: while_body,
+            },
+        ];
+
+        Ok(FirStmt::If {
+            cond: FirExpr::BoolLit(true),
+            then_body: setup_and_loop,
+            else_body: vec![],
+        })
+    }
+
     fn lower_place(&self, expr: &Expr) -> Result<FirPlace, LowerError> {
         match expr {
             Expr::Ident(name, _) => {
                 if let Some(&local_id) = self.locals.get(name.as_str()) {
                     Ok(FirPlace::Local(local_id))
+                } else if let Some(&self_id) = self.locals.get("self") {
+                    // Inside a method body — resolve bare field names as self.field
+                    let self_expr = Expr::Ident("self".to_string(), expr.span());
+                    match self.resolve_field_access(&self_expr, name) {
+                        Ok((offset, _ty)) => Ok(FirPlace::Field {
+                            object: Box::new(FirExpr::LocalVar(self_id, FirType::Ptr)),
+                            offset,
+                        }),
+                        Err(_) => Err(LowerError::UnboundVariable(name.clone())),
+                    }
                 } else {
                     Err(LowerError::UnboundVariable(name.clone()))
                 }
@@ -2051,7 +2217,9 @@ impl Lowerer {
         let saved_local_ast_types = std::mem::take(&mut self.local_ast_types);
         let saved_closure_info = std::mem::take(&mut self.closure_info);
         let saved_next_local = self.next_local;
+        let saved_return_type = self.current_return_type.take();
         self.next_local = 0;
+        self.current_return_type = Some(ret_type.clone());
 
         // Allocate __env as local 0
         let env_local = self.alloc_local(); // LocalId(0)
@@ -2141,6 +2309,7 @@ impl Lowerer {
         self.local_ast_types = saved_local_ast_types;
         self.closure_info = saved_closure_info;
         self.next_local = saved_next_local;
+        self.current_return_type = saved_return_type;
 
         // Re-register the function name
         self.functions.insert(lambda_name, func_id);
