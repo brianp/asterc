@@ -142,10 +142,10 @@ impl CraneliftAOT {
     fn declare_runtime_functions(&mut self) -> Result<(), String> {
         let common: Vec<(&str, Vec<ir::Type>, Option<ir::Type>)> = vec![
             ("aster_alloc", vec![types::I64], Some(types::I64)),
-            ("aster_print_str", vec![types::I64], Some(types::I64)),
-            ("aster_print_int", vec![types::I64], Some(types::I64)),
-            ("aster_print_float", vec![types::F64], Some(types::I64)),
-            ("aster_print_bool", vec![types::I8], Some(types::I64)),
+            ("aster_print_str", vec![types::I64], None),
+            ("aster_print_int", vec![types::I64], None),
+            ("aster_print_float", vec![types::F64], None),
+            ("aster_print_bool", vec![types::I8], None),
             (
                 "aster_string_new",
                 vec![types::I64, types::I64],
@@ -166,7 +166,7 @@ impl CraneliftAOT {
             (
                 "aster_list_set",
                 vec![types::I64, types::I64, types::I64],
-                Some(types::I64),
+                None,
             ),
             (
                 "aster_list_push",

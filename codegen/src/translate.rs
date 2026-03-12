@@ -413,7 +413,7 @@ fn translate_expr(
             let closure_ptr = translate_expr(builder, state, closure);
 
             // Load func_id from closure[0]
-            let func_id_val = builder.ins().load(
+            let _func_id_val = builder.ins().load(
                 types::I64,
                 ir::MemFlags::new(),
                 closure_ptr,
@@ -442,12 +442,10 @@ fn translate_expr(
             // so ClosureCall should not appear in the FIR. If it does, it means a closure
             // was passed as a first-class value without static resolution.
             // TODO: implement indirect call via function pointer table for dynamic dispatch.
-            panic!(
-                "ClosureCall codegen not yet implemented — closures must be statically resolved. \
-                 func_id_val={:?}, {} args",
-                func_id_val,
-                call_args.len()
-            )
+            // Emit a trap instead of panicking (panic across FFI is UB).
+            builder.ins().trap(ir::TrapCode::unwrap_user(0));
+            // Return a dummy value for the unreachable code after the trap.
+            builder.ins().iconst(types::I64, 0)
         }
 
         FirExpr::EnvLoad { env, offset, ty } => {
@@ -487,6 +485,13 @@ fn translate_binop(
         BinOp::Mul => builder.ins().imul(lhs, rhs),
         BinOp::Div if is_f => builder.ins().fdiv(lhs, rhs),
         BinOp::Div => builder.ins().sdiv(lhs, rhs),
+        BinOp::Mod if is_f => {
+            // Float modulo: a - floor(a/b) * b
+            let div = builder.ins().fdiv(lhs, rhs);
+            let floored = builder.ins().floor(div);
+            let prod = builder.ins().fmul(floored, rhs);
+            builder.ins().fsub(lhs, prod)
+        }
         BinOp::Mod => builder.ins().srem(lhs, rhs),
         BinOp::Eq if is_f => builder.ins().fcmp(FloatCC::Equal, lhs, rhs),
         BinOp::Eq => builder.ins().icmp(IntCC::Equal, lhs, rhs),
@@ -624,6 +629,9 @@ fn infer_operand_type(_state: &TranslationState, expr: &FirExpr) -> FirType {
         FirExpr::ClosureCall { ret_ty, .. } => ret_ty.clone(),
         FirExpr::EnvLoad { ty, .. } => ty.clone(),
         FirExpr::GlobalFunc(_) => FirType::Ptr,
-        _ => FirType::I64,
+        FirExpr::FieldSet { .. } | FirExpr::ListSet { .. } => FirType::Void,
+        FirExpr::TagWrap { ty, .. } => ty.clone(),
+        FirExpr::TagUnwrap { ty, .. } => ty.clone(),
+        FirExpr::TagCheck { .. } => FirType::Bool,
     }
 }

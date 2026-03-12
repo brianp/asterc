@@ -34,7 +34,12 @@ pub extern "C" fn aster_print_str(ptr: *const u8) {
         return;
     }
     unsafe {
-        let len = *(ptr as *const i64) as usize;
+        let raw_len = *(ptr as *const i64);
+        if raw_len < 0 {
+            println!("<invalid string: negative length>");
+            return;
+        }
+        let len = raw_len as usize;
         let data = ptr.add(8);
         let bytes = std::slice::from_raw_parts(data, len);
         match std::str::from_utf8(bytes) {
@@ -69,6 +74,10 @@ pub extern "C" fn aster_string_new(data: *const u8, len: usize) -> *mut u8 {
     unsafe {
         *(ptr as *mut i64) = len as i64;
         if len > 0 {
+            if data.is_null() {
+                eprintln!("aster_string_new: null data pointer with nonzero length");
+                std::process::abort();
+            }
             std::ptr::copy_nonoverlapping(data, ptr.add(8), len);
         }
     }
@@ -81,12 +90,14 @@ pub extern "C" fn aster_string_concat(a: *const u8, b: *const u8) -> *mut u8 {
         let a_len = if a.is_null() {
             0usize
         } else {
-            *(a as *const i64) as usize
+            let raw = *(a as *const i64);
+            if raw < 0 { 0usize } else { raw as usize }
         };
         let b_len = if b.is_null() {
             0usize
         } else {
-            *(b as *const i64) as usize
+            let raw = *(b as *const i64);
+            if raw < 0 { 0usize } else { raw as usize }
         };
         let total = a_len
             .checked_add(b_len)
@@ -109,7 +120,8 @@ pub extern "C" fn aster_string_len(ptr: *const u8) -> i64 {
     if ptr.is_null() {
         return 0;
     }
-    unsafe { *(ptr as *const i64) }
+    let raw = unsafe { *(ptr as *const i64) };
+    if raw < 0 { 0 } else { raw }
 }
 
 /// Allocate a new list. Layout: [len: i64][cap: i64][data: [i64...]]
@@ -129,10 +141,15 @@ pub extern "C" fn aster_list_new(cap: i64) -> *mut u8 {
 
 /// Get an element from a list by index. Returns the i64 value at that index.
 pub extern "C" fn aster_list_get(list: *const u8, index: i64) -> i64 {
+    if list.is_null() {
+        eprintln!("aster_list_get: null list pointer");
+        std::process::abort();
+    }
     unsafe {
         let len = *(list as *const i64);
         if index < 0 || index >= len {
-            panic!("list index out of bounds: {} (len {})", index, len);
+            eprintln!("list index out of bounds: {} (len {})", index, len);
+            std::process::abort();
         }
         let data = (list as *const i64).add(2);
         *data.add(index as usize)
@@ -141,10 +158,15 @@ pub extern "C" fn aster_list_get(list: *const u8, index: i64) -> i64 {
 
 /// Set an element in a list by index.
 pub extern "C" fn aster_list_set(list: *mut u8, index: i64, value: i64) {
+    if list.is_null() {
+        eprintln!("aster_list_set: null list pointer");
+        std::process::abort();
+    }
     unsafe {
         let len = *(list as *const i64);
         if index < 0 || index >= len {
-            panic!("list index out of bounds: {} (len {})", index, len);
+            eprintln!("list index out of bounds: {} (len {})", index, len);
+            std::process::abort();
         }
         let data = (list as *mut i64).add(2);
         *data.add(index as usize) = value;
@@ -153,6 +175,10 @@ pub extern "C" fn aster_list_set(list: *mut u8, index: i64, value: i64) {
 
 /// Push an element to a list. May reallocate.
 pub extern "C" fn aster_list_push(list: *mut u8, value: i64) -> *mut u8 {
+    if list.is_null() {
+        eprintln!("aster_list_push: null list pointer");
+        std::process::abort();
+    }
     unsafe {
         let len = *(list as *mut i64);
         let cap = *((list as *mut i64).add(1));
