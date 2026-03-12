@@ -108,7 +108,6 @@ dependencies = [
  "fir",
  "lexer",
  "parser",
- "target-lexicon",
  "typecheck",
 ]
 

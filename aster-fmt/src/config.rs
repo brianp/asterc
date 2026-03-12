@@ -12,7 +12,7 @@ pub enum QuoteStyle {
 pub struct FormatConfig {
     /// Maximum line width before breaking. Default: 88.
     pub line_width: usize,
-    /// Number of spaces per indentation level. Default: 4.
+    /// Number of spaces per indentation level. Default: 2.
     pub indent_size: usize,
     /// Quote style for string literals. Default: Double.
     pub quote_style: QuoteStyle,
@@ -22,7 +22,7 @@ impl Default for FormatConfig {
     fn default() -> Self {
         Self {
             line_width: 88,
-            indent_size: 4,
+            indent_size: 2,
             quote_style: QuoteStyle::Double,
         }
     }

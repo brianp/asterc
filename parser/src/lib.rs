@@ -41,6 +41,14 @@ impl Parser {
         self.tokens.get(self.pos).unwrap_or(&EOF_TOKEN)
     }
 
+    pub(crate) fn peek_kind(&self) -> &TokenKind {
+        &self.peek().kind
+    }
+
+    pub(crate) fn peek_second_kind(&self) -> Option<&TokenKind> {
+        self.tokens.get(self.pos + 1).map(|t| &t.kind)
+    }
+
     pub(crate) fn at(&self, kind: &TokenKind) -> bool {
         &self.peek().kind == kind
     }

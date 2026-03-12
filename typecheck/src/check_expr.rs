@@ -136,8 +136,8 @@ impl TypeChecker {
             ..
         } = expr
         {
-            let has_inferred =
-                params.iter().any(|(_, t)| *t == Type::Inferred) || *ret_type == Type::Inferred;
+            let has_inferred_params = params.iter().any(|(_, t)| *t == Type::Inferred);
+            let has_inferred = has_inferred_params || *ret_type == Type::Inferred;
 
             if has_inferred {
                 if let Some(Type::Function {
@@ -198,7 +198,7 @@ impl TypeChecker {
                         type_constraints,
                         defaults,
                     );
-                } else {
+                } else if has_inferred_params {
                     return Err(Diagnostic::error(
                         "Cannot infer lambda parameter types without a function type context. Add type annotations or pass to a function with known parameter types"
                             .to_string(),

@@ -519,7 +519,7 @@ impl Parser {
             None
         };
 
-        let mut ret = Type::Void;
+        let mut ret = Type::Inferred;
         if self.at(&Arrow) {
             self.advance();
             ret = self.parse_type()?;

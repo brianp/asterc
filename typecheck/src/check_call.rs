@@ -428,10 +428,23 @@ impl TypeChecker {
                         .with_label(func.span(), format!("expected {} arguments", params.len())));
                 }
             }
-            // Match args by name, order-independent
+            // Match args by name, order-independent.
+            // Positional args (synthesized names like `_0`, `_1`) map to params by index.
             let mut bindings: HashMap<String, Type> = HashMap::new();
             for (arg_name, arg_expr) in args {
-                let param_idx = param_names.iter().position(|n| n == arg_name);
+                let param_idx = if arg_name.starts_with('_') && !param_names.contains(arg_name) {
+                    if let Ok(pos) = arg_name[1..].parse::<usize>() {
+                        if pos < param_names.len() {
+                            Some(pos)
+                        } else {
+                            None
+                        }
+                    } else {
+                        param_names.iter().position(|n| n == arg_name)
+                    }
+                } else {
+                    param_names.iter().position(|n| n == arg_name)
+                };
                 let Some(idx) = param_idx else {
                     return Err(Diagnostic::error(format!(
                         "Unknown argument '{}'. Expected one of: {}",
