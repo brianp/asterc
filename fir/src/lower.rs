@@ -826,7 +826,10 @@ impl Lowerer {
             Expr::Index { object, index, .. } => {
                 // Check if the object is a map (use local_ast_types to determine)
                 let is_map = if let Expr::Ident(name, _) = object.as_ref() {
-                    matches!(self.local_ast_types.get(name.as_str()), Some(Type::Map(_, _)))
+                    matches!(
+                        self.local_ast_types.get(name.as_str()),
+                        Some(Type::Map(_, _))
+                    )
                 } else {
                     false
                 };
@@ -947,9 +950,7 @@ impl Lowerer {
             }
 
             // Error handling: `expr!.or_else(-> handler)` → evaluate, check error, call handler
-            Expr::ErrorOrElse {
-                expr, handler, ..
-            } => {
+            Expr::ErrorOrElse { expr, handler, .. } => {
                 let inner = if let Expr::Propagate(inner, _) = expr.as_ref() {
                     inner
                 } else {
