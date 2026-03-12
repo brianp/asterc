@@ -668,6 +668,34 @@ fn pub_use_accessible_via_namespace() {
     common::check_ok_with_files("use models as m\nlet u = m.User(name: \"Jo\")\n", files);
 }
 
+// --- Multiple use from same module ---
+
+#[test]
+fn multiple_selective_imports_same_module() {
+    let mut files = std::collections::HashMap::new();
+    files.insert(
+        "utils".to_string(),
+        "\
+pub def foo() -> Int
+  1
+
+pub def bar() -> Int
+  2
+"
+        .to_string(),
+    );
+    common::check_ok_with_files(
+        "\
+use utils { foo }
+use utils { bar }
+
+def main() -> Int
+  foo() + bar()
+",
+        files,
+    );
+}
+
 // --- Import class with inheritance ---
 
 #[test]

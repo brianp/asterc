@@ -27,11 +27,11 @@ fn jit_compile(fir: &FirModule) -> CraneliftJIT {
 }
 
 // ===========================================================================
-// MILESTONE 2: Integer arithmetic — JIT compile and execute
+// Integer arithmetic
 // ===========================================================================
 
 #[test]
-fn m2_return_constant() {
+fn return_constant() {
     let fir = compile_and_run("def main() -> Int\n  return 42\n");
     let jit = jit_compile(&fir);
     let result = jit.call_i64(fir.entry.unwrap());
@@ -39,7 +39,7 @@ fn m2_return_constant() {
 }
 
 #[test]
-fn m2_add_two_numbers() {
+fn add_two_numbers() {
     let fir = compile_and_run("def add(a: Int, b: Int) -> Int\n  a + b\n");
     let jit = jit_compile(&fir);
     let add_id = FunctionId(0);
@@ -48,7 +48,7 @@ fn m2_add_two_numbers() {
 }
 
 #[test]
-fn m2_subtract() {
+fn subtract() {
     let fir = compile_and_run("def sub(a: Int, b: Int) -> Int\n  a - b\n");
     let jit = jit_compile(&fir);
     let result = jit.call_i64_i64_i64(FunctionId(0), 10, 3);
@@ -56,7 +56,7 @@ fn m2_subtract() {
 }
 
 #[test]
-fn m2_multiply() {
+fn multiply() {
     let fir = compile_and_run("def mul(a: Int, b: Int) -> Int\n  a * b\n");
     let jit = jit_compile(&fir);
     let result = jit.call_i64_i64_i64(FunctionId(0), 6, 7);
@@ -64,7 +64,7 @@ fn m2_multiply() {
 }
 
 #[test]
-fn m2_divide() {
+fn divide() {
     let fir = compile_and_run("def div(a: Int, b: Int) -> Int\n  a / b\n");
     let jit = jit_compile(&fir);
     let result = jit.call_i64_i64_i64(FunctionId(0), 20, 4);
@@ -72,7 +72,7 @@ fn m2_divide() {
 }
 
 #[test]
-fn m2_nested_arithmetic() {
+fn nested_arithmetic() {
     let fir = compile_and_run("def f(a: Int, b: Int) -> Int\n  (a + b) * (a - b)\n");
     let jit = jit_compile(&fir);
     // (5+3) * (5-3) = 8 * 2 = 16
@@ -81,7 +81,7 @@ fn m2_nested_arithmetic() {
 }
 
 #[test]
-fn m2_unary_negation() {
+fn unary_negation() {
     let fir = compile_and_run("def neg(x: Int) -> Int\n  -x\n");
     let jit = jit_compile(&fir);
     let result = jit.call_i64_i64(FunctionId(0), 42);
@@ -89,7 +89,7 @@ fn m2_unary_negation() {
 }
 
 #[test]
-fn m2_let_binding_and_return() {
+fn let_binding_and_return() {
     let fir = compile_and_run("def f() -> Int\n  let x: Int = 10\n  let y: Int = 20\n  x + y\n");
     let jit = jit_compile(&fir);
     let result = jit.call_i64(FunctionId(0));
@@ -97,7 +97,7 @@ fn m2_let_binding_and_return() {
 }
 
 #[test]
-fn m2_modulo() {
+fn modulo() {
     let fir = compile_and_run("def modulo(a: Int, b: Int) -> Int\n  a % b\n");
     let jit = jit_compile(&fir);
     let result = jit.call_i64_i64_i64(FunctionId(0), 17, 5);
@@ -105,7 +105,7 @@ fn m2_modulo() {
 }
 
 #[test]
-fn m2_negative_literal() {
+fn negative_literal() {
     let fir = compile_and_run("def f() -> Int\n  return -42\n");
     let jit = jit_compile(&fir);
     let result = jit.call_i64(FunctionId(0));
@@ -113,11 +113,75 @@ fn m2_negative_literal() {
 }
 
 // ===========================================================================
-// MILESTONE 3: Control flow
+// Float arithmetic
 // ===========================================================================
 
 #[test]
-fn m3_if_else_true_branch() {
+fn float_return_constant() {
+    let src = "def main() -> Float\n  3.14\n";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.get_function_ptr(fir.entry.unwrap()).unwrap();
+    let f: fn() -> f64 = unsafe { std::mem::transmute(ptr) };
+    let result = f();
+    assert!((result - 3.14).abs() < 1e-10, "expected 3.14, got {}", result);
+}
+
+#[test]
+fn float_add() {
+    let src = "def main() -> Float\n  1.5 + 2.5\n";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.get_function_ptr(fir.entry.unwrap()).unwrap();
+    let f: fn() -> f64 = unsafe { std::mem::transmute(ptr) };
+    let result = f();
+    assert!((result - 4.0).abs() < 1e-10, "expected 4.0, got {}", result);
+}
+
+#[test]
+fn float_subtract() {
+    let src = "def main() -> Float\n  3.5 - 1.5\n";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.get_function_ptr(fir.entry.unwrap()).unwrap();
+    let f: fn() -> f64 = unsafe { std::mem::transmute(ptr) };
+    let result = f();
+    assert!((result - 2.0).abs() < 1e-10, "expected 2.0, got {}", result);
+}
+
+#[test]
+fn float_multiply() {
+    let src = "def main() -> Float\n  2.0 * 3.0\n";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.get_function_ptr(fir.entry.unwrap()).unwrap();
+    let f: fn() -> f64 = unsafe { std::mem::transmute(ptr) };
+    let result = f();
+    assert!((result - 6.0).abs() < 1e-10, "expected 6.0, got {}", result);
+}
+
+#[test]
+fn float_comparison() {
+    // 3.14 > 2.71 should return true (1)
+    let src = "\
+def main() -> Int
+  if 3.14 > 2.71
+    return 1
+  else
+    return 0
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 1);
+}
+
+// ===========================================================================
+// Control flow
+// ===========================================================================
+
+#[test]
+fn if_else_true_branch() {
     let src = "def f(x: Int) -> Int\n  if x > 0\n    return 1\n  else\n    return -1\n";
     let fir = compile_and_run(src);
     let jit = jit_compile(&fir);
@@ -125,7 +189,7 @@ fn m3_if_else_true_branch() {
 }
 
 #[test]
-fn m3_if_else_false_branch() {
+fn if_else_false_branch() {
     let src = "def f(x: Int) -> Int\n  if x > 0\n    return 1\n  else\n    return -1\n";
     let fir = compile_and_run(src);
     let jit = jit_compile(&fir);
@@ -133,7 +197,7 @@ fn m3_if_else_false_branch() {
 }
 
 #[test]
-fn m3_if_else_zero() {
+fn if_else_zero() {
     let src = "def f(x: Int) -> Int\n  if x > 0\n    return 1\n  else\n    return -1\n";
     let fir = compile_and_run(src);
     let jit = jit_compile(&fir);
@@ -141,7 +205,7 @@ fn m3_if_else_zero() {
 }
 
 #[test]
-fn m3_elif_chain() {
+fn elif_chain() {
     let src = "\
 def classify(x: Int) -> Int
   if x > 0
@@ -159,7 +223,7 @@ def classify(x: Int) -> Int
 }
 
 #[test]
-fn m3_while_loop_sum() {
+fn while_loop_sum() {
     let src = "\
 def sum_to(n: Int) -> Int
   let total: Int = 0
@@ -175,7 +239,7 @@ def sum_to(n: Int) -> Int
 }
 
 #[test]
-fn m3_while_loop_zero_iterations() {
+fn while_loop_zero_iterations() {
     let src = "\
 def sum_to(n: Int) -> Int
   let total: Int = 0
@@ -191,7 +255,7 @@ def sum_to(n: Int) -> Int
 }
 
 #[test]
-fn m3_break_in_while() {
+fn break_in_while() {
     let src = "\
 def f() -> Int
   let x: Int = 0
@@ -207,7 +271,7 @@ def f() -> Int
 }
 
 #[test]
-fn m3_comparison_operators() {
+fn comparison_operators() {
     // Test all comparisons by encoding results as bits
     let src = "\
 def test_cmp(a: Int, b: Int) -> Int
@@ -237,7 +301,7 @@ def test_cmp(a: Int, b: Int) -> Int
 }
 
 #[test]
-fn m3_nested_if() {
+fn nested_if() {
     let src = "\
 def f(x: Int, y: Int) -> Int
   if x > 0
@@ -256,11 +320,11 @@ def f(x: Int, y: Int) -> Int
 }
 
 // ===========================================================================
-// MILESTONE 4: Strings
+// Strings
 // ===========================================================================
 
 #[test]
-fn m4_string_return() {
+fn string_return() {
     // Verify string functions compile without crashing
     let src = "def f() -> String\n  return \"hello\"\n";
     let fir = compile_and_run(src);
@@ -271,7 +335,7 @@ fn m4_string_return() {
 }
 
 #[test]
-fn m4_string_length() {
+fn string_length() {
     // Create a string and verify its heap layout (len at offset 0)
     let src = "def f() -> String\n  return \"hello\"\n";
     let fir = compile_and_run(src);
@@ -283,7 +347,7 @@ fn m4_string_length() {
 }
 
 #[test]
-fn m4_string_data() {
+fn string_data() {
     let src = "def f() -> String\n  return \"hello\"\n";
     let fir = compile_and_run(src);
     let jit = jit_compile(&fir);
@@ -297,7 +361,7 @@ fn m4_string_data() {
 }
 
 #[test]
-fn m4_log_compiles() {
+fn log_compiles() {
     // Verify that log() calls compile (runtime call)
     let src = "def f() -> Void\n  log(message: \"hello\")\n";
     let fir = compile_and_run(src);
@@ -306,11 +370,11 @@ fn m4_log_compiles() {
 }
 
 // ===========================================================================
-// MILESTONE 5: Function calls
+// Function calls
 // ===========================================================================
 
 #[test]
-fn m5_call_another_function() {
+fn call_another_function() {
     let src = "\
 def double(x: Int) -> Int
   x * 2
@@ -325,7 +389,7 @@ def main() -> Int
 }
 
 #[test]
-fn m5_call_chain() {
+fn call_chain() {
     let src = "\
 def add(a: Int, b: Int) -> Int
   a + b
@@ -344,7 +408,7 @@ def main() -> Int
 }
 
 #[test]
-fn m5_recursive_factorial() {
+fn recursive_factorial() {
     let src = "\
 def factorial(n: Int) -> Int
   if n <= 1
@@ -359,7 +423,7 @@ def factorial(n: Int) -> Int
 }
 
 #[test]
-fn m5_recursive_fibonacci() {
+fn recursive_fibonacci() {
     let src = "\
 def fib(n: Int) -> Int
   if n <= 1
@@ -375,7 +439,7 @@ def fib(n: Int) -> Int
 }
 
 #[test]
-fn m5_mutual_recursion() {
+fn mutual_recursion() {
     let src = "\
 def is_even(n: Int) -> Int
   if n == 0
@@ -402,7 +466,7 @@ def is_odd(n: Int) -> Int
 }
 
 #[test]
-fn m5_function_with_multiple_calls() {
+fn function_with_multiple_calls() {
     let src = "\
 def square(x: Int) -> Int
   x * x
@@ -422,11 +486,11 @@ def sum_of_squares(a: Int, b: Int) -> Int
 }
 
 // ===========================================================================
-// MILESTONE 6: Classes
+// Classes
 // ===========================================================================
 
 #[test]
-fn m6_class_construction() {
+fn class_construction() {
     let src = "\
 class Point
   x: Int
@@ -449,7 +513,7 @@ def make_point() -> Point
 }
 
 #[test]
-fn m6_class_field_access() {
+fn class_field_access() {
     let src = "\
 class Point
   x: Int
@@ -467,7 +531,7 @@ def get_x() -> Int
 }
 
 #[test]
-fn m6_class_field_access_second_field() {
+fn class_field_access_second_field() {
     let src = "\
 class Point
   x: Int
@@ -485,8 +549,7 @@ def get_y() -> Int
 }
 
 #[test]
-#[ignore = "requires implicit self field resolution in method bodies"]
-fn m6_class_method_call() {
+fn method_returns_field() {
     let src = "\
 class Counter
   value: Int
@@ -504,12 +567,52 @@ def main() -> Int
     assert_eq!(result, 42);
 }
 
+#[test]
+fn method_returns_computed_field() {
+    let src = "\
+class Point
+  x: Int
+  y: Int
+
+  def sum() -> Int
+    x + y
+
+def main() -> Int
+  let p: Point = Point(x: 10, y: 32)
+  p.sum()
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn method_accesses_multiple_fields() {
+    let src = "\
+class Rect
+  w: Int
+  h: Int
+
+  def area() -> Int
+    w * h
+
+def main() -> Int
+  let r: Rect = Rect(w: 6, h: 7)
+  r.area()
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
 // ===========================================================================
-// MILESTONE 7: Lists — for-loops, iteration, list operations
+// Lists
 // ===========================================================================
 
 #[test]
-fn m7_list_creation_and_get() {
+fn list_creation_and_get() {
     let src = "\
 def main() -> Int
   let xs: List[Int] = [10, 20, 30]
@@ -522,7 +625,7 @@ def main() -> Int
 }
 
 #[test]
-fn m7_list_set() {
+fn list_set() {
     let src = "\
 def main() -> Int
   let xs: List[Int] = [10, 20, 30]
@@ -536,7 +639,7 @@ def main() -> Int
 }
 
 #[test]
-fn m7_list_len() {
+fn list_len() {
     let src = "\
 def main() -> Int
   let xs: List[Int] = [1, 2, 3, 4, 5]
@@ -549,7 +652,7 @@ def main() -> Int
 }
 
 #[test]
-fn m7_list_push() {
+fn list_push() {
     let src = "\
 def main() -> Int
   let xs: List[Int] = [1, 2]
@@ -563,7 +666,7 @@ def main() -> Int
 }
 
 #[test]
-fn m7_for_loop_sum() {
+fn for_loop_sum() {
     let src = "\
 def main() -> Int
   let xs: List[Int] = [1, 2, 3, 4, 5]
@@ -579,7 +682,7 @@ def main() -> Int
 }
 
 #[test]
-fn m7_for_loop_empty_list() {
+fn for_loop_empty_list() {
     let src = "\
 def main() -> Int
   let xs: List[Int] = []
@@ -595,7 +698,7 @@ def main() -> Int
 }
 
 #[test]
-fn m7_for_loop_with_break() {
+fn for_loop_with_break() {
     let src = "\
 def main() -> Int
   let xs: List[Int] = [1, 2, 3, 4, 5]
@@ -613,11 +716,11 @@ def main() -> Int
 }
 
 // ===========================================================================
-// MILESTONE 8: Error handling — nullable operations
+// Nullable operations
 // ===========================================================================
 
 #[test]
-fn m8_nullable_return_value() {
+fn nullable_return_value() {
     // Nullable Int? return — check that wrapping a value works
     let src = "\
 def f() -> Int?
@@ -631,7 +734,7 @@ def f() -> Int?
 }
 
 #[test]
-fn m8_nullable_nil_return() {
+fn nullable_nil_return() {
     let src = "\
 def f() -> Int?
   return nil
@@ -644,11 +747,11 @@ def f() -> Int?
 }
 
 // ===========================================================================
-// MILESTONE 9: Generics — monomorphization
+// Generics
 // ===========================================================================
 
 #[test]
-fn m9_generic_identity_int() {
+fn generic_identity_int() {
     let src = "\
 def identity(x: T) -> T
   x
@@ -663,7 +766,7 @@ def main() -> Int
 }
 
 #[test]
-fn m9_generic_class_field() {
+fn generic_class_field() {
     let src = "\
 class Box[T]
   value: T
@@ -679,11 +782,11 @@ def main() -> Int
 }
 
 // ===========================================================================
-// MILESTONE 10: AOT backend — compile to object files
+// AOT backend
 // ===========================================================================
 
 #[test]
-fn m10_aot_compile_simple() {
+fn aot_compile_simple() {
     let src = "\
 def main() -> Int
   return 42
@@ -703,7 +806,7 @@ def main() -> Int
 }
 
 #[test]
-fn m10_aot_compile_with_functions() {
+fn aot_compile_with_functions() {
     let src = "\
 def double(x: Int) -> Int
   x * 2
@@ -722,7 +825,7 @@ def main() -> Int
 }
 
 #[test]
-fn m10_aot_compile_with_strings() {
+fn aot_compile_with_strings() {
     let src = "\
 def main() -> Int
   log(message: \"hello AOT\")
@@ -736,7 +839,7 @@ def main() -> Int
 }
 
 #[test]
-fn m10_aot_compile_with_control_flow() {
+fn aot_compile_with_control_flow() {
     let src = "\
 def factorial(n: Int) -> Int
   if n <= 1
@@ -755,7 +858,7 @@ def main() -> Int
 }
 
 #[test]
-fn m10_aot_compile_with_classes() {
+fn aot_compile_with_classes() {
     let src = "\
 class Point
   x: Int
@@ -773,7 +876,7 @@ def main() -> Int
 }
 
 #[test]
-fn m10_aot_compile_with_lists() {
+fn aot_compile_with_lists() {
     let src = "\
 def main() -> Int
   let xs: List[Int] = [1, 2, 3, 4, 5]
@@ -790,11 +893,11 @@ def main() -> Int
 }
 
 // ===========================================================================
-// MILESTONE 11: Async — eager execution (no runtime scheduler yet)
+// Async
 // ===========================================================================
 
 #[test]
-fn m11_async_call_and_resolve() {
+fn async_call_and_resolve() {
     let src = "\
 def compute() -> Int
   42
@@ -810,7 +913,7 @@ def main() throws CancelledError -> Int
 }
 
 #[test]
-fn m11_async_with_args() {
+fn async_with_args() {
     let src = "\
 def add(a: Int, b: Int) -> Int
   a + b
@@ -826,11 +929,11 @@ def main() throws CancelledError -> Int
 }
 
 // ===========================================================================
-// MILESTONE 6: Classes (continued)
+// Classes (continued)
 // ===========================================================================
 
 #[test]
-fn m6_class_in_function() {
+fn class_in_function() {
     let src = "\
 class Point
   x: Int
@@ -853,11 +956,11 @@ def distance_sq() -> Int
 }
 
 // ===========================================================================
-// MILESTONE 12: Match expressions — desugared to if/else chains
+// Match expressions — desugared to if/else chains
 // ===========================================================================
 
 #[test]
-fn m12_match_int_literal() {
+fn match_int_literal() {
     let src = "\
 def classify(x: Int) -> Int
   match x
@@ -873,7 +976,7 @@ def classify(x: Int) -> Int
 }
 
 #[test]
-fn m12_match_wildcard_only() {
+fn match_wildcard_only() {
     let src = "\
 def f(x: Int) -> Int
   match x
@@ -886,7 +989,7 @@ def f(x: Int) -> Int
 }
 
 #[test]
-fn m12_match_variable_binding() {
+fn match_variable_binding() {
     let src = "\
 def f(x: Int) -> Int
   match x
@@ -900,7 +1003,7 @@ def f(x: Int) -> Int
 }
 
 #[test]
-fn m12_match_in_expression() {
+fn match_in_expression() {
     let src = "\
 def f(x: Int) -> Int
   let result: Int = match x
@@ -919,7 +1022,7 @@ def f(x: Int) -> Int
 // ===========================================================================
 
 #[test]
-fn m13_fieldless_enum_construct() {
+fn fieldless_enum_construct() {
     let src = "\
 enum Color
   Red
@@ -937,7 +1040,7 @@ def main() -> Int
 }
 
 #[test]
-fn m13_enum_match_tag() {
+fn enum_match_tag() {
     let src = "\
 enum Color
   Red
@@ -967,7 +1070,7 @@ def test(c: Color) -> Int
 }
 
 #[test]
-fn m13_enum_match_with_wildcard() {
+fn enum_match_with_wildcard() {
     let src = "\
 enum Direction
   North
@@ -1010,12 +1113,56 @@ def is_vertical(d: Direction) -> Int
     assert_eq!(result, 1);
 }
 
+#[test]
+fn enum_variant_with_field() {
+    // Construct an enum variant that carries a field, match on tag to dispatch
+    let src = "\
+enum Shape
+  Circle(radius: Int)
+  Square(side: Int)
+
+def describe(s: Shape) -> Int
+  match s
+    Shape.Circle => 1
+    Shape.Square => 2
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    // Construct a Circle with radius=10
+    let circle_ctor = fir
+        .functions
+        .iter()
+        .find(|f| f.name == "Shape.Circle")
+        .unwrap()
+        .id;
+    let circle_ptr = jit.call_i64_i64(circle_ctor, 10);
+    let describe_id = fir
+        .functions
+        .iter()
+        .find(|f| f.name == "describe")
+        .unwrap()
+        .id;
+    let result = jit.call_i64_i64(describe_id, circle_ptr);
+    assert_eq!(result, 1);
+
+    // Construct a Square with side=5
+    let square_ctor = fir
+        .functions
+        .iter()
+        .find(|f| f.name == "Shape.Square")
+        .unwrap()
+        .id;
+    let square_ptr = jit.call_i64_i64(square_ctor, 5);
+    let result = jit.call_i64_i64(describe_id, square_ptr);
+    assert_eq!(result, 2);
+}
+
 // ===========================================================================
 // MILESTONE 14: Closures — full calling convention
 // ===========================================================================
 
 #[test]
-fn m14_lambda_no_captures() {
+fn lambda_no_captures() {
     // Nested def (closure without captures) called directly
     let src = "\
 def main() -> Int
@@ -1030,7 +1177,7 @@ def main() -> Int
 }
 
 #[test]
-fn m14_lambda_with_captures() {
+fn lambda_with_captures() {
     // Nested def captures a local variable from enclosing scope
     let src = "\
 def main() -> Int
@@ -1046,7 +1193,7 @@ def main() -> Int
 }
 
 #[test]
-fn m14_closure_multiple_captures() {
+fn closure_multiple_captures() {
     let src = "\
 def main() -> Int
   let a: Int = 10
@@ -1062,11 +1209,11 @@ def main() -> Int
 }
 
 // ===========================================================================
-// MILESTONE 15: Top-level let bindings
+// Top-level let bindings
 // ===========================================================================
 
 #[test]
-fn m15_top_level_let_int() {
+fn top_level_let_int() {
     let src = "\
 let MAGIC: Int = 42
 
@@ -1080,7 +1227,7 @@ def main() -> Int
 }
 
 #[test]
-fn m15_top_level_let_expression() {
+fn top_level_let_expression() {
     let src = "\
 let BASE: Int = 20
 let OFFSET: Int = 22
@@ -1095,7 +1242,7 @@ def main() -> Int
 }
 
 #[test]
-fn m15_top_level_let_used_in_function() {
+fn top_level_let_used_in_function() {
     let src = "\
 let FACTOR: Int = 7
 
@@ -1112,11 +1259,11 @@ def main() -> Int
 }
 
 // ===========================================================================
-// MILESTONE 16: Generics monomorphization — same generic, different types
+// Generic monomorphization
 // ===========================================================================
 
 #[test]
-fn m16_generic_identity_int_and_string() {
+fn generic_identity_int_and_string() {
     // Same generic function called with Int and String in same program
     let src = "\
 def identity(x: T) -> T
@@ -1133,7 +1280,7 @@ def main() -> Int
 }
 
 #[test]
-fn m16_generic_max() {
+fn generic_max() {
     let src = "\
 def max_val(a: Int, b: Int) -> Int
   if a > b
@@ -1253,4 +1400,413 @@ fn aot_with_release_config() {
     aot.compile_module(&fir).expect("AOT compile ok");
     let bytes = aot.emit_object().expect("emit ok");
     assert!(!bytes.is_empty());
+}
+
+// ===========================================================================
+// Power operator
+// ===========================================================================
+
+#[test]
+fn pow_int_basic() {
+    let src = "\
+def main() -> Int
+  2 ** 3
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 8);
+}
+
+#[test]
+fn pow_int_zero_exponent() {
+    let src = "\
+def main() -> Int
+  5 ** 0
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 1);
+}
+
+#[test]
+fn pow_int_one_exponent() {
+    let src = "\
+def main() -> Int
+  7 ** 1
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 7);
+}
+
+#[test]
+fn pow_int_large() {
+    let src = "\
+def main() -> Int
+  10 ** 6
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 1_000_000);
+}
+
+#[test]
+fn pow_right_associative() {
+    // 2 ** 3 ** 2 = 2 ** 9 = 512 (right-associative)
+    let src = "\
+def main() -> Int
+  2 ** 3 ** 2
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 512);
+}
+
+#[test]
+fn pow_in_expression() {
+    let src = "\
+def main() -> Int
+  let x: Int = 3
+  x ** 2 + 1
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 10);
+}
+
+// ===========================================================================
+// String interpolation
+// ===========================================================================
+
+#[test]
+fn string_interp_literal_only() {
+    // No interpolation — should still work (already works via StringLit)
+    let src = "\
+def main() -> String
+  \"hello world\"
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.call_i64(fir.entry.unwrap());
+    assert_ne!(ptr, 0);
+    unsafe {
+        let len = *(ptr as *const i64) as usize;
+        let data = (ptr as *const u8).add(8);
+        let s = std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, len));
+        assert_eq!(s, "hello world");
+    }
+}
+
+#[test]
+fn string_interp_with_int() {
+    let src = "\
+def main() -> String
+  let x: Int = 42
+  \"value is {x}\"
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.call_i64(fir.entry.unwrap());
+    assert_ne!(ptr, 0);
+    unsafe {
+        let len = *(ptr as *const i64) as usize;
+        let data = (ptr as *const u8).add(8);
+        let s = std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, len));
+        assert_eq!(s, "value is 42");
+    }
+}
+
+#[test]
+fn string_interp_with_string() {
+    let src = "\
+def main() -> String
+  let name = \"world\"
+  \"hello {name}\"
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.call_i64(fir.entry.unwrap());
+    assert_ne!(ptr, 0);
+    unsafe {
+        let len = *(ptr as *const i64) as usize;
+        let data = (ptr as *const u8).add(8);
+        let s = std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, len));
+        assert_eq!(s, "hello world");
+    }
+}
+
+#[test]
+fn string_interp_multiple_parts() {
+    let src = "\
+def main() -> String
+  let a: Int = 1
+  let b: Int = 2
+  \"{a} + {b} = 3\"
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.call_i64(fir.entry.unwrap());
+    assert_ne!(ptr, 0);
+    unsafe {
+        let len = *(ptr as *const i64) as usize;
+        let data = (ptr as *const u8).add(8);
+        let s = std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, len));
+        assert_eq!(s, "1 + 2 = 3");
+    }
+}
+
+#[test]
+fn string_interp_with_bool() {
+    let src = "\
+def main() -> String
+  let flag = true
+  \"result: {flag}\"
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.call_i64(fir.entry.unwrap());
+    assert_ne!(ptr, 0);
+    unsafe {
+        let len = *(ptr as *const i64) as usize;
+        let data = (ptr as *const u8).add(8);
+        let s = std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, len));
+        assert_eq!(s, "result: true");
+    }
+}
+
+#[test]
+fn string_interp_expression() {
+    let src = "\
+def main() -> String
+  \"sum: {1 + 2}\"
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.call_i64(fir.entry.unwrap());
+    assert_ne!(ptr, 0);
+    unsafe {
+        let len = *(ptr as *const i64) as usize;
+        let data = (ptr as *const u8).add(8);
+        let s = std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, len));
+        assert_eq!(s, "sum: 3");
+    }
+}
+
+#[test]
+fn string_interp_float() {
+    let src = "\
+def main() -> String
+  \"pi: {3.14}\"
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.call_i64(fir.entry.unwrap());
+    assert_ne!(ptr, 0);
+    unsafe {
+        let len = *(ptr as *const i64) as usize;
+        let data = (ptr as *const u8).add(8);
+        let s = std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, len));
+        assert!(s.starts_with("pi: 3.14"), "expected 'pi: 3.14...', got '{}'", s);
+    }
+}
+
+// String interpolation — class to_string
+
+#[test]
+fn string_interp_class_manual_to_string() {
+    // A class with a manual to_string should have it called during interpolation
+    let src = "\
+class Point includes Printable
+  x: Int
+  y: Int
+  def to_string() -> String
+    \"point\"
+
+def main() -> String
+  let p = Point(x: 1, y: 2)
+  \"got: {p}\"
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.call_i64(fir.entry.unwrap());
+    assert_ne!(ptr, 0);
+    unsafe {
+        let len = *(ptr as *const i64) as usize;
+        let data = (ptr as *const u8).add(8);
+        let s = std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, len));
+        assert_eq!(s, "got: point");
+    }
+}
+
+#[test]
+fn string_interp_class_with_fields() {
+    // to_string that uses field access on self
+    let src = "\
+class Num includes Printable
+  val: Int
+  def to_string() -> String
+    \"num\"
+
+def main() -> String
+  let n = Num(val: 42)
+  \"value={n}\"
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.call_i64(fir.entry.unwrap());
+    assert_ne!(ptr, 0);
+    unsafe {
+        let len = *(ptr as *const i64) as usize;
+        let data = (ptr as *const u8).add(8);
+        let s = std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, len));
+        assert_eq!(s, "value=num");
+    }
+}
+
+#[test]
+fn string_interp_class_mixed_with_primitives() {
+    // Interpolation mixing class and primitive types
+    let src = "\
+class Tag includes Printable
+  label: String
+  def to_string() -> String
+    \"tag\"
+
+def main() -> String
+  let t = Tag(label: \"hello\")
+  let n: Int = 42
+  \"{t}:{n}\"
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.call_i64(fir.entry.unwrap());
+    assert_ne!(ptr, 0);
+    unsafe {
+        let len = *(ptr as *const i64) as usize;
+        let data = (ptr as *const u8).add(8);
+        let s = std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, len));
+        assert_eq!(s, "tag:42");
+    }
+}
+
+// ===========================================================================
+// Error handling
+// ===========================================================================
+
+#[test]
+fn error_or_success_path() {
+    // A throwing function that succeeds — .or fallback not needed
+    let src = "\
+class AppError extends Error
+  code: Int
+
+def risky() throws AppError -> Int
+  42
+
+def main() -> Int
+  risky()!.or(0)
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn error_or_else_success_path() {
+    let src = "\
+class AppError extends Error
+  code: Int
+
+def risky() throws AppError -> Int
+  42
+
+def main() -> Int
+  risky()!.or_else(-> 0)
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn bang_propagate_success() {
+    // Simple ! propagation on success
+    let src = "\
+class AppError extends Error
+  code: Int
+
+def risky() throws AppError -> Int
+  42
+
+def main() throws AppError -> Int
+  risky()!
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+// ===========================================================================
+// Closure dispatch
+// ===========================================================================
+
+#[test]
+fn closure_passed_to_function() {
+    // Pass a closure to a function that calls it
+    // Function type params use positional names (_0, _1, etc.)
+    let src = "\
+def apply(f: (Int) -> Int, x: Int) -> Int
+  f(_0: x)
+
+def main() -> Int
+  def double(x: Int) -> Int
+    x * 2
+  apply(f: double, x: 21)
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn closure_with_captures_passed() {
+    let src = "\
+def apply(f: (Int) -> Int, x: Int) -> Int
+  f(_0: x)
+
+def main() -> Int
+  let offset: Int = 10
+  def add_offset(x: Int) -> Int
+    x + offset
+  apply(f: add_offset, x: 32)
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn inline_lambda_passed() {
+    let src = "\
+def apply(f: (Int) -> Int, x: Int) -> Int
+  f(_0: x)
+
+def main() -> Int
+  apply(f: -> x: x * 3, x: 14)
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
 }

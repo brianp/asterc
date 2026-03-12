@@ -7,7 +7,7 @@ mod common;
 // C1: BC-9 removed async context restrictions — async calls work anywhere
 // This test verifies that async f() works from any context (no spoofing needed)
 #[test]
-fn regression_async_call_works_anywhere() {
+fn async_call_works_anywhere() {
     common::check_ok(
         r#"def fetch() -> Int
   42
@@ -20,7 +20,7 @@ def caller() -> Void
 
 // C2: Structural type unification for generic params in compound types
 #[test]
-fn regression_generic_list_param_unifies() {
+fn generic_list_param_unifies() {
     common::check_ok(
         r#"def first_elem(items: List[T]) -> T
   items[0]
@@ -33,7 +33,7 @@ let y = first_elem(items: xs)
 
 // H2: Match ident pattern binds the variable
 #[test]
-fn regression_match_ident_binds_variable() {
+fn match_ident_binds_variable() {
     common::check_ok(
         r#"def describe(n: Int) -> Int
   match n
@@ -48,7 +48,7 @@ fn regression_match_ident_binds_variable() {
 
 // R2-1: Nested return must be validated against declared return type
 #[test]
-fn regression_nested_return_type_mismatch() {
+fn nested_return_type_mismatch() {
     let err = common::check_err(
         r#"def f() -> Int
   if true
@@ -61,7 +61,7 @@ fn regression_nested_return_type_mismatch() {
 
 // R2-1b: Nested return with correct type still works
 #[test]
-fn regression_nested_return_correct_type() {
+fn nested_return_correct_type() {
     common::check_ok(
         r#"def f() -> Int
   if true
@@ -73,7 +73,7 @@ fn regression_nested_return_correct_type() {
 
 // R2-1c: Deeply nested return also validated
 #[test]
-fn regression_deeply_nested_return_mismatch() {
+fn deeply_nested_return_mismatch() {
     let err = common::check_err(
         r#"def f() -> Int
   while true
@@ -88,7 +88,7 @@ fn regression_deeply_nested_return_mismatch() {
 
 // R2-2: Generic class instantiation produces parameterized type
 #[test]
-fn regression_generic_class_field_access() {
+fn generic_class_field_access() {
     common::check_ok(
         r#"class Box[T]
   value: T
@@ -102,7 +102,7 @@ let x: Int = v
 
 // R2-2b: Different generic instantiations produce different types
 #[test]
-fn regression_generic_class_type_distinction() {
+fn generic_class_type_distinction() {
     let err = common::check_err(
         r#"class Box[T]
   value: T
@@ -116,7 +116,7 @@ let v: String = b.value
 
 // R2-3: Phantom type parameters (unresolvable) produce an error
 #[test]
-fn regression_phantom_typevar_error() {
+fn phantom_typevar_error() {
     // T only in return type (not in params) is not a type parameter —
     // it's an unknown type, causing a return type mismatch
     let err = common::check_err(
@@ -135,7 +135,7 @@ let x = phantom()
 
 // R2-4: Higher-order generic function unifies function params structurally
 #[test]
-fn regression_higher_order_generic_unification() {
+fn higher_order_generic_unification() {
     common::check_ok(
         r#"def apply(f: (T) -> T, x: T) -> T
   f(_0: x)
@@ -155,7 +155,7 @@ let r = apply(f: double, x: 5)
 // ─── 7A. extends keyword ─────────────────────────────────────────────
 
 #[test]
-fn phase7_extends_basic() {
+fn extends_basic_inheritance() {
     common::check_ok(
         r#"class Animal
   name: String
@@ -167,7 +167,7 @@ class Dog extends Animal
 }
 
 #[test]
-fn phase7_extends_unknown_parent_error() {
+fn extends_unknown_parent_error() {
     let err = common::check_err(
         r#"class Dog extends NonExistent
   breed: String
@@ -177,7 +177,7 @@ fn phase7_extends_unknown_parent_error() {
 }
 
 #[test]
-fn phase7_extends_with_includes() {
+fn extends_with_includes() {
     common::check_ok(
         r#"trait Printable
   def to_str() -> String
@@ -196,7 +196,7 @@ class Dog extends Animal includes Printable
 // ─── 7B. throws / throw / ! ──────────────────────────────────────────
 
 #[test]
-fn phase7_throws_basic() {
+fn throws_declaration_basic() {
     common::check_ok(
         r#"class AppError
   message: String
@@ -208,7 +208,7 @@ def risky() throws AppError -> Int
 }
 
 #[test]
-fn phase7_throw_basic() {
+fn throw_statement_basic() {
     common::check_ok(
         r#"class AppError
   message: String
@@ -220,7 +220,7 @@ def risky() throws AppError -> Int
 }
 
 #[test]
-fn phase7_throw_outside_throws_error() {
+fn throw_outside_throws_fn_error() {
     let err = common::check_err(
         r#"class AppError
   message: String
@@ -233,7 +233,7 @@ def safe() -> Int
 }
 
 #[test]
-fn phase7_bang_propagation() {
+fn bang_propagation_basic() {
     common::check_ok(
         r#"class AppError
   message: String
@@ -249,7 +249,7 @@ def caller() throws AppError -> Int
 }
 
 #[test]
-fn phase7_bang_outside_throws_error() {
+fn bang_outside_throws_fn_error() {
     let err = common::check_err(
         r#"class AppError
   message: String
@@ -266,7 +266,7 @@ def safe() -> Int
 }
 
 #[test]
-fn phase7_throw_with_extends_hierarchy() {
+fn throw_with_extends_hierarchy() {
     common::check_ok(
         r#"class AppError
   message: String
@@ -281,7 +281,7 @@ def fetch() throws AppError -> String
 }
 
 #[test]
-fn phase7_bang_propagation_with_extends() {
+fn bang_propagation_with_extends() {
     common::check_ok(
         r#"class AppError
   message: String
@@ -299,7 +299,7 @@ def caller() throws AppError -> String
 }
 
 #[test]
-fn phase7_throws_void_return() {
+fn throws_void_return() {
     common::check_ok(
         r#"class AppError
   message: String
@@ -313,7 +313,7 @@ def side_effect() throws AppError
 // ─── 7C. !.or(), !.or_else(), !.catch ────────────────────────────────
 
 #[test]
-fn phase7_bang_or_basic() {
+fn bang_or_fallback_basic() {
     common::check_ok(
         r#"class AppError
   message: String
@@ -328,7 +328,7 @@ def safe() -> Int
 }
 
 #[test]
-fn phase7_bang_or_type_mismatch_error() {
+fn bang_or_type_mismatch_error() {
     let err = common::check_err(
         r#"class AppError
   message: String
@@ -344,7 +344,7 @@ def safe() -> Int
 }
 
 #[test]
-fn phase7_bang_or_else_basic() {
+fn bang_or_else_basic() {
     common::check_ok(
         r#"class AppError
   message: String
@@ -362,7 +362,7 @@ def safe() -> Int
 }
 
 #[test]
-fn phase7_bang_catch_basic() {
+fn bang_catch_basic() {
     common::check_ok(
         r#"class AppError
   message: String
@@ -382,7 +382,7 @@ def safe() -> String
 }
 
 #[test]
-fn phase7_bang_catch_binds_var() {
+fn bang_catch_binds_error_var() {
     common::check_ok(
         r#"class AppError
   message: String
@@ -399,7 +399,7 @@ def safe() -> String
 }
 
 #[test]
-fn phase7_bang_catch_no_throws_needed() {
+fn bang_catch_no_throws_needed() {
     // !.catch handles all errors — caller doesn't need throws
     common::check_ok(
         r#"class AppError
@@ -418,7 +418,7 @@ def safe() -> Int
 // ─── 7D. T? nullable type ────────────────────────────────────────────
 
 #[test]
-fn phase7_nullable_type_annotation() {
+fn nullable_type_annotation() {
     common::check_ok(
         r#"let x: String? = nil
 "#,
@@ -426,7 +426,7 @@ fn phase7_nullable_type_annotation() {
 }
 
 #[test]
-fn phase7_nullable_auto_wrap() {
+fn nullable_auto_wrap() {
     common::check_ok(
         r#"let x: String? = "hello"
 "#,
@@ -434,7 +434,7 @@ fn phase7_nullable_auto_wrap() {
 }
 
 #[test]
-fn phase7_nullable_or() {
+fn nullable_or() {
     common::check_ok(
         r#"let x: String? = nil
 let y: String = x.or(default: "default")
@@ -443,7 +443,7 @@ let y: String = x.or(default: "default")
 }
 
 #[test]
-fn phase7_nullable_or_else() {
+fn nullable_or_else() {
     common::check_ok(
         r#"let x: String? = nil
 let y: String = x.or_else(f: -> "computed")
@@ -452,7 +452,7 @@ let y: String = x.or_else(f: -> "computed")
 }
 
 #[test]
-fn phase7_nullable_or_throw() {
+fn nullable_or_throw() {
     common::check_ok(
         r#"class AppError
   message: String
@@ -465,7 +465,7 @@ def get_value() throws AppError -> String
 }
 
 #[test]
-fn phase7_nullable_match() {
+fn nullable_match() {
     common::check_ok(
         r#"let x: String? = "hello"
 let y = match x
@@ -476,7 +476,7 @@ let y = match x
 }
 
 #[test]
-fn phase7_nullable_no_method_access_error() {
+fn nullable_no_method_access_error() {
     let err = common::check_err(
         r#"let x: String? = "hello"
 let y = len(value: x)
@@ -491,7 +491,7 @@ let y = len(value: x)
 }
 
 #[test]
-fn phase7_nullable_nil_to_non_nullable_error() {
+fn nullable_nil_to_non_nullable_error() {
     let err = common::check_err(
         r#"let x: String = nil
 "#,
@@ -505,7 +505,7 @@ fn phase7_nullable_nil_to_non_nullable_error() {
 }
 
 #[test]
-fn phase7_nullable_no_double_nullable_error() {
+fn nullable_no_double_nullable_error() {
     let err = common::check_parse_err(
         r#"let x: String?? = nil
 "#,
@@ -519,7 +519,7 @@ fn phase7_nullable_no_double_nullable_error() {
 }
 
 #[test]
-fn phase7_nullable_field() {
+fn nullable_field() {
     common::check_ok(
         r#"class User
   name: String
@@ -529,7 +529,7 @@ fn phase7_nullable_field() {
 }
 
 #[test]
-fn phase7_nullable_return_type() {
+fn nullable_return_type() {
     common::check_ok(
         r#"def find(id: Int) -> String?
   nil
@@ -538,10 +538,33 @@ fn phase7_nullable_return_type() {
 }
 
 #[test]
-fn phase7_nullable_return_value() {
+fn nullable_return_value() {
     common::check_ok(
         r#"def find(id: Int) -> String?
   "found"
+"#,
+    );
+}
+
+// ─── 7D+. Catch with multiple error types ─────────────────────────────
+
+#[test]
+fn catch_multiple_error_types() {
+    common::check_ok(
+        r#"class NetworkError extends Error
+  code: Int
+
+class ParseError extends Error
+  line: Int
+
+def risky() throws Error -> Int
+  throw NetworkError(message: "fail", code: 500)
+
+def main() -> Int
+  risky()!.catch
+    NetworkError e -> 0
+    ParseError e -> 1
+    Error e -> 2
 "#,
     );
 }
@@ -550,7 +573,7 @@ fn phase7_nullable_return_value() {
 
 // R2-9: Deeply nested expressions produce a clear error, not a stack overflow
 #[test]
-fn regression_recursion_depth_limit() {
+fn recursion_depth_limit() {
     // Run in a thread with a larger stack to avoid test-runner stack overflow
     // while still verifying the parser's own depth limit works.
     let result = std::thread::Builder::new()

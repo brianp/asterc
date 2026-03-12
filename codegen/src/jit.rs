@@ -180,6 +180,14 @@ impl CraneliftJIT {
             ),
             ("aster_list_len", vec![types::I64], Some(types::I64)),
             ("aster_class_alloc", vec![types::I64], Some(types::I64)),
+            (
+                "aster_pow_int",
+                vec![types::I64, types::I64],
+                Some(types::I64),
+            ),
+            ("aster_int_to_string", vec![types::I64], Some(types::I64)),
+            ("aster_float_to_string", vec![types::F64], Some(types::I64)),
+            ("aster_bool_to_string", vec![types::I8], Some(types::I64)),
         ];
 
         for (name, params, ret) in &common {

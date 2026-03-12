@@ -213,6 +213,42 @@ pub extern "C" fn aster_list_len(list: *const u8) -> i64 {
     unsafe { *(list as *const i64) }
 }
 
+/// Integer exponentiation: base ** exp (exp >= 0).
+pub extern "C" fn aster_pow_int(base: i64, exp: i64) -> i64 {
+    if exp < 0 {
+        return 0; // integer pow with negative exp → 0 (floor)
+    }
+    let mut result: i64 = 1;
+    let mut b = base;
+    let mut e = exp as u64;
+    while e > 0 {
+        if e & 1 == 1 {
+            result = result.wrapping_mul(b);
+        }
+        b = b.wrapping_mul(b);
+        e >>= 1;
+    }
+    result
+}
+
+/// Convert an integer to a heap string.
+pub extern "C" fn aster_int_to_string(val: i64) -> *mut u8 {
+    let s = val.to_string();
+    aster_string_new(s.as_ptr(), s.len())
+}
+
+/// Convert a float to a heap string.
+pub extern "C" fn aster_float_to_string(val: f64) -> *mut u8 {
+    let s = val.to_string();
+    aster_string_new(s.as_ptr(), s.len())
+}
+
+/// Convert a bool to a heap string.
+pub extern "C" fn aster_bool_to_string(val: i8) -> *mut u8 {
+    let s = if val != 0 { "true" } else { "false" };
+    aster_string_new(s.as_ptr(), s.len())
+}
+
 /// Allocate a class instance. Size is in bytes.
 pub extern "C" fn aster_class_alloc(size: usize) -> *mut u8 {
     aster_alloc(size)
@@ -235,6 +271,13 @@ pub fn register_runtime_builtins(builder: &mut JITBuilder) {
         ("aster_list_push", aster_list_push as *const u8),
         ("aster_list_len", aster_list_len as *const u8),
         ("aster_class_alloc", aster_class_alloc as *const u8),
+        ("aster_pow_int", aster_pow_int as *const u8),
+        ("aster_int_to_string", aster_int_to_string as *const u8),
+        (
+            "aster_float_to_string",
+            aster_float_to_string as *const u8,
+        ),
+        ("aster_bool_to_string", aster_bool_to_string as *const u8),
     ];
     builder.symbols(symbols);
 }
