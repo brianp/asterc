@@ -1327,8 +1327,8 @@ fn lower_float_arithmetic() {
 // ===========================================================================
 
 #[test]
-fn lower_throw_to_panic() {
-    // throw err should produce RuntimeCall to aster_panic
+fn lower_throw_to_error_set() {
+    // throw err should produce RuntimeCall to aster_error_set (error flag approach)
     let src = "\
 class AppError
   message: String
@@ -1338,16 +1338,13 @@ def f() throws AppError -> Int
 ";
     let fir = lower_ok(src);
     let f_func = fir.functions.iter().find(|f| f.name == "f").unwrap();
-    let has_panic = f_func.body.iter().any(|s| match s {
-        FirStmt::Expr(FirExpr::RuntimeCall { name, ret_ty, .. })
-        | FirStmt::Return(FirExpr::RuntimeCall { name, ret_ty, .. }) => {
-            name == "aster_panic" && *ret_ty == FirType::Never
-        }
+    let has_error_set = f_func.body.iter().any(|s| match s {
+        FirStmt::Expr(FirExpr::RuntimeCall { name, .. }) => name == "aster_error_set",
         _ => false,
     });
     assert!(
-        has_panic,
-        "expected RuntimeCall(aster_panic, Never) in body: {:?}",
+        has_error_set,
+        "expected RuntimeCall(aster_error_set) in body: {:?}",
         f_func.body
     );
 }
