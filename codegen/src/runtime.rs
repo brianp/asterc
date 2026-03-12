@@ -254,6 +254,112 @@ pub extern "C" fn aster_class_alloc(size: usize) -> *mut u8 {
     aster_alloc(size)
 }
 
+// ---------------------------------------------------------------------------
+// Map operations — linear-scan associative array
+// Layout: [len: i64][cap: i64][entries: [key_ptr: i64, value: i64]...]
+// Each entry is 16 bytes. Keys are heap string pointers, compared by content.
+// ---------------------------------------------------------------------------
+
+/// Create a new map with the given initial capacity.
+pub extern "C" fn aster_map_new(cap: i64) -> *mut u8 {
+    let cap = cap.max(4) as usize;
+    let alloc_size = cap
+        .checked_mul(16)
+        .and_then(|n| n.checked_add(16))
+        .expect("aster_map_new: size overflow");
+    let ptr = aster_alloc(alloc_size);
+    unsafe {
+        *(ptr as *mut i64) = 0; // len = 0
+        *((ptr as *mut i64).add(1)) = cap as i64; // cap
+    }
+    ptr
+}
+
+/// Compare two heap strings by content. Returns true if equal.
+unsafe fn string_eq(a: *const u8, b: *const u8) -> bool {
+    if a == b {
+        return true;
+    }
+    if a.is_null() || b.is_null() {
+        return false;
+    }
+    unsafe {
+        let a_len = *(a as *const i64) as usize;
+        let b_len = *(b as *const i64) as usize;
+        if a_len != b_len {
+            return false;
+        }
+        let a_data = a.add(8);
+        let b_data = b.add(8);
+        std::slice::from_raw_parts(a_data, a_len) == std::slice::from_raw_parts(b_data, b_len)
+    }
+}
+
+/// Set a key-value pair in the map. Overwrites if key exists, appends otherwise.
+/// May reallocate. Returns the (possibly new) map pointer.
+pub extern "C" fn aster_map_set(map: *mut u8, key: i64, value: i64) -> *mut u8 {
+    if map.is_null() {
+        eprintln!("aster_map_set: null map pointer");
+        std::process::abort();
+    }
+    unsafe {
+        let len = *(map as *const i64) as usize;
+        let entries = map.add(16) as *mut i64;
+
+        // Linear scan for existing key
+        for i in 0..len {
+            let entry_key = *entries.add(i * 2);
+            if string_eq(entry_key as *const u8, key as *const u8) {
+                *entries.add(i * 2 + 1) = value;
+                return map;
+            }
+        }
+
+        // Key not found — append
+        let cap = *((map as *const i64).add(1)) as usize;
+        if len >= cap {
+            // Grow: double capacity
+            let new_cap = (cap * 2).max(4);
+            let alloc_size = new_cap
+                .checked_mul(16)
+                .and_then(|n| n.checked_add(16))
+                .expect("aster_map_set: size overflow");
+            let new_ptr = aster_alloc(alloc_size);
+            std::ptr::copy_nonoverlapping(map, new_ptr, 16 + len * 16);
+            *((new_ptr as *mut i64).add(1)) = new_cap as i64;
+            let new_entries = new_ptr.add(16) as *mut i64;
+            *new_entries.add(len * 2) = key;
+            *new_entries.add(len * 2 + 1) = value;
+            *(new_ptr as *mut i64) = (len + 1) as i64;
+            new_ptr
+        } else {
+            *entries.add(len * 2) = key;
+            *entries.add(len * 2 + 1) = value;
+            *(map as *mut i64) = (len + 1) as i64;
+            map
+        }
+    }
+}
+
+/// Get a value from the map by key. Returns the value or 0 if not found.
+pub extern "C" fn aster_map_get(map: *const u8, key: i64) -> i64 {
+    if map.is_null() {
+        eprintln!("aster_map_get: null map pointer");
+        std::process::abort();
+    }
+    unsafe {
+        let len = *(map as *const i64) as usize;
+        let entries = map.add(16) as *const i64;
+        for i in 0..len {
+            let entry_key = *entries.add(i * 2);
+            if string_eq(entry_key as *const u8, key as *const u8) {
+                return *entries.add(i * 2 + 1);
+            }
+        }
+        0 // key not found
+    }
+}
+
 /// Register all runtime builtins with a JIT builder.
 pub fn register_runtime_builtins(builder: &mut JITBuilder) {
     let symbols: Vec<(&str, *const u8)> = vec![
@@ -275,6 +381,9 @@ pub fn register_runtime_builtins(builder: &mut JITBuilder) {
         ("aster_int_to_string", aster_int_to_string as *const u8),
         ("aster_float_to_string", aster_float_to_string as *const u8),
         ("aster_bool_to_string", aster_bool_to_string as *const u8),
+        ("aster_map_new", aster_map_new as *const u8),
+        ("aster_map_set", aster_map_set as *const u8),
+        ("aster_map_get", aster_map_get as *const u8),
     ];
     builder.symbols(symbols);
 }

@@ -727,6 +727,50 @@ def main() -> Int
     assert_eq!(result, 3);
 }
 
+// ===========================================================================
+// Maps
+// ===========================================================================
+
+#[test]
+fn map_literal_creation() {
+    // Map literal should be constructable without crashing
+    let src = "\
+def main() -> Int
+  let m: Map[String, Int] = {\"x\": 1, \"y\": 2}
+  42
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn map_get_value() {
+    let src = "\
+def main() -> Int
+  let m: Map[String, Int] = {\"x\": 10, \"y\": 32}
+  m[\"y\"]
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 32);
+}
+
+#[test]
+fn map_get_first_key() {
+    let src = "\
+def main() -> Int
+  let m: Map[String, Int] = {\"a\": 99, \"b\": 1}
+  m[\"a\"]
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 99);
+}
+
 #[test]
 fn for_loop_sum() {
     let src = "\

@@ -653,19 +653,40 @@ impl TypeChecker {
         if obj_ty.is_error() || idx_ty.is_error() {
             return Ok(Type::Error);
         }
-        if idx_ty != Type::Int {
-            return Err(
-                Diagnostic::error(format!("List index must be Int, got {:?}", idx_ty))
-                    .with_code("E016")
-                    .with_label(index.span(), "expected Int"),
-            );
-        }
-        match obj_ty {
-            Type::List(inner) => Ok(*inner),
+        match &obj_ty {
+            Type::Map(key_ty, val_ty) => {
+                if idx_ty != **key_ty {
+                    return Err(
+                        Diagnostic::error(format!(
+                            "Map key must be {:?}, got {:?}",
+                            key_ty, idx_ty
+                        ))
+                        .with_code("E016")
+                        .with_label(index.span(), format!("expected {:?}", key_ty)),
+                    );
+                }
+                Ok(*val_ty.clone())
+            }
+            Type::List(inner) => {
+                if idx_ty != Type::Int {
+                    return Err(
+                        Diagnostic::error(format!(
+                            "List index must be Int, got {:?}",
+                            idx_ty
+                        ))
+                        .with_code("E016")
+                        .with_label(index.span(), "expected Int"),
+                    );
+                }
+                Ok(*inner.clone())
+            }
             _ => Err(
-                Diagnostic::error(format!("Cannot index into {:?}, expected List", obj_ty))
-                    .with_code("E016")
-                    .with_label(object.span(), "not a list"),
+                Diagnostic::error(format!(
+                    "Cannot index into {:?}, expected List or Map",
+                    obj_ty
+                ))
+                .with_code("E016")
+                .with_label(object.span(), "not indexable"),
             ),
         }
     }

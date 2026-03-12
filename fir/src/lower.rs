@@ -824,13 +824,28 @@ impl Lowerer {
             }
 
             Expr::Index { object, index, .. } => {
+                // Check if the object is a map (use local_ast_types to determine)
+                let is_map = if let Expr::Ident(name, _) = object.as_ref() {
+                    matches!(self.local_ast_types.get(name.as_str()), Some(Type::Map(_, _)))
+                } else {
+                    false
+                };
+
                 let fir_obj = self.lower_expr(object)?;
                 let fir_idx = self.lower_expr(index)?;
-                Ok(FirExpr::ListGet {
-                    list: Box::new(fir_obj),
-                    index: Box::new(fir_idx),
-                    elem_ty: FirType::I64, // TODO: proper element type
-                })
+                if is_map {
+                    Ok(FirExpr::RuntimeCall {
+                        name: "aster_map_get".to_string(),
+                        args: vec![fir_obj, fir_idx],
+                        ret_ty: FirType::I64,
+                    })
+                } else {
+                    Ok(FirExpr::ListGet {
+                        list: Box::new(fir_obj),
+                        index: Box::new(fir_idx),
+                        elem_ty: FirType::I64, // TODO: proper element type
+                    })
+                }
             }
 
             Expr::Lambda {
@@ -904,6 +919,27 @@ impl Lowerer {
                     offset,
                     ty: field_ty,
                 })
+            }
+
+            Expr::Map { entries, .. } => {
+                // Lower map literal: create map, then set each entry
+                // Desugars to: let m = aster_map_new(cap); m = aster_map_set(m, k1, v1); ...
+                let cap = entries.len().max(4) as i64;
+                let mut result = FirExpr::RuntimeCall {
+                    name: "aster_map_new".to_string(),
+                    args: vec![FirExpr::IntLit(cap)],
+                    ret_ty: FirType::Ptr,
+                };
+                for (key, value) in entries {
+                    let fir_key = self.lower_expr(key)?;
+                    let fir_value = self.lower_expr(value)?;
+                    result = FirExpr::RuntimeCall {
+                        name: "aster_map_set".to_string(),
+                        args: vec![result, fir_key, fir_value],
+                        ret_ty: FirType::Ptr,
+                    };
+                }
+                Ok(result)
             }
 
             _ => Err(LowerError::UnsupportedFeature(format!(
