@@ -874,26 +874,170 @@ impl Lowerer {
             // Resolve: `resolve expr!` → identity (already computed eagerly)
             Expr::Resolve { expr: inner, .. } => self.lower_expr(inner),
 
-            // Propagate: `expr!` → identity for now (error propagation is step 8)
-            Expr::Propagate(inner, _) => self.lower_expr(inner),
+            // Propagate: `expr!` → evaluate, check error flag, trap if error
+            Expr::Propagate(inner, _) => {
+                let fir_inner = self.lower_expr(inner)?;
+                let result_ty = self.infer_fir_type(&fir_inner);
+                let result_id = self.alloc_local();
+                self.local_types.insert(result_id, result_ty.clone());
 
-            // Error handling: `expr!.or(default)` → evaluate expr (throws = trap)
-            Expr::ErrorOr { expr, .. } => self.lower_expr(expr),
+                // let __result = inner_expr
+                self.pending_stmts.push(FirStmt::Let {
+                    name: result_id,
+                    ty: result_ty.clone(),
+                    value: fir_inner,
+                });
 
-            // Error handling: `expr!.or_else(-> handler)` → evaluate expr (throws = trap)
-            Expr::ErrorOrElse { expr, .. } => self.lower_expr(expr),
+                // if aster_error_check(): aster_panic()
+                let check = FirExpr::RuntimeCall {
+                    name: "aster_error_check".to_string(),
+                    args: vec![],
+                    ret_ty: FirType::Bool,
+                };
+                self.pending_stmts.push(FirStmt::If {
+                    cond: check,
+                    then_body: vec![FirStmt::Expr(FirExpr::RuntimeCall {
+                        name: "aster_panic".to_string(),
+                        args: vec![],
+                        ret_ty: FirType::Void,
+                    })],
+                    else_body: vec![],
+                });
 
-            // Error handling: `expr!.catch { arms }` → evaluate expr (throws = trap)
-            Expr::ErrorCatch { expr, .. } => self.lower_expr(expr),
+                Ok(FirExpr::LocalVar(result_id, result_ty))
+            }
 
-            // Throw: lower to a runtime trap for now
+            // Error handling: `expr!.or(default)` → evaluate, check error, fallback
+            Expr::ErrorOr { expr, default, .. } => {
+                // Extract inner expression (skip Propagate wrapper)
+                let inner = if let Expr::Propagate(inner, _) = expr.as_ref() {
+                    inner
+                } else {
+                    expr
+                };
+                let fir_inner = self.lower_expr(inner)?;
+                let fir_default = self.lower_expr(default)?;
+                let result_ty = self.infer_fir_type(&fir_inner);
+                let result_id = self.alloc_local();
+                self.local_types.insert(result_id, result_ty.clone());
+
+                // let __result = inner_expr
+                self.pending_stmts.push(FirStmt::Let {
+                    name: result_id,
+                    ty: result_ty.clone(),
+                    value: fir_inner,
+                });
+
+                // if aster_error_check(): __result = default
+                let check = FirExpr::RuntimeCall {
+                    name: "aster_error_check".to_string(),
+                    args: vec![],
+                    ret_ty: FirType::Bool,
+                };
+                self.pending_stmts.push(FirStmt::If {
+                    cond: check,
+                    then_body: vec![FirStmt::Assign {
+                        target: FirPlace::Local(result_id),
+                        value: fir_default,
+                    }],
+                    else_body: vec![],
+                });
+
+                Ok(FirExpr::LocalVar(result_id, result_ty))
+            }
+
+            // Error handling: `expr!.or_else(-> handler)` → evaluate, check error, call handler
+            Expr::ErrorOrElse {
+                expr, handler, ..
+            } => {
+                let inner = if let Expr::Propagate(inner, _) = expr.as_ref() {
+                    inner
+                } else {
+                    expr
+                };
+                let fir_inner = self.lower_expr(inner)?;
+                let fir_handler = self.lower_expr(handler)?;
+                let result_ty = self.infer_fir_type(&fir_inner);
+                let result_id = self.alloc_local();
+                self.local_types.insert(result_id, result_ty.clone());
+
+                self.pending_stmts.push(FirStmt::Let {
+                    name: result_id,
+                    ty: result_ty.clone(),
+                    value: fir_inner,
+                });
+
+                let check = FirExpr::RuntimeCall {
+                    name: "aster_error_check".to_string(),
+                    args: vec![],
+                    ret_ty: FirType::Bool,
+                };
+                self.pending_stmts.push(FirStmt::If {
+                    cond: check,
+                    then_body: vec![FirStmt::Assign {
+                        target: FirPlace::Local(result_id),
+                        value: fir_handler,
+                    }],
+                    else_body: vec![],
+                });
+
+                Ok(FirExpr::LocalVar(result_id, result_ty))
+            }
+
+            // Error handling: `expr!.catch { arms }` → evaluate expr, check error
+            // For now, same as ErrorOr with the first arm's body as fallback
+            Expr::ErrorCatch { expr, arms, .. } => {
+                let inner = if let Expr::Propagate(inner, _) = expr.as_ref() {
+                    inner
+                } else {
+                    expr
+                };
+                let fir_inner = self.lower_expr(inner)?;
+                let result_ty = self.infer_fir_type(&fir_inner);
+                let result_id = self.alloc_local();
+                self.local_types.insert(result_id, result_ty.clone());
+
+                self.pending_stmts.push(FirStmt::Let {
+                    name: result_id,
+                    ty: result_ty.clone(),
+                    value: fir_inner,
+                });
+
+                // Use first arm as catch-all fallback
+                let fallback = if let Some((_, body)) = arms.first() {
+                    self.lower_expr(body)?
+                } else {
+                    FirExpr::IntLit(0) // no arms → default to 0
+                };
+
+                let check = FirExpr::RuntimeCall {
+                    name: "aster_error_check".to_string(),
+                    args: vec![],
+                    ret_ty: FirType::Bool,
+                };
+                self.pending_stmts.push(FirStmt::If {
+                    cond: check,
+                    then_body: vec![FirStmt::Assign {
+                        target: FirPlace::Local(result_id),
+                        value: fallback,
+                    }],
+                    else_body: vec![],
+                });
+
+                Ok(FirExpr::LocalVar(result_id, result_ty))
+            }
+
+            // Throw: set error flag, return dummy value
             Expr::Throw(inner, _) => {
                 let _fir_inner = self.lower_expr(inner)?;
-                Ok(FirExpr::RuntimeCall {
-                    name: "aster_panic".to_string(),
+                // Set the error flag
+                self.pending_stmts.push(FirStmt::Expr(FirExpr::RuntimeCall {
+                    name: "aster_error_set".to_string(),
                     args: vec![],
-                    ret_ty: FirType::Never,
-                })
+                    ret_ty: FirType::Void,
+                }));
+                // Return a dummy value (0) — the caller checks the error flag
+                Ok(FirExpr::IntLit(0))
             }
 
             Expr::Member { object, field, .. } => {

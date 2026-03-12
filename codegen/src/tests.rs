@@ -1974,6 +1974,43 @@ def main() throws AppError -> Int
     assert_eq!(result, 42);
 }
 
+#[test]
+fn error_or_failure_uses_default() {
+    // A throwing function that actually throws — .or fallback should be returned
+    let src = "\
+class AppError extends Error
+  code: Int
+
+def risky() throws AppError -> Int
+  throw AppError(message: \"fail\", code: 1)
+
+def main() -> Int
+  risky()!.or(99)
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 99);
+}
+
+#[test]
+fn error_or_else_failure_uses_handler() {
+    let src = "\
+class AppError extends Error
+  code: Int
+
+def risky() throws AppError -> Int
+  throw AppError(message: \"fail\", code: 1)
+
+def main() -> Int
+  risky()!.or_else(-> 77)
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 77);
+}
+
 // ===========================================================================
 // Closure dispatch
 // ===========================================================================

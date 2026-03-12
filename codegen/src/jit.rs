@@ -199,6 +199,9 @@ impl CraneliftJIT {
                 vec![types::I64, types::I64],
                 Some(types::I64),
             ),
+            ("aster_error_set", vec![], None),
+            ("aster_error_check", vec![], Some(types::I8)),
+            ("aster_panic", vec![], None),
         ];
 
         for (name, params, ret) in &common {
