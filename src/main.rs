@@ -378,6 +378,7 @@ fn c_runtime_source() -> &'static str {
 
 void* aster_alloc(int64_t size) {
     if (size == 0) return (void*)8; /* aligned dangling */
+    if (size < 0) { fprintf(stderr, "aster_alloc: negative size\n"); abort(); }
     void* p = malloc((size_t)size);
     if (!p) { fprintf(stderr, "out of memory\n"); abort(); }
     return p;
@@ -385,17 +386,17 @@ void* aster_alloc(int64_t size) {
 
 void* aster_class_alloc(int64_t size) { return aster_alloc(size); }
 
-int64_t aster_print_str(void* ptr) {
-    if (!ptr) { printf("nil\n"); return 0; }
+void aster_print_str(void* ptr) {
+    if (!ptr) { printf("nil\n"); return; }
     int64_t len = *(int64_t*)ptr;
+    if (len < 0) { printf("<invalid string>\n"); return; }
     char* data = (char*)ptr + 8;
     printf("%.*s\n", (int)len, data);
-    return 0;
 }
 
-int64_t aster_print_int(int64_t val) { printf("%lld\n", (long long)val); return 0; }
-int64_t aster_print_float(double val) { printf("%g\n", val); return 0; }
-int64_t aster_print_bool(int8_t val) { printf("%s\n", val ? "true" : "false"); return 0; }
+void aster_print_int(int64_t val) { printf("%lld\n", (long long)val); }
+void aster_print_float(double val) { printf("%g\n", val); }
+void aster_print_bool(int8_t val) { printf("%s\n", val ? "true" : "false"); }
 
 void* aster_string_new(void* data, int64_t len) {
     void* p = aster_alloc(8 + len);
@@ -407,6 +408,8 @@ void* aster_string_new(void* data, int64_t len) {
 void* aster_string_concat(void* a, void* b) {
     int64_t a_len = a ? *(int64_t*)a : 0;
     int64_t b_len = b ? *(int64_t*)b : 0;
+    if (a_len < 0) a_len = 0;
+    if (b_len < 0) b_len = 0;
     void* r = aster_alloc(8 + a_len + b_len);
     *(int64_t*)r = a_len + b_len;
     if (a_len > 0) memcpy((char*)r + 8, (char*)a + 8, (size_t)a_len);
@@ -416,7 +419,8 @@ void* aster_string_concat(void* a, void* b) {
 
 int64_t aster_string_len(void* ptr) {
     if (!ptr) return 0;
-    return *(int64_t*)ptr;
+    int64_t len = *(int64_t*)ptr;
+    return len < 0 ? 0 : len;
 }
 
 void* aster_list_new(int64_t cap) {
@@ -428,6 +432,7 @@ void* aster_list_new(int64_t cap) {
 }
 
 int64_t aster_list_get(void* list, int64_t index) {
+    if (!list) { fprintf(stderr, "aster_list_get: null list\n"); abort(); }
     int64_t len = *(int64_t*)list;
     if (index < 0 || index >= len) {
         fprintf(stderr, "list index out of bounds: %lld (len %lld)\n", (long long)index, (long long)len);
@@ -436,17 +441,18 @@ int64_t aster_list_get(void* list, int64_t index) {
     return *((int64_t*)list + 2 + index);
 }
 
-int64_t aster_list_set(void* list, int64_t index, int64_t value) {
+void aster_list_set(void* list, int64_t index, int64_t value) {
+    if (!list) { fprintf(stderr, "aster_list_set: null list\n"); abort(); }
     int64_t len = *(int64_t*)list;
     if (index < 0 || index >= len) {
         fprintf(stderr, "list index out of bounds: %lld (len %lld)\n", (long long)index, (long long)len);
         abort();
     }
     *((int64_t*)list + 2 + index) = value;
-    return 0;
 }
 
 void* aster_list_push(void* list, int64_t value) {
+    if (!list) { fprintf(stderr, "aster_list_push: null list\n"); abort(); }
     int64_t len = *(int64_t*)list;
     int64_t cap = *((int64_t*)list + 1);
     if (len >= cap) {

@@ -58,9 +58,6 @@ pub struct Lowerer {
     /// Statement-lifting buffer: match/closure lowering emits setup statements
     /// that must be injected into the enclosing body.
     pending_stmts: Vec<FirStmt>,
-    /// Monomorphization cache: (name, concrete_types) → FunctionId.
-    #[allow(dead_code)]
-    mono_cache: HashMap<(String, Vec<FirType>), FunctionId>,
 }
 
 impl Lowerer {
@@ -82,7 +79,6 @@ impl Lowerer {
             next_function: 0,
             next_class: 0,
             pending_stmts: Vec::new(),
-            mono_cache: HashMap::new(),
         }
     }
 
@@ -603,6 +599,11 @@ impl Lowerer {
             Expr::BinaryOp {
                 left, op, right, ..
             } => {
+                if matches!(op, ast::BinOp::Pow) {
+                    return Err(LowerError::UnsupportedFeature(
+                        "** (power) operator not yet supported in codegen".to_string(),
+                    ));
+                }
                 let fir_left = self.lower_expr(left)?;
                 let fir_right = self.lower_expr(right)?;
                 let fir_op = self.lower_binop(op);
@@ -1084,9 +1085,7 @@ impl Lowerer {
             ast::BinOp::Mul => BinOp::Mul,
             ast::BinOp::Div => BinOp::Div,
             ast::BinOp::Mod => BinOp::Mod,
-            ast::BinOp::Pow => {
-                panic!("** (power) operator not yet supported in codegen — needs runtime call")
-            }
+            ast::BinOp::Pow => BinOp::Add, // unreachable: Pow handled in lower_expr
             ast::BinOp::Eq => BinOp::Eq,
             ast::BinOp::Neq => BinOp::Neq,
             ast::BinOp::Lt => BinOp::Lt,
@@ -1260,138 +1259,6 @@ impl Lowerer {
                 "cannot determine class type of expression".into(),
             )),
         }
-    }
-
-    /// Create an __init thunk for top-level let bindings.
-    /// The __init function stores values into a globals array, and a call to __init
-    /// is injected at the start of main.
-    /// Currently unused — globals are inlined into each function — but kept for
-    /// future use with side-effectful initialization.
-    #[allow(dead_code)]
-    fn emit_init_thunk(&mut self) -> Result<(), LowerError> {
-        let init_id = FunctionId(self.next_function);
-        self.next_function += 1;
-        self.functions.insert("__init".to_string(), init_id);
-
-        // Save scope
-        let saved_locals = std::mem::take(&mut self.locals);
-        let saved_local_types = std::mem::take(&mut self.local_types);
-        let saved_next_local = self.next_local;
-        self.next_local = 0;
-
-        let mut init_body = Vec::new();
-
-        // For each top-level let, allocate a local and store the value.
-        // We also store into a global heap array so functions can access them.
-        // But since we need cross-function access, we use RuntimeCall to store
-        // into a globals array.
-
-        // Allocate globals array: one i64 per global
-        let num_globals = self.top_level_lets.len();
-        let globals_ptr_id = self.alloc_local();
-        self.locals.insert("__globals".to_string(), globals_ptr_id);
-        self.local_types.insert(globals_ptr_id, FirType::Ptr);
-
-        init_body.push(FirStmt::Let {
-            name: globals_ptr_id,
-            ty: FirType::Ptr,
-            value: FirExpr::RuntimeCall {
-                name: "aster_class_alloc".to_string(),
-                args: vec![FirExpr::IntLit((num_globals * 8) as i64)],
-                ret_ty: FirType::Ptr,
-            },
-        });
-
-        // Store each global value
-        let top_level_lets = std::mem::take(&mut self.top_level_lets);
-        for (i, (_name, ty, value)) in top_level_lets.iter().enumerate() {
-            // We need to re-lower the value in the init scope.
-            // But the value was already lowered. Clone it.
-            let local_id = self.alloc_local();
-            self.locals.insert(format!("__global_{}", i), local_id);
-            self.local_types.insert(local_id, ty.clone());
-
-            init_body.push(FirStmt::Let {
-                name: local_id,
-                ty: ty.clone(),
-                value: value.clone(),
-            });
-
-            // Store into globals array at offset i*8
-            init_body.push(FirStmt::Assign {
-                target: FirPlace::Field {
-                    object: Box::new(FirExpr::LocalVar(globals_ptr_id, FirType::Ptr)),
-                    offset: i * 8,
-                },
-                value: FirExpr::LocalVar(local_id, ty.clone()),
-            });
-        }
-
-        // Return the globals pointer
-        init_body.push(FirStmt::Return(FirExpr::LocalVar(
-            globals_ptr_id,
-            FirType::Ptr,
-        )));
-
-        let init_func = FirFunction {
-            id: init_id,
-            name: "__init".to_string(),
-            params: vec![],
-            ret_type: FirType::Ptr,
-            body: init_body,
-            is_entry: false,
-        };
-        self.module.add_function(init_func);
-
-        // Restore scope
-        self.locals = saved_locals;
-        self.local_types = saved_local_types;
-        self.next_local = saved_next_local;
-
-        // Find main function and inject __init call + global loads at the start
-        if let Some(entry_id) = self.module.entry {
-            let main_func = self.module.functions.iter_mut().find(|f| f.id == entry_id);
-
-            if let Some(main_func) = main_func {
-                let mut new_body = Vec::new();
-
-                // Call __init, get globals ptr
-                let globals_local = LocalId(main_func.params.len() as u32 + 1000); // high ID to avoid conflicts
-                new_body.push(FirStmt::Let {
-                    name: globals_local,
-                    ty: FirType::Ptr,
-                    value: FirExpr::Call {
-                        func: init_id,
-                        args: vec![],
-                        ret_ty: FirType::Ptr,
-                    },
-                });
-
-                // Load each global from the globals array
-                for (i, (name, ty, _)) in top_level_lets.iter().enumerate() {
-                    if let Some(&global_local_id) = self.globals.get(name) {
-                        new_body.push(FirStmt::Let {
-                            name: global_local_id,
-                            ty: ty.clone(),
-                            value: FirExpr::FieldGet {
-                                object: Box::new(FirExpr::LocalVar(globals_local, FirType::Ptr)),
-                                offset: i * 8,
-                                ty: ty.clone(),
-                            },
-                        });
-                    }
-                }
-
-                // Append original main body
-                new_body.append(&mut main_func.body);
-                main_func.body = new_body;
-            }
-        }
-
-        // Put back the top_level_lets
-        self.top_level_lets = top_level_lets;
-
-        Ok(())
     }
 
     /// Lower a match expression to nested if/else chains.

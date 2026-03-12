@@ -28,9 +28,6 @@ pub struct CraneliftJIT {
     runtime_declared: HashMap<String, cranelift_module::FuncId>,
 }
 
-// Safety: JIT pointers are only used from the thread that created them.
-unsafe impl Send for CraneliftJIT {}
-
 impl CraneliftJIT {
     /// Create a JIT with a specific build configuration.
     pub fn with_config(config: &crate::config::BuildConfig) -> Self {
@@ -150,10 +147,10 @@ impl CraneliftJIT {
     fn declare_runtime_functions(&mut self) -> Result<(), String> {
         let common: Vec<(&str, Vec<ir::Type>, Option<ir::Type>)> = vec![
             ("aster_alloc", vec![types::I64], Some(types::I64)),
-            ("aster_print_str", vec![types::I64], Some(types::I64)),
-            ("aster_print_int", vec![types::I64], Some(types::I64)),
-            ("aster_print_float", vec![types::F64], Some(types::I64)),
-            ("aster_print_bool", vec![types::I8], Some(types::I64)),
+            ("aster_print_str", vec![types::I64], None),
+            ("aster_print_int", vec![types::I64], None),
+            ("aster_print_float", vec![types::F64], None),
+            ("aster_print_bool", vec![types::I8], None),
             (
                 "aster_string_new",
                 vec![types::I64, types::I64],
@@ -174,7 +171,7 @@ impl CraneliftJIT {
             (
                 "aster_list_set",
                 vec![types::I64, types::I64, types::I64],
-                Some(types::I64),
+                None,
             ),
             (
                 "aster_list_push",

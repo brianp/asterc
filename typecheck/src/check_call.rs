@@ -170,7 +170,8 @@ impl TypeChecker {
                     if args.len() != 1 {
                         return Err(Diagnostic::error(format!(
                             "{}() takes 1 argument, got {}",
-                            name, args.len()
+                            name,
+                            args.len()
                         ))
                         .with_code("E006")
                         .with_label(func.span(), "expected 1 argument"));
@@ -765,7 +766,10 @@ impl TypeChecker {
         match func {
             Expr::Ident(name, span) => {
                 match name.as_str() {
-                    "len" | "to_string" | "log" | "print" => Ok(Type::Void), // Not a throws function
+                    // Builtins never throw. Return Void as a sentinel — callers only
+                    // inspect the `throws` field of Type::Function, so non-Function
+                    // types correctly signal "no throws".
+                    "len" | "to_string" | "log" | "print" => Ok(Type::Void),
                     _ => self.env.get_var(name).ok_or_else(|| {
                         let mut diag = Diagnostic::error(format!("Unknown identifier '{}'", name))
                             .with_code("E002")

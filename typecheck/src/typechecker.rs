@@ -345,6 +345,9 @@ impl TypeChecker {
         // Exit child scope (O(1) if Rc is unique)
         self.env.exit_scope();
 
+        // Collect diagnostics emitted during child scope
+        let child_diagnostics = std::mem::take(&mut self.diagnostics);
+
         // Restore state
         self.loop_depth = saved_loop_depth;
         self.expected_return_type = saved_expected_return_type;
@@ -352,6 +355,9 @@ impl TypeChecker {
         self.throws_type = saved_throws_type;
         self.diagnostics = saved_diagnostics;
         self.expected_type = saved_expected_type;
+
+        // Merge child diagnostics into parent
+        self.diagnostics.extend(child_diagnostics);
 
         result
     }
@@ -592,6 +598,8 @@ impl TypeChecker {
                 }
                 if let Some(expected) = &self.expected_return_type
                     && ty != *expected
+                    && !Self::is_nullable_compatible(expected, &ty)
+                    && !Self::is_subtype_compatible(&ty, expected, &self.env)
                 {
                     let ctx = self.current_function.as_deref().unwrap_or("<anonymous>");
                     return Err(Diagnostic::error(format!(
@@ -736,6 +744,10 @@ impl TypeChecker {
                             if let Type::Nullable(inner) = &target_ty
                                 && (val_ty == **inner || val_ty == Type::Nil)
                             {
+                                return Ok(target_ty);
+                            }
+                            // Subtype compatibility: allow Dog assigned to Animal
+                            if Self::is_subtype_compatible(&val_ty, &target_ty, &self.env) {
                                 return Ok(target_ty);
                             }
                             return Err(Diagnostic::error(format!(
