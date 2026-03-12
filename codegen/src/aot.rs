@@ -51,27 +51,7 @@ impl CraneliftAOT {
     }
 
     pub fn new() -> Self {
-        let mut flag_builder = settings::builder();
-        flag_builder.set("opt_level", "speed").unwrap();
-        flag_builder.set("is_pic", "true").unwrap();
-        let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
-            panic!("host machine is not supported: {}", msg);
-        });
-        let isa = isa_builder
-            .finish(settings::Flags::new(flag_builder))
-            .unwrap();
-
-        let builder = ObjectBuilder::new(isa, "aster_module", default_libcall_names()).unwrap();
-        let module = ObjectModule::new(builder);
-        let ctx = module.make_context();
-
-        Self {
-            module,
-            builder_context: FunctionBuilderContext::new(),
-            ctx,
-            declared: HashMap::new(),
-            runtime_declared: HashMap::new(),
-        }
+        Self::with_config(&crate::config::BuildConfig::release())
     }
 
     /// Compile all functions in a FirModule to an object file.
