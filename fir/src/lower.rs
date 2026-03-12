@@ -432,6 +432,19 @@ impl Lowerer {
             }
         }
 
+        // Synthesize auto-derived to_string if class includes Printable but has no explicit impl
+        let qualified_to_string = format!("{}.to_string", name);
+        if !self.functions.contains_key(&qualified_to_string) {
+            let has_printable = self
+                .type_env
+                .get_class(name)
+                .map(|ci| ci.includes.contains(&"Printable".to_string()))
+                .unwrap_or(false);
+            if has_printable {
+                self.synthesize_to_string(name, class_id)?;
+            }
+        }
+
         Ok(())
     }
 
@@ -1671,6 +1684,99 @@ impl Lowerer {
             }
         }
 
+        Ok(())
+    }
+
+    /// Synthesize a FIR function body for auto-derived `to_string`.
+    /// Produces: "ClassName(field1_str, field2_str, ...)"
+    fn synthesize_to_string(
+        &mut self,
+        class_name: &str,
+        class_id: ClassId,
+    ) -> Result<(), LowerError> {
+        let qualified = format!("{}.to_string", class_name);
+        let func_id = FunctionId(self.next_function);
+        self.next_function += 1;
+        self.functions.insert(qualified.clone(), func_id);
+
+        let field_layout = self
+            .class_fields
+            .get(&class_id)
+            .cloned()
+            .unwrap_or_default();
+
+        // Build the body: concat "ClassName(" + field_to_strings + ")"
+        // Start with "ClassName("
+        let mut result_expr = FirExpr::StringLit(format!("{}(", class_name));
+
+        let self_local = LocalId(0);
+        for (i, (field_name, field_ty, offset)) in field_layout.iter().enumerate() {
+            // Add separator ", " between fields
+            if i > 0 {
+                result_expr = FirExpr::RuntimeCall {
+                    name: "aster_string_concat".to_string(),
+                    args: vec![result_expr, FirExpr::StringLit(", ".to_string())],
+                    ret_ty: FirType::Ptr,
+                };
+            }
+
+            // Load field value from self
+            let field_val = FirExpr::FieldGet {
+                object: Box::new(FirExpr::LocalVar(self_local, FirType::Ptr)),
+                offset: *offset,
+                ty: field_ty.clone(),
+            };
+
+            // Convert field to string based on type
+            let field_str = match field_ty {
+                FirType::I64 => FirExpr::RuntimeCall {
+                    name: "aster_int_to_string".to_string(),
+                    args: vec![field_val],
+                    ret_ty: FirType::Ptr,
+                },
+                FirType::F64 => FirExpr::RuntimeCall {
+                    name: "aster_float_to_string".to_string(),
+                    args: vec![field_val],
+                    ret_ty: FirType::Ptr,
+                },
+                FirType::Bool => FirExpr::RuntimeCall {
+                    name: "aster_bool_to_string".to_string(),
+                    args: vec![field_val],
+                    ret_ty: FirType::Ptr,
+                },
+                FirType::Ptr => {
+                    // Could be a String or another class — check if field has its own to_string
+                    let _ = field_name; // suppress unused warning
+                    // For now, pass through as string (most common case)
+                    field_val
+                }
+                _ => field_val,
+            };
+
+            // Concat field string to result
+            result_expr = FirExpr::RuntimeCall {
+                name: "aster_string_concat".to_string(),
+                args: vec![result_expr, field_str],
+                ret_ty: FirType::Ptr,
+            };
+        }
+
+        // Append closing ")"
+        result_expr = FirExpr::RuntimeCall {
+            name: "aster_string_concat".to_string(),
+            args: vec![result_expr, FirExpr::StringLit(")".to_string())],
+            ret_ty: FirType::Ptr,
+        };
+
+        let func = FirFunction {
+            id: func_id,
+            name: qualified,
+            params: vec![("self".to_string(), FirType::Ptr)],
+            ret_type: FirType::Ptr,
+            body: vec![FirStmt::Return(result_expr)],
+            is_entry: false,
+        };
+        self.module.add_function(func);
         Ok(())
     }
 
