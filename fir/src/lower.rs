@@ -427,8 +427,8 @@ impl Lowerer {
                     vec![("self".to_string(), Type::Custom(name.to_string(), vec![]))];
                 full_params.extend(params.iter().cloned());
 
-                let qualified_name = format!("{}.{}", name, method_name);
-                self.lower_function(&qualified_name, &full_params, ret_type, body)?;
+                // method_name is already qualified by the parser (e.g. "Point.to_string")
+                self.lower_function(method_name, &full_params, ret_type, body)?;
             }
         }
 
@@ -498,9 +498,13 @@ impl Lowerer {
                         None
                     } else {
                         // The env local was created by lower_lambda in pending_stmts
-                        // It's the local that was returned as LocalVar
-                        if let FirExpr::LocalVar(env_id, _) = &fir_value {
-                            Some(*env_id)
+                        // Extract it from the ClosureCreate's env field
+                        if let FirExpr::ClosureCreate { env, .. } = &fir_value {
+                            if let FirExpr::LocalVar(env_id, _) = env.as_ref() {
+                                Some(*env_id)
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         }
@@ -634,6 +638,17 @@ impl Lowerer {
                     // Resolve the type from the type env
                     let ty = self.resolve_var_type(name);
                     Ok(FirExpr::LocalVar(local_id, ty))
+                } else if let Some(&self_id) = self.locals.get("self") {
+                    // Inside a method body — resolve bare field names as self.field
+                    let self_expr = Expr::Ident("self".to_string(), expr.span());
+                    match self.resolve_field_access(&self_expr, name) {
+                        Ok((offset, ty)) => Ok(FirExpr::FieldGet {
+                            object: Box::new(FirExpr::LocalVar(self_id, FirType::Ptr)),
+                            offset,
+                            ty,
+                        }),
+                        Err(_) => Err(LowerError::UnboundVariable(name.clone())),
+                    }
                 } else {
                     Err(LowerError::UnboundVariable(name.clone()))
                 }
@@ -643,9 +658,13 @@ impl Lowerer {
                 left, op, right, ..
             } => {
                 if matches!(op, ast::BinOp::Pow) {
-                    return Err(LowerError::UnsupportedFeature(
-                        "** (power) operator not yet supported in codegen".to_string(),
-                    ));
+                    let fir_left = self.lower_expr(left)?;
+                    let fir_right = self.lower_expr(right)?;
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_pow_int".to_string(),
+                        args: vec![fir_left, fir_right],
+                        ret_ty: FirType::I64,
+                    });
                 }
                 let fir_left = self.lower_expr(left)?;
                 let fir_right = self.lower_expr(right)?;
@@ -743,6 +762,17 @@ impl Lowerer {
                             args: fir_args?,
                             ret_ty,
                         })
+                    } else if self.locals.contains_key(name.as_str()) {
+                        // Local variable with function type — closure call (dynamic dispatch)
+                        let closure_var = self.lower_expr(func)?;
+                        let fir_args: Result<Vec<_>, _> =
+                            args.iter().map(|(_, arg)| self.lower_expr(arg)).collect();
+                        let ret_ty = self.resolve_closure_ret_type(name);
+                        Ok(FirExpr::ClosureCall {
+                            closure: Box::new(closure_var),
+                            args: fir_args?,
+                            ret_ty,
+                        })
                     } else {
                         // Could be a runtime call (print, etc.)
                         let fir_args: Result<Vec<_>, _> =
@@ -801,6 +831,10 @@ impl Lowerer {
                 scrutinee, arms, ..
             } => self.lower_match(scrutinee, arms),
 
+            Expr::StringInterpolation { parts, .. } => {
+                self.lower_string_interpolation(parts)
+            }
+
             // Async: `async f(args)` → eager call (no true concurrency yet)
             Expr::AsyncCall { func, args, .. } => {
                 // Lower as a regular call — the result IS the task (eager execution)
@@ -816,6 +850,15 @@ impl Lowerer {
 
             // Propagate: `expr!` → identity for now (error propagation is step 8)
             Expr::Propagate(inner, _) => self.lower_expr(inner),
+
+            // Error handling: `expr!.or(default)` → evaluate expr (throws = trap)
+            Expr::ErrorOr { expr, .. } => self.lower_expr(expr),
+
+            // Error handling: `expr!.or_else(-> handler)` → evaluate expr (throws = trap)
+            Expr::ErrorOrElse { expr, .. } => self.lower_expr(expr),
+
+            // Error handling: `expr!.catch { arms }` → evaluate expr (throws = trap)
+            Expr::ErrorCatch { expr, .. } => self.lower_expr(expr),
 
             // Throw: lower to a runtime trap for now
             Expr::Throw(inner, _) => {
@@ -1074,6 +1117,14 @@ impl Lowerer {
                     index: Box::new(fir_idx),
                 })
             }
+            Expr::Member { object, field, .. } => {
+                let fir_obj = self.lower_expr_ref(object)?;
+                let (offset, _field_ty) = self.resolve_field_access(object, field)?;
+                Ok(FirPlace::Field {
+                    object: Box::new(fir_obj),
+                    offset,
+                })
+            }
             _ => Err(LowerError::UnsupportedFeature(
                 "complex assignment target".into(),
             )),
@@ -1116,13 +1167,17 @@ impl Lowerer {
             Type::Function { .. } => FirType::Ptr, // function pointers
             Type::Task(_) => FirType::Ptr,
             Type::Map(_, _) => FirType::Ptr,
-            Type::Error | Type::Inferred => {
+            Type::Error => {
                 debug_assert!(
                     false,
-                    "Type::Error/Inferred should not survive past typechecking"
+                    "Type::Error should not survive past typechecking"
                 );
                 FirType::Void
             }
+            // Type::Inferred may survive in inline lambda parameters where the
+            // typechecker resolves the type in the env but doesn't mutate the AST.
+            // Default to I64 (the most common case).
+            Type::Inferred => FirType::I64,
             Type::TypeVar(_, _) => FirType::Void, // shouldn't appear after monomorphization
         }
     }
@@ -1222,6 +1277,18 @@ impl Lowerer {
         } else {
             FirType::Void
         }
+    }
+
+    /// Resolve the return type of a closure-typed local variable.
+    fn resolve_closure_ret_type(&self, name: &str) -> FirType {
+        if let Some(Type::Function { ret, .. }) = self.type_env.get_var(name) {
+            return self.lower_type(&ret);
+        }
+        // Check local AST types
+        if let Some(Type::Function { ret, .. }) = self.local_ast_types.get(name) {
+            return self.lower_type(ret);
+        }
+        FirType::I64 // fallback
     }
 
     fn resolve_function_ret_type(&self, name: &str) -> FirType {
@@ -1604,8 +1671,8 @@ impl Lowerer {
                 let mut full_params =
                     vec![("self".to_string(), Type::Custom(name.to_string(), vec![]))];
                 full_params.extend(params.iter().cloned());
-                let qualified_name = format!("{}.{}", name, method_name);
-                self.lower_function(&qualified_name, &full_params, ret_type, body)?;
+                // method_name is already qualified by the parser (e.g. "MyEnum.method")
+                self.lower_function(method_name, &full_params, ret_type, body)?;
             }
         }
 
@@ -1740,9 +1807,13 @@ impl Lowerer {
         self.functions.insert(lambda_name, func_id);
 
         if captures.is_empty() {
-            // No captures: env is null. Return a NilLit as placeholder.
-            // The important thing is closure_info registration (done at let-binding site).
-            Ok(FirExpr::NilLit)
+            // No captures: env is null. Return a ClosureCreate so the value
+            // can be passed as a first-class closure.
+            Ok(FirExpr::ClosureCreate {
+                func: func_id,
+                env: Box::new(FirExpr::NilLit),
+                ret_ty: self.lower_type(ret_type),
+            })
         } else {
             // Allocate env struct and store captures
             let env_size = captures.len() * 8;
@@ -1779,8 +1850,93 @@ impl Lowerer {
                 }
             }
 
-            Ok(FirExpr::LocalVar(env_id, FirType::Ptr))
+            Ok(FirExpr::ClosureCreate {
+                func: func_id,
+                env: Box::new(FirExpr::LocalVar(env_id, FirType::Ptr)),
+                ret_ty: self.lower_type(ret_type),
+            })
         }
+    }
+
+    /// Lower a string interpolation to a chain of to_string + concat calls.
+    fn lower_string_interpolation(
+        &mut self,
+        parts: &[ast::StringPart],
+    ) -> Result<FirExpr, LowerError> {
+        // Convert each part to a string FirExpr, then fold-concat them.
+        let mut string_exprs = Vec::new();
+
+        for part in parts {
+            match part {
+                ast::StringPart::Literal(s) => {
+                    string_exprs.push(FirExpr::StringLit(s.clone()));
+                }
+                ast::StringPart::Expr(expr) => {
+                    let fir_expr = self.lower_expr(expr)?;
+                    let fir_ty = self.infer_fir_type(&fir_expr);
+                    // Convert to string based on type
+                    let str_expr = match fir_ty {
+                        FirType::Ptr => {
+                            // Check if this is a class instance (needs to_string call)
+                            // vs a plain string (pass through)
+                            if let Ok(class_name) = self.resolve_class_name(expr) {
+                                let qualified = format!("{}.to_string", class_name);
+                                if let Some(&func_id) = self.functions.get(&qualified) {
+                                    FirExpr::Call {
+                                        func: func_id,
+                                        args: vec![fir_expr],
+                                        ret_ty: FirType::Ptr,
+                                    }
+                                } else {
+                                    fir_expr // no to_string lowered, pass through
+                                }
+                            } else {
+                                fir_expr // plain string or unknown — pass through
+                            }
+                        }
+                        FirType::I64 => FirExpr::RuntimeCall {
+                            name: "aster_int_to_string".to_string(),
+                            args: vec![fir_expr],
+                            ret_ty: FirType::Ptr,
+                        },
+                        FirType::F64 => FirExpr::RuntimeCall {
+                            name: "aster_float_to_string".to_string(),
+                            args: vec![fir_expr],
+                            ret_ty: FirType::Ptr,
+                        },
+                        FirType::Bool => FirExpr::RuntimeCall {
+                            name: "aster_bool_to_string".to_string(),
+                            args: vec![fir_expr],
+                            ret_ty: FirType::Ptr,
+                        },
+                        _ => fir_expr, // fallback: pass through
+                    };
+                    string_exprs.push(str_expr);
+                }
+            }
+        }
+
+        // If empty, return empty string
+        if string_exprs.is_empty() {
+            return Ok(FirExpr::StringLit(String::new()));
+        }
+
+        // If single part, return it directly
+        if string_exprs.len() == 1 {
+            return Ok(string_exprs.into_iter().next().unwrap());
+        }
+
+        // Fold left with aster_string_concat
+        let mut result = string_exprs.remove(0);
+        for part in string_exprs {
+            result = FirExpr::RuntimeCall {
+                name: "aster_string_concat".to_string(),
+                args: vec![result, part],
+                ret_ty: FirType::Ptr,
+            };
+        }
+
+        Ok(result)
     }
 
     /// Find variables referenced in a body that are not in the given param set

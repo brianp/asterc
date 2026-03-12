@@ -222,6 +222,39 @@ fn const_negative_value() {
     common::check_ok("const NEG = -42\n");
 }
 
+#[test]
+fn const_reassignment_in_nested_scope_error() {
+    let err = common::check_err(
+        "\
+def main() -> Int
+  const x = 10
+  if true
+    x = 20
+  x
+",
+    );
+    assert!(
+        err.contains("const") || err.contains("reassign") || err.contains("immutable"),
+        "expected const reassignment error, got: {}",
+        err
+    );
+}
+
+// ============================================================
+// Feature 2b: String Interpolation — Float
+// ============================================================
+
+#[test]
+fn string_interpolation_float_variable() {
+    common::check_ok(
+        "\
+def main() -> String
+  let pi: Float = 3.14
+  \"pi is {pi}\"
+",
+    );
+}
+
 // ============================================================
 // Feature 3: Default Parameter Values
 // ============================================================

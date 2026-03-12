@@ -7,7 +7,7 @@ mod common;
 // ─── 6A. Pattern Matching ────────────────────────────────────────────
 
 #[test]
-fn integration_match_int_literal_patterns() {
+fn match_int_literal_patterns() {
     common::check_ok(
         r#"let x = 5
 let y = match x
@@ -19,7 +19,7 @@ let y = match x
 }
 
 #[test]
-fn integration_match_bool_patterns() {
+fn match_bool_patterns() {
     common::check_ok(
         r#"let x = true
 let y = match x
@@ -30,7 +30,7 @@ let y = match x
 }
 
 #[test]
-fn integration_match_string_patterns() {
+fn match_string_patterns() {
     common::check_ok(
         r#"let x = "hello"
 let y = match x
@@ -42,7 +42,7 @@ let y = match x
 }
 
 #[test]
-fn integration_match_variable_binding() {
+fn match_variable_binding() {
     // Wildcard identifier captures the value
     common::check_ok(
         r#"let x = 42
@@ -54,7 +54,7 @@ let y = match x
 }
 
 #[test]
-fn integration_match_wildcard() {
+fn match_wildcard() {
     common::check_ok(
         r#"let x = 10
 let y = match x
@@ -66,7 +66,7 @@ let y = match x
 // -- Happy path: match as expression returns a value --
 
 #[test]
-fn integration_match_expression_in_let() {
+fn match_expression_in_let() {
     common::check_ok(
         r#"let x = 5
 let result = match x
@@ -78,7 +78,7 @@ let result = match x
 }
 
 #[test]
-fn integration_match_nested_in_function() {
+fn match_nested_in_function() {
     common::check_ok(
         r#"def describe(n: Int) -> String
   match n
@@ -92,7 +92,7 @@ fn integration_match_nested_in_function() {
 // -- Boundary: single arm, many arms --
 
 #[test]
-fn integration_match_single_arm() {
+fn match_single_arm() {
     common::check_ok(
         r#"let x = 1
 let y = match x
@@ -102,7 +102,7 @@ let y = match x
 }
 
 #[test]
-fn integration_match_many_arms() {
+fn match_many_arms() {
     common::check_ok(
         r#"let x = 5
 let y = match x
@@ -118,7 +118,7 @@ let y = match x
 // -- Error: arm type inconsistency --
 
 #[test]
-fn integration_match_arm_type_mismatch_error() {
+fn match_arm_type_mismatch_error() {
     let err = common::check_err(
         r#"let x = 1
 let y = match x
@@ -137,7 +137,7 @@ let y = match x
 // -- Error: pattern type vs scrutinee type mismatch --
 
 #[test]
-fn integration_match_pattern_type_mismatch_error() {
+fn match_pattern_type_mismatch_error() {
     let err = common::check_err(
         r#"let x = 1
 let y = match x
@@ -156,7 +156,7 @@ let y = match x
 // ─── 6C. Call-Site Async (BC-9: no async def, async works anywhere) ──
 
 #[test]
-fn integration_async_call_returns_task() {
+fn async_call_returns_task() {
     // BC-9: functions are plain def, async at call site returns Task[T]
     common::check_ok(
         r#"def fetch() -> Int
@@ -169,7 +169,7 @@ def main() -> Void
 }
 
 #[test]
-fn integration_detached_async_call() {
+fn detached_async_call() {
     common::check_ok(
         r#"def background_job() -> Void
   log(message: "working")
@@ -183,7 +183,7 @@ def main() -> Void
 // -- async scope for structured concurrency --
 
 #[test]
-fn integration_async_scope() {
+fn async_scope() {
     common::check_ok(
         r#"def task_a() -> Int
   1
@@ -202,7 +202,7 @@ def main() -> Void
 // -- async call works anywhere (no context restriction) --
 
 #[test]
-fn integration_async_call_works_anywhere() {
+fn async_call_works_anywhere() {
     common::check_ok(
         r#"def fetch() -> Int
   42
@@ -216,7 +216,7 @@ def main() -> Void
 // -- Error: detached without async --
 
 #[test]
-fn integration_detached_without_async_error() {
+fn detached_without_async_error() {
     let err = common::check_parse_err(
         r#"def fetch() -> Int
   42
@@ -231,7 +231,7 @@ def main() -> Void
 // -- Task type --
 
 #[test]
-fn integration_task_type_annotation() {
+fn task_type_annotation() {
     common::check_ok(
         r#"def fetch() -> Int
   42
@@ -245,7 +245,7 @@ def main() -> Void
 // -- resolve on Task[T] requires ! --
 
 #[test]
-fn integration_resolve_without_bang_error() {
+fn resolve_without_bang_error() {
     let err = common::check_err(
         r#"def fetch() -> Int
   42
@@ -261,7 +261,7 @@ def main() -> Void
 // -- async def is now a parse error --
 
 #[test]
-fn integration_async_def_is_parse_error() {
+fn async_def_is_parse_error() {
     let err = common::check_parse_err(
         r#"async def fetch() -> Int
   42
@@ -273,7 +273,7 @@ fn integration_async_def_is_parse_error() {
 // -- resolve on computed expressions (C1 fix) --
 
 #[test]
-fn integration_resolve_member_access() {
+fn resolve_member_access() {
     // resolve works on member access expressions
     common::check_ok(
         r#"class TaskHolder
@@ -290,7 +290,7 @@ def main() throws Error -> Void
 }
 
 #[test]
-fn integration_resolve_index_access() {
+fn resolve_index_access() {
     // resolve works on index expressions
     common::check_ok(
         r#"def fetch() -> Int
@@ -306,7 +306,7 @@ def main() throws Error -> Void
 // -- async + throws composition (C2 fix) --
 
 #[test]
-fn integration_async_throwing_function() {
+fn async_throwing_function() {
     // async on a throwing function should work — errors handled at resolve
     common::check_ok(
         r#"class AppError extends Error
@@ -323,7 +323,7 @@ def main() throws Error -> Void
 }
 
 #[test]
-fn integration_async_throwing_with_catch() {
+fn async_throwing_with_catch() {
     // async throwing + resolve with catch
     common::check_ok(
         r#"class AppError extends Error
@@ -343,7 +343,7 @@ def main() -> String
 }
 
 #[test]
-fn integration_async_throwing_with_or() {
+fn async_throwing_with_or() {
     // async throwing + resolve with or
     common::check_ok(
         r#"class AppError extends Error
@@ -360,7 +360,7 @@ def main() -> String
 }
 
 #[test]
-fn integration_detached_async_throwing() {
+fn detached_async_throwing() {
     // detached async on throwing functions — errors logged at runtime
     common::check_ok(
         r#"class AppError extends Error

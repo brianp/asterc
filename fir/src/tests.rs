@@ -930,3 +930,429 @@ fn nullable_type_becomes_tagged_union() {
         other => panic!("expected TaggedUnion, got {:?}", other),
     }
 }
+
+// ===========================================================================
+// String interpolation lowering
+// ===========================================================================
+
+#[test]
+fn lower_string_interpolation_literal_only() {
+    // A plain string literal in interpolation context should produce StringLit
+    let fir = lower_ok("def f() -> String\n  \"hello\"\n");
+    let func = &fir.functions[0];
+    let expr = func
+        .body
+        .iter()
+        .find_map(|s| match s {
+            FirStmt::Expr(e) | FirStmt::Return(e) => Some(e),
+            _ => None,
+        })
+        .expect("expected expression");
+    assert!(
+        matches!(expr, FirExpr::StringLit(s) if s == "hello"),
+        "expected StringLit(\"hello\"), got {:?}",
+        expr
+    );
+}
+
+#[test]
+fn lower_string_interpolation_with_int_var() {
+    // "val: {x}" where x: Int should produce RuntimeCall to aster_int_to_string + aster_string_concat
+    let src = "\
+def f() -> String
+  let x: Int = 42
+  \"val: {x}\"
+";
+    let fir = lower_ok(src);
+    let func = &fir.functions[0];
+    let expr = func
+        .body
+        .iter()
+        .find_map(|s| match s {
+            FirStmt::Expr(e) | FirStmt::Return(e) => Some(e),
+            _ => None,
+        })
+        .expect("expected expression");
+
+    // Should be aster_string_concat(StringLit("val: "), aster_int_to_string(x))
+    match expr {
+        FirExpr::RuntimeCall { name, args, .. } if name == "aster_string_concat" => {
+            assert_eq!(args.len(), 2, "concat should have 2 args");
+            assert!(
+                matches!(&args[0], FirExpr::StringLit(s) if s == "val: "),
+                "first arg should be StringLit(\"val: \"), got {:?}",
+                args[0]
+            );
+            assert!(
+                matches!(&args[1], FirExpr::RuntimeCall { name, .. } if name == "aster_int_to_string"),
+                "second arg should be aster_int_to_string call, got {:?}",
+                args[1]
+            );
+        }
+        other => panic!(
+            "expected RuntimeCall(aster_string_concat), got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn lower_string_interpolation_with_class_to_string() {
+    // Class with manual to_string, interpolation should produce Call to ClassName.to_string
+    let src = "\
+class Greeter includes Printable
+  name: String
+
+  def to_string() -> String
+    return \"hi\"
+
+def f() -> String
+  let g: Greeter = Greeter(name: \"world\")
+  \"{g}\"
+";
+    let fir = lower_ok(src);
+    let f_func = fir.functions.iter().find(|f| f.name == "f").unwrap();
+    let expr = f_func
+        .body
+        .iter()
+        .find_map(|s| match s {
+            FirStmt::Expr(e) | FirStmt::Return(e) => Some(e),
+            _ => None,
+        })
+        .expect("expected expression");
+
+    // The interpolation of a single class var should call ClassName.to_string
+    // It could be a Call (if to_string was lowered) or a RuntimeCall fallback
+    fn has_to_string_call(expr: &FirExpr) -> bool {
+        match expr {
+            FirExpr::Call { args, .. } => {
+                // to_string call should have exactly 1 arg (self)
+                args.len() == 1
+            }
+            _ => false,
+        }
+    }
+    assert!(
+        has_to_string_call(expr),
+        "expected Call to to_string method, got {:?}",
+        expr
+    );
+}
+
+// ===========================================================================
+// Method call lowering
+// ===========================================================================
+
+#[test]
+fn lower_class_method_call() {
+    // obj.method() should produce Call with self as first arg
+    let src = "\
+class Counter
+  value: Int
+
+  def get_value() -> Int
+    return value
+
+def f() -> Int
+  let c: Counter = Counter(value: 10)
+  c.get_value()
+";
+    let fir = lower_ok(src);
+    let f_func = fir.functions.iter().find(|f| f.name == "f").unwrap();
+    let has_method_call = f_func.body.iter().any(|s| match s {
+        FirStmt::Expr(FirExpr::Call { args, .. })
+        | FirStmt::Return(FirExpr::Call { args, .. }) => {
+            // self (the object) should be passed as the first arg
+            args.len() == 1
+                && matches!(&args[0], FirExpr::LocalVar(_, FirType::Ptr))
+        }
+        _ => false,
+    });
+    assert!(
+        has_method_call,
+        "expected Call with self as first arg in body: {:?}",
+        f_func.body
+    );
+}
+
+#[test]
+fn lower_list_len_method() {
+    // xs.len() should produce RuntimeCall to aster_list_len
+    let src = "\
+def f(xs: List[Int]) -> Int
+  xs.len()
+";
+    let fir = lower_ok(src);
+    let func = &fir.functions[0];
+    let has_list_len = func.body.iter().any(|s| match s {
+        FirStmt::Expr(FirExpr::RuntimeCall { name, args, .. })
+        | FirStmt::Return(FirExpr::RuntimeCall { name, args, .. }) => {
+            name == "aster_list_len" && args.len() == 1
+        }
+        _ => false,
+    });
+    assert!(
+        has_list_len,
+        "expected RuntimeCall(aster_list_len) in body: {:?}",
+        func.body
+    );
+}
+
+// ===========================================================================
+// Closure lowering
+// ===========================================================================
+
+#[test]
+fn lower_lambda_no_captures() {
+    // Nested def with no captures should create ClosureCreate with NilLit env
+    let src = "\
+def f() -> Void
+  def add(a: Int, b: Int) -> Int
+    a + b
+  nil
+";
+    let fir = lower_ok(src);
+    // The lambda should be lifted to a separate function
+    assert!(
+        fir.functions.len() >= 2,
+        "expected at least 2 functions (f + lambda), got {}",
+        fir.functions.len()
+    );
+    // The lambda function should have __env as first param
+    let lambda_func = fir
+        .functions
+        .iter()
+        .find(|f| f.name.starts_with("__lambda_"))
+        .expect("expected a __lambda_ function");
+    assert_eq!(
+        lambda_func.params[0].0, "__env",
+        "lambda should have __env as first param"
+    );
+    assert_eq!(lambda_func.params[0].1, FirType::Ptr);
+
+    // f's body should contain a Let with ClosureCreate { env: NilLit }
+    let f_func = fir.functions.iter().find(|f| f.name == "f").unwrap();
+    let has_closure_create = f_func.body.iter().any(|s| match s {
+        FirStmt::Let {
+            value: FirExpr::ClosureCreate { env, .. },
+            ..
+        } => matches!(env.as_ref(), FirExpr::NilLit),
+        _ => false,
+    });
+    assert!(
+        has_closure_create,
+        "expected ClosureCreate with NilLit env in f body: {:?}",
+        f_func.body
+    );
+}
+
+#[test]
+fn lower_lambda_with_capture() {
+    // Nested def capturing outer var should create env allocation + ClosureCreate
+    let src = "\
+def f() -> Void
+  let x: Int = 10
+  def add_x(y: Int) -> Int
+    x + y
+  nil
+";
+    let fir = lower_ok(src);
+    // Lambda function should exist and have __env as first param
+    let lambda_func = fir
+        .functions
+        .iter()
+        .find(|f| f.name.starts_with("__lambda_"))
+        .expect("expected a __lambda_ function");
+    assert_eq!(lambda_func.params[0].0, "__env");
+
+    // Lambda body should start with EnvLoad for the captured variable x
+    let has_env_load = lambda_func.body.iter().any(|s| match s {
+        FirStmt::Let {
+            value: FirExpr::EnvLoad { .. },
+            ..
+        } => true,
+        _ => false,
+    });
+    assert!(
+        has_env_load,
+        "expected EnvLoad in lambda body for captured var: {:?}",
+        lambda_func.body
+    );
+
+    // f's body should contain env allocation (aster_class_alloc) and ClosureCreate
+    let f_func = fir.functions.iter().find(|f| f.name == "f").unwrap();
+    let has_env_alloc = f_func.body.iter().any(|s| match s {
+        FirStmt::Let {
+            value: FirExpr::RuntimeCall { name, .. },
+            ..
+        } => name == "aster_class_alloc",
+        _ => false,
+    });
+    assert!(
+        has_env_alloc,
+        "expected aster_class_alloc for env in f body: {:?}",
+        f_func.body
+    );
+
+    let has_closure_create = f_func.body.iter().any(|s| match s {
+        FirStmt::Let {
+            value: FirExpr::ClosureCreate { env, .. },
+            ..
+        } => !matches!(env.as_ref(), FirExpr::NilLit),
+        _ => false,
+    });
+    assert!(
+        has_closure_create,
+        "expected ClosureCreate with non-nil env in f body: {:?}",
+        f_func.body
+    );
+}
+
+// ===========================================================================
+// Match with enum patterns
+// ===========================================================================
+
+#[test]
+fn lower_match_enum_variant() {
+    // Match on fieldless enum should produce tag comparison via FieldGet + BinaryOp(Eq)
+    let src = "\
+enum Color
+  Red
+  Green
+  Blue
+
+def f(c: Color) -> Int
+  match c
+    Color.Red => 1
+    Color.Green => 2
+    Color.Blue => 3
+";
+    let fir = lower_ok(src);
+    let f_func = fir.functions.iter().find(|f| f.name == "f").unwrap();
+
+    // Match lowers to pending stmts + an if/else chain.
+    // Look for an If statement whose condition involves BinaryOp(Eq) comparing a tag
+    fn has_tag_comparison(stmts: &[FirStmt]) -> bool {
+        stmts.iter().any(|s| match s {
+            FirStmt::If { cond, .. } => matches!(
+                cond,
+                FirExpr::BinaryOp {
+                    op: BinOp::Eq,
+                    left,
+                    ..
+                } if matches!(left.as_ref(), FirExpr::FieldGet { offset: 0, .. })
+            ),
+            _ => false,
+        })
+    }
+    assert!(
+        has_tag_comparison(&f_func.body),
+        "expected tag comparison (FieldGet offset 0 + Eq) in body: {:?}",
+        f_func.body
+    );
+}
+
+// ===========================================================================
+// Field assignment lowering
+// ===========================================================================
+
+#[test]
+fn lower_field_assignment() {
+    // obj.field = val should produce Assign with FirPlace::Field
+    let src = "\
+class Point
+  x: Int
+  y: Int
+
+def f() -> Void
+  let p: Point = Point(x: 1, y: 2)
+  p.x = 10
+";
+    let fir = lower_ok(src);
+    let f_func = fir.functions.iter().find(|f| f.name == "f").unwrap();
+    let has_field_assign = f_func.body.iter().any(|s| match s {
+        FirStmt::Assign {
+            target: FirPlace::Field { .. },
+            value,
+        } => matches!(value, FirExpr::IntLit(10)),
+        _ => false,
+    });
+    assert!(
+        has_field_assign,
+        "expected Assign(Field, IntLit(10)) in body: {:?}",
+        f_func.body
+    );
+}
+
+// ===========================================================================
+// Float arithmetic lowering
+// ===========================================================================
+
+#[test]
+#[allow(clippy::approx_constant)]
+fn lower_float_arithmetic() {
+    // 3.14 + 2.71 should produce BinaryOp with F64 result type
+    let src = "def f() -> Float\n  3.14 + 2.71\n";
+    let fir = lower_ok(src);
+    let func = &fir.functions[0];
+    let expr = func
+        .body
+        .iter()
+        .find_map(|s| match s {
+            FirStmt::Expr(e) | FirStmt::Return(e) => Some(e),
+            _ => None,
+        })
+        .expect("expected expression");
+
+    match expr {
+        FirExpr::BinaryOp {
+            op: BinOp::Add,
+            left,
+            right,
+            result_ty,
+        } => {
+            assert_eq!(*result_ty, FirType::F64);
+            assert!(
+                matches!(left.as_ref(), FirExpr::FloatLit(f) if (*f - 3.14).abs() < f64::EPSILON),
+                "left should be FloatLit(3.14), got {:?}",
+                left
+            );
+            assert!(
+                matches!(right.as_ref(), FirExpr::FloatLit(f) if (*f - 2.71).abs() < f64::EPSILON),
+                "right should be FloatLit(2.71), got {:?}",
+                right
+            );
+        }
+        other => panic!("expected BinaryOp(Add, F64), got {:?}", other),
+    }
+}
+
+// ===========================================================================
+// Throw expression lowering
+// ===========================================================================
+
+#[test]
+fn lower_throw_to_panic() {
+    // throw err should produce RuntimeCall to aster_panic
+    let src = "\
+class AppError
+  message: String
+
+def f() throws AppError -> Int
+  throw AppError(message: \"boom\")
+";
+    let fir = lower_ok(src);
+    let f_func = fir.functions.iter().find(|f| f.name == "f").unwrap();
+    let has_panic = f_func.body.iter().any(|s| match s {
+        FirStmt::Expr(FirExpr::RuntimeCall { name, ret_ty, .. })
+        | FirStmt::Return(FirExpr::RuntimeCall { name, ret_ty, .. }) => {
+            name == "aster_panic" && *ret_ty == FirType::Never
+        }
+        _ => false,
+    });
+    assert!(
+        has_panic,
+        "expected RuntimeCall(aster_panic, Never) in body: {:?}",
+        f_func.body
+    );
+}

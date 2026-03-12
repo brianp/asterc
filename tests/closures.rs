@@ -274,3 +274,15 @@ let result = f(x: 5)
 ",
     );
 }
+
+#[test]
+fn lambda_assigned_to_typed_let() {
+    // Lambda assigned to a let with explicit function type annotation
+    check_ok(
+        "\
+def main() -> Int
+  let f: (Int) -> Int = -> x: x + 1
+  f(_0: 5)
+",
+    );
+}

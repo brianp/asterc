@@ -6,7 +6,7 @@ mod common;
 
 // F2: Nullable(TypeVar) must be substituted in generics
 #[test]
-fn audit_f2_nullable_typevar_substitution() {
+fn nullable_typevar_substitution_in_generic() {
     // A generic function returning T? should produce Int? when called with Int
     common::check_ok(
         r#"class Box[T]
@@ -23,7 +23,7 @@ let result: Int? = maybe_first(xs: items)
 
 // F3: Calling a throws function without ! must be a type error
 #[test]
-fn audit_f3_throws_call_without_bang_error() {
+fn throws_call_without_bang_error() {
     let err = common::check_err(
         r#"class AppError extends Error
   code: Int
@@ -40,7 +40,7 @@ def safe() -> Int
 
 // F3b: Calling throws function WITH ! must still work
 #[test]
-fn audit_f3b_throws_call_with_bang_ok() {
+fn throws_call_with_bang_ok() {
     common::check_ok(
         r#"class AppError extends Error
   code: Int
@@ -56,7 +56,7 @@ def caller() throws AppError -> Int
 
 // F3c: Calling throws function with !.or() must still work
 #[test]
-fn audit_f3c_throws_call_with_or_ok() {
+fn throws_call_with_or_ok() {
     common::check_ok(
         r#"class AppError extends Error
   code: Int
@@ -72,7 +72,7 @@ def safe() -> Int
 
 // F4: calling a throwing function without error handling must be an error
 #[test]
-fn audit_f4_throwing_call_without_bang_error() {
+fn throwing_call_without_error_handling() {
     let err = common::check_err(
         r#"class AppError extends Error
   code: Int
@@ -89,7 +89,7 @@ def main() -> String
 
 // F5: !.catch arms should be validated against declared throws type
 #[test]
-fn audit_f5_catch_arm_unreachable_type_error() {
+fn catch_arm_unreachable_type_error() {
     let err = common::check_err(
         r#"class AppError extends Error
   code: Int
@@ -116,7 +116,7 @@ def caller() throws AppError -> Int
 
 // F5b: !.catch with valid subtype should work
 #[test]
-fn audit_f5b_catch_arm_valid_subtype_ok() {
+fn catch_arm_valid_subtype_ok() {
     common::check_ok(
         r#"class AppError extends Error
   code: Int
@@ -134,7 +134,7 @@ def caller() -> Int
 
 // F6: Inherited fields must be accessible via extends
 #[test]
-fn audit_f6_inherited_field_access() {
+fn inherited_field_access() {
     common::check_ok(
         r#"class Animal
   name: String
@@ -150,7 +150,7 @@ let n: String = d.name
 
 // F6b: Inherited methods must be accessible via extends
 #[test]
-fn audit_f6b_inherited_method_access() {
+fn inherited_method_access() {
     common::check_ok(
         r#"class Base
   x: Int
@@ -169,7 +169,7 @@ let val: String = c.greet()
 
 // F7: Assignment to nullable variable should accept inner type and nil
 #[test]
-fn audit_f7_nullable_assignment_inner_type() {
+fn nullable_assignment_accepts_inner_type() {
     common::check_ok(
         r#"let x: String? = nil
 x = "hello"
@@ -178,7 +178,7 @@ x = "hello"
 }
 
 #[test]
-fn audit_f7b_nullable_assignment_nil() {
+fn nullable_assignment_accepts_nil() {
     common::check_ok(
         r#"let x: String? = "hello"
 x = nil
@@ -188,7 +188,7 @@ x = nil
 
 // F9: Literal match patterns on nullable scrutinee should work for inner type
 #[test]
-fn audit_f9_literal_match_on_nullable() {
+fn literal_match_on_nullable_scrutinee() {
     common::check_ok(
         r#"def check(x: String?) -> Int
   match x
@@ -201,7 +201,7 @@ fn audit_f9_literal_match_on_nullable() {
 
 // F12: Map[K,V]? should parse
 #[test]
-fn audit_f12_map_nullable_parse() {
+fn map_nullable_type_parses() {
     common::check_ok(
         r#"def get_map() -> Map[String, Int]?
   nil
@@ -211,7 +211,7 @@ fn audit_f12_map_nullable_parse() {
 
 // F13: Task[T]? should parse
 #[test]
-fn audit_f13_task_nullable_parse() {
+fn task_nullable_type_parses() {
     common::check_ok(
         r#"def get_task() -> Task[Int]?
   nil
@@ -221,7 +221,7 @@ fn audit_f13_task_nullable_parse() {
 
 // H1: Deeply nested unary operators should hit depth limit, not stack overflow
 #[test]
-fn audit_h1_unary_recursion_depth_limit() {
+fn unary_recursion_depth_limit() {
     let result = std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
         .spawn(|| {
@@ -243,7 +243,7 @@ fn audit_h1_unary_recursion_depth_limit() {
 
 // H1b: Deeply nested statement blocks should hit depth limit
 #[test]
-fn audit_h1b_block_recursion_depth_limit() {
+fn block_recursion_depth_limit() {
     let result = std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
         .spawn(|| {
@@ -280,7 +280,7 @@ fn audit_h1b_block_recursion_depth_limit() {
 
 // H2: Cyclic extends chains must produce error, not infinite loop
 #[test]
-fn audit_h2_cyclic_extends_detection() {
+fn cyclic_extends_detection() {
     // Self-cycle: class extends itself — detectable because class is registered before extends check
     let err = common::check_err(
         r#"class A extends A
@@ -296,7 +296,7 @@ fn audit_h2_cyclic_extends_detection() {
 
 // Field shadowing: child class cannot redeclare inherited field
 #[test]
-fn audit_field_shadowing_in_extends() {
+fn field_shadowing_in_extends_error() {
     let err = common::check_err(
         r#"class Base
   message: String
@@ -315,7 +315,7 @@ class Child extends Base
 
 // M1: File size limit
 #[test]
-fn audit_m1_file_size_limit() {
+fn file_size_limit_rejects_large_input() {
     // 10MB+ input should be rejected
     let huge = "a".repeat(11 * 1024 * 1024);
     let result = lexer::lex(&huge);
@@ -324,7 +324,7 @@ fn audit_m1_file_size_limit() {
 
 // M5: String literal length limit
 #[test]
-fn audit_m5_string_length_limit() {
+fn string_literal_length_limit() {
     let long_str = format!("let x = \"{}\"", "a".repeat(1_000_001));
     let result = lexer::lex(&long_str);
     assert!(
@@ -335,7 +335,7 @@ fn audit_m5_string_length_limit() {
 
 // M6: Number literal digit limit
 #[test]
-fn audit_m6_digit_limit() {
+fn number_literal_digit_limit() {
     let long_num = format!("let x = {}", "9".repeat(1001));
     let result = lexer::lex(&long_num);
     assert!(
@@ -348,7 +348,7 @@ fn audit_m6_digit_limit() {
 
 // DC2: Type::Never should be recognized by from_ident (BUG — currently becomes Custom("Never"))
 #[test]
-fn audit_dc2_never_type_from_ident() {
+fn never_type_recognized_by_from_ident() {
     // "Never" used as a type annotation should be recognized, not become Custom("Never")
     // This validates that the type system correctly handles Never as a built-in type
     use ast::Type;
@@ -357,7 +357,7 @@ fn audit_dc2_never_type_from_ident() {
 
 // L2: Unicode homoglyph identifiers should be rejected
 #[test]
-fn audit_l2_unicode_homoglyph_rejected() {
+fn unicode_homoglyph_identifier_rejected() {
     // Cyrillic 'а' (U+0430) looks identical to Latin 'a' but is a different character
     // This could cause confusion and security issues
     let result = lexer::lex("let \u{0430} = 1");
@@ -365,14 +365,14 @@ fn audit_l2_unicode_homoglyph_rejected() {
 }
 
 #[test]
-fn audit_l2_ascii_identifiers_ok() {
+fn ascii_identifiers_accepted() {
     // Normal ASCII identifiers should still work
     let result = lexer::lex("let abc = 1");
     assert!(result.is_ok());
 }
 
 #[test]
-fn audit_l2_underscore_identifiers_ok() {
+fn underscore_identifiers_accepted() {
     let result = lexer::lex("let _foo = 1");
     assert!(result.is_ok());
 }
@@ -383,7 +383,7 @@ fn audit_l2_underscore_identifiers_ok() {
 // D3: Behavior-lock test for bracketed ident parsing (generics, includes)
 // Ensures parse_bracketed_idents extraction doesn't change behavior
 #[test]
-fn audit_d3_generic_class_params_parsed() {
+fn generic_class_params_parsed() {
     common::check_ok(
         r#"class Pair[A, B]
   first: A
@@ -393,7 +393,7 @@ fn audit_d3_generic_class_params_parsed() {
 }
 
 #[test]
-fn audit_d3_generic_function_params_parsed() {
+fn generic_function_params_parsed() {
     common::check_ok(
         r#"def identity(x: T) -> T
   x
@@ -402,7 +402,7 @@ fn audit_d3_generic_function_params_parsed() {
 }
 
 #[test]
-fn audit_d3_includes_multiple_traits() {
+fn includes_multiple_traits_parsed() {
     common::check_ok(
         r#"trait Printable
   def to_str() -> String
@@ -422,7 +422,7 @@ class Widget includes Printable, Serializable
 
 // D5: Behavior-lock for body checking in multiple contexts
 #[test]
-fn audit_d5_if_body_condition_checked() {
+fn if_condition_must_be_bool() {
     let err = common::check_err(
         r#"if 42
   let x = 1
@@ -436,7 +436,7 @@ fn audit_d5_if_body_condition_checked() {
 }
 
 #[test]
-fn audit_d5_while_body_checked() {
+fn while_body_typechecked() {
     common::check_ok(
         r#"let x = 0
 while x < 10
@@ -446,7 +446,7 @@ while x < 10
 }
 
 #[test]
-fn audit_d5_for_body_checked() {
+fn for_body_typechecked() {
     common::check_ok(
         r#"let items: List[Int] = [1, 2, 3]
 for item in items
@@ -457,7 +457,7 @@ for item in items
 
 // D6/D7: Behavior-lock for nullable and error or/or_else handlers
 #[test]
-fn audit_d6_nullable_or_returns_inner_type() {
+fn nullable_or_returns_inner_type() {
     common::check_ok(
         r#"let x: Int? = 5
 let y: Int = x.or(default: 0)
@@ -466,7 +466,7 @@ let y: Int = x.or(default: 0)
 }
 
 #[test]
-fn audit_d6_nullable_or_else_returns_inner_type() {
+fn nullable_or_else_returns_inner_type() {
     common::check_ok(
         r#"let x: Int? = nil
 let y: Int = x.or_else(f: -> 0)
@@ -475,7 +475,7 @@ let y: Int = x.or_else(f: -> 0)
 }
 
 #[test]
-fn audit_d6_nullable_or_type_mismatch() {
+fn nullable_or_type_mismatch_error() {
     let err = common::check_err(
         r#"let x: Int? = 5
 let y: Int = x.or(default: "not_int")
@@ -489,7 +489,7 @@ let y: Int = x.or(default: "not_int")
 }
 
 #[test]
-fn audit_d7_error_or_returns_success_type() {
+fn error_or_returns_success_type() {
     common::check_ok(
         r#"class AppError extends Error
   code: Int
@@ -504,7 +504,7 @@ def safe() -> String
 }
 
 #[test]
-fn audit_d7_error_or_else_returns_success_type() {
+fn error_or_else_returns_success_type() {
     common::check_ok(
         r#"class AppError extends Error
   code: Int
@@ -519,7 +519,7 @@ def safe() -> String
 }
 
 #[test]
-fn audit_d7_error_or_type_mismatch() {
+fn error_or_type_mismatch_error() {
     let err = common::check_err(
         r#"class AppError extends Error
   code: Int
@@ -540,7 +540,7 @@ def safe() -> String
 
 // D8: Statement-to-expression fallthrough — expressions work as statements
 #[test]
-fn audit_d8_expr_as_statement() {
+fn expr_as_statement() {
     common::check_ok(
         r#"def f() -> Int
   let x = 1
@@ -550,7 +550,7 @@ fn audit_d8_expr_as_statement() {
 }
 
 #[test]
-fn audit_d8_match_as_statement() {
+fn match_as_statement() {
     common::check_ok(
         r#"let x = match 1
   1 => "one"
@@ -561,7 +561,7 @@ fn audit_d8_match_as_statement() {
 
 // Q5: Nullable handling in call context — lock behavior
 #[test]
-fn audit_q5_nullable_or_throw_in_throws_context() {
+fn nullable_or_throw_in_throws_context() {
     common::check_ok(
         r#"class AppError extends Error
   code: Int
@@ -573,7 +573,7 @@ def risky(x: Int?) throws AppError -> Int
 }
 
 #[test]
-fn audit_q5_nullable_method_call_rejected() {
+fn nullable_method_call_rejected() {
     let err = common::check_err(
         r#"class Foo
   name: String
@@ -597,7 +597,7 @@ let y = x.name
 
 // L4: Tab indentation should produce a clear error
 #[test]
-fn audit_l4_tab_indentation_error() {
+fn tab_indentation_rejected() {
     let result = lexer::lex("def f() -> Int\n\treturn 1\n");
     assert!(result.is_err(), "Tab indentation should be rejected");
     let err = result.unwrap_err().to_string();

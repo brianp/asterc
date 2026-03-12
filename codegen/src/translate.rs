@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::immediates::Offset32;
 use cranelift_codegen::ir::types;
-use cranelift_codegen::ir::{self, InstBuilder, Value};
+use cranelift_codegen::ir::{self, AbiParam, InstBuilder, Value};
 use cranelift_frontend::{FunctionBuilder, Variable};
 
 use fir::exprs::{BinOp, FirExpr, UnaryOp};
@@ -391,11 +391,15 @@ fn translate_expr(
                 let call = builder.ins().call(alloc_ref, &[size]);
                 let closure_ptr = builder.inst_results(call)[0];
 
-                // Store function reference as index (we use it for indirect calls)
-                let func_idx = builder.ins().iconst(types::I64, func.0 as i64);
+                // Store the actual function pointer (for indirect calls)
+                let func_addr = if let Some(&func_ref) = state.func_refs.get(func) {
+                    builder.ins().func_addr(types::I64, func_ref)
+                } else {
+                    builder.ins().iconst(types::I64, 0)
+                };
                 builder
                     .ins()
-                    .store(ir::MemFlags::new(), func_idx, closure_ptr, Offset32::new(0));
+                    .store(ir::MemFlags::new(), func_addr, closure_ptr, Offset32::new(0));
 
                 // Store env pointer
                 let env_val = translate_expr(builder, state, env);
@@ -409,11 +413,15 @@ fn translate_expr(
             }
         }
 
-        FirExpr::ClosureCall { closure, args, .. } => {
+        FirExpr::ClosureCall {
+            closure,
+            args,
+            ret_ty,
+        } => {
             let closure_ptr = translate_expr(builder, state, closure);
 
-            // Load func_id from closure[0]
-            let _func_id_val = builder.ins().load(
+            // Load function pointer from closure[0]
+            let func_ptr = builder.ins().load(
                 types::I64,
                 ir::MemFlags::new(),
                 closure_ptr,
@@ -428,24 +436,28 @@ fn translate_expr(
                 Offset32::new(8),
             );
 
-            // Build args: env_ptr first, then the explicit args
+            // Build signature for the indirect call: (env_ptr: i64, args...) -> ret_ty
+            let sig = builder.func.import_signature(ir::Signature {
+                params: {
+                    let mut params = vec![AbiParam::new(types::I64)]; // env ptr
+                    for arg in args {
+                        let arg_ty = fir_type_to_clif(&infer_operand_type(state, arg));
+                        params.push(AbiParam::new(arg_ty));
+                    }
+                    params
+                },
+                returns: vec![AbiParam::new(fir_type_to_clif(ret_ty))],
+                call_conv: cranelift_codegen::isa::CallConv::Fast,
+            });
+
+            // Build args: env_ptr first, then explicit args
             let mut call_args = vec![env_ptr];
             for arg in args {
                 call_args.push(translate_expr(builder, state, arg));
             }
 
-            // We need to do an indirect call. The func_id_val is a FunctionId index.
-            // For JIT, we look up the function by trying all registered functions.
-            // The simplest approach: use the func_id as an index into func_refs.
-            // Since we store the FunctionId.0 as the value, try to find the matching func_ref.
-            // Currently closures are resolved statically in FIR lowering via closure_info,
-            // so ClosureCall should not appear in the FIR. If it does, it means a closure
-            // was passed as a first-class value without static resolution.
-            // TODO: implement indirect call via function pointer table for dynamic dispatch.
-            // Emit a trap instead of panicking (panic across FFI is UB).
-            builder.ins().trap(ir::TrapCode::unwrap_user(0));
-            // Return a dummy value for the unreachable code after the trap.
-            builder.ins().iconst(types::I64, 0)
+            let call = builder.ins().call_indirect(sig, func_ptr, &call_args);
+            builder.inst_results(call)[0]
         }
 
         FirExpr::EnvLoad { env, offset, ty } => {

@@ -7,7 +7,7 @@ mod common;
 // --- C2: Return type should accept subtypes ---
 
 #[test]
-fn audit_c2_return_subtype_accepted() {
+fn return_subtype_accepted() {
     // Returning a Dog from a function declared -> Animal should work
     common::check_ok(
         r#"class Animal
@@ -23,7 +23,7 @@ def test() -> Animal
 }
 
 #[test]
-fn audit_c2_implicit_return_subtype_accepted() {
+fn implicit_return_subtype_accepted() {
     // Implicit return (last expression) should also accept subtypes
     common::check_ok(
         r#"class Animal
@@ -39,7 +39,7 @@ def test() -> Animal
 }
 
 #[test]
-fn audit_c2_return_unrelated_type_still_rejected() {
+fn return_unrelated_type_rejected() {
     // Returning an unrelated type should still be an error
     let err = common::check_err(
         r#"class Animal
@@ -62,7 +62,7 @@ def test() -> Animal
 // --- C3: Match arm types should accept subtypes ---
 
 #[test]
-fn audit_c3_match_arms_different_subtypes() {
+fn match_arms_different_subtypes_unify() {
     // Match arms returning Dog and Animal should unify to Animal
     common::check_ok(
         r#"class Animal
@@ -79,7 +79,7 @@ let x: Animal = match true
 }
 
 #[test]
-fn audit_c3_match_arms_subtype_of_first_arm() {
+fn match_arms_subtype_of_first_arm() {
     // Second arm (subtype) should be compatible with first arm (supertype)
     common::check_ok(
         r#"class Animal
@@ -98,7 +98,7 @@ let x: Animal = match true
 // --- H1: Nullable enum exhaustiveness ---
 
 #[test]
-fn audit_h1_nullable_enum_exhaustive_match() {
+fn nullable_enum_exhaustive_match() {
     // Matching on Color? with nil + all variants should be exhaustive
     common::check_ok(
         r#"enum Color
@@ -115,7 +115,7 @@ def test(c: Color?) -> Int
 }
 
 #[test]
-fn audit_h1_nullable_enum_missing_variant_rejected() {
+fn nullable_enum_missing_variant_rejected() {
     // Matching on Color? with nil but missing a variant should be rejected
     let err = common::check_err(
         r#"enum Color
@@ -136,7 +136,7 @@ def test(c: Color?) -> Int
 }
 
 #[test]
-fn audit_h1_nullable_enum_missing_nil_rejected() {
+fn nullable_enum_missing_nil_rejected() {
     // Matching on Color? with all variants but no nil arm should be rejected
     let err = common::check_err(
         r#"enum Color
@@ -159,7 +159,7 @@ def test(c: Color?) -> Int
 // --- D1: type_includes_trait should handle List types ---
 
 #[test]
-fn audit_d1_list_type_includes_eq_via_constraint() {
+fn list_type_satisfies_eq_constraint() {
     // List[Int] should satisfy T includes Eq constraint since Int includes Eq
     common::check_ok(
         r#"def needs_eq(a: T includes Eq, b: T) -> Bool
@@ -174,7 +174,7 @@ needs_eq(a: [1, 2], b: [1, 2])
 // (This is tested via the module loader, not direct file access)
 
 #[test]
-fn audit_m1_path_traversal_in_module_rejected() {
+fn path_traversal_in_module_rejected() {
     // A module path with ".." should be rejected at the parser level.
     // The parser only accepts identifiers as path segments, so dots are rejected.
     let err = common::check_parse_err(
@@ -190,7 +190,7 @@ fn audit_m1_path_traversal_in_module_rejected() {
 // --- C1: List invariance ---
 
 #[test]
-fn audit_c1_list_invariant_rejects_subtype() {
+fn list_invariant_rejects_subtype() {
     // List[Dog] should NOT be accepted where List[Animal] is expected
     let err = common::check_err(
         r#"class Animal
@@ -214,7 +214,7 @@ add_animal(animals: dogs)
 }
 
 #[test]
-fn audit_c1_list_exact_type_still_works() {
+fn list_exact_type_accepted() {
     // List[Animal] should match List[Animal]
     common::check_ok(
         r#"class Animal
@@ -230,7 +230,7 @@ count_animals(animals: animals)
 }
 
 #[test]
-fn audit_c1_list_generic_constraint_works() {
+fn generic_extends_constraint_accepts_subtype() {
     // Passing Dog directly (not in List) to a constrained generic still works
     common::check_ok(
         r#"class Animal
@@ -248,7 +248,7 @@ get_name(a: Dog(name: "Rex", breed: "Lab"))
 }
 
 #[test]
-fn audit_c1_dog_as_animal_still_works() {
+fn direct_subtype_passing_accepted() {
     // Direct subtype passing should still work (not in a container)
     common::check_ok(
         r#"class Animal
@@ -268,7 +268,7 @@ greet(a: Dog(name: "Rex", breed: "Lab"))
 // --- Negative match patterns ---
 
 #[test]
-fn audit_m1_negative_int_match_pattern() {
+fn negative_int_match_pattern() {
     // Negative integer literals should work in match patterns
     common::check_ok(
         r#"def test(x: Int) -> String
