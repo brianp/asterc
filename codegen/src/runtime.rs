@@ -17,8 +17,13 @@ pub extern "C" fn aster_alloc(size: usize) -> *mut u8 {
         // Return a dangling but aligned pointer (safe as long as nothing is read/written).
         return std::ptr::NonNull::dangling().as_ptr();
     }
-    let layout = std::alloc::Layout::from_size_align(size, 8)
-        .expect("aster_alloc: invalid layout (size too large)");
+    let layout = match std::alloc::Layout::from_size_align(size, 8) {
+        Ok(l) => l,
+        Err(_) => {
+            eprintln!("aster_alloc: invalid layout (size too large)");
+            std::process::abort();
+        }
+    };
     let ptr = unsafe { std::alloc::alloc(layout) };
     if ptr.is_null() {
         std::alloc::handle_alloc_error(layout);
@@ -67,9 +72,13 @@ pub extern "C" fn aster_print_bool(val: i8) {
 /// Create a new heap-allocated string from a pointer and length.
 /// Returns a pointer to the string object [len: i64][data: u8...].
 pub extern "C" fn aster_string_new(data: *const u8, len: usize) -> *mut u8 {
-    let total = 8usize
-        .checked_add(len)
-        .expect("aster_string_new: size overflow");
+    let total = match 8usize.checked_add(len) {
+        Some(n) => n,
+        None => {
+            eprintln!("aster_string_new: size overflow");
+            std::process::abort();
+        }
+    };
     let ptr = aster_alloc(total);
     unsafe {
         *(ptr as *mut i64) = len as i64;
@@ -99,10 +108,13 @@ pub extern "C" fn aster_string_concat(a: *const u8, b: *const u8) -> *mut u8 {
             let raw = *(b as *const i64);
             if raw < 0 { 0usize } else { raw as usize }
         };
-        let total = a_len
-            .checked_add(b_len)
-            .and_then(|n| n.checked_add(8))
-            .expect("aster_string_concat: size overflow");
+        let total = match a_len.checked_add(b_len).and_then(|n| n.checked_add(8)) {
+            Some(n) => n,
+            None => {
+                eprintln!("aster_string_concat: size overflow");
+                std::process::abort();
+            }
+        };
         let result = aster_alloc(total);
         *(result as *mut i64) = (a_len + b_len) as i64;
         if a_len > 0 {
@@ -127,10 +139,13 @@ pub extern "C" fn aster_string_len(ptr: *const u8) -> i64 {
 /// Allocate a new list. Layout: [len: i64][cap: i64][data: [i64...]]
 pub extern "C" fn aster_list_new(cap: i64) -> *mut u8 {
     let cap = cap.max(4) as usize;
-    let alloc_size = cap
-        .checked_mul(8)
-        .and_then(|n| n.checked_add(16))
-        .expect("aster_list_new: size overflow");
+    let alloc_size = match cap.checked_mul(8).and_then(|n| n.checked_add(16)) {
+        Some(n) => n,
+        None => {
+            eprintln!("aster_list_new: size overflow");
+            std::process::abort();
+        }
+    };
     let ptr = aster_alloc(alloc_size);
     unsafe {
         *(ptr as *mut i64) = 0; // len = 0
@@ -185,10 +200,13 @@ pub extern "C" fn aster_list_push(list: *mut u8, value: i64) -> *mut u8 {
         if len >= cap {
             // Grow: double capacity
             let new_cap = (cap * 2).max(4) as usize;
-            let alloc_size = new_cap
-                .checked_mul(8)
-                .and_then(|n| n.checked_add(16))
-                .expect("aster_list_push: size overflow");
+            let alloc_size = match new_cap.checked_mul(8).and_then(|n| n.checked_add(16)) {
+                Some(n) => n,
+                None => {
+                    eprintln!("aster_list_push: size overflow");
+                    std::process::abort();
+                }
+            };
             let new_ptr = aster_alloc(alloc_size);
             std::ptr::copy_nonoverlapping(list, new_ptr, 16 + (len as usize) * 8);
             *((new_ptr as *mut i64).add(1)) = new_cap as i64;
@@ -263,10 +281,13 @@ pub extern "C" fn aster_class_alloc(size: usize) -> *mut u8 {
 /// Create a new map with the given initial capacity.
 pub extern "C" fn aster_map_new(cap: i64) -> *mut u8 {
     let cap = cap.max(4) as usize;
-    let alloc_size = cap
-        .checked_mul(16)
-        .and_then(|n| n.checked_add(16))
-        .expect("aster_map_new: size overflow");
+    let alloc_size = match cap.checked_mul(16).and_then(|n| n.checked_add(16)) {
+        Some(n) => n,
+        None => {
+            eprintln!("aster_map_new: size overflow");
+            std::process::abort();
+        }
+    };
     let ptr = aster_alloc(alloc_size);
     unsafe {
         *(ptr as *mut i64) = 0; // len = 0
@@ -325,10 +346,13 @@ pub extern "C" fn aster_map_set(map: *mut u8, key: i64, value: i64) -> *mut u8 {
         if len >= cap {
             // Grow: double capacity
             let new_cap = (cap * 2).max(4);
-            let alloc_size = new_cap
-                .checked_mul(16)
-                .and_then(|n| n.checked_add(16))
-                .expect("aster_map_set: size overflow");
+            let alloc_size = match new_cap.checked_mul(16).and_then(|n| n.checked_add(16)) {
+                Some(n) => n,
+                None => {
+                    eprintln!("aster_map_set: size overflow");
+                    std::process::abort();
+                }
+            };
             let new_ptr = aster_alloc(alloc_size);
             std::ptr::copy_nonoverlapping(map, new_ptr, 16 + len * 16);
             *((new_ptr as *mut i64).add(1)) = new_cap as i64;
@@ -366,25 +390,21 @@ pub extern "C" fn aster_map_get(map: *const u8, key: i64) -> i64 {
 }
 
 // ---------------------------------------------------------------------------
-// Error handling — global error flag (thread-local in practice)
+// Error handling — global error flag
 // ---------------------------------------------------------------------------
 
-static mut ERROR_FLAG: bool = false;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static ERROR_FLAG: AtomicBool = AtomicBool::new(false);
 
 /// Set the global error flag. Called by `throw`.
 pub extern "C" fn aster_error_set() {
-    unsafe {
-        ERROR_FLAG = true;
-    }
+    ERROR_FLAG.store(true, Ordering::Release);
 }
 
 /// Check and clear the global error flag. Returns 1 if error was set.
 pub extern "C" fn aster_error_check() -> i8 {
-    unsafe {
-        let was_set = ERROR_FLAG;
-        ERROR_FLAG = false;
-        was_set as i8
-    }
+    ERROR_FLAG.swap(false, Ordering::AcqRel) as i8
 }
 
 /// Panic / abort for uncaught errors.

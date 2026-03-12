@@ -47,7 +47,9 @@ impl TranslationState {
     }
 
     fn new_variable(&mut self) -> Variable {
-        let v = Variable::from_u32(self.next_var as u32);
+        let v = Variable::from_u32(
+            u32::try_from(self.next_var).expect("codegen: too many variables (exceeded u32::MAX)"),
+        );
         self.next_var += 1;
         v
     }

@@ -60,30 +60,7 @@ impl CraneliftJIT {
     }
 
     pub fn new() -> Self {
-        let mut flag_builder = settings::builder();
-        flag_builder.set("opt_level", "speed").unwrap();
-        flag_builder.set("is_pic", "false").unwrap();
-        let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
-            panic!("host machine is not supported: {}", msg);
-        });
-        let isa = isa_builder
-            .finish(settings::Flags::new(flag_builder))
-            .unwrap();
-
-        let mut builder = JITBuilder::with_isa(isa, default_libcall_names());
-        register_runtime_builtins(&mut builder);
-
-        let module = JITModule::new(builder);
-        let ctx = module.make_context();
-
-        Self {
-            module,
-            builder_context: FunctionBuilderContext::new(),
-            ctx,
-            compiled: HashMap::new(),
-            declared: HashMap::new(),
-            runtime_declared: HashMap::new(),
-        }
+        Self::with_config(&crate::config::BuildConfig::release())
     }
 
     /// Compile an entire FIR module.
@@ -328,17 +305,11 @@ impl CraneliftJIT {
                 .define_data(data_id, &desc)
                 .map_err(|e| e.to_string())?;
 
-            result.insert(s, (data_id, 0)); // len will be set from string_data
-        }
-
-        // Fix: store actual lengths
-        let mut fixed = HashMap::new();
-        for (s, (data_id, _)) in result {
             let len = s.len();
-            fixed.insert(s, (data_id, len));
+            result.insert(s, (data_id, len));
         }
 
-        Ok(fixed)
+        Ok(result)
     }
 
     /// Execute a compiled function by ID (no args, returns i64).
@@ -399,10 +370,20 @@ pub fn collect_string_lits_stmts(
                 collect_string_lits_expr(cond, strings);
                 collect_string_lits_stmts(body, strings);
             }
-            FirStmt::Assign { value, .. } => {
+            FirStmt::Assign { target, value } => {
                 collect_string_lits_expr(value, strings);
+                match target {
+                    fir::stmts::FirPlace::Field { object, .. } => {
+                        collect_string_lits_expr(object, strings);
+                    }
+                    fir::stmts::FirPlace::Index { list, index } => {
+                        collect_string_lits_expr(list, strings);
+                        collect_string_lits_expr(index, strings);
+                    }
+                    fir::stmts::FirPlace::Local(_) => {}
+                }
             }
-            _ => {}
+            FirStmt::Break | FirStmt::Continue => {}
         }
     }
 }
@@ -470,6 +451,11 @@ pub fn collect_string_lits_expr(expr: &FirExpr, strings: &mut std::collections::
         FirExpr::TagCheck { value, .. } => {
             collect_string_lits_expr(value, strings);
         }
-        _ => {}
+        FirExpr::IntLit(_)
+        | FirExpr::FloatLit(_)
+        | FirExpr::BoolLit(_)
+        | FirExpr::NilLit
+        | FirExpr::LocalVar(_, _)
+        | FirExpr::GlobalFunc(_) => {}
     }
 }
