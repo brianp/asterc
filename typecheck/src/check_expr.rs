@@ -656,38 +656,32 @@ impl TypeChecker {
         match &obj_ty {
             Type::Map(key_ty, val_ty) => {
                 if idx_ty != **key_ty {
-                    return Err(
-                        Diagnostic::error(format!(
-                            "Map key must be {:?}, got {:?}",
-                            key_ty, idx_ty
-                        ))
-                        .with_code("E016")
-                        .with_label(index.span(), format!("expected {:?}", key_ty)),
-                    );
+                    return Err(Diagnostic::error(format!(
+                        "Map key must be {:?}, got {:?}",
+                        key_ty, idx_ty
+                    ))
+                    .with_code("E016")
+                    .with_label(index.span(), format!("expected {:?}", key_ty)));
                 }
                 Ok(*val_ty.clone())
             }
             Type::List(inner) => {
                 if idx_ty != Type::Int {
-                    return Err(
-                        Diagnostic::error(format!(
-                            "List index must be Int, got {:?}",
-                            idx_ty
-                        ))
-                        .with_code("E016")
-                        .with_label(index.span(), "expected Int"),
-                    );
+                    return Err(Diagnostic::error(format!(
+                        "List index must be Int, got {:?}",
+                        idx_ty
+                    ))
+                    .with_code("E016")
+                    .with_label(index.span(), "expected Int"));
                 }
                 Ok(*inner.clone())
             }
-            _ => Err(
-                Diagnostic::error(format!(
-                    "Cannot index into {:?}, expected List or Map",
-                    obj_ty
-                ))
-                .with_code("E016")
-                .with_label(object.span(), "not indexable"),
-            ),
+            _ => Err(Diagnostic::error(format!(
+                "Cannot index into {:?}, expected List or Map",
+                obj_ty
+            ))
+            .with_code("E016")
+            .with_label(object.span(), "not indexable")),
         }
     }
 
