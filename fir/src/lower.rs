@@ -831,9 +831,7 @@ impl Lowerer {
                 scrutinee, arms, ..
             } => self.lower_match(scrutinee, arms),
 
-            Expr::StringInterpolation { parts, .. } => {
-                self.lower_string_interpolation(parts)
-            }
+            Expr::StringInterpolation { parts, .. } => self.lower_string_interpolation(parts),
 
             // Async: `async f(args)` → eager call (no true concurrency yet)
             Expr::AsyncCall { func, args, .. } => {
@@ -1168,10 +1166,7 @@ impl Lowerer {
             Type::Task(_) => FirType::Ptr,
             Type::Map(_, _) => FirType::Ptr,
             Type::Error => {
-                debug_assert!(
-                    false,
-                    "Type::Error should not survive past typechecking"
-                );
+                debug_assert!(false, "Type::Error should not survive past typechecking");
                 FirType::Void
             }
             // Type::Inferred may survive in inline lambda parameters where the

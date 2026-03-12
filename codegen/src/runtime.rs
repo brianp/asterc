@@ -273,10 +273,7 @@ pub fn register_runtime_builtins(builder: &mut JITBuilder) {
         ("aster_class_alloc", aster_class_alloc as *const u8),
         ("aster_pow_int", aster_pow_int as *const u8),
         ("aster_int_to_string", aster_int_to_string as *const u8),
-        (
-            "aster_float_to_string",
-            aster_float_to_string as *const u8,
-        ),
+        ("aster_float_to_string", aster_float_to_string as *const u8),
         ("aster_bool_to_string", aster_bool_to_string as *const u8),
     ];
     builder.symbols(symbols);
