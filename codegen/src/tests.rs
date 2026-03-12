@@ -1271,6 +1271,42 @@ def main() -> Int
 }
 
 // ===========================================================================
+// MILESTONE 15: ClosureCall dynamic dispatch
+// ===========================================================================
+
+#[test]
+fn closure_stored_in_variable_then_called() {
+    // Closure assigned to a local variable and called dynamically
+    let src = "\
+def main() -> Int
+  def adder(x: Int) -> Int
+    x + 10
+  let f: (Int) -> Int = adder
+  f(_0: 32)
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn closure_no_captures_stored_and_called() {
+    let src = "\
+def main() -> Int
+  let offset: Int = 10
+  def add_offset(x: Int) -> Int
+    x + offset
+  let f: (Int) -> Int = add_offset
+  f(_0: 32)
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+// ===========================================================================
 // Top-level let bindings
 // ===========================================================================
 
