@@ -880,10 +880,20 @@ impl Lowerer {
                         ret_ty: FirType::I64,
                     })
                 } else {
+                    // Resolve element type from AST type info when available
+                    let elem_ty = if let Expr::Ident(name, _) = object.as_ref() {
+                        if let Some(Type::List(inner)) = self.local_ast_types.get(name.as_str()) {
+                            self.lower_type(inner)
+                        } else {
+                            FirType::I64
+                        }
+                    } else {
+                        FirType::I64
+                    };
                     Ok(FirExpr::ListGet {
                         list: Box::new(fir_obj),
                         index: Box::new(fir_idx),
-                        elem_ty: FirType::I64, // TODO: proper element type
+                        elem_ty,
                     })
                 }
             }
@@ -1295,10 +1305,21 @@ impl Lowerer {
         self.locals.insert(format!("__for_idx_{}", uid), idx_id);
         self.local_types.insert(idx_id, FirType::I64);
 
+        // Resolve element type from AST type info when available
+        let elem_ty = if let Expr::Ident(name, _) = iter {
+            if let Some(Type::List(inner)) = self.local_ast_types.get(name.as_str()) {
+                self.lower_type(inner)
+            } else {
+                FirType::I64
+            }
+        } else {
+            FirType::I64
+        };
+
         // let var = aster_list_get(__iter, __idx)
         let var_id = self.alloc_local();
         self.locals.insert(var.to_string(), var_id);
-        self.local_types.insert(var_id, FirType::I64);
+        self.local_types.insert(var_id, elem_ty.clone());
 
         // Build the while loop body
         let mut while_body = Vec::new();
@@ -1306,14 +1327,14 @@ impl Lowerer {
         // let var = aster_list_get(__iter, __idx)
         while_body.push(FirStmt::Let {
             name: var_id,
-            ty: FirType::I64,
+            ty: elem_ty.clone(),
             value: FirExpr::RuntimeCall {
                 name: "aster_list_get".to_string(),
                 args: vec![
                     FirExpr::LocalVar(iter_id, FirType::Ptr),
                     FirExpr::LocalVar(idx_id, FirType::I64),
                 ],
-                ret_ty: FirType::I64,
+                ret_ty: elem_ty,
             },
         });
 
@@ -1588,9 +1609,18 @@ impl Lowerer {
             }
             // Type::Inferred may survive in inline lambda parameters where the
             // typechecker resolves the type in the env but doesn't mutate the AST.
-            // Default to I64 (the most common case).
-            Type::Inferred => FirType::I64,
-            Type::TypeVar(_, _) => FirType::Void, // shouldn't appear after monomorphization
+            // Default to I64 — correct for Int/String/Class (all 64-bit), but wrong
+            // for Float (F64) and Bool (I8). Proper fix requires type info threading.
+            Type::Inferred => {
+                debug_assert!(false, "Type::Inferred survived to FIR lowering — may produce wrong codegen for Float/Bool");
+                FirType::I64
+            }
+            // TypeVar should be resolved by monomorphization. Defaulting to I64 is
+            // correct for most types (all 64-bit), but wrong for Float/Bool.
+            Type::TypeVar(_, _) => {
+                debug_assert!(false, "Type::TypeVar survived to FIR lowering — generics not yet monomorphized");
+                FirType::I64
+            }
         }
     }
 
@@ -2253,7 +2283,15 @@ impl Lowerer {
 
         // Emit env loads for captures at the start of the body
         for (i, cap_name) in captures.iter().enumerate() {
-            let local_id = *self.locals.get(cap_name).unwrap();
+            let local_id = match self.locals.get(cap_name) {
+                Some(&id) => id,
+                None => {
+                    return Err(LowerError::UnsupportedExpr(format!(
+                        "closure capture '{}' not found in scope",
+                        cap_name
+                    )));
+                }
+            };
             let cap_ty = self
                 .local_types
                 .get(&local_id)
