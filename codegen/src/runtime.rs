@@ -360,6 +360,34 @@ pub extern "C" fn aster_map_get(map: *const u8, key: i64) -> i64 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Error handling — global error flag (thread-local in practice)
+// ---------------------------------------------------------------------------
+
+static mut ERROR_FLAG: bool = false;
+
+/// Set the global error flag. Called by `throw`.
+pub extern "C" fn aster_error_set() {
+    unsafe {
+        ERROR_FLAG = true;
+    }
+}
+
+/// Check and clear the global error flag. Returns 1 if error was set.
+pub extern "C" fn aster_error_check() -> i8 {
+    unsafe {
+        let was_set = ERROR_FLAG;
+        ERROR_FLAG = false;
+        was_set as i8
+    }
+}
+
+/// Panic / abort for uncaught errors.
+pub extern "C" fn aster_panic() {
+    eprintln!("aster: uncaught error");
+    std::process::abort();
+}
+
 /// Register all runtime builtins with a JIT builder.
 pub fn register_runtime_builtins(builder: &mut JITBuilder) {
     let symbols: Vec<(&str, *const u8)> = vec![
@@ -384,6 +412,9 @@ pub fn register_runtime_builtins(builder: &mut JITBuilder) {
         ("aster_map_new", aster_map_new as *const u8),
         ("aster_map_set", aster_map_set as *const u8),
         ("aster_map_get", aster_map_get as *const u8),
+        ("aster_error_set", aster_error_set as *const u8),
+        ("aster_error_check", aster_error_check as *const u8),
+        ("aster_panic", aster_panic as *const u8),
     ];
     builder.symbols(symbols);
 }
