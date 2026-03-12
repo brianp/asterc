@@ -103,15 +103,16 @@ fn translate_stmt(builder: &mut FunctionBuilder, state: &mut TranslationState, s
             let val = translate_expr(builder, state, value);
             match target {
                 FirPlace::Local(id) => {
-                    let var = *state.locals.get(id).unwrap_or_else(|| {
-                        panic!("codegen: assign to undefined local {:?}", id)
-                    });
+                    let var = *state
+                        .locals
+                        .get(id)
+                        .unwrap_or_else(|| panic!("codegen: assign to undefined local {:?}", id));
                     builder.def_var(var, val);
                 }
                 FirPlace::Field { object, offset } => {
                     let obj_ptr = translate_expr(builder, state, object);
-                    let off = i32::try_from(*offset)
-                        .expect("codegen: field offset exceeds i32::MAX");
+                    let off =
+                        i32::try_from(*offset).expect("codegen: field offset exceeds i32::MAX");
                     builder
                         .ins()
                         .store(ir::MemFlags::new(), val, obj_ptr, Offset32::new(off));
@@ -251,9 +252,10 @@ fn translate_expr(
         FirExpr::NilLit => builder.ins().iconst(types::I64, 0),
 
         FirExpr::LocalVar(id, _ty) => {
-            let var = *state.locals.get(id).unwrap_or_else(|| {
-                panic!("codegen: use of undefined local {:?}", id)
-            });
+            let var = *state
+                .locals
+                .get(id)
+                .unwrap_or_else(|| panic!("codegen: use of undefined local {:?}", id));
             builder.use_var(var)
         }
 
@@ -297,8 +299,7 @@ fn translate_expr(
         FirExpr::FieldGet { object, offset, ty } => {
             let obj_ptr = translate_expr(builder, state, object);
             let clif_ty = fir_type_to_clif(ty);
-            let off =
-                i32::try_from(*offset).expect("codegen: field offset exceeds i32::MAX");
+            let off = i32::try_from(*offset).expect("codegen: field offset exceeds i32::MAX");
             builder
                 .ins()
                 .load(clif_ty, ir::MemFlags::new(), obj_ptr, Offset32::new(off))
@@ -311,8 +312,7 @@ fn translate_expr(
         } => {
             let obj_ptr = translate_expr(builder, state, object);
             let val = translate_expr(builder, state, value);
-            let off =
-                i32::try_from(*offset).expect("codegen: field offset exceeds i32::MAX");
+            let off = i32::try_from(*offset).expect("codegen: field offset exceeds i32::MAX");
             builder
                 .ins()
                 .store(ir::MemFlags::new(), val, obj_ptr, Offset32::new(off));
@@ -505,8 +505,7 @@ fn translate_expr(
         FirExpr::EnvLoad { env, offset, ty } => {
             let env_ptr = translate_expr(builder, state, env);
             let clif_ty = fir_type_to_clif(ty);
-            let off =
-                i32::try_from(*offset).expect("codegen: env load offset exceeds i32::MAX");
+            let off = i32::try_from(*offset).expect("codegen: env load offset exceeds i32::MAX");
             builder
                 .ins()
                 .load(clif_ty, ir::MemFlags::new(), env_ptr, Offset32::new(off))

@@ -1,7 +1,7 @@
 //! Shared runtime function signature table for JIT and AOT backends.
 
-use cranelift_codegen::ir::types;
 use cranelift_codegen::ir::Type;
+use cranelift_codegen::ir::types;
 
 /// A runtime function signature: (name, param types, optional return type).
 pub type RuntimeSig = (&'static str, &'static [Type], Option<Type>);
@@ -42,11 +42,7 @@ pub static RUNTIME_SIGS: &[RuntimeSig] = &[
     ),
     ("aster_list_len", &[types::I64], Some(types::I64)),
     ("aster_class_alloc", &[types::I64], Some(types::I64)),
-    (
-        "aster_pow_int",
-        &[types::I64, types::I64],
-        Some(types::I64),
-    ),
+    ("aster_pow_int", &[types::I64, types::I64], Some(types::I64)),
     ("aster_int_to_string", &[types::I64], Some(types::I64)),
     ("aster_float_to_string", &[types::F64], Some(types::I64)),
     ("aster_bool_to_string", &[types::I8], Some(types::I64)),
@@ -56,11 +52,7 @@ pub static RUNTIME_SIGS: &[RuntimeSig] = &[
         &[types::I64, types::I64, types::I64],
         Some(types::I64),
     ),
-    (
-        "aster_map_get",
-        &[types::I64, types::I64],
-        Some(types::I64),
-    ),
+    ("aster_map_get", &[types::I64, types::I64], Some(types::I64)),
     ("aster_error_set", &[], None),
     ("aster_error_check", &[], Some(types::I8)),
     ("aster_panic", &[], None),

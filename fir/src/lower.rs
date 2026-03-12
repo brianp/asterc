@@ -1085,7 +1085,11 @@ impl Lowerer {
                     ret_ty: FirType::Void,
                 }));
                 // Return a type-correct dummy value — the caller checks the error flag
-                let dummy = match self.current_return_type.as_ref().map(|t| self.lower_type(t)) {
+                let dummy = match self
+                    .current_return_type
+                    .as_ref()
+                    .map(|t| self.lower_type(t))
+                {
                     Some(FirType::F64) => FirExpr::FloatLit(0.0),
                     Some(FirType::Bool) => FirExpr::BoolLit(false),
                     _ => FirExpr::IntLit(0),
