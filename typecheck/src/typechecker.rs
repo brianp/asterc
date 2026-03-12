@@ -1445,7 +1445,9 @@ impl TypeChecker {
     fn is_obviously_typed(expr: &Expr, env: &TypeEnv) -> bool {
         match expr {
             Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Bool(..) => true,
-            Expr::ListLiteral(elems, _) => !elems.is_empty(),
+            Expr::ListLiteral(elems, _) => {
+                !elems.is_empty() && elems.iter().all(|e| Self::is_obviously_typed(e, env))
+            }
             Expr::UnaryOp {
                 op: ast::UnaryOp::Neg,
                 operand,
@@ -1464,23 +1466,6 @@ impl TypeChecker {
 
     /// Formats a Type for display in diagnostic messages.
     fn format_type(ty: &Type) -> String {
-        match ty {
-            Type::Int => "Int".to_string(),
-            Type::Float => "Float".to_string(),
-            Type::Bool => "Bool".to_string(),
-            Type::String => "String".to_string(),
-            Type::Nil => "Nil".to_string(),
-            Type::Void => "Void".to_string(),
-            Type::List(inner) => format!("List[{}]", Self::format_type(inner)),
-            Type::Nullable(inner) => format!("{}?", Self::format_type(inner)),
-            Type::Custom(name, params) if params.is_empty() => name.clone(),
-            Type::Custom(name, params) => {
-                let ps: Vec<String> = params.iter().map(Self::format_type).collect();
-                format!("{}[{}]", name, ps.join(", "))
-            }
-            Type::Task(inner) => format!("Task[{}]", Self::format_type(inner)),
-            Type::Map(k, v) => format!("Map[{}, {}]", Self::format_type(k), Self::format_type(v)),
-            _ => format!("{:?}", ty),
-        }
+        ty.to_string()
     }
 }

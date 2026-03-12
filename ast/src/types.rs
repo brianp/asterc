@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 /// Constraint on a generic type parameter.
@@ -154,6 +156,45 @@ impl Type {
                 }
             }
             _ => {}
+        }
+    }
+}
+
+impl fmt::Display for Type {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Type::Int => write!(f, "Int"),
+            Type::Float => write!(f, "Float"),
+            Type::Bool => write!(f, "Bool"),
+            Type::String => write!(f, "String"),
+            Type::Nil => write!(f, "Nil"),
+            Type::Void => write!(f, "Void"),
+            Type::Never => write!(f, "Never"),
+            Type::Error => write!(f, "Error"),
+            Type::Inferred => write!(f, "Inferred"),
+            Type::List(inner) => write!(f, "List[{}]", inner),
+            Type::Nullable(inner) => write!(f, "{}?", inner),
+            Type::Custom(name, params) if params.is_empty() => write!(f, "{}", name),
+            Type::Custom(name, params) => {
+                let ps: Vec<std::string::String> = params.iter().map(|p| p.to_string()).collect();
+                write!(f, "{}[{}]", name, ps.join(", "))
+            }
+            Type::Task(inner) => write!(f, "Task[{}]", inner),
+            Type::Map(k, v) => write!(f, "Map[{}, {}]", k, v),
+            Type::TypeVar(name, _) => write!(f, "{}", name),
+            Type::Function {
+                params,
+                ret,
+                throws,
+                ..
+            } => {
+                let ps: Vec<std::string::String> = params.iter().map(|p| p.to_string()).collect();
+                write!(f, "({}) -> {}", ps.join(", "), ret)?;
+                if let Some(t) = throws {
+                    write!(f, " throws {}", t)?;
+                }
+                Ok(())
+            }
         }
     }
 }
