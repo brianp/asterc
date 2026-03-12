@@ -58,6 +58,10 @@ pub struct Lowerer {
     /// Statement-lifting buffer: match/closure lowering emits setup statements
     /// that must be injected into the enclosing body.
     pending_stmts: Vec<FirStmt>,
+    /// Default parameter values for functions: maps function name → [(param_name, default_expr?)].
+    /// Used to fill in missing arguments at call sites.
+    #[allow(clippy::type_complexity)]
+    function_defaults: HashMap<String, Vec<(String, Option<Expr>)>>,
 }
 
 impl Lowerer {
@@ -79,6 +83,7 @@ impl Lowerer {
             next_function: 0,
             next_class: 0,
             pending_stmts: Vec::new(),
+            function_defaults: HashMap::new(),
         }
     }
 
@@ -89,12 +94,24 @@ impl Lowerer {
             match stmt {
                 Stmt::Let {
                     name,
-                    value: Expr::Lambda { .. },
+                    value:
+                        Expr::Lambda {
+                            params, defaults, ..
+                        },
                     ..
                 } => {
                     let id = FunctionId(self.next_function);
                     self.next_function += 1;
                     self.functions.insert(name.clone(), id);
+                    // Store defaults for filling in missing args at call sites
+                    let param_defaults: Vec<(String, Option<Expr>)> = params
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (pname, _))| (pname.clone(), defaults.get(i).cloned().flatten()))
+                        .collect();
+                    if param_defaults.iter().any(|(_, d)| d.is_some()) {
+                        self.function_defaults.insert(name.clone(), param_defaults);
+                    }
                 }
                 Stmt::Class { name, .. } => {
                     let id = ClassId(self.next_class);
@@ -417,6 +434,7 @@ impl Lowerer {
                         params,
                         ret_type,
                         body,
+                        defaults,
                         ..
                     },
                 ..
@@ -426,6 +444,17 @@ impl Lowerer {
                 let mut full_params =
                     vec![("self".to_string(), Type::Custom(name.to_string(), vec![]))];
                 full_params.extend(params.iter().cloned());
+
+                // Store defaults for method calls (qualified name)
+                let param_defaults: Vec<(String, Option<Expr>)> = params
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (pname, _))| (pname.clone(), defaults.get(i).cloned().flatten()))
+                    .collect();
+                if param_defaults.iter().any(|(_, d)| d.is_some()) {
+                    self.function_defaults
+                        .insert(method_name.clone(), param_defaults);
+                }
 
                 // method_name is already qualified by the parser (e.g. "Point.to_string")
                 self.lower_function(method_name, &full_params, ret_type, body)?;
@@ -767,12 +796,11 @@ impl Lowerer {
                             ty: FirType::Ptr,
                         })
                     } else if let Some(&func_id) = self.functions.get(name.as_str()) {
-                        let fir_args: Result<Vec<_>, _> =
-                            args.iter().map(|(_, arg)| self.lower_expr(arg)).collect();
+                        let fir_args = self.lower_call_args_with_defaults(name, args)?;
                         let ret_ty = self.resolve_function_ret_type(name);
                         Ok(FirExpr::Call {
                             func: func_id,
-                            args: fir_args?,
+                            args: fir_args,
                             ret_ty,
                         })
                     } else if self.locals.contains_key(name.as_str()) {
@@ -1147,11 +1175,10 @@ impl Lowerer {
         if let Ok(class_name) = self.resolve_class_name(object) {
             let qualified_name = format!("{}.{}", class_name, method);
             if let Some(&func_id) = self.functions.get(&qualified_name) {
-                // Build args: self + explicit args
+                // Build args: self + explicit args (with defaults filled in)
                 let mut call_args = vec![fir_object];
-                for (_, arg) in args {
-                    call_args.push(self.lower_expr(arg)?);
-                }
+                let method_args = self.lower_call_args_with_defaults(&qualified_name, args)?;
+                call_args.extend(method_args);
                 let ret_ty = self.resolve_function_ret_type(&qualified_name);
                 return Ok(FirExpr::Call {
                     func: func_id,
@@ -1165,6 +1192,36 @@ impl Lowerer {
             "method call: .{}()",
             method
         )))
+    }
+
+    /// Lower call arguments, filling in default values for any missing named parameters.
+    /// If the function has no defaults or all args are provided, this just lowers args in order.
+    fn lower_call_args_with_defaults(
+        &mut self,
+        func_name: &str,
+        args: &[(String, Expr)],
+    ) -> Result<Vec<FirExpr>, LowerError> {
+        if let Some(param_defaults) = self.function_defaults.get(func_name).cloned() {
+            // Build args in parameter order, using defaults for missing args
+            let mut fir_args = Vec::new();
+            for (param_name, default_expr) in &param_defaults {
+                if let Some((_, arg_expr)) = args.iter().find(|(name, _)| name == param_name) {
+                    fir_args.push(self.lower_expr(arg_expr)?);
+                } else if let Some(default) = default_expr {
+                    fir_args.push(self.lower_expr(default)?);
+                } else {
+                    // No arg provided and no default — shouldn't happen (typechecker catches this)
+                    return Err(LowerError::UnsupportedFeature(format!(
+                        "missing argument '{}' with no default for {}",
+                        param_name, func_name
+                    )));
+                }
+            }
+            Ok(fir_args)
+        } else {
+            // No defaults — lower args in the order provided
+            args.iter().map(|(_, arg)| self.lower_expr(arg)).collect()
+        }
     }
 
     /// Lower `for var in iter: body` → index-based while loop.

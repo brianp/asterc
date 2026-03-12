@@ -2066,3 +2066,102 @@ def main() -> Int
     let result = jit.call_i64(fir.entry.unwrap());
     assert_eq!(result, 42);
 }
+
+// ===========================================================================
+// MILESTONE 17: Default parameter values
+// ===========================================================================
+
+#[test]
+fn default_param_uses_default_when_arg_omitted() {
+    let src = "\
+def add(a: Int, b: Int = 10) -> Int
+  a + b
+
+def main() -> Int
+  add(a: 32)
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn default_param_uses_explicit_value_when_provided() {
+    let src = "\
+def add(a: Int, b: Int = 10) -> Int
+  a + b
+
+def main() -> Int
+  add(a: 20, b: 22)
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn default_param_all_params_defaulted() {
+    let src = "\
+def f(a: Int = 40, b: Int = 2) -> Int
+  a + b
+
+def main() -> Int
+  f()
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn default_param_selective_override() {
+    let src = "\
+def f(a: Int = 100, b: Int = 2) -> Int
+  a + b
+
+def main() -> Int
+  f(a: 40)
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn default_param_string_default() {
+    // Validates string defaults work through codegen (uses Ptr type)
+    let src = "\
+def greet(name: String = \"world\") -> Int
+  return 42
+
+def main() -> Int
+  greet()
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn default_param_in_method() {
+    let src = "\
+class Calc
+  base: Int
+
+  def add(n: Int = 10) -> Int
+    base + n
+
+def main() -> Int
+  let c: Calc = Calc(base: 32)
+  c.add()
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
