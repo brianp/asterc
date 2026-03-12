@@ -408,7 +408,9 @@ impl Parser {
         let generic_params: Option<Vec<String>> = None;
 
         let mut params: Vec<(String, Type)> = Vec::new();
+        let mut defaults: Vec<Option<Expr>> = Vec::new();
         let mut type_constraints: Vec<(String, Vec<TypeConstraint>)> = Vec::new();
+        let mut seen_default = false;
         if self.at(&LParen) {
             self.advance();
             if !self.at(&RParen) {
@@ -481,7 +483,24 @@ impl Parser {
                         type_constraints.push((type_param_name, constraints));
                     }
 
+                    // Parse optional default value: = expr
+                    let default_val = if self.at(&Equals) {
+                        self.advance();
+                        seen_default = true;
+                        Some(self.parse_expr()?)
+                    } else {
+                        if seen_default {
+                            return Err(Diagnostic::error(format!(
+                                "Parameter '{}' without default follows parameter with default",
+                                pname
+                            ))
+                            .with_code("P001"));
+                        }
+                        None
+                    };
+
                     params.push((pname, ptype));
+                    defaults.push(default_val);
                     if self.at(&Comma) {
                         self.advance();
                     } else {
@@ -522,6 +541,7 @@ impl Parser {
             generic_params,
             throws,
             type_constraints,
+            defaults: Box::new(defaults),
             span: lambda_span,
         };
 

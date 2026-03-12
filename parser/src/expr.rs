@@ -467,6 +467,7 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Str(lit, self.span_from(start)))
             }
+            TokenKind::StringStart(_) => self.parse_string_interpolation(start),
             Int(v) => {
                 let val = *v;
                 self.advance();
@@ -527,6 +528,38 @@ impl Parser {
                 }
                 self.expect(RBracket)?;
                 Ok(Expr::ListLiteral(elems, self.span_from(start)))
+            }
+            LBrace => {
+                self.advance();
+                let mut entries = Vec::new();
+                if !self.at(&RBrace) {
+                    loop {
+                        if self.at(&RBrace) {
+                            break; // trailing comma
+                        }
+                        let key = self.parse_expr()?;
+                        self.expect(Colon)?;
+                        let value = self.parse_expr()?;
+                        entries.push((key, value));
+                        if entries.len() > MAX_COLLECTION_SIZE {
+                            return Err(Diagnostic::error(format!(
+                                "Map literal exceeds maximum of {} entries",
+                                MAX_COLLECTION_SIZE
+                            ))
+                            .with_code("P001"));
+                        }
+                        if self.at(&Comma) {
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                self.expect(RBrace)?;
+                Ok(Expr::Map {
+                    entries,
+                    span: self.span_from(start),
+                })
             }
             Match => {
                 self.advance();
@@ -608,6 +641,60 @@ impl Parser {
         }
     }
 
+    /// Parse a string interpolation: StringStart expr StringMid expr ... StringEnd
+    fn parse_string_interpolation(&mut self, start: usize) -> Result<Expr, Diagnostic> {
+        let mut parts = Vec::new();
+
+        // First token is StringStart
+        if let TokenKind::StringStart(s) = &self.peek().kind {
+            let lit = s.clone();
+            self.advance();
+            if !lit.is_empty() {
+                parts.push(ast::StringPart::Literal(lit));
+            }
+        } else {
+            return Err(Diagnostic::error("Expected StringStart token").with_code("P001"));
+        }
+
+        loop {
+            // Parse the interpolated expression
+            let expr = self.parse_expr()?;
+            parts.push(ast::StringPart::Expr(Box::new(expr)));
+
+            // Next should be StringMid or StringEnd
+            match &self.peek().kind {
+                TokenKind::StringMid(s) => {
+                    let lit = s.clone();
+                    self.advance();
+                    if !lit.is_empty() {
+                        parts.push(ast::StringPart::Literal(lit));
+                    }
+                    // Continue loop — more interpolations follow
+                }
+                TokenKind::StringEnd(s) => {
+                    let lit = s.clone();
+                    self.advance();
+                    if !lit.is_empty() {
+                        parts.push(ast::StringPart::Literal(lit));
+                    }
+                    break;
+                }
+                t => {
+                    return Err(Diagnostic::error(format!(
+                        "Expected string continuation or end, got {:?}",
+                        t
+                    ))
+                    .with_code("P001"));
+                }
+            }
+        }
+
+        Ok(Expr::StringInterpolation {
+            parts,
+            span: self.span_from(start),
+        })
+    }
+
     /// Parse an inline lambda after the `->` has been consumed.
     ///
     /// Forms:
@@ -630,6 +717,7 @@ impl Parser {
                 generic_params: None,
                 throws: None,
                 type_constraints: vec![],
+                defaults: Box::new(vec![]),
                 span,
             });
         }
@@ -678,6 +766,7 @@ impl Parser {
             generic_params: None,
             throws: None,
             type_constraints: vec![],
+            defaults: Box::new(vec![]),
             span,
         })
     }

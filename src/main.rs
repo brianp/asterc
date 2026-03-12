@@ -59,6 +59,7 @@ fn print_usage() {
     eprintln!("  check <file>                Type-check a source file");
     eprintln!("  run <file>                  Compile and execute via JIT");
     eprintln!("  build <file> [options]      Compile to a native executable");
+    eprintln!("  fmt [file] [options]        Format source files");
     eprintln!("  clean                       Remove build artifacts");
     eprintln!();
     eprintln!("Build options:");
@@ -482,6 +483,65 @@ int main(int argc, char** argv) {
 "#
 }
 
+fn cmd_fmt(args: &[String]) {
+    let config = aster_fmt::config::FormatConfig::default();
+    let mut check_only = false;
+    let mut files = Vec::new();
+
+    for arg in args {
+        match arg.as_str() {
+            "--check" => check_only = true,
+            _ => files.push(arg.clone()),
+        }
+    }
+
+    // If no files given, find all .aster files in cwd
+    if files.is_empty() {
+        let cwd = env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
+        if let Ok(entries) = fs::read_dir(&cwd) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("aster") {
+                    files.push(path.to_string_lossy().to_string());
+                }
+            }
+        }
+        if files.is_empty() {
+            eprintln!("No .aster files found in current directory.");
+            std::process::exit(1);
+        }
+    }
+
+    let mut any_changed = false;
+    for file in &files {
+        let source = read_source(file);
+        match aster_fmt::format_source(&source, &config) {
+            Ok(formatted) => {
+                if check_only {
+                    if formatted != source {
+                        eprintln!("{}: needs formatting", file);
+                        any_changed = true;
+                    }
+                } else if formatted != source {
+                    fs::write(file, &formatted).unwrap_or_else(|e| {
+                        eprintln!("Could not write '{}': {}", file, e);
+                        std::process::exit(1);
+                    });
+                    println!("Formatted {}", file);
+                }
+            }
+            Err(e) => {
+                eprintln!("Error formatting '{}': {}", file, e);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if check_only && any_changed {
+        std::process::exit(1);
+    }
+}
+
 fn read_source(filename: &str) -> String {
     match fs::read_to_string(filename) {
         Ok(s) => s,
@@ -599,6 +659,9 @@ fn main() {
             }
             let opts = parse_build_options(&args, 2);
             cmd_build(&opts);
+        }
+        "fmt" => {
+            cmd_fmt(&args[2..]);
         }
         "clean" => {
             let all = args.iter().any(|a| a == "--all");

@@ -182,6 +182,7 @@ impl Parser {
             TokenKind::If => self.parse_if(),
             TokenKind::While => self.parse_while(),
             TokenKind::For => self.parse_for(),
+            TokenKind::Const => self.parse_const(false),
             TokenKind::Let => self.parse_let(false),
             TokenKind::Return => {
                 self.advance();
@@ -312,6 +313,7 @@ impl Parser {
             TokenKind::Class => self.parse_class(true),
             TokenKind::Trait => self.parse_trait(true),
             TokenKind::Enum => self.parse_enum(true),
+            TokenKind::Const => self.parse_const(true),
             TokenKind::Let => self.parse_let(true),
             TokenKind::Use => self.parse_use(true),
             t => Err(Diagnostic::error(format!(
@@ -389,6 +391,40 @@ impl Parser {
         })
     }
 
+    fn parse_const(&mut self, is_public: bool) -> Result<Stmt, Diagnostic> {
+        let start = self.start_span();
+        self.expect(TokenKind::Const)?;
+
+        let name_tok = self.advance();
+        let name = if let TokenKind::Ident(s) = name_tok.kind {
+            s
+        } else {
+            return Err(Diagnostic::error(format!(
+                "Expected identifier after const at line {}",
+                name_tok.line
+            ))
+            .with_code("P001"));
+        };
+
+        let type_ann = if self.at(&TokenKind::Colon) {
+            self.advance();
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+
+        self.expect(TokenKind::Equals)?;
+        let value = self.parse_expr()?;
+
+        Ok(Stmt::Const {
+            name,
+            type_ann,
+            value,
+            is_public,
+            span: self.span_from(start),
+        })
+    }
+
     fn parse_let(&mut self, is_public: bool) -> Result<Stmt, Diagnostic> {
         let start = self.start_span();
         self.expect(TokenKind::Let)?;
@@ -459,6 +495,7 @@ impl Parser {
                     match &self.peek().kind {
                         TokenKind::Def
                         | TokenKind::Let
+                        | TokenKind::Const
                         | TokenKind::Class
                         | TokenKind::Trait
                         | TokenKind::Enum

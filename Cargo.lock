@@ -39,11 +39,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "aster-fmt"
+version = "0.1.0"
+dependencies = [
+ "ast",
+ "lexer",
+ "parser",
+]
+
+[[package]]
 name = "asterc"
 version = "0.1.0"
 dependencies = [
  "ariadne",
  "ast",
+ "aster-fmt",
  "codegen",
  "fir",
  "lexer",

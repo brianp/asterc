@@ -29,6 +29,10 @@ pub struct TypeChecker {
     /// Expected type from context (e.g., let binding type annotation, function arg type).
     /// Used to resolve ambiguous parametric trait methods like `.into()`.
     pub(crate) expected_type: Option<Type>,
+    /// Names of const bindings — cannot be reassigned.
+    pub(crate) const_names: std::collections::HashSet<String>,
+    /// For functions with default parameters: maps function name -> set of param names that have defaults.
+    pub(crate) default_params: HashMap<String, std::collections::HashSet<String>>,
 }
 
 impl Default for TypeChecker {
@@ -249,6 +253,24 @@ impl TypeChecker {
         );
 
         builtin_traits.insert(
+            "Iterator".into(),
+            TraitInfo {
+                name: "Iterator".into(),
+                methods: HashMap::from([(
+                    "next".into(),
+                    Type::Function {
+                        param_names: vec![],
+                        params: vec![],
+                        ret: Box::new(Type::Nullable(Box::new(Type::TypeVar("T".into(), vec![])))),
+                        throws: None,
+                    },
+                )]),
+                required_methods: vec!["next".into()],
+                generic_params: Some(vec!["T".into()]),
+            },
+        );
+
+        builtin_traits.insert(
             "Iterable".into(),
             TraitInfo {
                 name: "Iterable".into(),
@@ -290,6 +312,8 @@ impl TypeChecker {
             builtin_traits: Rc::new(builtin_traits),
             builtin_enums: Rc::new(builtin_enums),
             expected_type: None,
+            const_names: std::collections::HashSet::new(),
+            default_params: HashMap::new(),
         }
     }
 
@@ -299,7 +323,15 @@ impl TypeChecker {
         let mut tc = Self::new();
         tc.module_loader = Some(loader);
         // Remove protocol traits from env — require `use std { ... }` import
-        for name in ["Eq", "Ord", "Printable", "From", "Into", "Iterable"] {
+        for name in [
+            "Eq",
+            "Ord",
+            "Printable",
+            "From",
+            "Into",
+            "Iterable",
+            "Iterator",
+        ] {
             tc.env.remove_trait(name);
         }
         tc.env.remove_enum("Ordering");
@@ -320,6 +352,8 @@ impl TypeChecker {
             builtin_traits: self.builtin_traits.clone(),
             builtin_enums: self.builtin_enums.clone(),
             expected_type: self.expected_type.clone(),
+            const_names: self.const_names.clone(),
+            default_params: self.default_params.clone(),
         }
     }
 
@@ -336,6 +370,7 @@ impl TypeChecker {
         let saved_throws_type = self.throws_type.clone();
         let saved_diagnostics = std::mem::take(&mut self.diagnostics);
         let saved_expected_type = self.expected_type.clone();
+        let saved_const_names = self.const_names.clone();
 
         // Enter child scope (O(1) — moves data, no clone)
         self.env.enter_scope();
@@ -355,6 +390,7 @@ impl TypeChecker {
         self.throws_type = saved_throws_type;
         self.diagnostics = saved_diagnostics;
         self.expected_type = saved_expected_type;
+        self.const_names = saved_const_names;
 
         // Merge child diagnostics into parent
         self.diagnostics.extend(child_diagnostics);
@@ -493,6 +529,13 @@ impl TypeChecker {
                         self.env.set_var(name.clone(), ann.clone());
                         return Ok(ann.clone());
                     }
+                    // Empty map takes on the annotated type
+                    if ty == Type::Map(Box::new(Type::Error), Box::new(Type::Error))
+                        && matches!(ann, Type::Map(_, _))
+                    {
+                        self.env.set_var(name.clone(), ann.clone());
+                        return Ok(ann.clone());
+                    }
                     // Nullable auto-wrap: T or Nil assigned to T?
                     if let Type::Nullable(inner) = ann {
                         if ty == *ann || ty == **inner || ty == Type::Nil {
@@ -522,6 +565,23 @@ impl TypeChecker {
                         ))
                         .with_code("E001")
                         .with_label(stmt_span, format!("expected {:?}", ann)));
+                    }
+                }
+                // Track default params for the function if it has any
+                if let Expr::Lambda {
+                    params, defaults, ..
+                } = value
+                {
+                    let mut default_set = std::collections::HashSet::new();
+                    for (i, d) in defaults.iter().enumerate() {
+                        if d.is_some()
+                            && let Some((pname, _)) = params.get(i)
+                        {
+                            default_set.insert(pname.clone());
+                        }
+                    }
+                    if !default_set.is_empty() {
+                        self.default_params.insert(name.clone(), default_set);
                     }
                 }
                 self.env.set_var(name.clone(), ty.clone());
@@ -685,30 +745,40 @@ impl TypeChecker {
                                         .with_code("E007")
                                         .with_label(iter.span(), "missing each() method")
                                     })?
+                            } else if class_info.includes.contains(&"Iterator".to_string()) {
+                                Self::get_iterator_element_type_from_class(&class_info)
+                                    .ok_or_else(|| {
+                                        Diagnostic::error(format!(
+                                            "Class '{}' includes Iterator but has no valid next() method",
+                                            class_name
+                                        ))
+                                        .with_code("E007")
+                                        .with_label(iter.span(), "missing next() method")
+                                    })?
                             } else {
                                 return Err(Diagnostic::error(format!(
-                                    "Cannot iterate over '{}': class does not include Iterable",
+                                    "Cannot iterate over '{}': class does not include Iterable or Iterator",
                                     class_name
                                 ))
                                 .with_code("E007")
-                                .with_label(iter.span(), "does not include Iterable"));
+                                .with_label(iter.span(), "does not include Iterable or Iterator"));
                             }
                         } else {
                             return Err(Diagnostic::error(format!(
-                                "Cannot iterate over {:?}, expected List or Iterable class",
+                                "Cannot iterate over {:?}, expected List, Iterable, or Iterator class",
                                 iter_ty
                             ))
                             .with_code("E007")
-                            .with_label(iter.span(), "expected List or Iterable"));
+                            .with_label(iter.span(), "expected List, Iterable, or Iterator"));
                         }
                     }
                     _ => {
                         return Err(Diagnostic::error(format!(
-                            "Cannot iterate over {:?}, expected List or Iterable class",
+                            "Cannot iterate over {:?}, expected List, Iterable, or Iterator class",
                             iter_ty
                         ))
                         .with_code("E007")
-                        .with_label(iter.span(), "expected List or Iterable"));
+                        .with_label(iter.span(), "expected List, Iterable, or Iterator"));
                     }
                 };
                 self.with_child_scope(|tc| {
@@ -724,6 +794,15 @@ impl TypeChecker {
                 }
                 match target {
                     Expr::Ident(name, ident_span) => {
+                        // Check if the variable is a const binding
+                        if self.const_names.contains(name) {
+                            return Err(Diagnostic::error(format!(
+                                "Cannot reassign const '{}'",
+                                name
+                            ))
+                            .with_code("E026")
+                            .with_label(*ident_span, "const binding cannot be reassigned"));
+                        }
                         let target_ty = self.env.get_var(name).ok_or_else(|| {
                             let mut diag = Diagnostic::error(format!(
                                 "Assignment to undeclared variable '{}'",
@@ -917,6 +996,38 @@ impl TypeChecker {
                 self.env.set_enum(name.clone(), info);
                 Ok(Type::Void)
             }
+            Stmt::Const {
+                name,
+                type_ann,
+                value,
+                ..
+            } => {
+                // Validate that the value is a compile-time constant expression
+                if !Self::is_const_expr(value) {
+                    return Err(Diagnostic::error(format!(
+                        "Const '{}' must be initialized with a compile-time constant",
+                        name
+                    ))
+                    .with_code("E026")
+                    .with_label(stmt_span, "not a constant expression"));
+                }
+                let val_ty = self.check_expr(value)?;
+                if let Some(ann) = type_ann {
+                    if !Self::types_compatible_with_env(ann, &val_ty, &self.env) {
+                        return Err(Diagnostic::error(format!(
+                            "Type annotation mismatch for const '{}': declared {:?}, got {:?}",
+                            name, ann, val_ty
+                        ))
+                        .with_code("E001")
+                        .with_label(stmt_span, format!("expected {:?}", ann)));
+                    }
+                    self.env.set_var(name.clone(), ann.clone());
+                } else {
+                    self.env.set_var(name.clone(), val_ty);
+                }
+                self.const_names.insert(name.clone());
+                Ok(Type::Void)
+            }
         }
     }
 
@@ -1026,7 +1137,7 @@ impl TypeChecker {
         match submodule {
             "cmp" => Some(self.builtin_exports_from(&["Eq", "Ord"], &["Ordering"])),
             "fmt" => Some(self.builtin_exports_from(&["Printable"], &[])),
-            "collections" => Some(self.builtin_exports_from(&["Iterable"], &[])),
+            "collections" => Some(self.builtin_exports_from(&["Iterable", "Iterator"], &[])),
             "convert" => Some(self.builtin_exports_from(&["From", "Into"], &[])),
             _ => None,
         }
@@ -1254,6 +1365,23 @@ impl TypeChecker {
                 }
                 Ok(())
             }
+        }
+    }
+
+    /// Returns true if the expression is a valid compile-time constant.
+    fn is_const_expr(expr: &Expr) -> bool {
+        match expr {
+            Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Bool(..) | Expr::Nil(_) => true,
+            Expr::UnaryOp { operand, .. } => Self::is_const_expr(operand),
+            Expr::BinaryOp { left, right, .. } => {
+                Self::is_const_expr(left) && Self::is_const_expr(right)
+            }
+            Expr::ListLiteral(elems, _) => elems.iter().all(Self::is_const_expr),
+            Expr::StringInterpolation { parts, .. } => parts.iter().all(|p| match p {
+                ast::StringPart::Literal(_) => true,
+                ast::StringPart::Expr(e) => Self::is_const_expr(e),
+            }),
+            _ => false,
         }
     }
 

@@ -1,0 +1,1012 @@
+use ast::expr::{
+    BinOp, EnumVariant, ErrorCatchPattern, Expr, MatchPattern, Module, Stmt, StringPart, UnaryOp,
+};
+use ast::types::{Type, TypeConstraint};
+
+use crate::config::FormatConfig;
+use crate::doc::*;
+
+/// Format an entire module.
+pub fn format_module(module: &Module, config: &FormatConfig) -> Doc {
+    let docs: Vec<Doc> = module.body.iter().map(|s| format_stmt(s, config)).collect();
+    let body = join_stmts(&docs);
+    concat(vec![body, hardline()])
+}
+
+/// Join top-level statements with newlines between them.
+fn join_stmts(docs: &[Doc]) -> Doc {
+    let mut result = Vec::new();
+    for (i, d) in docs.iter().enumerate() {
+        if i > 0 {
+            result.push(hardline());
+        }
+        result.push(d.clone());
+    }
+    concat(result)
+}
+
+/// Format a single statement.
+pub fn format_stmt(stmt: &Stmt, config: &FormatConfig) -> Doc {
+    match stmt {
+        Stmt::Let {
+            name,
+            type_ann,
+            value,
+            is_public,
+            ..
+        } => format_let(name, type_ann, value, *is_public, config),
+
+        Stmt::Class {
+            name,
+            fields,
+            methods,
+            is_public,
+            generic_params,
+            extends,
+            includes,
+            ..
+        } => format_class(
+            name,
+            fields,
+            methods,
+            *is_public,
+            generic_params,
+            extends,
+            includes,
+            config,
+        ),
+
+        Stmt::Trait {
+            name,
+            methods,
+            is_public,
+            generic_params,
+            ..
+        } => format_trait(name, methods, *is_public, generic_params, config),
+
+        Stmt::Return(expr, _) => concat(vec![text("return "), format_expr(expr, config)]),
+
+        Stmt::Expr(expr, _) => format_expr(expr, config),
+
+        Stmt::If {
+            cond,
+            then_body,
+            elif_branches,
+            else_body,
+            ..
+        } => format_if(cond, then_body, elif_branches, else_body, config),
+
+        Stmt::While { cond, body, .. } => format_while(cond, body, config),
+
+        Stmt::For {
+            var, iter, body, ..
+        } => format_for(var, iter, body, config),
+
+        Stmt::Assignment { target, value, .. } => concat(vec![
+            format_expr(target, config),
+            text(" = "),
+            format_expr(value, config),
+        ]),
+
+        Stmt::Break(_) => text("break"),
+        Stmt::Continue(_) => text("continue"),
+
+        Stmt::Use {
+            path,
+            names,
+            alias,
+            is_public,
+            ..
+        } => format_use(path, names, alias, *is_public),
+
+        Stmt::Enum {
+            name,
+            variants,
+            methods,
+            includes,
+            is_public,
+            ..
+        } => format_enum(name, variants, methods, includes, *is_public, config),
+
+        Stmt::Const {
+            name,
+            type_ann,
+            value,
+            is_public,
+            ..
+        } => {
+            let mut parts = Vec::new();
+            if *is_public {
+                parts.push(text("pub "));
+            }
+            parts.push(text("const "));
+            parts.push(text(name.as_str()));
+            if let Some(ty) = type_ann {
+                parts.push(text(": "));
+                parts.push(format_type(ty));
+            }
+            parts.push(text(" = "));
+            parts.push(format_expr(value, config));
+            concat(parts)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Let / function definitions
+// ---------------------------------------------------------------------------
+
+fn format_let(
+    name: &str,
+    type_ann: &Option<Type>,
+    value: &Expr,
+    is_public: bool,
+    config: &FormatConfig,
+) -> Doc {
+    if let Expr::Lambda {
+        params,
+        ret_type,
+        body,
+        generic_params,
+        throws,
+        type_constraints,
+        defaults,
+        ..
+    } = value
+    {
+        return format_function_def(
+            name,
+            params,
+            ret_type,
+            body,
+            generic_params,
+            throws,
+            type_constraints,
+            defaults,
+            is_public,
+            config,
+        );
+    }
+
+    let mut parts = Vec::new();
+    if is_public {
+        parts.push(text("pub "));
+    }
+    parts.push(text("let "));
+    parts.push(text(name));
+    if let Some(ty) = type_ann {
+        parts.push(text(": "));
+        parts.push(format_type(ty));
+    }
+    parts.push(text(" = "));
+    parts.push(format_expr(value, config));
+    concat(parts)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn format_function_def(
+    name: &str,
+    params: &[(String, Type)],
+    ret_type: &Type,
+    body: &[Stmt],
+    generic_params: &Option<Vec<String>>,
+    throws: &Option<Type>,
+    type_constraints: &[(String, Vec<TypeConstraint>)],
+    defaults: &[Option<Expr>],
+    is_public: bool,
+    config: &FormatConfig,
+) -> Doc {
+    let mut header = Vec::new();
+    if is_public {
+        header.push(text("pub "));
+    }
+    header.push(text("def "));
+    // Strip qualified prefix (e.g. "ClassName.method" -> "method")
+    let short_name = name.rsplit_once('.').map_or(name, |(_, m)| m);
+    header.push(text(short_name));
+
+    if let Some(gp) = generic_params
+        && !gp.is_empty()
+    {
+        header.push(text("["));
+        header.push(join(
+            gp.iter().map(|g| text(g.as_str())).collect(),
+            text(", "),
+        ));
+        header.push(text("]"));
+    }
+
+    header.push(text("("));
+    let param_docs: Vec<Doc> = params
+        .iter()
+        .enumerate()
+        .map(|(i, (pname, ptype))| {
+            let mut parts = vec![text(pname.as_str())];
+            if !matches!(ptype, Type::Inferred) {
+                parts.push(text(": "));
+                parts.push(format_type(ptype));
+            }
+            if let Some(Some(default_expr)) = defaults.get(i) {
+                parts.push(text(" = "));
+                parts.push(format_expr(default_expr, config));
+            }
+            concat(parts)
+        })
+        .collect();
+    header.push(group(join(param_docs, concat(vec![text(","), line()]))));
+    header.push(text(")"));
+
+    // throws comes BEFORE -> in Aster syntax
+    if let Some(throw_ty) = throws {
+        header.push(text(" throws "));
+        header.push(format_type(throw_ty));
+    }
+
+    if !matches!(ret_type, Type::Void) {
+        header.push(text(" -> "));
+        header.push(format_type(ret_type));
+    }
+
+    for (tvar, constraints) in type_constraints {
+        for c in constraints {
+            match c {
+                TypeConstraint::Extends(class) => {
+                    header.push(text(format!(" where {} extends {}", tvar, class)));
+                }
+                TypeConstraint::Includes(trait_name, args) => {
+                    header.push(text(format!(" where {} includes {}", tvar, trait_name)));
+                    if !args.is_empty() {
+                        header.push(text("["));
+                        header.push(join(args.iter().map(format_type).collect(), text(", ")));
+                        header.push(text("]"));
+                    }
+                }
+            }
+        }
+    }
+
+    format_block(&concat(header), body, config)
+}
+
+// ---------------------------------------------------------------------------
+// Blocks (indented body after a header)
+// ---------------------------------------------------------------------------
+
+fn format_block(header: &Doc, body: &[Stmt], config: &FormatConfig) -> Doc {
+    if body.is_empty() {
+        return header.clone();
+    }
+    let body_docs: Vec<Doc> = body.iter().map(|s| format_stmt(s, config)).collect();
+    let mut inner = Vec::new();
+    for d in body_docs {
+        inner.push(hardline());
+        inner.push(d);
+    }
+    concat(vec![header.clone(), indent(concat(inner))])
+}
+
+// ---------------------------------------------------------------------------
+// Class
+// ---------------------------------------------------------------------------
+
+#[allow(clippy::too_many_arguments)]
+fn format_class(
+    name: &str,
+    fields: &[(String, Type)],
+    methods: &[Stmt],
+    is_public: bool,
+    generic_params: &Option<Vec<String>>,
+    extends: &Option<String>,
+    includes: &Option<Vec<(String, Vec<Type>)>>,
+    config: &FormatConfig,
+) -> Doc {
+    let mut header = Vec::new();
+    if is_public {
+        header.push(text("pub "));
+    }
+    header.push(text("class "));
+    header.push(text(name));
+
+    if let Some(gp) = generic_params
+        && !gp.is_empty()
+    {
+        header.push(text("["));
+        header.push(join(
+            gp.iter().map(|g| text(g.as_str())).collect(),
+            text(", "),
+        ));
+        header.push(text("]"));
+    }
+
+    if let Some(base) = extends {
+        header.push(text(" extends "));
+        header.push(text(base.as_str()));
+    }
+
+    if let Some(inc) = includes {
+        for (trait_name, args) in inc {
+            header.push(text(" includes "));
+            header.push(text(trait_name.as_str()));
+            if !args.is_empty() {
+                header.push(text("["));
+                header.push(join(args.iter().map(format_type).collect(), text(", ")));
+                header.push(text("]"));
+            }
+        }
+    }
+
+    let mut body_parts = Vec::new();
+    for (fname, ftype) in fields {
+        body_parts.push(concat(vec![
+            text(fname.as_str()),
+            text(": "),
+            format_type(ftype),
+        ]));
+    }
+    for method in methods {
+        body_parts.push(format_stmt(method, config));
+    }
+
+    if body_parts.is_empty() {
+        concat(header)
+    } else {
+        let mut inner = Vec::new();
+        for d in body_parts {
+            inner.push(hardline());
+            inner.push(d);
+        }
+        concat(vec![concat(header), indent(concat(inner))])
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Trait
+// ---------------------------------------------------------------------------
+
+fn format_trait(
+    name: &str,
+    methods: &[Stmt],
+    is_public: bool,
+    generic_params: &Option<Vec<String>>,
+    config: &FormatConfig,
+) -> Doc {
+    let mut header = Vec::new();
+    if is_public {
+        header.push(text("pub "));
+    }
+    header.push(text("trait "));
+    header.push(text(name));
+
+    if let Some(gp) = generic_params
+        && !gp.is_empty()
+    {
+        header.push(text("["));
+        header.push(join(
+            gp.iter().map(|g| text(g.as_str())).collect(),
+            text(", "),
+        ));
+        header.push(text("]"));
+    }
+
+    format_block(&concat(header), methods, config)
+}
+
+// ---------------------------------------------------------------------------
+// Enum
+// ---------------------------------------------------------------------------
+
+fn format_enum(
+    name: &str,
+    variants: &[EnumVariant],
+    methods: &[Stmt],
+    includes: &[(String, Vec<Type>)],
+    is_public: bool,
+    config: &FormatConfig,
+) -> Doc {
+    let mut header = Vec::new();
+    if is_public {
+        header.push(text("pub "));
+    }
+    header.push(text("enum "));
+    header.push(text(name));
+
+    for (trait_name, args) in includes {
+        header.push(text(" includes "));
+        header.push(text(trait_name.as_str()));
+        if !args.is_empty() {
+            header.push(text("["));
+            header.push(join(args.iter().map(format_type).collect(), text(", ")));
+            header.push(text("]"));
+        }
+    }
+
+    let mut body_parts = Vec::new();
+    for variant in variants {
+        if variant.fields.is_empty() {
+            body_parts.push(text(variant.name.as_str()));
+        } else {
+            let field_docs: Vec<Doc> = variant
+                .fields
+                .iter()
+                .map(|(fname, ftype)| {
+                    concat(vec![text(fname.as_str()), text(": "), format_type(ftype)])
+                })
+                .collect();
+            body_parts.push(concat(vec![
+                text(variant.name.as_str()),
+                text("("),
+                join(field_docs, text(", ")),
+                text(")"),
+            ]));
+        }
+    }
+    for method in methods {
+        body_parts.push(format_stmt(method, config));
+    }
+
+    if body_parts.is_empty() {
+        concat(header)
+    } else {
+        let mut inner = Vec::new();
+        for d in body_parts {
+            inner.push(hardline());
+            inner.push(d);
+        }
+        concat(vec![concat(header), indent(concat(inner))])
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Control flow
+// ---------------------------------------------------------------------------
+
+fn format_if(
+    cond: &Expr,
+    then_body: &[Stmt],
+    elif_branches: &[(Expr, Vec<Stmt>)],
+    else_body: &[Stmt],
+    config: &FormatConfig,
+) -> Doc {
+    let header = concat(vec![text("if "), format_expr(cond, config)]);
+    let mut result = format_block(&header, then_body, config);
+
+    for (elif_cond, elif_body) in elif_branches {
+        let elif_header = concat(vec![text("elif "), format_expr(elif_cond, config)]);
+        result = concat(vec![
+            result,
+            hardline(),
+            format_block(&elif_header, elif_body, config),
+        ]);
+    }
+
+    if !else_body.is_empty() {
+        let else_header = text("else");
+        result = concat(vec![
+            result,
+            hardline(),
+            format_block(&else_header, else_body, config),
+        ]);
+    }
+
+    result
+}
+
+fn format_while(cond: &Expr, body: &[Stmt], config: &FormatConfig) -> Doc {
+    let header = concat(vec![text("while "), format_expr(cond, config)]);
+    format_block(&header, body, config)
+}
+
+fn format_for(var: &str, iter: &Expr, body: &[Stmt], config: &FormatConfig) -> Doc {
+    let header = concat(vec![
+        text("for "),
+        text(var),
+        text(" in "),
+        format_expr(iter, config),
+    ]);
+    format_block(&header, body, config)
+}
+
+// ---------------------------------------------------------------------------
+// Use / imports
+// ---------------------------------------------------------------------------
+
+fn format_use(
+    path: &[String],
+    names: &Option<Vec<String>>,
+    alias: &Option<String>,
+    is_public: bool,
+) -> Doc {
+    let mut parts = Vec::new();
+    if is_public {
+        parts.push(text("pub "));
+    }
+    parts.push(text("use "));
+    parts.push(text(path.join("/")));
+
+    if let Some(ns) = names {
+        parts.push(text(" { "));
+        parts.push(join(
+            ns.iter().map(|n| text(n.as_str())).collect(),
+            text(", "),
+        ));
+        parts.push(text(" }"));
+    }
+
+    if let Some(a) = alias {
+        parts.push(text(" as "));
+        parts.push(text(a.as_str()));
+    }
+
+    concat(parts)
+}
+
+// ---------------------------------------------------------------------------
+// Expressions
+// ---------------------------------------------------------------------------
+
+pub fn format_expr(expr: &Expr, config: &FormatConfig) -> Doc {
+    match expr {
+        Expr::Int(n, _) => text(n.to_string()),
+        Expr::Float(f, _) => text(format_float(*f)),
+        Expr::Str(s, _) => {
+            // Always use double quotes — the Aster lexer only supports double-quoted strings.
+            let q = '"';
+            text(format!("{}{}{}", q, escape_string(s), q))
+        }
+        Expr::Bool(b, _) => text(if *b { "true" } else { "false" }),
+        Expr::Nil(_) => text("nil"),
+        Expr::Ident(name, _) => text(name.as_str()),
+
+        Expr::Member { object, field, .. } => concat(vec![
+            format_expr(object, config),
+            text("."),
+            text(field.as_str()),
+        ]),
+
+        Expr::Lambda {
+            params,
+            ret_type,
+            body,
+            generic_params,
+            throws,
+            type_constraints,
+            defaults,
+            ..
+        } => format_lambda(
+            params,
+            ret_type,
+            body,
+            generic_params,
+            throws,
+            type_constraints,
+            defaults,
+            config,
+        ),
+
+        Expr::Call { func, args, .. } => format_call(func, args, config),
+
+        Expr::BinaryOp {
+            left, op, right, ..
+        } => format_binop(left, op, right, config),
+
+        Expr::UnaryOp { op, operand, .. } => format_unaryop(op, operand, config),
+
+        Expr::ListLiteral(elems, _) => {
+            if elems.is_empty() {
+                text("[]")
+            } else {
+                let elem_docs: Vec<Doc> = elems.iter().map(|e| format_expr(e, config)).collect();
+                group(concat(vec![
+                    text("["),
+                    indent(concat(vec![
+                        softline(),
+                        join(elem_docs, concat(vec![text(","), line()])),
+                    ])),
+                    softline(),
+                    text("]"),
+                ]))
+            }
+        }
+
+        Expr::Index { object, index, .. } => concat(vec![
+            format_expr(object, config),
+            text("["),
+            format_expr(index, config),
+            text("]"),
+        ]),
+
+        Expr::Match {
+            scrutinee, arms, ..
+        } => format_match(scrutinee, arms, config),
+
+        Expr::AsyncCall { func, args, .. } => {
+            concat(vec![text("async "), format_call_inner(func, args, config)])
+        }
+
+        Expr::Resolve { expr: inner, .. } => {
+            concat(vec![text("resolve "), format_expr(inner, config)])
+        }
+
+        Expr::DetachedCall { func, args, .. } => concat(vec![
+            text("detached async "),
+            format_call_inner(func, args, config),
+        ]),
+
+        Expr::Propagate(inner, _) => concat(vec![format_expr(inner, config), text("!")]),
+
+        Expr::Throw(inner, _) => concat(vec![text("throw "), format_expr(inner, config)]),
+
+        Expr::ErrorOr {
+            expr: inner,
+            default,
+            ..
+        } => concat(vec![
+            format_expr(inner, config),
+            text("!.or("),
+            format_expr(default, config),
+            text(")"),
+        ]),
+
+        Expr::ErrorOrElse {
+            expr: inner,
+            handler,
+            ..
+        } => concat(vec![
+            format_expr(inner, config),
+            text("!.or_else("),
+            format_expr(handler, config),
+            text(")"),
+        ]),
+
+        Expr::ErrorCatch {
+            expr: inner, arms, ..
+        } => format_error_catch(inner, arms, config),
+
+        Expr::AsyncScope { body, .. } => {
+            let header = text("async scope");
+            format_block(&header, body, config)
+        }
+
+        Expr::StringInterpolation { parts, .. } => {
+            // Always use double quotes — the Aster lexer only supports double-quoted strings.
+            let q = '"';
+            let mut s = String::new();
+            s.push(q);
+            for part in parts {
+                match part {
+                    StringPart::Literal(lit) => s.push_str(&escape_string(lit)),
+                    StringPart::Expr(inner_expr) => {
+                        s.push('{');
+                        let rendered = crate::doc::pretty(
+                            config.line_width,
+                            config.indent_size,
+                            &format_expr(inner_expr, config),
+                        );
+                        s.push_str(&rendered);
+                        s.push('}');
+                    }
+                }
+            }
+            s.push(q);
+            text(s)
+        }
+
+        Expr::Map { entries, .. } => {
+            if entries.is_empty() {
+                text("{}")
+            } else {
+                let entry_docs: Vec<Doc> = entries
+                    .iter()
+                    .map(|(k, v)| {
+                        concat(vec![
+                            format_expr(k, config),
+                            text(": "),
+                            format_expr(v, config),
+                        ])
+                    })
+                    .collect();
+                group(concat(vec![
+                    text("{"),
+                    indent(concat(vec![
+                        softline(),
+                        join(entry_docs, concat(vec![text(","), line()])),
+                    ])),
+                    softline(),
+                    text("}"),
+                ]))
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Expression helpers
+// ---------------------------------------------------------------------------
+
+fn format_float(f: f64) -> String {
+    if f.is_nan() {
+        return "0.0".to_string(); // NaN cannot be represented as an Aster literal
+    }
+    if f.is_infinite() {
+        // Infinity cannot be represented as an Aster literal
+        return if f.is_sign_positive() {
+            "9999999999.0".to_string()
+        } else {
+            "-9999999999.0".to_string()
+        };
+    }
+    let s = f.to_string();
+    if s.contains('.') {
+        s
+    } else {
+        format!("{}.0", s)
+    }
+}
+
+fn escape_string(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+        .replace('"', "\\\"")
+        .replace('{', "\\{")
+        .replace('}', "\\}")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn format_lambda(
+    params: &[(String, Type)],
+    ret_type: &Type,
+    body: &[Stmt],
+    generic_params: &Option<Vec<String>>,
+    throws: &Option<Type>,
+    type_constraints: &[(String, Vec<TypeConstraint>)],
+    defaults: &[Option<Expr>],
+    config: &FormatConfig,
+) -> Doc {
+    // Single-expression lambda: `(x: Int) -> x + 1`
+    if body.len() == 1
+        && let Stmt::Expr(expr, _) = &body[0]
+    {
+        let mut parts = Vec::new();
+        parts.push(text("("));
+        let param_docs: Vec<Doc> = params
+            .iter()
+            .enumerate()
+            .map(|(i, (pname, ptype))| {
+                let mut p = vec![text(pname.as_str())];
+                if !matches!(ptype, Type::Inferred) {
+                    p.push(text(": "));
+                    p.push(format_type(ptype));
+                }
+                if let Some(Some(default_expr)) = defaults.get(i) {
+                    p.push(text(" = "));
+                    p.push(format_expr(default_expr, config));
+                }
+                concat(p)
+            })
+            .collect();
+        parts.push(join(param_docs, text(", ")));
+        parts.push(text(")"));
+        if !matches!(ret_type, Type::Void) {
+            parts.push(text(" -> "));
+            parts.push(format_type(ret_type));
+        }
+        parts.push(text(": "));
+        parts.push(format_expr(expr, config));
+        return group(concat(parts));
+    }
+
+    // Multi-statement: format as anonymous def block
+    format_function_def(
+        "<lambda>",
+        params,
+        ret_type,
+        body,
+        generic_params,
+        throws,
+        type_constraints,
+        defaults,
+        false,
+        config,
+    )
+}
+
+fn format_call(func: &Expr, args: &[(String, Expr)], config: &FormatConfig) -> Doc {
+    format_call_inner(func, args, config)
+}
+
+fn format_call_inner(func: &Expr, args: &[(String, Expr)], config: &FormatConfig) -> Doc {
+    let func_doc = format_expr(func, config);
+    if args.is_empty() {
+        return concat(vec![func_doc, text("()")]);
+    }
+
+    let arg_docs: Vec<Doc> = args
+        .iter()
+        .map(|(name, expr)| {
+            concat(vec![
+                text(name.as_str()),
+                text(": "),
+                format_expr(expr, config),
+            ])
+        })
+        .collect();
+
+    group(concat(vec![
+        func_doc,
+        text("("),
+        indent(concat(vec![
+            softline(),
+            join(arg_docs, concat(vec![text(","), line()])),
+        ])),
+        softline(),
+        text(")"),
+    ]))
+}
+
+fn format_binop(left: &Expr, op: &BinOp, right: &Expr, config: &FormatConfig) -> Doc {
+    let op_str = match op {
+        BinOp::Add => "+",
+        BinOp::Sub => "-",
+        BinOp::Mul => "*",
+        BinOp::Div => "/",
+        BinOp::Mod => "%",
+        BinOp::Pow => "**",
+        BinOp::Eq => "==",
+        BinOp::Neq => "!=",
+        BinOp::Lt => "<",
+        BinOp::Gt => ">",
+        BinOp::Lte => "<=",
+        BinOp::Gte => ">=",
+        BinOp::And => "and",
+        BinOp::Or => "or",
+    };
+
+    group(concat(vec![
+        format_expr(left, config),
+        text(" "),
+        text(op_str),
+        line(),
+        format_expr(right, config),
+    ]))
+}
+
+fn format_unaryop(op: &UnaryOp, operand: &Expr, config: &FormatConfig) -> Doc {
+    match op {
+        UnaryOp::Neg => concat(vec![text("-"), format_expr(operand, config)]),
+        UnaryOp::Not => concat(vec![text("not "), format_expr(operand, config)]),
+    }
+}
+
+fn format_match(scrutinee: &Expr, arms: &[(MatchPattern, Expr)], config: &FormatConfig) -> Doc {
+    let header = concat(vec![text("match "), format_expr(scrutinee, config)]);
+
+    let mut inner = Vec::new();
+    for (pattern, body) in arms {
+        inner.push(hardline());
+        inner.push(concat(vec![
+            format_match_pattern(pattern),
+            text(" => "),
+            format_expr(body, config),
+        ]));
+    }
+
+    concat(vec![header, indent(concat(inner))])
+}
+
+fn format_match_pattern(pattern: &MatchPattern) -> Doc {
+    match pattern {
+        MatchPattern::Literal(expr, _) => format_pattern_literal(expr),
+        MatchPattern::Ident(name, _) => text(name.as_str()),
+        MatchPattern::Wildcard(_) => text("_"),
+        MatchPattern::EnumVariant {
+            enum_name, variant, ..
+        } => text(format!("{}.{}", enum_name, variant)),
+    }
+}
+
+fn format_pattern_literal(expr: &Expr) -> Doc {
+    match expr {
+        Expr::Int(n, _) => text(n.to_string()),
+        Expr::Float(f, _) => text(format_float(*f)),
+        Expr::Str(s, _) => text(format!("\"{}\"", escape_string(s))),
+        Expr::Bool(b, _) => text(if *b { "true" } else { "false" }),
+        Expr::Nil(_) => text("nil"),
+        _ => text("<expr>"),
+    }
+}
+
+fn format_error_catch(
+    expr: &Expr,
+    arms: &[(ErrorCatchPattern, Expr)],
+    config: &FormatConfig,
+) -> Doc {
+    let header = concat(vec![format_expr(expr, config), text("!.catch")]);
+
+    let mut inner = Vec::new();
+    for (pattern, body) in arms {
+        inner.push(hardline());
+        inner.push(concat(vec![
+            format_error_catch_pattern(pattern),
+            text(" -> "),
+            format_expr(body, config),
+        ]));
+    }
+
+    concat(vec![header, indent(concat(inner))])
+}
+
+fn format_error_catch_pattern(pattern: &ErrorCatchPattern) -> Doc {
+    match pattern {
+        ErrorCatchPattern::Typed {
+            error_type, var, ..
+        } => concat(vec![
+            text(error_type.as_str()),
+            text(" "),
+            text(var.as_str()),
+        ]),
+        ErrorCatchPattern::Wildcard(_) => text("_"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Type formatting
+// ---------------------------------------------------------------------------
+
+pub fn format_type(ty: &Type) -> Doc {
+    match ty {
+        Type::Int => text("Int"),
+        Type::Float => text("Float"),
+        Type::Bool => text("Bool"),
+        Type::String => text("String"),
+        Type::Nil => text("Nil"),
+        Type::Void => text("Void"),
+        Type::Never => text("Never"),
+        Type::Error => text("<error>"),
+        Type::Inferred => text("_"),
+        Type::List(inner) => concat(vec![text("List["), format_type(inner), text("]")]),
+        Type::Map(k, v) => concat(vec![
+            text("Map["),
+            format_type(k),
+            text(", "),
+            format_type(v),
+            text("]"),
+        ]),
+        Type::Custom(name, args) => {
+            if args.is_empty() {
+                text(name.as_str())
+            } else {
+                concat(vec![
+                    text(name.as_str()),
+                    text("["),
+                    join(args.iter().map(format_type).collect(), text(", ")),
+                    text("]"),
+                ])
+            }
+        }
+        Type::TypeVar(name, _) => text(name.as_str()),
+        Type::Function {
+            param_names,
+            params,
+            ret,
+            throws,
+        } => {
+            let param_docs: Vec<Doc> = param_names
+                .iter()
+                .zip(params.iter())
+                .map(|(name, ty)| concat(vec![text(name.as_str()), text(": "), format_type(ty)]))
+                .collect();
+            let mut parts = vec![text("("), join(param_docs, text(", ")), text(")")];
+            if let Some(t) = throws {
+                parts.push(text(" throws "));
+                parts.push(format_type(t));
+            }
+            parts.push(text(" -> "));
+            parts.push(format_type(ret));
+            concat(parts)
+        }
+        Type::Task(inner) => concat(vec![text("Task["), format_type(inner), text("]")]),
+        Type::Nullable(inner) => concat(vec![format_type(inner), text("?")]),
+    }
+}

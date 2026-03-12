@@ -222,6 +222,27 @@ impl Lowerer {
                 methods,
                 ..
             } => self.lower_enum(name, variants, methods),
+            // Const is treated like Let at the FIR level
+            Stmt::Const {
+                name,
+                type_ann,
+                value,
+                ..
+            } => {
+                let fir_value = self.lower_expr(value)?;
+                let fir_type = if let Some(ann) = type_ann {
+                    self.lower_type(ann)
+                } else {
+                    self.infer_fir_type(&fir_value)
+                };
+                let local_id = self.alloc_local();
+                self.locals.insert(name.clone(), local_id);
+                self.local_types.insert(local_id, fir_type.clone());
+                self.globals.insert(name.clone(), local_id);
+                self.top_level_lets
+                    .push((name.clone(), fir_type, fir_value));
+                Ok(())
+            }
             Stmt::Expr(expr, _) => {
                 // Top-level expression — wrap in a thunk
                 let fir_expr = self.lower_expr(expr)?;
@@ -541,6 +562,27 @@ impl Lowerer {
             Stmt::For {
                 var, iter, body, ..
             } => self.lower_for_loop(var, iter, body),
+            Stmt::Const {
+                name,
+                type_ann,
+                value,
+                ..
+            } => {
+                let fir_value = self.lower_expr(value)?;
+                let fir_type = if let Some(ann) = type_ann {
+                    self.lower_type(ann)
+                } else {
+                    self.infer_fir_type(&fir_value)
+                };
+                let local_id = self.alloc_local();
+                self.locals.insert(name.clone(), local_id);
+                self.local_types.insert(local_id, fir_type.clone());
+                Ok(FirStmt::Let {
+                    name: local_id,
+                    ty: fir_type,
+                    value: fir_value,
+                })
+            }
             _ => Err(LowerError::UnsupportedFeature(format!(
                 "statement: {:?}",
                 std::mem::discriminant(stmt)

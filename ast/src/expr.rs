@@ -78,6 +78,13 @@ pub enum Stmt {
         is_public: bool,
         span: Span,
     },
+    Const {
+        name: String,
+        type_ann: Option<Type>,
+        value: Expr,
+        is_public: bool,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -156,6 +163,8 @@ pub enum Expr {
         throws: Option<Type>,
         /// Generic type parameter constraints: `T extends Foo includes Bar`.
         type_constraints: Vec<(String, Vec<crate::types::TypeConstraint>)>,
+        /// Default values for parameters, indexed by position. None = no default.
+        defaults: Box<Vec<Option<Expr>>>,
         span: Span,
     },
     Call {
@@ -223,6 +232,20 @@ pub enum Expr {
         body: Vec<Stmt>,
         span: Span,
     },
+    StringInterpolation {
+        parts: Vec<StringPart>,
+        span: Span,
+    },
+    Map {
+        entries: Vec<(Expr, Expr)>,
+        span: Span,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum StringPart {
+    Literal(String),
+    Expr(Box<Expr>),
 }
 
 impl Expr {
@@ -251,6 +274,8 @@ impl Expr {
             Expr::ErrorOrElse { span, .. } => *span,
             Expr::ErrorCatch { span, .. } => *span,
             Expr::AsyncScope { span, .. } => *span,
+            Expr::StringInterpolation { span, .. } => *span,
+            Expr::Map { span, .. } => *span,
         }
     }
 }
@@ -271,6 +296,7 @@ impl Stmt {
             Stmt::Continue(s) => *s,
             Stmt::Use { span, .. } => *span,
             Stmt::Enum { span, .. } => *span,
+            Stmt::Const { span, .. } => *span,
         }
     }
 }
