@@ -13,6 +13,16 @@ impl TypeChecker {
         }
     }
 
+    /// Check if `actual` is a subtype of `expected` via the extends chain.
+    pub(crate) fn is_subtype_compatible(actual: &Type, expected: &Type, env: &TypeEnv) -> bool {
+        if let (Type::Custom(an, _), Type::Custom(en, _)) = (actual, expected)
+            && an != en
+        {
+            return Self::is_subtype_of(an, en, env);
+        }
+        false
+    }
+
     pub(crate) fn check_call(
         &mut self,
         func: &Expr,
@@ -150,6 +160,33 @@ impl TypeChecker {
                             return Err(Diagnostic::error(format!(
                                 "to_string() expects Int, Float, Bool, or String, got {:?}",
                                 aty
+                            ))
+                            .with_code("E005")
+                            .with_label(args[0].1.span(), "unsupported type"));
+                        }
+                    }
+                }
+                "log" | "print" => {
+                    if args.len() != 1 {
+                        return Err(Diagnostic::error(format!(
+                            "{}() takes 1 argument, got {}",
+                            name, args.len()
+                        ))
+                        .with_code("E006")
+                        .with_label(func.span(), "expected 1 argument"));
+                    }
+                    let aty = self.check_expr(&args[0].1)?;
+                    if aty.is_error() {
+                        return Ok(Type::Void);
+                    }
+                    match aty {
+                        Type::Int | Type::Float | Type::Bool | Type::String => {
+                            return Ok(Type::Void);
+                        }
+                        _ => {
+                            return Err(Diagnostic::error(format!(
+                                "{}() expects Int, Float, Bool, or String, got {:?}",
+                                name, aty
                             ))
                             .with_code("E005")
                             .with_label(args[0].1.span(), "unsupported type"));
@@ -412,6 +449,16 @@ impl TypeChecker {
         bindings: &mut HashMap<String, Type>,
         env: Option<&TypeEnv>,
     ) -> Result<(), Diagnostic> {
+        Self::unify_inner(expected, actual, bindings, env, false)
+    }
+
+    fn unify_inner(
+        expected: &Type,
+        actual: &Type,
+        bindings: &mut HashMap<String, Type>,
+        env: Option<&TypeEnv>,
+        invariant: bool,
+    ) -> Result<(), Diagnostic> {
         match (expected, actual) {
             // If both sides are the same TypeVar, they trivially unify
             (Type::TypeVar(tv1, _), Type::TypeVar(tv2, _)) if tv1 == tv2 => Ok(()),
@@ -465,22 +512,27 @@ impl TypeChecker {
                 if **a_inner == Type::Nil {
                     return Ok(());
                 }
-                Self::unify_type_with_env(e_inner, a_inner, bindings, env)
+                // Lists are invariant: List[Dog] ≠ List[Animal]
+                Self::unify_inner(e_inner, a_inner, bindings, env, true)
             }
             (Type::Map(ek, ev), Type::Map(ak, av)) => {
-                Self::unify_type_with_env(ek, ak, bindings, env)?;
-                Self::unify_type_with_env(ev, av, bindings, env)
+                // Maps are invariant in both key and value types
+                Self::unify_inner(ek, ak, bindings, env, true)?;
+                Self::unify_inner(ev, av, bindings, env, true)
             }
             (Type::Task(e_inner), Type::Task(a_inner)) => {
-                Self::unify_type_with_env(e_inner, a_inner, bindings, env)
+                // Tasks are invariant
+                Self::unify_inner(e_inner, a_inner, bindings, env, true)
             }
             (Type::Nullable(e_inner), Type::Nullable(a_inner)) => {
-                Self::unify_type_with_env(e_inner, a_inner, bindings, env)
+                Self::unify_inner(e_inner, a_inner, bindings, env, invariant)
             }
             (Type::Custom(en, eargs), Type::Custom(an, aargs)) => {
                 // S3: If names differ, check subtype relationship via extends chain
+                // Skip subtype coercion in invariant positions (container type params)
                 if en != an {
-                    if let Some(type_env) = env
+                    if !invariant
+                        && let Some(type_env) = env
                         && Self::is_subtype_of(an, en, type_env)
                     {
                         return Ok(());
@@ -499,7 +551,7 @@ impl TypeChecker {
                     .with_code("E001"));
                 }
                 for (e, a) in eargs.iter().zip(aargs.iter()) {
-                    Self::unify_type_with_env(e, a, bindings, env)?;
+                    Self::unify_inner(e, a, bindings, env, invariant)?;
                 }
                 Ok(())
             }
@@ -524,9 +576,9 @@ impl TypeChecker {
                     .with_code("E006"));
                 }
                 for (e, a) in ep.iter().zip(ap.iter()) {
-                    Self::unify_type_with_env(e, a, bindings, env)?;
+                    Self::unify_inner(e, a, bindings, env, invariant)?;
                 }
-                Self::unify_type_with_env(er, ar, bindings, env)
+                Self::unify_inner(er, ar, bindings, env, invariant)
             }
             _ => {
                 if expected != actual {
@@ -649,7 +701,7 @@ impl TypeChecker {
                     .with_code("E024"));
                 }
             }
-            ast::TypeConstraint::Includes(trait_name, _trait_args) => {
+            ast::TypeConstraint::Includes(trait_name, trait_args) => {
                 if !self.type_includes_trait(actual, trait_name) {
                     return Err(Diagnostic::error(format!(
                         "Type {:?} does not satisfy constraint '{} includes {}': \
@@ -658,49 +710,62 @@ impl TypeChecker {
                     ))
                     .with_code("E024"));
                 }
+                // Validate parametric trait type args if present
+                if !trait_args.is_empty()
+                    && !self.type_includes_parametric_trait(actual, trait_name, trait_args)
+                {
+                    let args_str: Vec<String> =
+                        trait_args.iter().map(|t| format!("{:?}", t)).collect();
+                    return Err(Diagnostic::error(format!(
+                        "Type {:?} does not satisfy constraint '{} includes {}[{}]': \
+                         {:?} does not include {}[{}]",
+                        actual,
+                        type_param,
+                        trait_name,
+                        args_str.join(", "),
+                        actual,
+                        trait_name,
+                        args_str.join(", "),
+                    ))
+                    .with_code("E024"));
+                }
             }
         }
         Ok(())
     }
 
-    /// Check if a type includes a given trait.
-    fn type_includes_trait(&self, ty: &Type, trait_name: &str) -> bool {
+    /// Check if a type includes a parametric trait with the specified type arguments.
+    fn type_includes_parametric_trait(
+        &self,
+        ty: &Type,
+        trait_name: &str,
+        expected_args: &[Type],
+    ) -> bool {
         match ty {
-            // Primitives include Eq, Ord, and Printable
-            Type::Int | Type::Float | Type::String | Type::Bool => {
-                matches!(trait_name, "Eq" | "Ord" | "Printable")
-            }
-            Type::Nil => matches!(trait_name, "Eq" | "Printable"),
             Type::Custom(name, _) => {
                 if let Some(info) = self.env.get_class(name) {
-                    if info.includes.contains(&trait_name.to_string()) {
-                        return true;
-                    }
-                    // Ord includes Eq
-                    if trait_name == "Eq" && info.includes.contains(&"Ord".to_string()) {
-                        return true;
-                    }
+                    return info
+                        .parametric_includes
+                        .iter()
+                        .any(|(tn, args)| tn == trait_name && args == expected_args);
                 }
-                if let Some(info) = self.env.get_enum(name) {
-                    if info.includes.contains(&trait_name.to_string()) {
-                        return true;
-                    }
-                    if trait_name == "Eq" && info.includes.contains(&"Ord".to_string()) {
-                        return true;
-                    }
-                }
+                // EnumInfo doesn't support parametric includes yet
                 false
             }
-            Type::Error => true, // error sentinel compatible with everything
             _ => false,
         }
+    }
+
+    /// Check if a type includes a given trait.
+    fn type_includes_trait(&self, ty: &Type, trait_name: &str) -> bool {
+        self.type_includes_protocol(ty, trait_name)
     }
 
     pub(crate) fn resolve_func_type(&mut self, func: &Expr) -> Result<Type, Diagnostic> {
         match func {
             Expr::Ident(name, span) => {
                 match name.as_str() {
-                    "len" | "to_string" => Ok(Type::Void), // Not a throws function
+                    "len" | "to_string" | "log" | "print" => Ok(Type::Void), // Not a throws function
                     _ => self.env.get_var(name).ok_or_else(|| {
                         let mut diag = Diagnostic::error(format!("Unknown identifier '{}'", name))
                             .with_code("E002")

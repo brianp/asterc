@@ -301,6 +301,7 @@ impl TypeChecker {
                     && ret_val_ty != Type::Never
                     && !ret_val_ty.is_error()
                     && !Self::is_nullable_compatible(ret_type, &ret_val_ty)
+                    && !Self::is_subtype_compatible(&ret_val_ty, ret_type, &sub.env)
                 {
                     return Err(Diagnostic::error(format!(
                         "Return type mismatch: expected {:?}, got {:?}",
@@ -320,6 +321,7 @@ impl TypeChecker {
             && *ret_type != Type::Inferred
             && last != Type::Never
             && !last.is_error()
+            && !Self::is_subtype_compatible(&last, ret_type, &sub.env)
         {
             if let Type::Nullable(inner) = ret_type {
                 if last != **inner && last != Type::Nil {
@@ -373,7 +375,7 @@ impl TypeChecker {
 
     /// Collect unknown type names from a type. A Custom(name, []) is "unknown" if
     /// it doesn't correspond to a known class, trait, or enum in the current environment.
-    fn collect_unknown_type_names(&self, ty: &Type, out: &mut Vec<String>) {
+    pub(crate) fn collect_unknown_type_names(&self, ty: &Type, out: &mut Vec<String>) {
         let mut collected = Vec::new();
         ty.collect_types(
             &|t| matches!(t, Type::Custom(name, args) if args.is_empty() && !self.is_known_type_name(name)),
@@ -397,7 +399,7 @@ impl TypeChecker {
     }
 
     /// Replace Custom(name, []) with TypeVar(name, constraints) for names in the given type param list.
-    fn replace_custom_with_typevar(
+    pub(crate) fn replace_custom_with_typevar(
         ty: &Type,
         type_params: &[String],
         type_constraints: &[(String, Vec<ast::TypeConstraint>)],
@@ -931,7 +933,10 @@ impl TypeChecker {
             if let Some(ref expected) = result_ty {
                 if *expected == Type::Never || expected.is_error() {
                     result_ty = Some(arm_ty);
-                } else if arm_ty != *expected {
+                } else if arm_ty != *expected
+                    && !Self::is_subtype_compatible(&arm_ty, expected, &self.env)
+                    && !Self::is_subtype_compatible(expected, &arm_ty, &self.env)
+                {
                     return Err(Diagnostic::error(format!(
                         "Match arm type mismatch: expected {:?}, got {:?}",
                         expected, arm_ty
@@ -949,7 +954,24 @@ impl TypeChecker {
             .iter()
             .any(|(p, _)| matches!(p, MatchPattern::Wildcard(_) | MatchPattern::Ident(..)));
         if !has_catchall {
-            match &scrutinee_ty {
+            // For nullable types, unwrap to check inner type exhaustiveness
+            // but also require a nil arm
+            let (effective_ty, is_nullable) = match &scrutinee_ty {
+                Type::Nullable(inner) => (inner.as_ref().clone(), true),
+                other => (other.clone(), false),
+            };
+            let has_nil_arm = arms.iter().any(
+                |(p, _)| matches!(p, MatchPattern::Literal(e, _) if matches!(**e, Expr::Nil(_))),
+            );
+            if is_nullable && !has_nil_arm {
+                return Err(Diagnostic::error(
+                    "Non-exhaustive match: nullable type requires a 'nil' arm or wildcard"
+                        .to_string(),
+                )
+                .with_code("E011")
+                .with_label(scrutinee.span(), "non-exhaustive patterns"));
+            }
+            match &effective_ty {
                 Type::Bool => {
                     let has_true = arms.iter().any(|(p, _)| {
                         matches!(p, MatchPattern::Literal(e, _) if matches!(**e, Expr::Bool(true, _)))

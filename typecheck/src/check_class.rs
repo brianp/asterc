@@ -731,11 +731,18 @@ impl TypeChecker {
     }
 
     /// Extract the Iterable element type from a class's each() method signature.
+    /// Validates the signature matches the Iterable protocol: each(f: (T) -> Void) -> Void
     pub(crate) fn get_iterable_element_type_from_class(info: &ClassInfo) -> Option<Type> {
-        if let Some(Type::Function { params, .. }) = info.methods.get("each")
+        if let Some(Type::Function { params, ret, .. }) = info.methods.get("each")
+            && params.len() == 1
+            && **ret == Type::Void
             && let Some(Type::Function {
-                params: cb_params, ..
+                params: cb_params,
+                ret: cb_ret,
+                ..
             }) = params.first()
+            && cb_params.len() == 1
+            && **cb_ret == Type::Void
         {
             return cb_params.first().cloned();
         }

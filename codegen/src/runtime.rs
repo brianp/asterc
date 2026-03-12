@@ -1,0 +1,214 @@
+use cranelift_jit::JITBuilder;
+
+// ---------------------------------------------------------------------------
+// Runtime builtins — called from JIT-compiled code via symbol registration
+// ---------------------------------------------------------------------------
+
+// Heap-allocated string: pointer to { len: i64, data: [u8] }
+// We represent strings as a pair (ptr, len) packed into a struct on the heap.
+// For now, the "Ptr" in FIR is a raw pointer to the data, with length stored
+// at offset -8 (just before the data pointer).
+
+/// Allocate `size` bytes on the heap, 8-byte aligned.
+/// Aborts on zero-size allocations or OOM.
+pub extern "C" fn aster_alloc(size: usize) -> *mut u8 {
+    if size == 0 {
+        // Zero-size alloc is UB per the global allocator contract.
+        // Return a dangling but aligned pointer (safe as long as nothing is read/written).
+        return std::ptr::NonNull::dangling().as_ptr();
+    }
+    let layout = std::alloc::Layout::from_size_align(size, 8)
+        .expect("aster_alloc: invalid layout (size too large)");
+    let ptr = unsafe { std::alloc::alloc(layout) };
+    if ptr.is_null() {
+        std::alloc::handle_alloc_error(layout);
+    }
+    ptr
+}
+
+/// Print a string (ptr to heap string object).
+/// String layout: [len: i64][data: u8...]
+pub extern "C" fn aster_print_str(ptr: *const u8) {
+    if ptr.is_null() {
+        println!("nil");
+        return;
+    }
+    unsafe {
+        let len = *(ptr as *const i64) as usize;
+        let data = ptr.add(8);
+        let bytes = std::slice::from_raw_parts(data, len);
+        match std::str::from_utf8(bytes) {
+            Ok(s) => println!("{}", s),
+            Err(_) => println!("{}", String::from_utf8_lossy(bytes)),
+        }
+    }
+}
+
+/// Print an integer.
+pub extern "C" fn aster_print_int(val: i64) {
+    println!("{}", val);
+}
+
+/// Print a float.
+pub extern "C" fn aster_print_float(val: f64) {
+    println!("{}", val);
+}
+
+/// Print a bool.
+pub extern "C" fn aster_print_bool(val: i8) {
+    println!("{}", if val != 0 { "true" } else { "false" });
+}
+
+/// Create a new heap-allocated string from a pointer and length.
+/// Returns a pointer to the string object [len: i64][data: u8...].
+pub extern "C" fn aster_string_new(data: *const u8, len: usize) -> *mut u8 {
+    let total = 8usize
+        .checked_add(len)
+        .expect("aster_string_new: size overflow");
+    let ptr = aster_alloc(total);
+    unsafe {
+        *(ptr as *mut i64) = len as i64;
+        if len > 0 {
+            std::ptr::copy_nonoverlapping(data, ptr.add(8), len);
+        }
+    }
+    ptr
+}
+
+/// Concatenate two heap strings. Returns a new heap string.
+pub extern "C" fn aster_string_concat(a: *const u8, b: *const u8) -> *mut u8 {
+    unsafe {
+        let a_len = if a.is_null() {
+            0usize
+        } else {
+            *(a as *const i64) as usize
+        };
+        let b_len = if b.is_null() {
+            0usize
+        } else {
+            *(b as *const i64) as usize
+        };
+        let total = a_len
+            .checked_add(b_len)
+            .and_then(|n| n.checked_add(8))
+            .expect("aster_string_concat: size overflow");
+        let result = aster_alloc(total);
+        *(result as *mut i64) = (a_len + b_len) as i64;
+        if a_len > 0 {
+            std::ptr::copy_nonoverlapping(a.add(8), result.add(8), a_len);
+        }
+        if b_len > 0 {
+            std::ptr::copy_nonoverlapping(b.add(8), result.add(8 + a_len), b_len);
+        }
+        result
+    }
+}
+
+/// Get the length of a heap string.
+pub extern "C" fn aster_string_len(ptr: *const u8) -> i64 {
+    if ptr.is_null() {
+        return 0;
+    }
+    unsafe { *(ptr as *const i64) }
+}
+
+/// Allocate a new list. Layout: [len: i64][cap: i64][data: [i64...]]
+pub extern "C" fn aster_list_new(cap: i64) -> *mut u8 {
+    let cap = cap.max(4) as usize;
+    let alloc_size = cap
+        .checked_mul(8)
+        .and_then(|n| n.checked_add(16))
+        .expect("aster_list_new: size overflow");
+    let ptr = aster_alloc(alloc_size);
+    unsafe {
+        *(ptr as *mut i64) = 0; // len = 0
+        *((ptr as *mut i64).add(1)) = cap as i64; // cap
+    }
+    ptr
+}
+
+/// Get an element from a list by index. Returns the i64 value at that index.
+pub extern "C" fn aster_list_get(list: *const u8, index: i64) -> i64 {
+    unsafe {
+        let len = *(list as *const i64);
+        if index < 0 || index >= len {
+            panic!("list index out of bounds: {} (len {})", index, len);
+        }
+        let data = (list as *const i64).add(2);
+        *data.add(index as usize)
+    }
+}
+
+/// Set an element in a list by index.
+pub extern "C" fn aster_list_set(list: *mut u8, index: i64, value: i64) {
+    unsafe {
+        let len = *(list as *const i64);
+        if index < 0 || index >= len {
+            panic!("list index out of bounds: {} (len {})", index, len);
+        }
+        let data = (list as *mut i64).add(2);
+        *data.add(index as usize) = value;
+    }
+}
+
+/// Push an element to a list. May reallocate.
+pub extern "C" fn aster_list_push(list: *mut u8, value: i64) -> *mut u8 {
+    unsafe {
+        let len = *(list as *mut i64);
+        let cap = *((list as *mut i64).add(1));
+        if len >= cap {
+            // Grow: double capacity
+            let new_cap = (cap * 2).max(4) as usize;
+            let alloc_size = new_cap
+                .checked_mul(8)
+                .and_then(|n| n.checked_add(16))
+                .expect("aster_list_push: size overflow");
+            let new_ptr = aster_alloc(alloc_size);
+            std::ptr::copy_nonoverlapping(list, new_ptr, 16 + (len as usize) * 8);
+            *((new_ptr as *mut i64).add(1)) = new_cap as i64;
+            let data = (new_ptr as *mut i64).add(2);
+            *data.add(len as usize) = value;
+            *(new_ptr as *mut i64) = len + 1;
+            new_ptr
+        } else {
+            let data = (list as *mut i64).add(2);
+            *data.add(len as usize) = value;
+            *(list as *mut i64) = len + 1;
+            list
+        }
+    }
+}
+
+/// Get the length of a list.
+pub extern "C" fn aster_list_len(list: *const u8) -> i64 {
+    if list.is_null() {
+        return 0;
+    }
+    unsafe { *(list as *const i64) }
+}
+
+/// Allocate a class instance. Size is in bytes.
+pub extern "C" fn aster_class_alloc(size: usize) -> *mut u8 {
+    aster_alloc(size)
+}
+
+/// Register all runtime builtins with a JIT builder.
+pub fn register_runtime_builtins(builder: &mut JITBuilder) {
+    let symbols: Vec<(&str, *const u8)> = vec![
+        ("aster_alloc", aster_alloc as *const u8),
+        ("aster_print_str", aster_print_str as *const u8),
+        ("aster_print_int", aster_print_int as *const u8),
+        ("aster_print_float", aster_print_float as *const u8),
+        ("aster_print_bool", aster_print_bool as *const u8),
+        ("aster_string_new", aster_string_new as *const u8),
+        ("aster_string_concat", aster_string_concat as *const u8),
+        ("aster_string_len", aster_string_len as *const u8),
+        ("aster_list_new", aster_list_new as *const u8),
+        ("aster_list_get", aster_list_get as *const u8),
+        ("aster_list_set", aster_list_set as *const u8),
+        ("aster_list_push", aster_list_push as *const u8),
+        ("aster_list_len", aster_list_len as *const u8),
+        ("aster_class_alloc", aster_class_alloc as *const u8),
+    ];
+    builder.symbols(symbols);
+}
