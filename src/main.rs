@@ -171,7 +171,7 @@ fn cmd_run(filename: &str) {
     }
 
     let exit_code = jit.call_i64(entry);
-    std::process::exit(exit_code as i32);
+    std::process::exit(exit_code.clamp(0, 255) as i32);
 }
 
 /// Parsed build options from CLI flags.

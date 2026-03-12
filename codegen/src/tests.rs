@@ -72,6 +72,24 @@ fn divide() {
 }
 
 #[test]
+fn divide_by_zero_returns_zero() {
+    let fir = compile_and_run("def div(a: Int, b: Int) -> Int\n  a / b\n");
+    let jit = jit_compile(&fir);
+    // Division by zero should return 0, not trap
+    let result = jit.call_i64_i64_i64(FunctionId(0), 10, 0);
+    assert_eq!(result, 0);
+}
+
+#[test]
+fn modulo_by_zero_returns_zero() {
+    let fir = compile_and_run("def modz(a: Int, b: Int) -> Int\n  a % b\n");
+    let jit = jit_compile(&fir);
+    // Modulo by zero should return 0, not trap
+    let result = jit.call_i64_i64_i64(FunctionId(0), 10, 0);
+    assert_eq!(result, 0);
+}
+
+#[test]
 fn nested_arithmetic() {
     let fir = compile_and_run("def f(a: Int, b: Int) -> Int\n  (a + b) * (a - b)\n");
     let jit = jit_compile(&fir);

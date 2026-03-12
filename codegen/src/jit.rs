@@ -201,7 +201,10 @@ impl CraneliftJIT {
     }
 
     fn compile_function(&mut self, func: &FirFunction) -> Result<(), String> {
-        let clif_func_id = self.declared[&func.id];
+        let clif_func_id = *self
+            .declared
+            .get(&func.id)
+            .ok_or_else(|| format!("codegen: undeclared function {:?} ({})", func.id, func.name))?;
 
         // Build signature
         self.ctx.func.signature.params.clear();
@@ -314,22 +317,31 @@ impl CraneliftJIT {
 
     /// Execute a compiled function by ID (no args, returns i64).
     pub fn call_i64(&self, id: FunctionId) -> i64 {
-        let ptr = self.compiled[&id];
-        let f: fn() -> i64 = unsafe { std::mem::transmute(ptr) };
+        let ptr = self
+            .compiled
+            .get(&id)
+            .unwrap_or_else(|| panic!("codegen: function {:?} not compiled", id));
+        let f: fn() -> i64 = unsafe { std::mem::transmute(*ptr) };
         f()
     }
 
     /// Execute with one i64 arg.
     pub fn call_i64_i64(&self, id: FunctionId, arg: i64) -> i64 {
-        let ptr = self.compiled[&id];
-        let f: fn(i64) -> i64 = unsafe { std::mem::transmute(ptr) };
+        let ptr = self
+            .compiled
+            .get(&id)
+            .unwrap_or_else(|| panic!("codegen: function {:?} not compiled", id));
+        let f: fn(i64) -> i64 = unsafe { std::mem::transmute(*ptr) };
         f(arg)
     }
 
     /// Execute with two i64 args.
     pub fn call_i64_i64_i64(&self, id: FunctionId, a: i64, b: i64) -> i64 {
-        let ptr = self.compiled[&id];
-        let f: fn(i64, i64) -> i64 = unsafe { std::mem::transmute(ptr) };
+        let ptr = self
+            .compiled
+            .get(&id)
+            .unwrap_or_else(|| panic!("codegen: function {:?} not compiled", id));
+        let f: fn(i64, i64) -> i64 = unsafe { std::mem::transmute(*ptr) };
         f(a, b)
     }
 
