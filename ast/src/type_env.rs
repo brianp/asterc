@@ -45,13 +45,15 @@ pub struct NamespaceInfo {
     pub enums: HashMap<String, EnumInfo>,
 }
 
+/// Type environment with Rc-shared maps for O(1) scope creation.
+/// Maps are shared via Rc and only cloned on mutation (copy-on-write).
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeEnv {
-    pub variables: HashMap<String, Type>,
-    pub classes: HashMap<String, ClassInfo>,
-    pub traits: HashMap<String, TraitInfo>,
-    pub enums: HashMap<String, EnumInfo>,
-    pub namespaces: HashMap<String, NamespaceInfo>,
+    variables: Rc<HashMap<String, Type>>,
+    classes: Rc<HashMap<String, ClassInfo>>,
+    traits: Rc<HashMap<String, TraitInfo>>,
+    enums: Rc<HashMap<String, EnumInfo>>,
+    namespaces: Rc<HashMap<String, NamespaceInfo>>,
     pub parent: Option<Rc<TypeEnv>>,
 }
 
@@ -64,28 +66,47 @@ impl Default for TypeEnv {
 impl TypeEnv {
     pub fn new() -> Self {
         Self {
-            variables: HashMap::new(),
-            classes: HashMap::new(),
-            traits: HashMap::new(),
-            enums: HashMap::new(),
-            namespaces: HashMap::new(),
+            variables: Rc::new(HashMap::new()),
+            classes: Rc::new(HashMap::new()),
+            traits: Rc::new(HashMap::new()),
+            enums: Rc::new(HashMap::new()),
+            namespaces: Rc::new(HashMap::new()),
             parent: None,
         }
     }
 
-    /// Create a child scope that inherits from this environment.
-    /// Clones the current level's maps into an Rc snapshot so children observe
-    /// lexical scoping semantics (no visibility of later parent mutations).
-    /// The clone is shallow: only the current level's HashMaps are copied;
-    /// ancestor levels are shared via Rc reference counting.
+    /// Create a child scope. O(1) — Rc clone, no HashMap cloning.
     pub fn child(&self) -> TypeEnv {
         TypeEnv {
-            variables: HashMap::new(),
-            classes: HashMap::new(),
-            traits: HashMap::new(),
-            enums: HashMap::new(),
-            namespaces: HashMap::new(),
+            variables: Rc::new(HashMap::new()),
+            classes: Rc::new(HashMap::new()),
+            traits: Rc::new(HashMap::new()),
+            enums: Rc::new(HashMap::new()),
+            namespaces: Rc::new(HashMap::new()),
             parent: Some(Rc::new(self.clone())),
+        }
+    }
+
+    /// Enter a child scope in-place. O(1) — moves data, no clone.
+    pub fn enter_scope(&mut self) {
+        let snapshot = TypeEnv {
+            variables: std::mem::take(&mut self.variables),
+            classes: std::mem::take(&mut self.classes),
+            traits: std::mem::take(&mut self.traits),
+            enums: std::mem::take(&mut self.enums),
+            namespaces: std::mem::take(&mut self.namespaces),
+            parent: self.parent.take(),
+        };
+        self.parent = Some(Rc::new(snapshot));
+    }
+
+    /// Exit the current scope, restoring the parent's state.
+    pub fn exit_scope(&mut self) {
+        if let Some(parent_rc) = self.parent.take() {
+            match Rc::try_unwrap(parent_rc) {
+                Ok(parent) => *self = parent,
+                Err(rc) => *self = (*rc).clone(),
+            }
         }
     }
 
@@ -97,7 +118,7 @@ impl TypeEnv {
     }
 
     pub fn set_var(&mut self, name: String, ty: Type) {
-        self.variables.insert(name, ty);
+        Rc::make_mut(&mut self.variables).insert(name, ty);
     }
 
     pub fn get_class(&self, name: &str) -> Option<ClassInfo> {
@@ -108,7 +129,7 @@ impl TypeEnv {
     }
 
     pub fn set_class(&mut self, name: String, info: ClassInfo) {
-        self.classes.insert(name, info);
+        Rc::make_mut(&mut self.classes).insert(name, info);
     }
 
     pub fn get_trait(&self, name: &str) -> Option<TraitInfo> {
@@ -119,7 +140,11 @@ impl TypeEnv {
     }
 
     pub fn set_trait(&mut self, name: String, info: TraitInfo) {
-        self.traits.insert(name, info);
+        Rc::make_mut(&mut self.traits).insert(name, info);
+    }
+
+    pub fn remove_trait(&mut self, name: &str) {
+        Rc::make_mut(&mut self.traits).remove(name);
     }
 
     pub fn get_enum(&self, name: &str) -> Option<EnumInfo> {
@@ -130,7 +155,11 @@ impl TypeEnv {
     }
 
     pub fn set_enum(&mut self, name: String, info: EnumInfo) {
-        self.enums.insert(name, info);
+        Rc::make_mut(&mut self.enums).insert(name, info);
+    }
+
+    pub fn remove_enum(&mut self, name: &str) {
+        Rc::make_mut(&mut self.enums).remove(name);
     }
 
     pub fn get_namespace(&self, name: &str) -> Option<NamespaceInfo> {
@@ -141,7 +170,7 @@ impl TypeEnv {
     }
 
     pub fn set_namespace(&mut self, name: String, info: NamespaceInfo) {
-        self.namespaces.insert(name, info);
+        Rc::make_mut(&mut self.namespaces).insert(name, info);
     }
 
     pub fn all_var_names(&self) -> Vec<&str> {
@@ -266,5 +295,18 @@ mod tests {
         assert!(child.parent.is_some());
         assert_eq!(child.get_var("x"), Some(Type::Int));
         assert_eq!(child.get_var("y"), Some(Type::Float));
+    }
+
+    #[test]
+    fn enter_exit_scope_preserves_state() {
+        let mut env = TypeEnv::new();
+        env.set_var("x".into(), Type::Int);
+        env.enter_scope();
+        env.set_var("y".into(), Type::Float);
+        assert_eq!(env.get_var("x"), Some(Type::Int)); // inherited
+        assert_eq!(env.get_var("y"), Some(Type::Float)); // local
+        env.exit_scope();
+        assert_eq!(env.get_var("x"), Some(Type::Int));
+        assert_eq!(env.get_var("y"), None); // gone after exit
     }
 }

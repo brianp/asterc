@@ -40,7 +40,8 @@ impl Default for TypeChecker {
 impl TypeChecker {
     pub fn new() -> Self {
         let mut env = TypeEnv::new();
-        // Builtins
+        // Register log/print so they appear in scope for diagnostics (e.g. typo suggestions).
+        // Actual type checking is handled as polymorphic builtins in check_call_inner.
         env.set_var(
             "log".into(),
             Type::Function {
@@ -299,16 +300,14 @@ impl TypeChecker {
         tc.module_loader = Some(loader);
         // Remove protocol traits from env — require `use std { ... }` import
         for name in ["Eq", "Ord", "Printable", "From", "Into", "Iterable"] {
-            tc.env.traits.remove(name);
+            tc.env.remove_trait(name);
         }
-        {
-            let name = "Ordering";
-            tc.env.enums.remove(name);
-        }
+        tc.env.remove_enum("Ordering");
         tc
     }
 
     /// Create a child TypeChecker that inherits context flags and a child scope.
+    /// Uses clone — prefer `with_child_scope` for better performance.
     pub(crate) fn child_checker(&self) -> TypeChecker {
         TypeChecker {
             env: self.env.child(),
@@ -324,6 +323,39 @@ impl TypeChecker {
         }
     }
 
+    /// Execute `f` in a child scope. The env is scoped via enter/exit (zero-copy),
+    /// and TypeChecker state (loop_depth, throws, etc.) is saved and restored.
+    pub(crate) fn with_child_scope<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&mut Self) -> R,
+    {
+        // Save state
+        let saved_loop_depth = self.loop_depth;
+        let saved_expected_return_type = self.expected_return_type.clone();
+        let saved_current_function = self.current_function.clone();
+        let saved_throws_type = self.throws_type.clone();
+        let saved_diagnostics = std::mem::take(&mut self.diagnostics);
+        let saved_expected_type = self.expected_type.clone();
+
+        // Enter child scope (O(1) — moves data, no clone)
+        self.env.enter_scope();
+
+        let result = f(self);
+
+        // Exit child scope (O(1) if Rc is unique)
+        self.env.exit_scope();
+
+        // Restore state
+        self.loop_depth = saved_loop_depth;
+        self.expected_return_type = saved_expected_return_type;
+        self.current_function = saved_current_function;
+        self.throws_type = saved_throws_type;
+        self.diagnostics = saved_diagnostics;
+        self.expected_type = saved_expected_type;
+
+        result
+    }
+
     pub fn check_module(&mut self, m: &ast::Module) -> Result<(), Diagnostic> {
         let diags = self.check_module_all(m);
         if diags.is_empty() {
@@ -335,6 +367,74 @@ impl TypeChecker {
     }
 
     pub fn check_module_all(&mut self, m: &ast::Module) -> Vec<Diagnostic> {
+        // First pass: pre-register all top-level function signatures so that
+        // recursive and mutually recursive calls resolve during the second pass.
+        for s in &m.body {
+            if let Stmt::Let {
+                name,
+                value:
+                    Expr::Lambda {
+                        params,
+                        ret_type,
+                        generic_params,
+                        throws,
+                        type_constraints,
+                        ..
+                    },
+                ..
+            } = s
+            {
+                // Skip lambdas with inferred param types — they need context to resolve.
+                if params.iter().any(|(_, t)| *t == Type::Inferred) {
+                    continue;
+                }
+
+                // Determine generic type params (explicit or auto-detected).
+                let inferred_type_params = if generic_params.is_some() {
+                    generic_params.clone().unwrap_or_default()
+                } else {
+                    let mut type_param_names: Vec<String> = Vec::new();
+                    for (_, t) in params {
+                        self.collect_unknown_type_names(t, &mut type_param_names);
+                    }
+                    type_param_names
+                };
+
+                let param_types: Vec<Type> = params.iter().map(|(_, t)| t.clone()).collect();
+
+                // Convert inferred type params from Custom to TypeVar in the signature.
+                let (final_params, final_ret) = if inferred_type_params.is_empty() {
+                    (param_types, ret_type.clone())
+                } else {
+                    let fp = param_types
+                        .iter()
+                        .map(|t| {
+                            Self::replace_custom_with_typevar(
+                                t,
+                                &inferred_type_params,
+                                type_constraints,
+                            )
+                        })
+                        .collect();
+                    let fr = Self::replace_custom_with_typevar(
+                        ret_type,
+                        &inferred_type_params,
+                        type_constraints,
+                    );
+                    (fp, fr)
+                };
+
+                let fn_type = Type::Function {
+                    param_names: params.iter().map(|(n, _)| n.clone()).collect(),
+                    params: final_params,
+                    ret: Box::new(final_ret),
+                    throws: throws.clone().map(Box::new),
+                };
+                self.env.set_var(name.clone(), fn_type);
+            }
+        }
+
+        // Second pass: typecheck all statements (function bodies can now see all signatures).
         for s in &m.body {
             match self.check_stmt(s) {
                 Ok(_) => {}
@@ -521,7 +621,7 @@ impl TypeChecker {
                     .with_label(cond.span(), "expected Bool"));
                 }
 
-                self.child_checker().check_body(then_body)?;
+                self.with_child_scope(|tc| tc.check_body(then_body))?;
                 for (elif_cond, elif_body) in elif_branches {
                     let elif_cond_ty = self.check_expr(elif_cond)?;
                     if elif_cond_ty != Type::Bool && !elif_cond_ty.is_error() {
@@ -532,9 +632,9 @@ impl TypeChecker {
                         .with_code("E015")
                         .with_label(elif_cond.span(), "expected Bool"));
                     }
-                    self.child_checker().check_body(elif_body)?;
+                    self.with_child_scope(|tc| tc.check_body(elif_body))?;
                 }
-                self.child_checker().check_body(else_body)
+                self.with_child_scope(|tc| tc.check_body(else_body))
             }
             Stmt::While { cond, body, .. } => {
                 let cond_ty = self.check_expr(cond)?;
@@ -546,20 +646,22 @@ impl TypeChecker {
                     .with_code("E015")
                     .with_label(cond.span(), "expected Bool"));
                 }
-                let mut sub = self.child_checker();
-                sub.loop_depth += 1;
-                sub.check_body(body)
+                self.with_child_scope(|tc| {
+                    tc.loop_depth += 1;
+                    tc.check_body(body)
+                })
             }
             Stmt::For {
                 var, iter, body, ..
             } => {
                 let iter_ty = self.check_expr(iter)?;
                 if iter_ty.is_error() {
-                    let mut sub = self.child_checker();
-                    sub.loop_depth += 1;
-                    sub.env.set_var(var.clone(), Type::Error);
-                    sub.check_body(body)?;
-                    return Ok(Type::Void);
+                    return self.with_child_scope(|tc| {
+                        tc.loop_depth += 1;
+                        tc.env.set_var(var.clone(), Type::Error);
+                        tc.check_body(body)?;
+                        Ok(Type::Void)
+                    });
                 }
                 let elem_ty = match iter_ty {
                     Type::List(inner) => *inner,
@@ -601,10 +703,11 @@ impl TypeChecker {
                         .with_label(iter.span(), "expected List or Iterable"));
                     }
                 };
-                let mut sub = self.child_checker();
-                sub.loop_depth += 1;
-                sub.env.set_var(var.clone(), elem_ty);
-                sub.check_body(body)
+                self.with_child_scope(|tc| {
+                    tc.loop_depth += 1;
+                    tc.env.set_var(var.clone(), elem_ty);
+                    tc.check_body(body)
+                })
             }
             Stmt::Assignment { target, value, .. } => {
                 let val_ty = self.check_expr(value)?;
@@ -653,6 +756,12 @@ impl TypeChecker {
                             if let Some(info) = self.env.get_class(class_name) {
                                 if let Some(field_ty) = info.fields.get(field) {
                                     if *field_ty != val_ty {
+                                        // Nullable auto-wrap: allow T or Nil assigned to T?
+                                        if let Type::Nullable(inner) = field_ty
+                                            && (val_ty == **inner || val_ty == Type::Nil)
+                                        {
+                                            return Ok(field_ty.clone());
+                                        }
                                         return Err(Diagnostic::error(format!(
                                             "Cannot assign {:?} to field '{}' of type {:?}",
                                             val_ty, field, field_ty
@@ -872,60 +981,41 @@ impl TypeChecker {
         }
     }
 
-    /// Build exports for a std submodule. Returns None if submodule name is unknown.
-    fn builtin_std_submodule_exports(
+    /// Build a ModuleExports containing only the named builtin traits and enums.
+    fn builtin_exports_from(
         &self,
-        submodule: &str,
-    ) -> Option<crate::module_loader::ModuleExports> {
-        use crate::module_loader::ModuleExports;
-        let empty = || ModuleExports {
+        trait_names: &[&str],
+        enum_names: &[&str],
+    ) -> crate::module_loader::ModuleExports {
+        let mut exports = crate::module_loader::ModuleExports {
             variables: HashMap::new(),
             classes: HashMap::new(),
             traits: HashMap::new(),
             enums: HashMap::new(),
         };
+        for &name in trait_names {
+            if let Some(t) = self.builtin_traits.get(name) {
+                exports.traits.insert(name.to_string(), t.clone());
+            }
+        }
+        for &name in enum_names {
+            if let Some(e) = self.builtin_enums.get(name) {
+                exports.enums.insert(name.to_string(), e.clone());
+            }
+        }
+        exports
+    }
+
+    /// Build exports for a std submodule. Returns None if submodule name is unknown.
+    fn builtin_std_submodule_exports(
+        &self,
+        submodule: &str,
+    ) -> Option<crate::module_loader::ModuleExports> {
         match submodule {
-            "cmp" => {
-                let mut exports = empty();
-                for name in ["Eq", "Ord"] {
-                    if let Some(t) = self.builtin_traits.get(name) {
-                        exports.traits.insert(name.to_string(), t.clone());
-                    }
-                }
-                for name in ["Ordering"] {
-                    if let Some(e) = self.builtin_enums.get(name) {
-                        exports.enums.insert(name.to_string(), e.clone());
-                    }
-                }
-                Some(exports)
-            }
-            "fmt" => {
-                let mut exports = empty();
-                for name in ["Printable"] {
-                    if let Some(t) = self.builtin_traits.get(name) {
-                        exports.traits.insert(name.to_string(), t.clone());
-                    }
-                }
-                Some(exports)
-            }
-            "collections" => {
-                let mut exports = empty();
-                for name in ["Iterable"] {
-                    if let Some(t) = self.builtin_traits.get(name) {
-                        exports.traits.insert(name.to_string(), t.clone());
-                    }
-                }
-                Some(exports)
-            }
-            "convert" => {
-                let mut exports = empty();
-                for name in ["From", "Into"] {
-                    if let Some(t) = self.builtin_traits.get(name) {
-                        exports.traits.insert(name.to_string(), t.clone());
-                    }
-                }
-                Some(exports)
-            }
+            "cmp" => Some(self.builtin_exports_from(&["Eq", "Ord"], &["Ordering"])),
+            "fmt" => Some(self.builtin_exports_from(&["Printable"], &[])),
+            "collections" => Some(self.builtin_exports_from(&["Iterable"], &[])),
+            "convert" => Some(self.builtin_exports_from(&["From", "Into"], &[])),
             _ => None,
         }
     }
@@ -1021,20 +1111,25 @@ impl TypeChecker {
             }
             (None, None) => {
                 // Wildcard import: use foo — import all pub items
-                for (name, ty) in &exports.variables {
-                    self.env.set_var(name.clone(), ty.clone());
-                }
-                for (name, info) in &exports.classes {
-                    self.env.set_class(name.clone(), info.clone());
-                }
-                for (name, info) in &exports.traits {
-                    self.env.set_trait(name.clone(), info.clone());
-                }
-                for (name, info) in &exports.enums {
-                    self.env.set_enum(name.clone(), info.clone());
-                }
+                self.inject_all_exports(exports);
                 Ok(Type::Void)
             }
+        }
+    }
+
+    /// Inject all exports from a module into the current environment.
+    fn inject_all_exports(&mut self, exports: &crate::module_loader::ModuleExports) {
+        for (name, ty) in &exports.variables {
+            self.env.set_var(name.clone(), ty.clone());
+        }
+        for (name, info) in &exports.classes {
+            self.env.set_class(name.clone(), info.clone());
+        }
+        for (name, info) in &exports.traits {
+            self.env.set_trait(name.clone(), info.clone());
+        }
+        for (name, info) in &exports.enums {
+            self.env.set_enum(name.clone(), info.clone());
         }
     }
 
@@ -1131,9 +1226,13 @@ impl TypeChecker {
                     .with_code("E001")
                     .with_label(*span, format!("unknown variant on {}", enum_name)));
                 }
-                // Check enum type matches scrutinee type
+                // Check enum type matches scrutinee type (unwrap Nullable if present)
                 let expected_enum_ty = Type::Custom(enum_name.clone(), Vec::new());
-                if *scrutinee_ty != expected_enum_ty {
+                let scrutinee_unwrapped = match scrutinee_ty {
+                    Type::Nullable(inner) => inner.as_ref(),
+                    other => other,
+                };
+                if *scrutinee_unwrapped != expected_enum_ty {
                     return Err(Diagnostic::error(format!(
                         "Pattern type mismatch: expected {:?}, got {}",
                         scrutinee_ty, enum_name
@@ -1150,7 +1249,8 @@ impl TypeChecker {
         let mut best: Option<(usize, &str)> = None;
         for known in self.env.all_var_names() {
             let dist = Self::levenshtein(name, known);
-            if dist <= 2 && dist < name.len() && (best.is_none() || dist < best.unwrap().0) {
+            let dominated = best.as_ref().is_none_or(|(d, _)| dist < *d);
+            if dist <= 2 && dist < name.len() && dominated {
                 best = Some((dist, known));
             }
         }

@@ -345,6 +345,32 @@ impl Parser {
         use TokenKind::*;
         let start = self.start_span();
         match &self.peek().kind {
+            Minus => {
+                // Negative numeric literal in match pattern
+                self.advance();
+                match &self.peek().kind {
+                    Int(v) => {
+                        let val = -*v;
+                        self.advance();
+                        let span = self.span_from(start);
+                        Ok(MatchPattern::Literal(Box::new(Expr::Int(val, span)), span))
+                    }
+                    Float(v) => {
+                        let val = -*v;
+                        self.advance();
+                        let span = self.span_from(start);
+                        Ok(MatchPattern::Literal(
+                            Box::new(Expr::Float(val, span)),
+                            span,
+                        ))
+                    }
+                    t => Err(Diagnostic::error(format!(
+                        "Expected number after '-' in match pattern, got {:?}",
+                        t
+                    ))
+                    .with_code("P001")),
+                }
+            }
             Int(v) => {
                 let val = *v;
                 self.advance();
