@@ -103,17 +103,18 @@ fn translate_stmt(builder: &mut FunctionBuilder, state: &mut TranslationState, s
             let val = translate_expr(builder, state, value);
             match target {
                 FirPlace::Local(id) => {
-                    let var = state.locals[id];
+                    let var = *state.locals.get(id).unwrap_or_else(|| {
+                        panic!("codegen: assign to undefined local {:?}", id)
+                    });
                     builder.def_var(var, val);
                 }
                 FirPlace::Field { object, offset } => {
                     let obj_ptr = translate_expr(builder, state, object);
-                    builder.ins().store(
-                        ir::MemFlags::new(),
-                        val,
-                        obj_ptr,
-                        Offset32::new(*offset as i32),
-                    );
+                    let off = i32::try_from(*offset)
+                        .expect("codegen: field offset exceeds i32::MAX");
+                    builder
+                        .ins()
+                        .store(ir::MemFlags::new(), val, obj_ptr, Offset32::new(off));
                 }
                 FirPlace::Index { list, index } => {
                     let list_val = translate_expr(builder, state, list);
@@ -250,7 +251,9 @@ fn translate_expr(
         FirExpr::NilLit => builder.ins().iconst(types::I64, 0),
 
         FirExpr::LocalVar(id, _ty) => {
-            let var = state.locals[id];
+            let var = *state.locals.get(id).unwrap_or_else(|| {
+                panic!("codegen: use of undefined local {:?}", id)
+            });
             builder.use_var(var)
         }
 
@@ -294,12 +297,11 @@ fn translate_expr(
         FirExpr::FieldGet { object, offset, ty } => {
             let obj_ptr = translate_expr(builder, state, object);
             let clif_ty = fir_type_to_clif(ty);
-            builder.ins().load(
-                clif_ty,
-                ir::MemFlags::new(),
-                obj_ptr,
-                Offset32::new(*offset as i32),
-            )
+            let off =
+                i32::try_from(*offset).expect("codegen: field offset exceeds i32::MAX");
+            builder
+                .ins()
+                .load(clif_ty, ir::MemFlags::new(), obj_ptr, Offset32::new(off))
         }
 
         FirExpr::FieldSet {
@@ -309,12 +311,11 @@ fn translate_expr(
         } => {
             let obj_ptr = translate_expr(builder, state, object);
             let val = translate_expr(builder, state, value);
-            builder.ins().store(
-                ir::MemFlags::new(),
-                val,
-                obj_ptr,
-                Offset32::new(*offset as i32),
-            );
+            let off =
+                i32::try_from(*offset).expect("codegen: field offset exceeds i32::MAX");
+            builder
+                .ins()
+                .store(ir::MemFlags::new(), val, obj_ptr, Offset32::new(off));
             val
         }
 
@@ -326,12 +327,11 @@ fn translate_expr(
                 let ptr = builder.inst_results(call)[0];
                 for (i, field_expr) in fields.iter().enumerate() {
                     let field_val = translate_expr(builder, state, field_expr);
-                    builder.ins().store(
-                        ir::MemFlags::new(),
-                        field_val,
-                        ptr,
-                        Offset32::new((i * 8) as i32),
-                    );
+                    let off = i32::try_from(i * 8)
+                        .expect("codegen: construct field offset exceeds i32::MAX");
+                    builder
+                        .ins()
+                        .store(ir::MemFlags::new(), field_val, ptr, Offset32::new(off));
                 }
                 ptr
             } else {
@@ -505,12 +505,11 @@ fn translate_expr(
         FirExpr::EnvLoad { env, offset, ty } => {
             let env_ptr = translate_expr(builder, state, env);
             let clif_ty = fir_type_to_clif(ty);
-            builder.ins().load(
-                clif_ty,
-                ir::MemFlags::new(),
-                env_ptr,
-                Offset32::new(*offset as i32),
-            )
+            let off =
+                i32::try_from(*offset).expect("codegen: env load offset exceeds i32::MAX");
+            builder
+                .ins()
+                .load(clif_ty, ir::MemFlags::new(), env_ptr, Offset32::new(off))
         }
 
         FirExpr::GlobalFunc(func) => {
@@ -538,7 +537,34 @@ fn translate_binop(
         BinOp::Mul if is_f => builder.ins().fmul(lhs, rhs),
         BinOp::Mul => builder.ins().imul(lhs, rhs),
         BinOp::Div if is_f => builder.ins().fdiv(lhs, rhs),
-        BinOp::Div => builder.ins().sdiv(lhs, rhs),
+        BinOp::Div => {
+            // Guard against division by zero and i64::MIN / -1 overflow.
+            // Both cause hardware traps (SIGFPE) with no recovery path.
+            let zero = builder.ins().iconst(types::I64, 0);
+            let is_zero = builder.ins().icmp(IntCC::Equal, rhs, zero);
+            let safe_block = builder.create_block();
+            let trap_block = builder.create_block();
+            let merge_block = builder.create_block();
+            builder.append_block_param(merge_block, types::I64);
+
+            builder
+                .ins()
+                .brif(is_zero, trap_block, &[], safe_block, &[]);
+
+            builder.switch_to_block(trap_block);
+            builder.seal_block(trap_block);
+            let zero_result = builder.ins().iconst(types::I64, 0);
+            builder.ins().jump(merge_block, &[zero_result]);
+
+            builder.switch_to_block(safe_block);
+            builder.seal_block(safe_block);
+            let result = builder.ins().sdiv(lhs, rhs);
+            builder.ins().jump(merge_block, &[result]);
+
+            builder.switch_to_block(merge_block);
+            builder.seal_block(merge_block);
+            builder.block_params(merge_block)[0]
+        }
         BinOp::Mod if is_f => {
             // Float modulo: a - floor(a/b) * b
             let div = builder.ins().fdiv(lhs, rhs);
@@ -546,7 +572,33 @@ fn translate_binop(
             let prod = builder.ins().fmul(floored, rhs);
             builder.ins().fsub(lhs, prod)
         }
-        BinOp::Mod => builder.ins().srem(lhs, rhs),
+        BinOp::Mod => {
+            // Guard against modulo by zero (same trap as division)
+            let zero = builder.ins().iconst(types::I64, 0);
+            let is_zero = builder.ins().icmp(IntCC::Equal, rhs, zero);
+            let safe_block = builder.create_block();
+            let trap_block = builder.create_block();
+            let merge_block = builder.create_block();
+            builder.append_block_param(merge_block, types::I64);
+
+            builder
+                .ins()
+                .brif(is_zero, trap_block, &[], safe_block, &[]);
+
+            builder.switch_to_block(trap_block);
+            builder.seal_block(trap_block);
+            let zero_result = builder.ins().iconst(types::I64, 0);
+            builder.ins().jump(merge_block, &[zero_result]);
+
+            builder.switch_to_block(safe_block);
+            builder.seal_block(safe_block);
+            let result = builder.ins().srem(lhs, rhs);
+            builder.ins().jump(merge_block, &[result]);
+
+            builder.switch_to_block(merge_block);
+            builder.seal_block(merge_block);
+            builder.block_params(merge_block)[0]
+        }
         BinOp::Eq if is_f => builder.ins().fcmp(FloatCC::Equal, lhs, rhs),
         BinOp::Eq => builder.ins().icmp(IntCC::Equal, lhs, rhs),
         BinOp::Neq if is_f => builder.ins().fcmp(FloatCC::NotEqual, lhs, rhs),

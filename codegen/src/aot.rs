@@ -199,7 +199,10 @@ impl CraneliftAOT {
     }
 
     fn compile_function(&mut self, func: &FirFunction) -> Result<(), String> {
-        let clif_func_id = self.declared[&func.id];
+        let clif_func_id = *self
+            .declared
+            .get(&func.id)
+            .ok_or_else(|| format!("codegen: undeclared function {:?} ({})", func.id, func.name))?;
 
         self.ctx.func.signature.params.clear();
         self.ctx.func.signature.returns.clear();
