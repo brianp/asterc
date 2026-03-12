@@ -93,6 +93,28 @@ impl TypeChecker {
                 // Substitute Self -> class type in method lambda types before checking
                 let resolved_value = Self::substitute_self_in_lambda(value, &class_type);
                 let mty = method_checker.check_expr(&resolved_value)?;
+
+                // Register method defaults for call-site resolution
+                if let ast::Expr::Lambda {
+                    params: lp,
+                    defaults: ld,
+                    ..
+                } = value
+                {
+                    let mut default_set = std::collections::HashSet::new();
+                    for (i, d) in ld.iter().enumerate() {
+                        if d.is_some()
+                            && let Some((pname, _)) = lp.get(i)
+                        {
+                            default_set.insert(pname.clone());
+                        }
+                    }
+                    if !default_set.is_empty() {
+                        // Use the qualified name (e.g., "Calc.add")
+                        self.default_params.insert(mname.clone(), default_set);
+                    }
+                }
+
                 let short_name = mname
                     .strip_prefix(&format!("{}.", name))
                     .unwrap_or(mname)
