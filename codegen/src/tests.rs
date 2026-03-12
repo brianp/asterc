@@ -612,6 +612,64 @@ def main() -> Int
 }
 
 // ===========================================================================
+// Field mutation
+// ===========================================================================
+
+#[test]
+fn field_mutation_assign_and_read() {
+    let src = "\
+class Point
+  x: Int
+  y: Int
+
+def main() -> Int
+  let p: Point = Point(x: 1, y: 2)
+  p.x = 99
+  p.x
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 99);
+}
+
+#[test]
+fn field_mutation_second_field() {
+    let src = "\
+class Point
+  x: Int
+  y: Int
+
+def main() -> Int
+  let p: Point = Point(x: 1, y: 2)
+  p.y = 77
+  p.y
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 77);
+}
+
+#[test]
+fn field_mutation_preserves_other_fields() {
+    let src = "\
+class Point
+  x: Int
+  y: Int
+
+def main() -> Int
+  let p: Point = Point(x: 10, y: 32)
+  p.x = 99
+  p.y
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 32);
+}
+
+// ===========================================================================
 // Lists
 // ===========================================================================
 
