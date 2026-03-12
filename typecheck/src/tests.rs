@@ -54,6 +54,7 @@ fn lambda_type_check() {
         generic_params: None,
         throws: None,
         type_constraints: vec![],
+        defaults: Box::new(vec![]),
         span: s(),
     };
     let ty = tc.check_expr(&lambda).unwrap();
@@ -76,6 +77,7 @@ fn call_type_check_and_mismatch() {
         generic_params: None,
         throws: None,
         type_constraints: vec![],
+        defaults: Box::new(vec![]),
         span: s(),
     };
     tc.check_stmt(&Stmt::Let {
@@ -142,6 +144,7 @@ fn class_type_check_and_member_access() {
                 generic_params: None,
                 throws: None,
                 type_constraints: vec![],
+                defaults: Box::new(vec![]),
                 span: s(),
             },
             is_public: false,
@@ -962,6 +965,7 @@ fn trait_definition_registers_trait() {
                 generic_params: None,
                 throws: None,
                 type_constraints: vec![],
+                defaults: Box::new(vec![]),
                 span: s(),
             },
             is_public: false,
@@ -993,6 +997,7 @@ fn class_includes_trait_gets_methods() {
                 generic_params: None,
                 throws: None,
                 type_constraints: vec![],
+                defaults: Box::new(vec![]),
                 span: s(),
             },
             is_public: false,
@@ -1018,6 +1023,7 @@ fn class_includes_trait_gets_methods() {
                 generic_params: None,
                 throws: None,
                 type_constraints: vec![],
+                defaults: Box::new(vec![]),
                 span: s(),
             },
             is_public: false,
@@ -1066,6 +1072,7 @@ fn class_missing_trait_method_error() {
                 generic_params: None,
                 throws: None,
                 type_constraints: vec![],
+                defaults: Box::new(vec![]),
                 span: s(),
             },
             is_public: false,
@@ -1126,6 +1133,7 @@ fn generic_lambda_typechecks_inline() {
         generic_params: None,
         throws: None,
         type_constraints: vec![],
+        defaults: Box::new(vec![]),
         span: s(),
     };
     let ty = tc.check_expr(&lambda).unwrap();
@@ -1149,6 +1157,7 @@ fn generic_lambda_typechecks_explicit() {
         generic_params: Some(vec!["T".into()]),
         throws: None,
         type_constraints: vec![],
+        defaults: Box::new(vec![]),
         span: s(),
     };
     let ty = tc.check_expr(&lambda).unwrap();
@@ -1174,6 +1183,7 @@ fn generic_call_unifies_typevar_to_int() {
         generic_params: None,
         throws: None,
         type_constraints: vec![],
+        defaults: Box::new(vec![]),
         span: s(),
     };
     tc.check_stmt(&Stmt::Let {
@@ -1204,6 +1214,7 @@ fn generic_call_unifies_typevar_to_string() {
         generic_params: None,
         throws: None,
         type_constraints: vec![],
+        defaults: Box::new(vec![]),
         span: s(),
     };
     tc.check_stmt(&Stmt::Let {
@@ -1238,6 +1249,7 @@ fn generic_call_multi_params_unifies() {
         generic_params: None,
         throws: None,
         type_constraints: vec![],
+        defaults: Box::new(vec![]),
         span: s(),
     };
     tc.check_stmt(&Stmt::Let {
@@ -1279,6 +1291,7 @@ fn class_includes_trait_wrong_signature_error() {
                 generic_params: None,
                 throws: None,
                 type_constraints: vec![],
+                defaults: Box::new(vec![]),
                 span: s(),
             },
             is_public: false,
@@ -1304,6 +1317,7 @@ fn class_includes_trait_wrong_signature_error() {
                 generic_params: None,
                 throws: None,
                 type_constraints: vec![],
+                defaults: Box::new(vec![]),
                 span: s(),
             },
             is_public: false,
@@ -1337,6 +1351,7 @@ fn member_access_finds_method_unqualified() {
                 generic_params: None,
                 throws: None,
                 type_constraints: vec![],
+                defaults: Box::new(vec![]),
                 span: s(),
             },
             is_public: false,
@@ -1375,6 +1390,7 @@ fn return_type_mismatch_in_function_error() {
         generic_params: None,
         throws: None,
         type_constraints: vec![],
+        defaults: Box::new(vec![]),
         span: s(),
     };
     let err = err_msg(tc.check_expr(&lambda));
@@ -1397,6 +1413,7 @@ fn return_mid_body_type_mismatch_error() {
         generic_params: None,
         throws: None,
         type_constraints: vec![],
+        defaults: Box::new(vec![]),
         span: s(),
     };
     let err = err_msg(tc.check_expr(&lambda));
@@ -1481,6 +1498,7 @@ fn return_correct_type_ok() {
         generic_params: None,
         throws: None,
         type_constraints: vec![],
+        defaults: Box::new(vec![]),
         span: s(),
     };
     assert!(tc.check_expr(&lambda).is_ok());
@@ -1500,6 +1518,7 @@ fn generic_lambda_body_type_matches_typevar() {
         generic_params: Some(vec!["T".into()]),
         throws: None,
         type_constraints: vec![],
+        defaults: Box::new(vec![]),
         span: s(),
     };
     assert!(tc.check_expr(&lambda).is_ok());
@@ -1517,6 +1536,7 @@ fn generic_lambda_body_wrong_typevar_error() {
         generic_params: Some(vec!["T".into()]),
         throws: None,
         type_constraints: vec![],
+        defaults: Box::new(vec![]),
         span: s(),
     };
     let err = err_msg(tc.check_expr(&lambda));

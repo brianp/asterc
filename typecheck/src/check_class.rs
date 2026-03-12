@@ -243,7 +243,7 @@ impl TypeChecker {
                     let submod = match trait_name.as_str() {
                         "Eq" | "Ord" => "cmp",
                         "Printable" => "fmt",
-                        "Iterable" => "collections",
+                        "Iterable" | "Iterator" => "collections",
                         "From" | "Into" => "convert",
                         _ => "std",
                     };
@@ -608,6 +608,7 @@ impl TypeChecker {
             generic_params,
             throws,
             type_constraints,
+            defaults,
             span,
         } = expr
         {
@@ -626,6 +627,7 @@ impl TypeChecker {
                 generic_params: generic_params.clone(),
                 throws: resolved_throws,
                 type_constraints: type_constraints.clone(),
+                defaults: defaults.clone(),
                 span: *span,
             }
         } else {
@@ -745,6 +747,25 @@ impl TypeChecker {
             && **cb_ret == Type::Void
         {
             return cb_params.first().cloned();
+        }
+        None
+    }
+
+    /// Extract the element type T from a class that includes Iterator[T].
+    /// Looks at the parametric_includes to find the concrete type argument.
+    /// Falls back to inspecting the next() method return type.
+    pub(crate) fn get_iterator_element_type_from_class(info: &ClassInfo) -> Option<Type> {
+        // First try parametric_includes for the concrete type arg
+        for (tname, targs) in &info.parametric_includes {
+            if tname == "Iterator" && targs.len() == 1 {
+                return Some(targs[0].clone());
+            }
+        }
+        // Fallback: inspect next() return type (should be T?)
+        if let Some(Type::Function { ret, .. }) = info.methods.get("next")
+            && let Type::Nullable(inner) = ret.as_ref()
+        {
+            return Some(*inner.clone());
         }
         None
     }

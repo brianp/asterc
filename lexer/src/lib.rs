@@ -14,22 +14,37 @@ const MAX_STRING_LENGTH: usize = 1_000_000;
 // Helpers called from lex()
 // ---------------------------------------------------------------------------
 
+/// Result of lexing a string — either a plain string or an interpolated string
+/// with embedded expression tokens.
+enum StringResult {
+    Plain(String, usize),
+    Interpolated(Vec<Token>, usize),
+}
+
 /// Lex a double-quoted string literal. Called after the opening `"` has been
 /// consumed. Returns the string contents and the updated column offset.
-fn lex_string(
+/// If the string contains `{expr}` interpolations, returns an Interpolated result
+/// with StringStart/StringMid/StringEnd tokens and embedded expression tokens.
+fn lex_string_full(
     chars: &mut std::iter::Peekable<std::str::Chars>,
     mut col: usize,
     line_no: usize,
     byte_offset: usize,
-) -> Result<(String, usize), Diagnostic> {
+    ls: usize,
+) -> Result<StringResult, Diagnostic> {
     let mut s = String::new();
+    let mut has_interpolation = false;
+    let mut segments: Vec<(String, Vec<Token>)> = Vec::new(); // (literal_before, expr_tokens)
+
     loop {
-        match chars.next() {
-            Some('"') => {
+        match chars.peek() {
+            Some(&'"') => {
+                chars.next();
                 col += 1;
                 break;
             }
-            Some('\\') => {
+            Some(&'\\') => {
+                chars.next();
                 col += 1;
                 match chars.next() {
                     Some('n') => {
@@ -56,6 +71,14 @@ fn lex_string(
                         s.push('\0');
                         col += 1;
                     }
+                    Some('{') => {
+                        s.push('{');
+                        col += 1;
+                    }
+                    Some('}') => {
+                        s.push('}');
+                        col += 1;
+                    }
                     Some(c) => {
                         return Err(Diagnostic::error(format!(
                             "Unknown escape sequence '\\{}' at line {}",
@@ -76,7 +99,314 @@ fn lex_string(
                     }
                 }
             }
-            Some(c) => {
+            Some(&'{') => {
+                chars.next();
+                col += 1;
+                has_interpolation = true;
+                // Collect the expression text until matching '}'
+                let literal_part = std::mem::take(&mut s);
+                let mut expr_text = String::new();
+                let mut brace_depth = 1;
+                let expr_start_col = col;
+                while let Some(&ch) = chars.peek() {
+                    if ch == '{' {
+                        brace_depth += 1;
+                        expr_text.push(ch);
+                        chars.next();
+                        col += 1;
+                    } else if ch == '}' {
+                        brace_depth -= 1;
+                        if brace_depth == 0 {
+                            chars.next();
+                            col += 1;
+                            break;
+                        }
+                        expr_text.push(ch);
+                        chars.next();
+                        col += 1;
+                    } else if ch == '"' {
+                        // Don't allow unescaped quotes inside interpolation
+                        return Err(Diagnostic::error(format!(
+                            "Unexpected '\"' inside string interpolation at line {}",
+                            line_no
+                        ))
+                        .with_code("L002")
+                        .with_label(
+                            Span::new(ls + col, ls + col + 1),
+                            "unexpected quote in interpolation",
+                        ));
+                    } else {
+                        expr_text.push(ch);
+                        chars.next();
+                        col += 1;
+                    }
+                }
+                if brace_depth != 0 {
+                    return Err(Diagnostic::error(format!(
+                        "Unterminated string interpolation at line {}",
+                        line_no
+                    ))
+                    .with_code("L002"));
+                }
+                // Lex the expression text into tokens
+                // We need to produce tokens with correct positions
+                let mut expr_chars = expr_text.chars().peekable();
+                let mut expr_col = expr_start_col;
+                let mut expr_tokens = Vec::new();
+                while let Some(&ech) = expr_chars.peek() {
+                    if ech == ' ' || ech == '\t' {
+                        expr_chars.next();
+                        expr_col += 1;
+                        continue;
+                    }
+                    let tok_start = ls + expr_col;
+                    expr_col += 1;
+                    expr_chars.next();
+                    match ech {
+                        '(' => expr_tokens.push(Token {
+                            kind: TokenKind::LParen,
+                            line: line_no,
+                            col: expr_col,
+                            start: tok_start,
+                            end: tok_start + 1,
+                        }),
+                        ')' => expr_tokens.push(Token {
+                            kind: TokenKind::RParen,
+                            line: line_no,
+                            col: expr_col,
+                            start: tok_start,
+                            end: tok_start + 1,
+                        }),
+                        '+' => expr_tokens.push(Token {
+                            kind: TokenKind::Plus,
+                            line: line_no,
+                            col: expr_col,
+                            start: tok_start,
+                            end: tok_start + 1,
+                        }),
+                        '-' => {
+                            if expr_chars.peek() == Some(&'>') {
+                                expr_chars.next();
+                                expr_col += 1;
+                                expr_tokens.push(Token {
+                                    kind: TokenKind::Arrow,
+                                    line: line_no,
+                                    col: expr_col,
+                                    start: tok_start,
+                                    end: tok_start + 2,
+                                });
+                            } else {
+                                expr_tokens.push(Token {
+                                    kind: TokenKind::Minus,
+                                    line: line_no,
+                                    col: expr_col,
+                                    start: tok_start,
+                                    end: tok_start + 1,
+                                });
+                            }
+                        }
+                        '*' => {
+                            if expr_chars.peek() == Some(&'*') {
+                                expr_chars.next();
+                                expr_col += 1;
+                                expr_tokens.push(Token {
+                                    kind: TokenKind::StarStar,
+                                    line: line_no,
+                                    col: expr_col,
+                                    start: tok_start,
+                                    end: tok_start + 2,
+                                });
+                            } else {
+                                expr_tokens.push(Token {
+                                    kind: TokenKind::Star,
+                                    line: line_no,
+                                    col: expr_col,
+                                    start: tok_start,
+                                    end: tok_start + 1,
+                                });
+                            }
+                        }
+                        '/' => expr_tokens.push(Token {
+                            kind: TokenKind::Slash,
+                            line: line_no,
+                            col: expr_col,
+                            start: tok_start,
+                            end: tok_start + 1,
+                        }),
+                        '%' => expr_tokens.push(Token {
+                            kind: TokenKind::Percent,
+                            line: line_no,
+                            col: expr_col,
+                            start: tok_start,
+                            end: tok_start + 1,
+                        }),
+                        '.' => expr_tokens.push(Token {
+                            kind: TokenKind::Dot,
+                            line: line_no,
+                            col: expr_col,
+                            start: tok_start,
+                            end: tok_start + 1,
+                        }),
+                        ',' => expr_tokens.push(Token {
+                            kind: TokenKind::Comma,
+                            line: line_no,
+                            col: expr_col,
+                            start: tok_start,
+                            end: tok_start + 1,
+                        }),
+                        ':' => expr_tokens.push(Token {
+                            kind: TokenKind::Colon,
+                            line: line_no,
+                            col: expr_col,
+                            start: tok_start,
+                            end: tok_start + 1,
+                        }),
+                        '[' => expr_tokens.push(Token {
+                            kind: TokenKind::LBracket,
+                            line: line_no,
+                            col: expr_col,
+                            start: tok_start,
+                            end: tok_start + 1,
+                        }),
+                        ']' => expr_tokens.push(Token {
+                            kind: TokenKind::RBracket,
+                            line: line_no,
+                            col: expr_col,
+                            start: tok_start,
+                            end: tok_start + 1,
+                        }),
+                        '=' => {
+                            if expr_chars.peek() == Some(&'=') {
+                                expr_chars.next();
+                                expr_col += 1;
+                                expr_tokens.push(Token {
+                                    kind: TokenKind::EqualEqual,
+                                    line: line_no,
+                                    col: expr_col,
+                                    start: tok_start,
+                                    end: tok_start + 2,
+                                });
+                            } else {
+                                expr_tokens.push(Token {
+                                    kind: TokenKind::Equals,
+                                    line: line_no,
+                                    col: expr_col,
+                                    start: tok_start,
+                                    end: tok_start + 1,
+                                });
+                            }
+                        }
+                        '!' => {
+                            if expr_chars.peek() == Some(&'=') {
+                                expr_chars.next();
+                                expr_col += 1;
+                                expr_tokens.push(Token {
+                                    kind: TokenKind::BangEqual,
+                                    line: line_no,
+                                    col: expr_col,
+                                    start: tok_start,
+                                    end: tok_start + 2,
+                                });
+                            } else {
+                                expr_tokens.push(Token {
+                                    kind: TokenKind::Bang,
+                                    line: line_no,
+                                    col: expr_col,
+                                    start: tok_start,
+                                    end: tok_start + 1,
+                                });
+                            }
+                        }
+                        '<' => {
+                            if expr_chars.peek() == Some(&'=') {
+                                expr_chars.next();
+                                expr_col += 1;
+                                expr_tokens.push(Token {
+                                    kind: TokenKind::LessEqual,
+                                    line: line_no,
+                                    col: expr_col,
+                                    start: tok_start,
+                                    end: tok_start + 2,
+                                });
+                            } else {
+                                expr_tokens.push(Token {
+                                    kind: TokenKind::Less,
+                                    line: line_no,
+                                    col: expr_col,
+                                    start: tok_start,
+                                    end: tok_start + 1,
+                                });
+                            }
+                        }
+                        '>' => {
+                            if expr_chars.peek() == Some(&'=') {
+                                expr_chars.next();
+                                expr_col += 1;
+                                expr_tokens.push(Token {
+                                    kind: TokenKind::GreaterEqual,
+                                    line: line_no,
+                                    col: expr_col,
+                                    start: tok_start,
+                                    end: tok_start + 2,
+                                });
+                            } else {
+                                expr_tokens.push(Token {
+                                    kind: TokenKind::Greater,
+                                    line: line_no,
+                                    col: expr_col,
+                                    start: tok_start,
+                                    end: tok_start + 1,
+                                });
+                            }
+                        }
+                        '?' => expr_tokens.push(Token {
+                            kind: TokenKind::Question,
+                            line: line_no,
+                            col: expr_col,
+                            start: tok_start,
+                            end: tok_start + 1,
+                        }),
+                        '0'..='9' => {
+                            let (kind, new_col) =
+                                lex_number(&mut expr_chars, ech, expr_col, line_no, tok_start)?;
+                            expr_col = new_col;
+                            expr_tokens.push(Token {
+                                kind,
+                                line: line_no,
+                                col: expr_col,
+                                start: tok_start,
+                                end: ls + expr_col,
+                            });
+                        }
+                        _ if ech.is_ascii_alphabetic() || ech == '_' => {
+                            let (kind, new_col) =
+                                lex_ident_or_keyword(&mut expr_chars, ech, expr_col);
+                            expr_col = new_col;
+                            expr_tokens.push(Token {
+                                kind,
+                                line: line_no,
+                                col: expr_col,
+                                start: tok_start,
+                                end: ls + expr_col,
+                            });
+                        }
+                        _ => {
+                            return Err(Diagnostic::error(format!(
+                                "Unexpected character '{}' in string interpolation at line {}",
+                                ech, line_no
+                            ))
+                            .with_code("L001")
+                            .with_label(
+                                Span::new(tok_start, tok_start + 1),
+                                "unexpected character in interpolation",
+                            ));
+                        }
+                    }
+                }
+                segments.push((literal_part, expr_tokens));
+            }
+            Some(&c) => {
+                chars.next();
                 s.push(c);
                 col += 1;
                 if s.len() > MAX_STRING_LENGTH {
@@ -99,7 +429,46 @@ fn lex_string(
             }
         }
     }
-    Ok((s, col))
+
+    if !has_interpolation {
+        return Ok(StringResult::Plain(s, col));
+    }
+
+    // Build interpolation tokens
+    let mut tokens = Vec::new();
+    let total_segments = segments.len();
+    for (i, (literal, expr_tokens)) in segments.into_iter().enumerate() {
+        if i == 0 {
+            tokens.push(Token {
+                kind: TokenKind::StringStart(literal),
+                line: line_no,
+                col,
+                start: byte_offset,
+                end: ls + col,
+            });
+        } else {
+            tokens.push(Token {
+                kind: TokenKind::StringMid(literal),
+                line: line_no,
+                col,
+                start: byte_offset,
+                end: ls + col,
+            });
+        }
+        tokens.extend(expr_tokens);
+    }
+    // Final trailing literal after last interpolation
+    if total_segments > 0 {
+        tokens.push(Token {
+            kind: TokenKind::StringEnd(s),
+            line: line_no,
+            col,
+            start: byte_offset,
+            end: ls + col,
+        });
+    }
+
+    Ok(StringResult::Interpolated(tokens, col))
 }
 
 /// Lex an integer or float literal. Called with the first digit `first`.
@@ -226,6 +595,7 @@ fn lex_ident_or_keyword(
         "resolve" => Resolve,
         "detached" => Detached,
         "scope" => Scope,
+        "const" => Const,
         _ => Ident(word),
     };
     (kind, col)
@@ -439,17 +809,22 @@ pub fn lex(input: &str) -> Result<Vec<Token>, Diagnostic> {
                     }
                 }
 
-                '"' => {
-                    let (s, new_col) = lex_string(&mut chars, col, line_no, tok_start)?;
-                    col = new_col;
-                    tokens.push(Token {
-                        kind: Str(s),
-                        line: line_no,
-                        col,
-                        start: tok_start,
-                        end: ls + col,
-                    });
-                }
+                '"' => match lex_string_full(&mut chars, col, line_no, tok_start, ls)? {
+                    StringResult::Plain(s, new_col) => {
+                        col = new_col;
+                        tokens.push(Token {
+                            kind: Str(s),
+                            line: line_no,
+                            col,
+                            start: tok_start,
+                            end: ls + col,
+                        });
+                    }
+                    StringResult::Interpolated(interp_tokens, new_col) => {
+                        col = new_col;
+                        tokens.extend(interp_tokens);
+                    }
+                },
 
                 '0'..='9' => {
                     let (kind, new_col) = lex_number(&mut chars, ch, col, line_no, tok_start)?;

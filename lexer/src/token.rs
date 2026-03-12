@@ -33,6 +33,7 @@ pub enum TokenKind {
     Resolve,
     Detached,
     Scope,
+    Const,
     // structure
     Indent,
     Dedent,
@@ -73,6 +74,12 @@ pub enum TokenKind {
     Float(f64),
     Str(String),
     Ident(String),
+    // String interpolation tokens: "hello {name} world" becomes
+    // StringStart("hello "), ...expr tokens..., StringMid(" world"), StringEnd("")
+    // or StringStart("hello "), ...expr..., StringEnd(" world")
+    StringStart(String),
+    StringMid(String),
+    StringEnd(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

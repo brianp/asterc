@@ -5,7 +5,9 @@ pub mod type_env;
 pub mod types;
 
 pub use diagnostic::{Diagnostic, Label, Severity};
-pub use expr::{BinOp, EnumVariant, ErrorCatchPattern, Expr, MatchPattern, Module, Stmt, UnaryOp};
+pub use expr::{
+    BinOp, EnumVariant, ErrorCatchPattern, Expr, MatchPattern, Module, Stmt, StringPart, UnaryOp,
+};
 pub use span::Span;
 pub use type_env::{ClassInfo, EnumInfo, NamespaceInfo, TraitInfo, TypeEnv};
 pub use types::{Type, TypeConstraint};

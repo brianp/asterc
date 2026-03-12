@@ -352,41 +352,81 @@ impl TypeChecker {
                 .with_label(func.span(), "throwing function requires error handling"));
             }
             if params.len() != args.len() {
-                // Build a helpful error listing missing/extra args
+                // Check if the difference can be explained by default params
+                let func_name: Option<String> = match func {
+                    Expr::Ident(name, _) => Some(name.clone()),
+                    Expr::Member { object, field, .. } => {
+                        // For method calls, try qualified name like "ClassName.method"
+                        let obj_type = self.check_expr(object).ok();
+                        if let Some(ast::Type::Custom(class_name, _)) = obj_type {
+                            Some(format!("{}.{}", class_name, field))
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+                let default_param_names = func_name
+                    .as_deref()
+                    .and_then(|n| self.default_params.get(n));
+
                 let provided: std::collections::HashSet<&str> =
                     args.iter().map(|(n, _)| n.as_str()).collect();
                 let expected: std::collections::HashSet<&str> =
                     param_names.iter().map(|n| n.as_str()).collect();
                 let missing: Vec<&&str> = expected.difference(&provided).collect();
                 let extra: Vec<&&str> = provided.difference(&expected).collect();
-                let mut msg = format!(
-                    "Function arity mismatch: expected {}, got {}",
-                    params.len(),
-                    args.len()
-                );
-                if !missing.is_empty() {
-                    msg.push_str(&format!(
-                        ", missing: {}",
-                        missing
-                            .iter()
-                            .map(|s| format!("'{}'", s))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ));
+
+                // If all missing params have defaults and there are no extra args, allow it
+                let all_missing_have_defaults = if let Some(defaults) = default_param_names {
+                    extra.is_empty() && missing.iter().all(|m| defaults.contains(**m))
+                } else {
+                    false
+                };
+
+                if !all_missing_have_defaults {
+                    let mut msg = format!(
+                        "Function arity mismatch: expected {}, got {}",
+                        params.len(),
+                        args.len()
+                    );
+                    if !missing.is_empty() {
+                        // Filter out params that have defaults from the "missing" list
+                        let truly_missing: Vec<&&str> = if let Some(defaults) = default_param_names
+                        {
+                            missing
+                                .iter()
+                                .filter(|m| !defaults.contains(***m))
+                                .copied()
+                                .collect()
+                        } else {
+                            missing.clone()
+                        };
+                        if !truly_missing.is_empty() {
+                            msg.push_str(&format!(
+                                ", missing: {}",
+                                truly_missing
+                                    .iter()
+                                    .map(|s| format!("'{}'", s))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ));
+                        }
+                    }
+                    if !extra.is_empty() {
+                        msg.push_str(&format!(
+                            ", unknown: {}",
+                            extra
+                                .iter()
+                                .map(|s| format!("'{}'", s))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ));
+                    }
+                    return Err(Diagnostic::error(msg)
+                        .with_code("E006")
+                        .with_label(func.span(), format!("expected {} arguments", params.len())));
                 }
-                if !extra.is_empty() {
-                    msg.push_str(&format!(
-                        ", unknown: {}",
-                        extra
-                            .iter()
-                            .map(|s| format!("'{}'", s))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ));
-                }
-                return Err(Diagnostic::error(msg)
-                    .with_code("E006")
-                    .with_label(func.span(), format!("expected {} arguments", params.len())));
             }
             // Match args by name, order-independent
             let mut bindings: HashMap<String, Type> = HashMap::new();

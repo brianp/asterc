@@ -28,6 +28,7 @@ impl TypeChecker {
                 generic_params,
                 throws,
                 type_constraints,
+                defaults,
                 ..
             } => self.check_lambda(
                 params,
@@ -36,6 +37,7 @@ impl TypeChecker {
                 generic_params,
                 throws,
                 type_constraints,
+                defaults,
             ),
             Expr::Call { func, args, .. } => self.check_call(func, args),
             Expr::BinaryOp {
@@ -57,6 +59,62 @@ impl TypeChecker {
             Expr::ErrorOrElse { expr, handler, .. } => self.check_error_or_else(expr, handler),
             Expr::ErrorCatch { expr, arms, .. } => self.check_error_catch(expr, arms),
             Expr::AsyncScope { body, .. } => self.check_async_scope(body),
+            Expr::StringInterpolation { parts, span } => {
+                for part in parts {
+                    if let ast::StringPart::Expr(e) = part {
+                        let ty = self.check_expr(e)?;
+                        // Allow primitive types and String directly; others must include Printable
+                        match &ty {
+                            Type::Int | Type::Float | Type::Bool | Type::String | Type::Error => {}
+                            Type::Custom(name, _) => {
+                                // Check if the class includes Printable
+                                if let Some(class_info) = self.env.get_class(name)
+                                    && !class_info.includes.contains(&"Printable".to_string())
+                                {
+                                    return Err(Diagnostic::error(format!(
+                                        "Type {:?} in string interpolation must include Printable",
+                                        ty
+                                    ))
+                                    .with_code("E023")
+                                    .with_label(*span, "expression must be Printable"));
+                                }
+                                // If class not found, allow it (may be a generic type)
+                            }
+                            Type::Nil => {} // nil prints as "nil"
+                            _ => {}         // Allow other types for now (generics etc.)
+                        }
+                    }
+                }
+                Ok(Type::String)
+            }
+            Expr::Map { entries, .. } => {
+                if entries.is_empty() {
+                    return Ok(Type::Map(Box::new(Type::Error), Box::new(Type::Error)));
+                }
+                let key_ty = self.check_expr(&entries[0].0)?;
+                let val_ty = self.check_expr(&entries[0].1)?;
+                for (k, v) in &entries[1..] {
+                    let kt = self.check_expr(k)?;
+                    let vt = self.check_expr(v)?;
+                    if kt != key_ty {
+                        return Err(Diagnostic::error(format!(
+                            "Map key type mismatch: expected {:?}, got {:?}",
+                            key_ty, kt
+                        ))
+                        .with_code("E003")
+                        .with_label(k.span(), "mismatched key type"));
+                    }
+                    if vt != val_ty {
+                        return Err(Diagnostic::error(format!(
+                            "Map value type mismatch: expected {:?}, got {:?}",
+                            val_ty, vt
+                        ))
+                        .with_code("E003")
+                        .with_label(v.span(), "mismatched value type"));
+                    }
+                }
+                Ok(Type::Map(Box::new(key_ty), Box::new(val_ty)))
+            }
         }
     }
 
@@ -74,6 +132,7 @@ impl TypeChecker {
             generic_params,
             throws,
             type_constraints,
+            defaults,
             ..
         } = expr
         {
@@ -137,6 +196,7 @@ impl TypeChecker {
                         generic_params,
                         &resolved_throws,
                         type_constraints,
+                        defaults,
                     );
                 } else {
                     return Err(Diagnostic::error(
@@ -155,12 +215,14 @@ impl TypeChecker {
                 generic_params,
                 throws,
                 type_constraints,
+                defaults,
             )
         } else {
             self.check_expr(expr)
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn check_lambda(
         &mut self,
         params: &[(String, Type)],
@@ -169,7 +231,26 @@ impl TypeChecker {
         generic_params: &Option<Vec<String>>,
         throws: &Option<Type>,
         type_constraints: &[(String, Vec<ast::TypeConstraint>)],
+        defaults: &[Option<Expr>],
     ) -> Result<Type, Diagnostic> {
+        // Validate default value types match parameter types
+        for (i, default_opt) in defaults.iter().enumerate() {
+            if let Some(default_expr) = default_opt
+                && let Some((pname, ptype)) = params.get(i)
+            {
+                let default_ty = self.check_expr(default_expr)?;
+                if !Self::types_compatible_with_env(ptype, &default_ty, &self.env)
+                    && default_ty != *ptype
+                {
+                    return Err(Diagnostic::error(format!(
+                        "Default value for parameter '{}' has type {:?}, expected {:?}",
+                        pname, default_ty, ptype
+                    ))
+                    .with_code("E001")
+                    .with_label(default_expr.span(), format!("expected {:?}", ptype)));
+                }
+            }
+        }
         // Validate constraint targets exist before proceeding
         for (_, constraints) in type_constraints {
             for c in constraints {

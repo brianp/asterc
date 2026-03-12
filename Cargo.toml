@@ -10,6 +10,7 @@ parser = { path = "parser" }
 typecheck = { path = "typecheck" }
 fir = { path = "fir" }
 codegen = { path = "codegen" }
+aster-fmt = { path = "aster-fmt" }
 ariadne = "0.4"
 sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
@@ -23,6 +24,7 @@ members = [
     "typecheck",   # type inference/checking
     "fir",             # Flat Intermediate Representation (AST → FIR lowering)
     "codegen",         # FIR → machine code (Cranelift JIT + AOT)
+    "aster-fmt",       # source code formatter
     # "vm",           # interpreter/bytecode runtime
 ]
 resolver = "2"
