@@ -6,39 +6,58 @@ use lexer::TokenKind;
 use crate::{MAX_COLLECTION_SIZE, MAX_NESTING_DEPTH, Parser};
 
 impl Parser {
-    /// Parse named argument list: `name1: expr1, name2: expr2`.
+    /// Parse argument list with optional positional arg support.
+    /// When `allow_positional` is true, non-named arguments get synthesized names `_0`, `_1`, etc.
     /// The opening `(` must already be consumed. Does NOT consume the closing `)`.
-    pub(crate) fn parse_named_args(&mut self) -> Result<Vec<(String, Expr)>, Diagnostic> {
+    fn parse_args_inner(
+        &mut self,
+        allow_positional: bool,
+    ) -> Result<Vec<(String, Expr)>, Diagnostic> {
         let mut args = Vec::new();
         let mut seen_names = HashSet::new();
+        let mut positional_index = 0usize;
         if !self.at(&TokenKind::RParen) {
             loop {
                 let arg_start = self.start_span();
-                let name_tok = self.advance();
-                let name = match name_tok.kind {
-                    TokenKind::Ident(n) => n,
-                    ref t => {
+                // Detect named argument: `ident: expr`
+                let is_named = matches!(self.peek_kind(), TokenKind::Ident(_))
+                    && self.peek_second_kind() == Some(&TokenKind::Colon);
+                if is_named {
+                    let name_tok = self.advance();
+                    let name = match name_tok.kind {
+                        TokenKind::Ident(n) => n,
+                        _ => unreachable!(),
+                    };
+                    if !seen_names.insert(name.clone()) {
                         return Err(Diagnostic::error(format!(
-                            "Expected argument name, got {:?}. All arguments must be named (e.g. `name: value`)",
-                            t
+                            "Duplicate argument name '{}'",
+                            name
                         ))
                         .with_code("P001")
-                        .with_label(
-                            ast::Span::new(name_tok.start, name_tok.end),
-                            "expected argument name",
-                        ));
+                        .with_label(self.span_from(arg_start), "duplicate argument"));
                     }
-                };
-                if !seen_names.insert(name.clone()) {
-                    return Err(
-                        Diagnostic::error(format!("Duplicate argument name '{}'", name))
-                            .with_code("P001")
-                            .with_label(self.span_from(arg_start), "duplicate argument"),
-                    );
+                    self.expect(TokenKind::Colon)?;
+                    let value = self.parse_expr()?;
+                    args.push((name, value));
+                } else if allow_positional {
+                    // Positional argument (constructor-style calls)
+                    let value = self.parse_expr()?;
+                    let name = format!("_{}", positional_index);
+                    positional_index += 1;
+                    args.push((name, value));
+                } else {
+                    // Strict named args — produce original error
+                    let name_tok = self.advance();
+                    return Err(Diagnostic::error(format!(
+                        "Expected argument name, got {:?}. All arguments must be named (e.g. `name: value`)",
+                        name_tok.kind
+                    ))
+                    .with_code("P001")
+                    .with_label(
+                        ast::Span::new(name_tok.start, name_tok.end),
+                        "expected argument name",
+                    ));
                 }
-                self.expect(TokenKind::Colon)?;
-                let value = self.parse_expr()?;
-                args.push((name, value));
                 if args.len() > MAX_COLLECTION_SIZE {
                     return Err(Diagnostic::error(format!(
                         "Function call exceeds maximum of {} arguments",
@@ -198,7 +217,12 @@ impl Parser {
         loop {
             if self.at(&TokenKind::LParen) {
                 self.advance();
-                let args = self.parse_named_args()?;
+                // Allow positional args for constructor-like calls (uppercase identifier)
+                let allow_positional = matches!(
+                    &expr,
+                    Expr::Ident(name, _) if name.starts_with(|c: char| c.is_uppercase())
+                );
+                let args = self.parse_args_inner(allow_positional)?;
                 self.expect(TokenKind::RParen)?;
                 expr = Expr::Call {
                     func: Box::new(expr),

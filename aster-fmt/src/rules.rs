@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use ast::expr::{
     BinOp, EnumVariant, ErrorCatchPattern, Expr, MatchPattern, Module, Stmt, StringPart, UnaryOp,
 };
@@ -6,10 +8,133 @@ use ast::types::{Type, TypeConstraint};
 use crate::config::FormatConfig;
 use crate::doc::*;
 
-/// Format an entire module.
+/// Classify an import path into one of three groups.
+fn import_group(path: &[String]) -> u8 {
+    match path.first().map(|s| s.as_str()) {
+        Some("std") => 0,                                      // stdlib
+        Some(p) if p.contains('/') || p.starts_with('.') => 2, // app/relative
+        _ => 1,                                                // third-party (or unknown)
+    }
+}
+
+/// Format an entire module, with import merging/sorting/grouping.
 pub fn format_module(module: &Module, config: &FormatConfig) -> Doc {
-    let docs: Vec<Doc> = module.body.iter().map(|s| format_stmt(s, config)).collect();
-    let body = join_stmts(&docs);
+    // Separate imports from other statements
+    let mut imports: Vec<&Stmt> = Vec::new();
+    let mut others: Vec<&Stmt> = Vec::new();
+
+    for stmt in &module.body {
+        if matches!(stmt, Stmt::Use { .. }) {
+            imports.push(stmt);
+        } else {
+            others.push(stmt);
+        }
+    }
+
+    let mut result_docs: Vec<Doc> = Vec::new();
+
+    if !imports.is_empty() {
+        // Merge imports by (is_public, path) → combined names
+        let mut merged: BTreeMap<(bool, Vec<String>), Vec<String>> = BTreeMap::new();
+        let mut aliases: Vec<&Stmt> = Vec::new(); // imports with aliases can't be merged
+
+        for imp in &imports {
+            if let Stmt::Use {
+                path,
+                names,
+                alias,
+                is_public,
+                ..
+            } = imp
+            {
+                if alias.is_some() || names.is_none() {
+                    // Aliased imports and wildcard imports (no names) can't be merged
+                    aliases.push(imp);
+                    continue;
+                }
+                let key = (*is_public, path.clone());
+                let entry = merged.entry(key).or_default();
+                if let Some(ns) = names {
+                    for n in ns {
+                        if !entry.contains(n) {
+                            entry.push(n.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort names within each import
+        for names in merged.values_mut() {
+            names.sort();
+        }
+
+        // Build import docs grouped by category
+        struct ImportEntry {
+            group: u8,
+            path_str: String,
+            doc: Doc,
+        }
+
+        let mut entries: Vec<ImportEntry> = Vec::new();
+
+        for ((is_public, path), names) in &merged {
+            let doc = if names.is_empty() {
+                format_use(path, &None, &None, *is_public)
+            } else {
+                format_use(path, &Some(names.clone()), &None, *is_public)
+            };
+            entries.push(ImportEntry {
+                group: import_group(path),
+                path_str: path.join("/"),
+                doc,
+            });
+        }
+
+        // Add aliased imports
+        for imp in &aliases {
+            if let Stmt::Use {
+                path,
+                names,
+                alias,
+                is_public,
+                ..
+            } = imp
+            {
+                let doc = format_use(path, names, alias, *is_public);
+                entries.push(ImportEntry {
+                    group: import_group(path),
+                    path_str: path.join("/"),
+                    doc,
+                });
+            }
+        }
+
+        // Sort by group, then by path
+        entries.sort_by(|a, b| a.group.cmp(&b.group).then(a.path_str.cmp(&b.path_str)));
+
+        // Emit with blank lines between groups
+        let mut last_group: Option<u8> = None;
+        for entry in &entries {
+            if let Some(lg) = last_group
+                && lg != entry.group
+            {
+                result_docs.push(hardline()); // blank line between groups
+            }
+            result_docs.push(entry.doc.clone());
+            last_group = Some(entry.group);
+        }
+    }
+
+    // Add non-import statements
+    for stmt in &others {
+        if !result_docs.is_empty() {
+            result_docs.push(hardline());
+        }
+        result_docs.push(format_stmt(stmt, config));
+    }
+
+    let body = join_stmts(&result_docs);
     concat(vec![body, hardline()])
 }
 
@@ -216,8 +341,12 @@ fn format_function_def(
         header.push(text("]"));
     }
 
-    header.push(text("("));
-    let param_docs: Vec<Doc> = params
+    // Compute the prefix length up to and including "("
+    let prefix = render_doc(&concat(header.clone()), config);
+    let paren_col = prefix.len() + 1; // +1 for the "(" we're about to add
+
+    // Render each param as a string for packing
+    let param_strs: Vec<String> = params
         .iter()
         .enumerate()
         .map(|(i, (pname, ptype))| {
@@ -230,11 +359,12 @@ fn format_function_def(
                 parts.push(text(" = "));
                 parts.push(format_expr(default_expr, config));
             }
-            concat(parts)
+            render_doc(&concat(parts), config)
         })
         .collect();
-    header.push(group(join(param_docs, concat(vec![text(","), line()]))));
-    header.push(text(")"));
+
+    let packed = pack_items_str(&param_strs, paren_col, config);
+    header.push(text(format!("({})", packed)));
 
     // throws comes BEFORE -> in Aster syntax
     if let Some(throw_ty) = throws {
@@ -242,7 +372,7 @@ fn format_function_def(
         header.push(format_type(throw_ty));
     }
 
-    if !matches!(ret_type, Type::Void) {
+    if !matches!(ret_type, Type::Void | Type::Inferred) {
         header.push(text(" -> "));
         header.push(format_type(ret_type));
     }
@@ -265,18 +395,43 @@ fn format_function_def(
         }
     }
 
-    format_block(&concat(header), body, config)
+    format_block_inner(&concat(header), body, true, config)
 }
 
 // ---------------------------------------------------------------------------
 // Blocks (indented body after a header)
 // ---------------------------------------------------------------------------
 
+/// Format a block without return stripping (used for if/while/for/etc).
 fn format_block(header: &Doc, body: &[Stmt], config: &FormatConfig) -> Doc {
+    format_block_inner(header, body, false, config)
+}
+
+/// Format a block, optionally stripping `return` on the last statement.
+/// Only function/method bodies should use `strip_last_return = true`.
+fn format_block_inner(
+    header: &Doc,
+    body: &[Stmt],
+    strip_last_return: bool,
+    config: &FormatConfig,
+) -> Doc {
     if body.is_empty() {
         return header.clone();
     }
-    let body_docs: Vec<Doc> = body.iter().map(|s| format_stmt(s, config)).collect();
+    let last_idx = body.len() - 1;
+    let body_docs: Vec<Doc> = body
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            if strip_last_return
+                && i == last_idx
+                && let Stmt::Return(expr, _) = s
+            {
+                return format_expr(expr, config);
+            }
+            format_stmt(s, config)
+        })
+        .collect();
     let mut inner = Vec::new();
     for d in body_docs {
         inner.push(hardline());
@@ -724,17 +879,10 @@ pub fn format_expr(expr: &Expr, config: &FormatConfig) -> Doc {
 // ---------------------------------------------------------------------------
 
 fn format_float(f: f64) -> String {
-    if f.is_nan() {
-        return "0.0".to_string(); // NaN cannot be represented as an Aster literal
-    }
-    if f.is_infinite() {
-        // Infinity cannot be represented as an Aster literal
-        return if f.is_sign_positive() {
-            "9999999999.0".to_string()
-        } else {
-            "-9999999999.0".to_string()
-        };
-    }
+    debug_assert!(
+        !f.is_nan() && !f.is_infinite(),
+        "NaN/Infinity cannot appear in Aster float literals"
+    );
     let s = f.to_string();
     if s.contains('.') {
         s
@@ -751,6 +899,59 @@ fn escape_string(s: &str) -> String {
         .replace('"', "\\\"")
         .replace('{', "\\{")
         .replace('}', "\\}")
+}
+
+/// Pack items into lines with paren-alignment wrapping.
+///
+/// Wraps when either:
+/// - Items on the current line exceed 2/3 of `config.line_width`, OR
+/// - Total column position would exceed `config.line_width`.
+///
+/// `align_col` is the column just after the opening `(`.
+/// Returns a raw string with embedded newlines and alignment spaces.
+fn pack_items_str(items: &[String], align_col: usize, config: &FormatConfig) -> String {
+    if items.is_empty() {
+        return String::new();
+    }
+    if items.len() == 1 {
+        return items[0].clone();
+    }
+
+    let max_width = config.line_width;
+    let two_thirds = max_width * 2 / 3;
+    let align_spaces: String = " ".repeat(align_col);
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut line_buf = items[0].clone();
+    let mut col = align_col + items[0].len();
+
+    for item in &items[1..] {
+        let piece = format!(", {}", item);
+        let new_content_len = line_buf.len() + piece.len();
+        let new_col = col + piece.len();
+
+        if new_content_len > two_thirds || new_col > max_width {
+            line_buf.push(',');
+            lines.push(line_buf);
+            line_buf = item.clone();
+            col = align_col + item.len();
+        } else {
+            line_buf.push_str(&piece);
+            col += piece.len();
+        }
+    }
+    lines.push(line_buf);
+
+    if lines.len() == 1 {
+        lines[0].clone()
+    } else {
+        lines.join(&format!("\n{}", align_spaces))
+    }
+}
+
+/// Render a Doc to a flat string for measuring.
+fn render_doc(doc: &Doc, config: &FormatConfig) -> String {
+    crate::doc::pretty(config.line_width, config.indent_size, doc)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -788,7 +989,7 @@ fn format_lambda(
             .collect();
         parts.push(join(param_docs, text(", ")));
         parts.push(text(")"));
-        if !matches!(ret_type, Type::Void) {
+        if !matches!(ret_type, Type::Void | Type::Inferred) {
             parts.push(text(" -> "));
             parts.push(format_type(ret_type));
         }
@@ -822,27 +1023,19 @@ fn format_call_inner(func: &Expr, args: &[(String, Expr)], config: &FormatConfig
         return concat(vec![func_doc, text("()")]);
     }
 
-    let arg_docs: Vec<Doc> = args
+    let func_str = render_doc(&func_doc, config);
+    let paren_col = func_str.len() + 1; // +1 for "("
+
+    let arg_strs: Vec<String> = args
         .iter()
         .map(|(name, expr)| {
-            concat(vec![
-                text(name.as_str()),
-                text(": "),
-                format_expr(expr, config),
-            ])
+            let val = render_doc(&format_expr(expr, config), config);
+            format!("{}: {}", name, val)
         })
         .collect();
 
-    group(concat(vec![
-        func_doc,
-        text("("),
-        indent(concat(vec![
-            softline(),
-            join(arg_docs, concat(vec![text(","), line()])),
-        ])),
-        softline(),
-        text(")"),
-    ]))
+    let packed = pack_items_str(&arg_strs, paren_col, config);
+    concat(vec![func_doc, text(format!("({})", packed))])
 }
 
 fn format_binop(left: &Expr, op: &BinOp, right: &Expr, config: &FormatConfig) -> Doc {

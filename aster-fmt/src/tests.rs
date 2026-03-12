@@ -17,25 +17,25 @@ fn fmt_with(source: &str, config: &FormatConfig) -> String {
 #[test]
 fn doc_text() {
     let d = text("hello");
-    assert_eq!(pretty(80, 4, &d), "hello");
+    assert_eq!(pretty(80, 2, &d), "hello");
 }
 
 #[test]
 fn doc_hardline() {
     let d = concat(vec![text("a"), hardline(), text("b")]);
-    assert_eq!(pretty(80, 4, &d), "a\nb");
+    assert_eq!(pretty(80, 2, &d), "a\nb");
 }
 
 #[test]
 fn doc_group_fits() {
     let d = group(concat(vec![text("a"), line(), text("b")]));
-    assert_eq!(pretty(80, 4, &d), "a b");
+    assert_eq!(pretty(80, 2, &d), "a b");
 }
 
 #[test]
 fn doc_group_breaks() {
     let d = group(concat(vec![text("hello"), line(), text("world")]));
-    assert_eq!(pretty(5, 4, &d), "hello\nworld");
+    assert_eq!(pretty(5, 2, &d), "hello\nworld");
 }
 
 #[test]
@@ -44,7 +44,7 @@ fn doc_indent() {
         text("if true"),
         indent(concat(vec![hardline(), text("body")])),
     ]);
-    assert_eq!(pretty(80, 4, &d), "if true\n    body");
+    assert_eq!(pretty(80, 2, &d), "if true\n  body");
 }
 
 #[test]
@@ -57,7 +57,7 @@ fn doc_nested_indent() {
             indent(concat(vec![hardline(), text("c")])),
         ])),
     ]);
-    assert_eq!(pretty(80, 4, &d), "a\n    b\n        c");
+    assert_eq!(pretty(80, 2, &d), "a\n  b\n    c");
 }
 
 #[test]
@@ -69,13 +69,13 @@ fn doc_softline_flat() {
         softline(),
         text("]"),
     ]));
-    assert_eq!(pretty(80, 4, &d), "[1]");
+    assert_eq!(pretty(80, 2, &d), "[1]");
 }
 
 #[test]
 fn doc_join() {
     let d = join(vec![text("a"), text("b"), text("c")], text(", "));
-    assert_eq!(pretty(80, 4, &d), "a, b, c");
+    assert_eq!(pretty(80, 2, &d), "a, b, c");
 }
 
 // ===========================================================================
@@ -113,25 +113,21 @@ fn format_let_nil() {
 }
 
 // ===========================================================================
-// Function definitions
+// Function definitions — implicit return (last return stripped)
 // ===========================================================================
 
 #[test]
 fn format_simple_function() {
     let source = "def main() -> Int\n  return 0\n";
     let out = fmt(source);
-    assert!(out.contains("def main() -> Int"));
-    assert!(out.contains("return 0"));
-    // No colon after the header
-    assert!(!out.contains("Int:"));
+    assert_eq!(out, "def main() -> Int\n  0\n");
 }
 
 #[test]
 fn format_function_with_params() {
     let source = "def add(a: Int, b: Int) -> Int\n  return a + b\n";
     let out = fmt(source);
-    assert!(out.contains("def add(a: Int, b: Int) -> Int"));
-    assert!(out.contains("return a + b"));
+    assert_eq!(out, "def add(a: Int, b: Int) -> Int\n  a + b\n");
 }
 
 #[test]
@@ -141,6 +137,26 @@ fn format_function_void() {
     assert!(out.contains("def greet(name: String)"));
     // Void return should not emit -> Void
     assert!(!out.contains("->"));
+}
+
+#[test]
+fn format_function_early_return_kept() {
+    let source = "def f(x: Int) -> Int\n  if x > 0\n    return x\n  return 0\n";
+    let out = fmt(source);
+    // Early return in if is kept
+    assert!(out.contains("return x"));
+    // Last return is stripped
+    assert!(out.contains("\n  0\n"));
+}
+
+#[test]
+fn format_function_multi_stmt_last_stripped() {
+    let source = "def f(x: Int) -> Int\n  let y = x * 2\n  return y\n";
+    let out = fmt(source);
+    assert!(out.contains("let y = x * 2"));
+    // Last return stripped
+    assert!(!out.contains("return y"));
+    assert!(out.contains("\n  y\n"));
 }
 
 // ===========================================================================
@@ -334,11 +350,12 @@ fn format_list_elements() {
 
 #[test]
 fn format_lambda_as_def() {
-    // Lambda assigned to let — roundtrips as def
+    // Lambda assigned to let — roundtrips as def, return stripped
     let source = "def f(x: Int) -> Int\n  return x + 1\n";
     let out = fmt(source);
     assert!(out.contains("def f(x: Int) -> Int"));
-    assert!(out.contains("return x + 1"));
+    assert!(out.contains("x + 1"));
+    assert!(!out.contains("return"));
 }
 
 // ===========================================================================
@@ -355,7 +372,6 @@ fn format_trait_simple() {
 
 #[test]
 fn format_trait_abstract_method() {
-    // Abstract trait methods have no body
     let source = "trait Printable\n  def to_string() -> String\n";
     let out = fmt(source);
     assert!(out.contains("trait Printable"));
@@ -405,7 +421,7 @@ fn format_propagate() {
 }
 
 // ===========================================================================
-// Use / imports
+// Use / imports — merging, alphabetizing, grouping
 // ===========================================================================
 
 #[test]
@@ -422,14 +438,62 @@ fn format_use_multiple() {
     assert!(out.contains("use std { Eq, Ord }"));
 }
 
+#[test]
+fn import_merge_same_path() {
+    let source = "use std { Ord }\nuse std { Eq }\n";
+    let out = fmt(source);
+    // Should merge into one use statement with alphabetized names
+    assert!(out.contains("use std { Eq, Ord }"));
+    // Should NOT have two separate use statements
+    assert_eq!(out.matches("use std").count(), 1);
+}
+
+#[test]
+fn import_alphabetize_names() {
+    let source = "use std { Ord, Eq, Printable }\n";
+    let out = fmt(source);
+    assert!(out.contains("use std { Eq, Ord, Printable }"));
+}
+
+#[test]
+fn import_alphabetize_statements() {
+    let source = "use std/fmt { Printable }\nuse std/cmp { Eq }\n";
+    let out = fmt(source);
+    // std/cmp comes before std/fmt alphabetically
+    let cmp_pos = out.find("std/cmp").unwrap();
+    let fmt_pos = out.find("std/fmt").unwrap();
+    assert!(cmp_pos < fmt_pos, "std/cmp should come before std/fmt");
+}
+
+#[test]
+fn import_grouping_three_groups() {
+    let source = "use myapp { Foo }\nuse http { Request }\nuse std { Eq }\n";
+    let out = fmt(source);
+    // std first, then third-party (http), then app (myapp)
+    let std_pos = out.find("use std").unwrap();
+    let http_pos = out.find("use http").unwrap();
+    let app_pos = out.find("use myapp").unwrap();
+    assert!(std_pos < http_pos, "std should come before http");
+    assert!(http_pos < app_pos, "http should come before myapp");
+}
+
+#[test]
+fn import_merge_dedup() {
+    let source = "use std { Eq }\nuse std { Eq, Ord }\n";
+    let out = fmt(source);
+    assert!(out.contains("use std { Eq, Ord }"));
+    assert_eq!(out.matches("use std").count(), 1);
+}
+
 // ===========================================================================
 // Return / break / continue
 // ===========================================================================
 
 #[test]
-fn format_return() {
+fn format_return_last_stripped() {
+    // Last return in function body is stripped (implicit return)
     let out = fmt("def f() -> Int\n  return 42\n");
-    assert!(out.contains("return 42"));
+    assert_eq!(out, "def f() -> Int\n  42\n");
 }
 
 #[test]
@@ -477,12 +541,12 @@ fn format_index() {
 }
 
 // ===========================================================================
-// Idempotency
+// Idempotency (2-space indent)
 // ===========================================================================
 
 #[test]
 fn idempotent_simple_function() {
-    let source = "def main() -> Int\n    return 0\n";
+    let source = "def main() -> Int\n  0\n";
     let first = fmt(source);
     let second = fmt(&first);
     assert_eq!(first, second, "formatting should be idempotent");
@@ -490,7 +554,7 @@ fn idempotent_simple_function() {
 
 #[test]
 fn idempotent_class() {
-    let source = "class Point\n    x: Int\n    y: Int\n";
+    let source = "class Point\n  x: Int\n  y: Int\n";
     let first = fmt(source);
     let second = fmt(&first);
     assert_eq!(first, second, "formatting should be idempotent");
@@ -498,7 +562,7 @@ fn idempotent_class() {
 
 #[test]
 fn idempotent_if_elif_else() {
-    let source = "if x == 1\n    let a = 1\nelif x == 2\n    let b = 2\nelse\n    let c = 3\n";
+    let source = "if x == 1\n  let a = 1\nelif x == 2\n  let b = 2\nelse\n  let c = 3\n";
     let first = fmt(source);
     let second = fmt(&first);
     assert_eq!(first, second, "formatting should be idempotent");
@@ -506,7 +570,7 @@ fn idempotent_if_elif_else() {
 
 #[test]
 fn idempotent_enum() {
-    let source = "enum Color\n    Red\n    Green\n    Blue\n";
+    let source = "enum Color\n  Red\n  Green\n  Blue\n";
     let first = fmt(source);
     let second = fmt(&first);
     assert_eq!(first, second, "formatting should be idempotent");
@@ -574,8 +638,6 @@ fn roundtrip_enum() {
 
 #[test]
 fn config_single_quotes_ignored() {
-    // Single quotes are not supported by the Aster lexer, so the formatter
-    // always uses double quotes regardless of the config setting.
     let config = FormatConfig {
         quote_style: crate::config::QuoteStyle::Single,
         ..FormatConfig::default()
@@ -585,29 +647,73 @@ fn config_single_quotes_ignored() {
 }
 
 // ===========================================================================
-// Config: indent size
+// Config: default indent is 2
 // ===========================================================================
 
 #[test]
-fn config_indent_size_2() {
-    let config = FormatConfig {
-        indent_size: 2,
-        ..FormatConfig::default()
-    };
-    let out = fmt_with("if true\n  let x = 1\n", &config);
-    // With indent_size=2, body should be indented by 2 spaces
-    assert!(out.contains("  let x = 1"));
+fn config_default_indent_is_2() {
+    assert_eq!(FormatConfig::default().indent_size, 2);
 }
 
 #[test]
-fn config_indent_size_4() {
+fn config_default_indent_produces_2_spaces() {
+    let out = fmt("if true\n  let x = 1\n");
+    assert_eq!(out, "if true\n  let x = 1\n");
+}
+
+#[test]
+fn config_indent_size_4_explicit() {
     let config = FormatConfig {
         indent_size: 4,
         ..FormatConfig::default()
     };
     let out = fmt_with("if true\n  let x = 1\n", &config);
-    // With indent_size=4, body should be indented by 4 spaces
     assert!(out.contains("    let x = 1"));
+}
+
+// ===========================================================================
+// Signature wrapping — packs to 2/3 width, aligns to paren
+// ===========================================================================
+
+#[test]
+fn sig_wrap_short_fits_one_line() {
+    let source = "def add(x: Int, y: Int) -> Int\n  x + y\n";
+    let out = fmt(source);
+    assert!(out.contains("def add(x: Int, y: Int) -> Int"));
+}
+
+#[test]
+fn sig_wrap_long_params_wrap_at_paren() {
+    // These params together exceed 58 chars (2/3 of 88)
+    let source = "def transform(input: String, count: Int, flag: Bool, callback: (Int) -> String) -> String\n  input\n";
+    let out = fmt(source);
+    // Should wrap, with continuation aligned to after "("
+    assert!(out.contains("def transform("));
+    // Verify it wraps (has newline within the signature)
+    // Check it doesn't exceed 88 chars per line
+    for line in out.lines() {
+        assert!(
+            line.len() <= 88,
+            "line exceeds 88 chars: {:?} (len={})",
+            line,
+            line.len()
+        );
+    }
+}
+
+#[test]
+fn call_wrap_long_args_wrap_at_paren() {
+    let source =
+        "do_thing(name: \"hello world\", count: 42, flag: true, timeout: 30, retries: 3)\n";
+    let out = fmt(source);
+    for line in out.lines() {
+        assert!(
+            line.len() <= 88,
+            "line exceeds 88 chars: {:?} (len={})",
+            line,
+            line.len()
+        );
+    }
 }
 
 // ===========================================================================

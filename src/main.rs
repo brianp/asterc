@@ -101,16 +101,19 @@ fn frontend(source: &str, filename: &str) -> Result<(ast::Module, TypeChecker), 
     let resolver = FsResolver { root };
     let loader = Rc::new(RefCell::new(ModuleLoader::new(Box::new(resolver))));
     let mut checker = TypeChecker::with_loader(loader);
-    let diagnostics = checker.check_module_all(&module_ast);
+    let errors = checker.check_module_all(&module_ast);
 
-    if !diagnostics.is_empty() {
-        for diag in &diagnostics {
+    // Surface warnings (stored in checker.diagnostics by check_module_all)
+    let warnings: Vec<_> = checker.diagnostics.drain(..).collect();
+    for w in &warnings {
+        render_diagnostic(source, filename, w);
+    }
+
+    if !errors.is_empty() {
+        for diag in &errors {
             render_diagnostic(source, filename, diag);
         }
-        let error_count = diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .count();
+        let error_count = errors.len();
         eprintln!(
             "\n{} error{} emitted",
             error_count,

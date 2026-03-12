@@ -400,11 +400,19 @@ impl TypeChecker {
 
     pub fn check_module(&mut self, m: &ast::Module) -> Result<(), Diagnostic> {
         let diags = self.check_module_all(m);
-        if diags.is_empty() {
-            Ok(())
-        } else {
-            // Return the first diagnostic for backward compatibility
-            Err(diags[0].clone())
+        let mut first_error = None;
+        for d in diags {
+            if d.severity == ast::Severity::Error {
+                if first_error.is_none() {
+                    first_error = Some(d);
+                }
+            } else {
+                self.diagnostics.push(d);
+            }
+        }
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
         }
     }
 
@@ -489,7 +497,16 @@ impl TypeChecker {
                 }
             }
         }
-        std::mem::take(&mut self.diagnostics)
+        let all = std::mem::take(&mut self.diagnostics);
+        let mut errors = Vec::new();
+        for d in all {
+            if d.severity == ast::Severity::Error {
+                errors.push(d);
+            } else {
+                self.diagnostics.push(d);
+            }
+        }
+        errors
     }
 
     pub fn check_stmt(&mut self, stmt: &Stmt) -> Result<Type, Diagnostic> {
@@ -565,6 +582,16 @@ impl TypeChecker {
                         ))
                         .with_code("E001")
                         .with_label(stmt_span, format!("expected {:?}", ann)));
+                    }
+                    // W001: warn when a type annotation is redundant (matches inferred type)
+                    if Self::is_obviously_typed(value, &self.env) && *ann == ty {
+                        self.diagnostics.push(
+                            Diagnostic::warning(format!(
+                                "redundant type annotation: type `{}` can be inferred",
+                                Self::format_type(ann)
+                            ))
+                            .with_code("W001"),
+                        );
                     }
                 }
                 // Track default params for the function if it has any
@@ -1412,5 +1439,48 @@ impl TypeChecker {
             std::mem::swap(&mut prev, &mut curr);
         }
         prev[n]
+    }
+
+    /// Returns true if the expression has an obvious, unambiguous type from its literal form.
+    fn is_obviously_typed(expr: &Expr, env: &TypeEnv) -> bool {
+        match expr {
+            Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Bool(..) => true,
+            Expr::ListLiteral(elems, _) => !elems.is_empty(),
+            Expr::UnaryOp {
+                op: ast::UnaryOp::Neg,
+                operand,
+                ..
+            } => matches!(**operand, Expr::Int(..) | Expr::Float(..)),
+            Expr::Call { func, .. } => {
+                if let Expr::Ident(name, _) = func.as_ref() {
+                    env.get_class(name).is_some()
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// Formats a Type for display in diagnostic messages.
+    fn format_type(ty: &Type) -> String {
+        match ty {
+            Type::Int => "Int".to_string(),
+            Type::Float => "Float".to_string(),
+            Type::Bool => "Bool".to_string(),
+            Type::String => "String".to_string(),
+            Type::Nil => "Nil".to_string(),
+            Type::Void => "Void".to_string(),
+            Type::List(inner) => format!("List[{}]", Self::format_type(inner)),
+            Type::Nullable(inner) => format!("{}?", Self::format_type(inner)),
+            Type::Custom(name, params) if params.is_empty() => name.clone(),
+            Type::Custom(name, params) => {
+                let ps: Vec<String> = params.iter().map(Self::format_type).collect();
+                format!("{}[{}]", name, ps.join(", "))
+            }
+            Type::Task(inner) => format!("Task[{}]", Self::format_type(inner)),
+            Type::Map(k, v) => format!("Map[{}, {}]", Self::format_type(k), Self::format_type(v)),
+            _ => format!("{:?}", ty),
+        }
     }
 }
