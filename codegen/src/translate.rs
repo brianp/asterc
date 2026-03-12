@@ -397,9 +397,12 @@ fn translate_expr(
                 } else {
                     builder.ins().iconst(types::I64, 0)
                 };
-                builder
-                    .ins()
-                    .store(ir::MemFlags::new(), func_addr, closure_ptr, Offset32::new(0));
+                builder.ins().store(
+                    ir::MemFlags::new(),
+                    func_addr,
+                    closure_ptr,
+                    Offset32::new(0),
+                );
 
                 // Store env pointer
                 let env_val = translate_expr(builder, state, env);

@@ -989,10 +989,7 @@ def f() -> String
                 args[1]
             );
         }
-        other => panic!(
-            "expected RuntimeCall(aster_string_concat), got {:?}",
-            other
-        ),
+        other => panic!("expected RuntimeCall(aster_string_concat), got {:?}", other),
     }
 }
 
@@ -1060,11 +1057,9 @@ def f() -> Int
     let fir = lower_ok(src);
     let f_func = fir.functions.iter().find(|f| f.name == "f").unwrap();
     let has_method_call = f_func.body.iter().any(|s| match s {
-        FirStmt::Expr(FirExpr::Call { args, .. })
-        | FirStmt::Return(FirExpr::Call { args, .. }) => {
+        FirStmt::Expr(FirExpr::Call { args, .. }) | FirStmt::Return(FirExpr::Call { args, .. }) => {
             // self (the object) should be passed as the first arg
-            args.len() == 1
-                && matches!(&args[0], FirExpr::LocalVar(_, FirType::Ptr))
+            args.len() == 1 && matches!(&args[0], FirExpr::LocalVar(_, FirType::Ptr))
         }
         _ => false,
     });

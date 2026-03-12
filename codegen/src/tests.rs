@@ -124,7 +124,11 @@ fn float_return_constant() {
     let ptr = jit.get_function_ptr(fir.entry.unwrap()).unwrap();
     let f: fn() -> f64 = unsafe { std::mem::transmute(ptr) };
     let result = f();
-    assert!((result - 3.14).abs() < 1e-10, "expected 3.14, got {}", result);
+    assert!(
+        (result - 3.14).abs() < 1e-10,
+        "expected 3.14, got {}",
+        result
+    );
 }
 
 #[test]
@@ -1612,7 +1616,11 @@ def main() -> String
         let len = *(ptr as *const i64) as usize;
         let data = (ptr as *const u8).add(8);
         let s = std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, len));
-        assert!(s.starts_with("pi: 3.14"), "expected 'pi: 3.14...', got '{}'", s);
+        assert!(
+            s.starts_with("pi: 3.14"),
+            "expected 'pi: 3.14...', got '{}'",
+            s
+        );
     }
 }
 
