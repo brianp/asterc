@@ -1271,6 +1271,79 @@ def main() -> Int
 }
 
 // ===========================================================================
+// Auto-derived to_string (Printable)
+// ===========================================================================
+
+#[test]
+fn auto_derived_to_string_single_int_field() {
+    // Class with auto-derived Printable should produce "ClassName(field_value)"
+    let src = "\
+class Wrapper includes Printable
+  val: Int
+
+def main() -> String
+  let w = Wrapper(val: 42)
+  w.to_string()
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.call_i64(fir.entry.unwrap());
+    assert_ne!(ptr, 0);
+    unsafe {
+        let len = *(ptr as *const i64) as usize;
+        let data = (ptr as *const u8).add(8);
+        let s = std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, len));
+        assert_eq!(s, "Wrapper(42)");
+    }
+}
+
+#[test]
+fn auto_derived_to_string_multiple_fields() {
+    let src = "\
+class Point includes Printable
+  x: Int
+  y: Int
+
+def main() -> String
+  let p = Point(x: 10, y: 20)
+  p.to_string()
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.call_i64(fir.entry.unwrap());
+    assert_ne!(ptr, 0);
+    unsafe {
+        let len = *(ptr as *const i64) as usize;
+        let data = (ptr as *const u8).add(8);
+        let s = std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, len));
+        assert_eq!(s, "Point(10, 20)");
+    }
+}
+
+#[test]
+fn auto_derived_to_string_in_interpolation() {
+    let src = "\
+class Pair includes Printable
+  a: Int
+  b: Int
+
+def main() -> String
+  let p = Pair(a: 1, b: 2)
+  \"result: {p}\"
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.call_i64(fir.entry.unwrap());
+    assert_ne!(ptr, 0);
+    unsafe {
+        let len = *(ptr as *const i64) as usize;
+        let data = (ptr as *const u8).add(8);
+        let s = std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, len));
+        assert_eq!(s, "result: Pair(1, 2)");
+    }
+}
+
+// ===========================================================================
 // MILESTONE 15: ClosureCall dynamic dispatch
 // ===========================================================================
 
