@@ -10,21 +10,87 @@ use crate::stmts::{FirPlace, FirStmt};
 use crate::types::{ClassId, FirType, FunctionId, LocalId};
 
 #[derive(Debug)]
+pub enum UnsupportedFeatureKind {
+    TopLevelStatement(&'static str),
+    Statement(&'static str),
+    Expression(&'static str),
+    Other(String),
+}
+
+impl UnsupportedFeatureKind {
+    pub fn detail(&self) -> String {
+        match self {
+            UnsupportedFeatureKind::TopLevelStatement(name) => {
+                format!("top-level `{name}` statements")
+            }
+            UnsupportedFeatureKind::Statement(name) => format!("`{name}` statements"),
+            UnsupportedFeatureKind::Expression(name) => format!("`{name}` expressions"),
+            UnsupportedFeatureKind::Other(msg) => msg.clone(),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub enum LowerError {
-    UnsupportedFeature(String),
+    UnsupportedFeature(UnsupportedFeatureKind),
     UnboundVariable(String),
 }
 
 impl std::fmt::Display for LowerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LowerError::UnsupportedFeature(msg) => write!(f, "unsupported: {}", msg),
+            LowerError::UnsupportedFeature(kind) => write!(f, "unsupported: {}", kind.detail()),
             LowerError::UnboundVariable(name) => write!(f, "unbound variable: {}", name),
         }
     }
 }
 
 impl std::error::Error for LowerError {}
+
+fn unsupported_top_level_stmt(stmt: &Stmt) -> LowerError {
+    let name = match stmt {
+        Stmt::Trait { .. } => "trait",
+        Stmt::Return(..) => "return",
+        Stmt::If { .. } => "if",
+        Stmt::While { .. } => "while",
+        Stmt::For { .. } => "for",
+        Stmt::Assignment { .. } => "assignment",
+        Stmt::Break(..) => "break",
+        Stmt::Continue(..) => "continue",
+        Stmt::Use { .. } => "use",
+        _ => "statement",
+    };
+    LowerError::UnsupportedFeature(UnsupportedFeatureKind::TopLevelStatement(name))
+}
+
+fn unsupported_stmt(stmt: &Stmt) -> LowerError {
+    let name = match stmt {
+        Stmt::Class { .. } => "class",
+        Stmt::Trait { .. } => "trait",
+        Stmt::Use { .. } => "use",
+        Stmt::Enum { .. } => "enum",
+        Stmt::Const { .. } => "const",
+        _ => "statement",
+    };
+    LowerError::UnsupportedFeature(UnsupportedFeatureKind::Statement(name))
+}
+
+fn unsupported_expr(expr: &Expr) -> LowerError {
+    let name = match expr {
+        Expr::Match { .. } => "match",
+        Expr::AsyncCall { .. } => "async call",
+        Expr::Resolve { .. } => "resolve",
+        Expr::DetachedCall { .. } => "detached async",
+        Expr::Propagate(..) => "error propagation",
+        Expr::Throw(..) => "throw",
+        Expr::ErrorOr { .. } => "!.or",
+        Expr::ErrorOrElse { .. } => "!.or_else",
+        Expr::ErrorCatch { .. } => "!.catch",
+        Expr::AsyncScope { .. } => "async scope",
+        _ => "expression",
+    };
+    LowerError::UnsupportedFeature(UnsupportedFeatureKind::Expression(name))
+}
 
 pub struct Lowerer {
     type_env: TypeEnv,
@@ -287,10 +353,7 @@ impl Lowerer {
                 self.module.entry = Some(id);
                 Ok(())
             }
-            _ => Err(LowerError::UnsupportedFeature(format!(
-                "top-level statement: {:?}",
-                std::mem::discriminant(stmt)
-            ))),
+            _ => Err(unsupported_top_level_stmt(stmt)),
         }
     }
 
@@ -647,10 +710,7 @@ impl Lowerer {
                     value: fir_value,
                 })
             }
-            _ => Err(LowerError::UnsupportedFeature(format!(
-                "statement: {:?}",
-                std::mem::discriminant(stmt)
-            ))),
+            _ => Err(unsupported_stmt(stmt)),
         }
     }
 
@@ -850,7 +910,7 @@ impl Lowerer {
                     }
                 } else {
                     Err(LowerError::UnsupportedFeature(
-                        "non-ident function call target".into(),
+                        UnsupportedFeatureKind::Other("non-ident function call target".into()),
                     ))
                 }
             }
@@ -1190,10 +1250,7 @@ impl Lowerer {
                 Ok(result)
             }
 
-            _ => Err(LowerError::UnsupportedFeature(format!(
-                "expression: {:?}",
-                std::mem::discriminant(expr)
-            ))),
+            _ => Err(unsupported_expr(expr)),
         }
     }
 
@@ -1230,10 +1287,12 @@ impl Lowerer {
                     variants[0].clone()
                 }
                 other => {
-                    return Err(LowerError::UnsupportedFeature(format!(
-                        ".or_throw() on non-nullable FIR type: {:?}",
-                        other
-                    )));
+                    return Err(LowerError::UnsupportedFeature(
+                        UnsupportedFeatureKind::Other(format!(
+                            ".or_throw() on non-nullable FIR type: {:?}",
+                            other
+                        )),
+                    ));
                 }
             };
 
@@ -1316,10 +1375,9 @@ impl Lowerer {
             }
         }
 
-        Err(LowerError::UnsupportedFeature(format!(
-            "method call: .{}()",
-            method
-        )))
+        Err(LowerError::UnsupportedFeature(
+            UnsupportedFeatureKind::Other(format!("method call: .{}()", method)),
+        ))
     }
 
     fn to_string_expr(&self, ast_expr: &Expr, fir_expr: FirExpr) -> FirExpr {
@@ -1436,10 +1494,12 @@ impl Lowerer {
                     fir_args.push(self.lower_expr(default)?);
                 } else {
                     // No arg provided and no default — shouldn't happen (typechecker catches this)
-                    return Err(LowerError::UnsupportedFeature(format!(
-                        "missing argument '{}' with no default for {}",
-                        param_name, func_name
-                    )));
+                    return Err(LowerError::UnsupportedFeature(
+                        UnsupportedFeatureKind::Other(format!(
+                            "missing argument '{}' with no default for {}",
+                            param_name, func_name
+                        )),
+                    ));
                 }
             }
             Ok(fir_args)
@@ -1630,10 +1690,10 @@ impl Lowerer {
         // Resolve the next() method
         let next_name = format!("{}.next", class_name);
         let next_func_id = self.functions.get(&next_name).copied().ok_or_else(|| {
-            LowerError::UnsupportedFeature(format!(
+            LowerError::UnsupportedFeature(UnsupportedFeatureKind::Other(format!(
                 "Iterator class '{}' has no next() method in FIR",
                 class_name
-            ))
+            )))
         })?;
 
         // let __next (will be reassigned each iteration)
@@ -1742,7 +1802,7 @@ impl Lowerer {
                 })
             }
             _ => Err(LowerError::UnsupportedFeature(
-                "complex assignment target".into(),
+                UnsupportedFeatureKind::Other("complex assignment target".into()),
             )),
         }
     }
@@ -1761,7 +1821,7 @@ impl Lowerer {
                 }
             }
             _ => Err(LowerError::UnsupportedFeature(
-                "complex expression in place context".into(),
+                UnsupportedFeatureKind::Other("complex expression in place context".into()),
             )),
         }
     }
@@ -1932,12 +1992,18 @@ impl Lowerer {
 
         // Look up the class ID
         let class_id = self.classes.get(&class_name).ok_or_else(|| {
-            LowerError::UnsupportedFeature(format!("unknown class: {}", class_name))
+            LowerError::UnsupportedFeature(UnsupportedFeatureKind::Other(format!(
+                "unknown class: {}",
+                class_name
+            )))
         })?;
 
         // Look up the field in the class layout
         let fields = self.class_fields.get(class_id).ok_or_else(|| {
-            LowerError::UnsupportedFeature(format!("no field layout for class: {}", class_name))
+            LowerError::UnsupportedFeature(UnsupportedFeatureKind::Other(format!(
+                "no field layout for class: {}",
+                class_name
+            )))
         })?;
 
         for (fname, fty, foffset) in fields {
@@ -1946,10 +2012,12 @@ impl Lowerer {
             }
         }
 
-        Err(LowerError::UnsupportedFeature(format!(
-            "unknown field '{}' on class '{}'",
-            field, class_name
-        )))
+        Err(LowerError::UnsupportedFeature(
+            UnsupportedFeatureKind::Other(format!(
+                "unknown field '{}' on class '{}'",
+                field, class_name
+            )),
+        ))
     }
 
     /// Determine the class name of an expression by inspecting local AST types
@@ -1969,10 +2037,12 @@ impl Lowerer {
                 {
                     return Ok(class_name);
                 }
-                Err(LowerError::UnsupportedFeature(format!(
-                    "cannot determine class type of variable '{}'",
-                    name
-                )))
+                Err(LowerError::UnsupportedFeature(
+                    UnsupportedFeatureKind::Other(format!(
+                        "cannot determine class type of variable '{}'",
+                        name
+                    )),
+                ))
             }
             Expr::Call { func, .. } => {
                 // Constructor call: the function name IS the class name
@@ -1982,11 +2052,13 @@ impl Lowerer {
                     return Ok(name.clone());
                 }
                 Err(LowerError::UnsupportedFeature(
-                    "cannot determine class type of call expression".into(),
+                    UnsupportedFeatureKind::Other(
+                        "cannot determine class type of call expression".into(),
+                    ),
                 ))
             }
             _ => Err(LowerError::UnsupportedFeature(
-                "cannot determine class type of expression".into(),
+                UnsupportedFeatureKind::Other("cannot determine class type of expression".into()),
             )),
         }
     }

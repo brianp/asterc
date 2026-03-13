@@ -4,6 +4,7 @@ use fir::types::FunctionId;
 
 use crate::aot::CraneliftAOT;
 use crate::jit::CraneliftJIT;
+use crate::runtime::runtime_builtin_symbols;
 use crate::runtime_sigs::RUNTIME_SIGS;
 use crate::runtime_source::c_runtime_source;
 
@@ -36,6 +37,21 @@ fn c_runtime_source_covers_runtime_signatures() {
         assert!(
             source.contains(&needle),
             "runtime source is missing {name} from the shared symbol table"
+        );
+    }
+}
+
+#[test]
+fn jit_runtime_symbols_cover_runtime_signatures() {
+    let registered: std::collections::HashSet<_> = runtime_builtin_symbols()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+
+    for (name, _, _) in RUNTIME_SIGS {
+        assert!(
+            registered.contains(name),
+            "JIT runtime registration is missing {name} from the shared symbol table"
         );
     }
 }
@@ -150,15 +166,15 @@ fn negative_literal() {
 
 #[test]
 fn float_return_constant() {
-    let src = "def main() -> Float\n  3.14\n";
+    let src = "def main() -> Float\n  3.141592653589793\n";
     let fir = compile_and_run(src);
     let jit = jit_compile(&fir);
     let ptr = jit.get_function_ptr(fir.entry.unwrap()).unwrap();
     let f: fn() -> f64 = unsafe { std::mem::transmute(ptr) };
     let result = f();
     assert!(
-        (result - 3.14).abs() < 1e-10,
-        "expected 3.14, got {}",
+        (result - std::f64::consts::PI).abs() < 1e-10,
+        "expected PI, got {}",
         result
     );
 }

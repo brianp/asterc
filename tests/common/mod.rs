@@ -3,12 +3,12 @@
 use ast::{Diagnostic, ParseResult};
 use lexer::lex;
 use parser::Parser;
-use std::ffi::OsString;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use typecheck::module_loader::{ModuleLoader, VirtualResolver};
