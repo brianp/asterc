@@ -550,6 +550,32 @@ impl Lowerer {
             }
         }
 
+        // Synthesize auto-derived eq if class includes Eq but has no explicit impl
+        let qualified_eq = format!("{}.eq", name);
+        if !self.functions.contains_key(&qualified_eq) {
+            let has_eq = self
+                .type_env
+                .get_class(name)
+                .map(|ci| ci.includes.contains(&"Eq".to_string()))
+                .unwrap_or(false);
+            if has_eq {
+                self.synthesize_eq(name, class_id)?;
+            }
+        }
+
+        // Synthesize auto-derived cmp if class includes Ord but has no explicit impl
+        let qualified_cmp = format!("{}.cmp", name);
+        if !self.functions.contains_key(&qualified_cmp) {
+            let has_ord = self
+                .type_env
+                .get_class(name)
+                .map(|ci| ci.includes.contains(&"Ord".to_string()))
+                .unwrap_or(false);
+            if has_ord {
+                self.synthesize_cmp(name, class_id)?;
+            }
+        }
+
         Ok(())
     }
 
@@ -784,6 +810,68 @@ impl Lowerer {
                         args: vec![fir_left, fir_right],
                         ret_ty: FirType::I64,
                     });
+                }
+                // Dispatch == / != on custom types to ClassName.eq(self, other)
+                if matches!(op, ast::BinOp::Eq | ast::BinOp::Neq)
+                    && let Ok(class_name) = self.resolve_class_name(left)
+                {
+                    let eq_name = format!("{}.eq", class_name);
+                    if let Some(&func_id) = self.functions.get(&eq_name) {
+                        let fir_left = self.lower_expr(left)?;
+                        let fir_right = self.lower_expr(right)?;
+                        let eq_result = FirExpr::Call {
+                            func: func_id,
+                            args: vec![fir_left, fir_right],
+                            ret_ty: FirType::Bool,
+                        };
+                        return if matches!(op, ast::BinOp::Neq) {
+                            Ok(FirExpr::UnaryOp {
+                                op: UnaryOp::Not,
+                                operand: Box::new(eq_result),
+                                result_ty: FirType::Bool,
+                            })
+                        } else {
+                            Ok(eq_result)
+                        };
+                    }
+                }
+                // Dispatch <, >, <=, >= on custom types to ClassName.cmp(self, other)
+                if matches!(
+                    op,
+                    ast::BinOp::Lt | ast::BinOp::Gt | ast::BinOp::Lte | ast::BinOp::Gte
+                ) && let Ok(class_name) = self.resolve_class_name(left)
+                {
+                    let cmp_name = format!("{}.cmp", class_name);
+                    if let Some(&func_id) = self.functions.get(&cmp_name) {
+                        let fir_left = self.lower_expr(left)?;
+                        let fir_right = self.lower_expr(right)?;
+                        // cmp returns Ordering (tag: 0=Less, 1=Equal, 2=Greater)
+                        // Extract the tag from the struct at offset 0
+                        let cmp_result = FirExpr::Call {
+                            func: func_id,
+                            args: vec![fir_left, fir_right],
+                            ret_ty: FirType::Ptr,
+                        };
+                        let tag = FirExpr::FieldGet {
+                            object: Box::new(cmp_result),
+                            offset: 0,
+                            ty: FirType::I64,
+                        };
+                        // Compare the tag against expected value
+                        let (cmp_op, cmp_val) = match op {
+                            ast::BinOp::Lt => (BinOp::Eq, 0i64),   // Less = 0
+                            ast::BinOp::Gt => (BinOp::Eq, 2i64),   // Greater = 2
+                            ast::BinOp::Lte => (BinOp::Neq, 2i64), // not Greater
+                            ast::BinOp::Gte => (BinOp::Neq, 0i64), // not Less
+                            _ => unreachable!(),
+                        };
+                        return Ok(FirExpr::BinaryOp {
+                            left: Box::new(tag),
+                            op: cmp_op,
+                            right: Box::new(FirExpr::IntLit(cmp_val)),
+                            result_ty: FirType::Bool,
+                        });
+                    }
                 }
                 let fir_left = self.lower_expr(left)?;
                 let fir_right = self.lower_expr(right)?;
@@ -1111,7 +1199,14 @@ impl Lowerer {
                     expr
                 };
                 let fir_inner = self.lower_expr(inner)?;
-                let fir_handler = self.lower_expr(handler)?;
+                // For zero-param lambdas (-> expr), inline the body directly
+                let fir_handler = if let Expr::Lambda { params, body, .. } = handler.as_ref()
+                    && params.is_empty()
+                {
+                    self.lower_inline_body(body)?
+                } else {
+                    self.lower_expr(handler)?
+                };
                 let result_ty = self.infer_fir_type(&fir_inner);
                 let result_id = self.alloc_local();
                 self.local_types.insert(result_id, result_ty.clone());
@@ -1512,6 +1607,29 @@ impl Lowerer {
     /// Lower `for var in iter: body`.
     /// For List types: index-based while loop (aster_list_len/aster_list_get).
     /// For Iterator classes: next()-based loop with nullable check.
+    /// Lower a zero-param lambda body inline, returning the last expression as a FirExpr.
+    /// Emits any preceding statements into pending_stmts.
+    fn lower_inline_body(&mut self, body: &[Stmt]) -> Result<FirExpr, LowerError> {
+        if body.is_empty() {
+            return Ok(FirExpr::IntLit(0));
+        }
+        // Lower all but the last statement into pending_stmts
+        for stmt in &body[..body.len() - 1] {
+            let fir_stmt = self.lower_stmt_inner(stmt)?;
+            self.pending_stmts.push(fir_stmt);
+        }
+        // Last statement: extract its expression value
+        let last = &body[body.len() - 1];
+        match last {
+            Stmt::Expr(expr, _) | Stmt::Return(expr, _) => self.lower_expr(expr),
+            other => {
+                let fir_stmt = self.lower_stmt_inner(other)?;
+                self.pending_stmts.push(fir_stmt);
+                Ok(FirExpr::IntLit(0))
+            }
+        }
+    }
+
     fn lower_for_loop(
         &mut self,
         var: &str,
@@ -1786,12 +1904,27 @@ impl Lowerer {
                 }
             }
             Expr::Index { object, index, .. } => {
+                let is_map = if let Expr::Ident(name, _) = object.as_ref() {
+                    matches!(
+                        self.local_ast_types.get(name.as_str()),
+                        Some(Type::Map(_, _))
+                    )
+                } else {
+                    false
+                };
                 let fir_obj = self.lower_expr_ref(object)?;
                 let fir_idx = self.lower_expr_ref(index)?;
-                Ok(FirPlace::Index {
-                    list: Box::new(fir_obj),
-                    index: Box::new(fir_idx),
-                })
+                if is_map {
+                    Ok(FirPlace::MapIndex {
+                        map: Box::new(fir_obj),
+                        key: Box::new(fir_idx),
+                    })
+                } else {
+                    Ok(FirPlace::Index {
+                        list: Box::new(fir_obj),
+                        index: Box::new(fir_idx),
+                    })
+                }
             }
             Expr::Member { object, field, .. } => {
                 let fir_obj = self.lower_expr_ref(object)?;
@@ -1812,6 +1945,7 @@ impl Lowerer {
         // For now, delegate to a simple version that doesn't allocate locals
         match expr {
             Expr::Int(n, _) => Ok(FirExpr::IntLit(*n)),
+            Expr::Str(s, _) => Ok(FirExpr::StringLit(s.clone())),
             Expr::Ident(name, _) => {
                 if let Some(&local_id) = self.locals.get(name.as_str()) {
                     let ty = self.resolve_var_type(name);
@@ -2452,6 +2586,159 @@ impl Lowerer {
             params: vec![("self".to_string(), FirType::Ptr)],
             ret_type: FirType::Ptr,
             body: vec![FirStmt::Return(result_expr)],
+            is_entry: false,
+        };
+        self.module.add_function(func);
+        Ok(())
+    }
+
+    /// Synthesize an auto-derived `eq` method for a class.
+    /// Compares all fields pairwise: self.f1 == other.f1 and self.f2 == other.f2 ...
+    fn synthesize_eq(&mut self, class_name: &str, class_id: ClassId) -> Result<(), LowerError> {
+        let qualified = format!("{}.eq", class_name);
+        let func_id = FunctionId(self.next_function);
+        self.next_function += 1;
+        self.functions.insert(qualified.clone(), func_id);
+
+        let field_layout = self
+            .class_fields
+            .get(&class_id)
+            .cloned()
+            .unwrap_or_default();
+
+        let self_local = LocalId(0);
+        let other_local = LocalId(1);
+
+        // Build: self.f1 == other.f1 and self.f2 == other.f2 and ...
+        let mut result_expr: Option<FirExpr> = None;
+        for (_field_name, field_ty, offset) in &field_layout {
+            let self_field = FirExpr::FieldGet {
+                object: Box::new(FirExpr::LocalVar(self_local, FirType::Ptr)),
+                offset: *offset,
+                ty: field_ty.clone(),
+            };
+            let other_field = FirExpr::FieldGet {
+                object: Box::new(FirExpr::LocalVar(other_local, FirType::Ptr)),
+                offset: *offset,
+                ty: field_ty.clone(),
+            };
+            let cmp = FirExpr::BinaryOp {
+                left: Box::new(self_field),
+                op: BinOp::Eq,
+                right: Box::new(other_field),
+                result_ty: FirType::Bool,
+            };
+            result_expr = Some(match result_expr {
+                None => cmp,
+                Some(prev) => FirExpr::BinaryOp {
+                    left: Box::new(prev),
+                    op: BinOp::And,
+                    right: Box::new(cmp),
+                    result_ty: FirType::Bool,
+                },
+            });
+        }
+        let body_expr = result_expr.unwrap_or(FirExpr::BoolLit(true));
+
+        let func = FirFunction {
+            id: func_id,
+            name: qualified,
+            params: vec![
+                ("self".to_string(), FirType::Ptr),
+                ("other".to_string(), FirType::Ptr),
+            ],
+            ret_type: FirType::Bool,
+            body: vec![FirStmt::Return(body_expr)],
+            is_entry: false,
+        };
+        self.module.add_function(func);
+        Ok(())
+    }
+
+    /// Synthesize an auto-derived `cmp` method for a class.
+    /// Compares fields in order, returning an Ordering enum variant.
+    fn synthesize_cmp(&mut self, class_name: &str, class_id: ClassId) -> Result<(), LowerError> {
+        let qualified = format!("{}.cmp", class_name);
+        let func_id = FunctionId(self.next_function);
+        self.next_function += 1;
+        self.functions.insert(qualified.clone(), func_id);
+
+        let field_layout = self
+            .class_fields
+            .get(&class_id)
+            .cloned()
+            .unwrap_or_default();
+
+        let self_local = LocalId(0);
+        let other_local = LocalId(1);
+
+        // For each field, compare and return early if not equal.
+        // Return Ordering.Equal at the end.
+        // Ordering enum: tag 0 = Less, tag 1 = Equal, tag 2 = Greater
+        let ordering_ctor = |tag: i64| -> FirExpr {
+            // Ordering variant is a struct with a single tag field
+            if let Some(&ctor_func_id) = self.functions.get(match tag {
+                0 => "Ordering.Less",
+                1 => "Ordering.Equal",
+                _ => "Ordering.Greater",
+            }) {
+                FirExpr::Call {
+                    func: ctor_func_id,
+                    args: vec![],
+                    ret_ty: FirType::Ptr,
+                }
+            } else {
+                // Fallback: construct inline with tag
+                FirExpr::IntLit(tag)
+            }
+        };
+
+        let mut body = Vec::new();
+        for (_field_name, field_ty, offset) in &field_layout {
+            let self_field = FirExpr::FieldGet {
+                object: Box::new(FirExpr::LocalVar(self_local, FirType::Ptr)),
+                offset: *offset,
+                ty: field_ty.clone(),
+            };
+            let other_field = FirExpr::FieldGet {
+                object: Box::new(FirExpr::LocalVar(other_local, FirType::Ptr)),
+                offset: *offset,
+                ty: field_ty.clone(),
+            };
+            // if self.f < other.f: return Less
+            body.push(FirStmt::If {
+                cond: FirExpr::BinaryOp {
+                    left: Box::new(self_field.clone()),
+                    op: BinOp::Lt,
+                    right: Box::new(other_field.clone()),
+                    result_ty: FirType::Bool,
+                },
+                then_body: vec![FirStmt::Return(ordering_ctor(0))],
+                else_body: vec![],
+            });
+            // if self.f > other.f: return Greater
+            body.push(FirStmt::If {
+                cond: FirExpr::BinaryOp {
+                    left: Box::new(self_field),
+                    op: BinOp::Gt,
+                    right: Box::new(other_field),
+                    result_ty: FirType::Bool,
+                },
+                then_body: vec![FirStmt::Return(ordering_ctor(2))],
+                else_body: vec![],
+            });
+        }
+        body.push(FirStmt::Return(ordering_ctor(1)));
+
+        let func = FirFunction {
+            id: func_id,
+            name: qualified,
+            params: vec![
+                ("self".to_string(), FirType::Ptr),
+                ("other".to_string(), FirType::Ptr),
+            ],
+            ret_type: FirType::Ptr,
+            body,
             is_entry: false,
         };
         self.module.add_function(func);

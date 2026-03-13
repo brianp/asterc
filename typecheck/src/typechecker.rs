@@ -928,16 +928,16 @@ impl TypeChecker {
                         if obj_ty.is_error() || idx_ty.is_error() {
                             return Ok(Type::Error);
                         }
-                        if idx_ty != Type::Int {
-                            return Err(Diagnostic::error(format!(
-                                "Index must be Int, got {:?}",
-                                idx_ty
-                            ))
-                            .with_code("E016")
-                            .with_label(index.span(), "expected Int"));
-                        }
                         match &obj_ty {
                             Type::List(inner) => {
+                                if idx_ty != Type::Int {
+                                    return Err(Diagnostic::error(format!(
+                                        "List index must be Int, got {:?}",
+                                        idx_ty
+                                    ))
+                                    .with_code("E016")
+                                    .with_label(index.span(), "expected Int"));
+                                }
                                 if **inner != val_ty {
                                     return Err(Diagnostic::error(format!(
                                         "Cannot assign {:?} to List[{:?}] element",
@@ -948,12 +948,31 @@ impl TypeChecker {
                                 }
                                 Ok(val_ty)
                             }
+                            Type::Map(key_ty, map_val_ty) => {
+                                if idx_ty != **key_ty {
+                                    return Err(Diagnostic::error(format!(
+                                        "Map key must be {:?}, got {:?}",
+                                        key_ty, idx_ty
+                                    ))
+                                    .with_code("E016")
+                                    .with_label(index.span(), format!("expected {:?}", key_ty)));
+                                }
+                                if **map_val_ty != val_ty {
+                                    return Err(Diagnostic::error(format!(
+                                        "Cannot assign {:?} to Map value type {:?}",
+                                        val_ty, map_val_ty
+                                    ))
+                                    .with_code("E001")
+                                    .with_label(stmt_span, format!("expected {:?}", map_val_ty)));
+                                }
+                                Ok(val_ty)
+                            }
                             _ => Err(Diagnostic::error(format!(
                                 "Cannot index-assign into {:?}",
                                 obj_ty
                             ))
                             .with_code("E016")
-                            .with_label(object.span(), "not a list")),
+                            .with_label(object.span(), "not a list or map")),
                         }
                     }
                     _ => Err(Diagnostic::error("Invalid assignment target".to_string())

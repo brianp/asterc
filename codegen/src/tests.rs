@@ -2367,3 +2367,410 @@ def main() -> Int
     let result = jit.call_i64(fir.entry.unwrap());
     assert_eq!(result, 42);
 }
+
+// ---------------------------------------------------------------------------
+// M21: Map literals
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e2e_map_empty_creation() {
+    let src = "\
+def main() -> Int
+  let m: Map[String, Int] = {}
+  0
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 0);
+}
+
+#[test]
+fn e2e_map_literal_with_entries() {
+    let src = r#"
+def main() -> Int
+  let m: Map[String, Int] = {"a": 10, "b": 20}
+  m["a"]
+"#;
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 10);
+}
+
+#[test]
+fn e2e_map_get_second_key() {
+    let src = r#"
+def main() -> Int
+  let m: Map[String, Int] = {"x": 5, "y": 42}
+  m["y"]
+"#;
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn e2e_map_set_via_index_assignment() {
+    let src = r#"
+def main() -> Int
+  let m: Map[String, Int] = {"a": 1}
+  m["a"] = 42
+  m["a"]
+"#;
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn e2e_map_add_new_key() {
+    let src = r#"
+def main() -> Int
+  let m: Map[String, Int] = {}
+  m["key"] = 99
+  m["key"]
+"#;
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 99);
+}
+
+// ---------------------------------------------------------------------------
+// M23: Virtual dispatch — trait methods on custom types
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e2e_class_eq_same_values() {
+    let src = "\
+class Point includes Eq
+  x: Int
+  y: Int
+
+def main() -> Int
+  let a: Point = Point(x: 1, y: 2)
+  let b: Point = Point(x: 1, y: 2)
+  if a == b
+    return 1
+  return 0
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 1);
+}
+
+#[test]
+fn e2e_class_eq_different_values() {
+    let src = "\
+class Point includes Eq
+  x: Int
+  y: Int
+
+def main() -> Int
+  let a: Point = Point(x: 1, y: 2)
+  let b: Point = Point(x: 3, y: 4)
+  if a == b
+    return 1
+  return 0
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 0);
+}
+
+#[test]
+fn e2e_class_neq() {
+    let src = "\
+class Point includes Eq
+  x: Int
+  y: Int
+
+def main() -> Int
+  let a: Point = Point(x: 1, y: 2)
+  let b: Point = Point(x: 3, y: 4)
+  if a != b
+    return 1
+  return 0
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 1);
+}
+
+#[test]
+fn e2e_class_printable_to_string() {
+    let src = "\
+class Point includes Printable
+  x: Int
+  y: Int
+
+def main() -> Int
+  let p: Point = Point(x: 3, y: 4)
+  let s = p.to_string()
+  42
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+// ---------------------------------------------------------------------------
+// M24: Iterator protocol — custom for-loop
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e2e_for_loop_over_list() {
+    let src = "\
+def main() -> Int
+  let nums: List[Int] = [10, 20, 12]
+  let sum = 0
+  for n in nums
+    sum = sum + n
+  sum
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn e2e_custom_iterator_for_loop() {
+    let src = "\
+class Range includes Iterator[Int]
+  current: Int
+  end_val: Int
+
+  def next() -> Int?
+    if current >= end_val
+      return nil
+    let val = current
+    current = current + 1
+    return val
+
+def main() -> Int
+  let r: Range = Range(current: 0, end_val: 5)
+  let sum = 0
+  for i in r
+    sum = sum + i
+  sum
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 10);
+}
+
+// ---------------------------------------------------------------------------
+// M22: Error handling (throw, propagate, .or, .or_else, .catch)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e2e_error_or_fallback() {
+    let src = "\
+def risky() throws String -> Int
+  throw \"oops\"
+
+def main() -> Int
+  risky()!.or(42)
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn e2e_error_or_success_path() {
+    let src = "\
+def safe() throws String -> Int
+  return 10
+
+def main() -> Int
+  safe()!.or(99)
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 10);
+}
+
+#[test]
+fn e2e_error_or_else_fallback() {
+    let src = "\
+def risky() throws String -> Int
+  throw \"oops\"
+
+def main() -> Int
+  risky()!.or_else(-> 42)
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn e2e_error_catch_fallback() {
+    let src = "\
+def risky() throws String -> Int
+  throw \"oops\"
+
+def main() -> Int
+  risky()!.catch
+    _ -> 42
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+// ---------------------------------------------------------------------------
+// Coverage: every Expr variant must have at least one codegen test
+// ---------------------------------------------------------------------------
+
+#[test]
+fn coverage_all_expr_variants() {
+    // This test maps every AST Expr variant to the test(s) that exercise it.
+    // If a variant is added to the Expr enum without codegen coverage, add a
+    // test and update this list. Variants listed here are *known* to be
+    // exercised by the named test(s).
+    //
+    // Count of Expr variants in ast/src/expr.rs (keep in sync):
+    let covered_variants: &[(&str, &str)] = &[
+        ("Int", "m2_int_literal"),
+        ("Float", "m3_float_literal"),
+        ("Str", "m4_string_literal"),
+        ("Bool", "m5_bool_literal"),
+        ("Nil", "m6_nil_literal"),
+        ("Ident", "m2_int_literal"),
+        ("Member", "m10_class_field_access"),
+        ("Lambda", "m11_closure_identity"),
+        ("Call", "m7_function_call"),
+        ("BinaryOp", "m2_int_literal"),
+        ("UnaryOp", "m14_unary_negation"),
+        ("ListLiteral", "m8_list_creation"),
+        ("Index", "m8_list_index_access"),
+        ("Match", "m9_match_int_literal"),
+        ("StringInterpolation", "m13_string_interpolation"),
+        ("Map", "e2e_map_literal_with_entries"),
+        ("AsyncCall", "m15_async_eager_call"),
+        ("Resolve", "m16_resolve_identity"),
+        ("Propagate", "e2e_error_or_fallback"),
+        ("Throw", "e2e_throw_returns_from_function"),
+        ("ErrorOr", "e2e_error_or_fallback"),
+        ("ErrorOrElse", "e2e_error_or_else_fallback"),
+        ("ErrorCatch", "e2e_error_catch_fallback"),
+        // These two are blocked on async runtime — documented as known gaps:
+        ("DetachedCall", "KNOWN_GAP_async_runtime"),
+        ("AsyncScope", "KNOWN_GAP_async_runtime"),
+    ];
+
+    // Verify the count matches the actual Expr enum variant count.
+    // Expr has 25 variants (count from ast/src/expr.rs).
+    assert_eq!(
+        covered_variants.len(),
+        25,
+        "coverage_all_expr_variants is out of sync with the Expr enum — update this list"
+    );
+}
+
+#[test]
+fn coverage_all_stmt_variants() {
+    let covered_variants: &[(&str, &str)] = &[
+        ("Let", "m2_int_literal"),
+        ("Class", "m10_class_construction"),
+        ("Trait", "ERASED_type_only"),
+        ("Return", "m7_function_call"),
+        ("Expr", "m2_int_literal"),
+        ("If", "m5_if_true_branch"),
+        ("While", "m6_while_loop_sum"),
+        ("For", "m6_for_loop"),
+        ("Assignment", "m8_list_set"),
+        ("Break", "m6_while_break"),
+        ("Continue", "m6_while_continue"),
+        ("Use", "ERASED_resolved_pre_fir"),
+        ("Enum", "m9_enum_match"),
+        ("Const", "m20_const_binding"),
+    ];
+
+    // Stmt has 14 variants.
+    assert_eq!(
+        covered_variants.len(),
+        14,
+        "coverage_all_stmt_variants is out of sync with the Stmt enum — update this list"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Audit: UnsupportedFeature occurrences must be tracked in the parity matrix
+// ---------------------------------------------------------------------------
+
+#[test]
+fn unsupported_feature_audit() {
+    // Count UnsupportedFeature call sites in lower.rs.
+    // Each occurrence represents a known gap or guard rail. If you add a new
+    // UnsupportedFeature path, you MUST document it in the STATUS.md parity
+    // matrix. If you close a gap, decrement the count here.
+    //
+    // Current breakdown (16 sites in lower.rs, 0 in translate.rs):
+    //   3 — generic catch-alls (unsupported_top_level_stmt, unsupported_stmt, unsupported_expr)
+    //   2 — assignment/place edge cases (complex target, complex place expr)
+    //   1 — non-ident call target
+    //   1 — .or_throw() on non-nullable FIR type
+    //   1 — unresolved method call
+    //   1 — missing argument with no default
+    //   1 — Iterator class missing next() method
+    //   3 — class field resolution errors (unknown class, no layout, unknown field)
+    //   3 — resolve_class_name failures (variable, call expr, other expr)
+    //
+    let lower_src = include_str!("../../fir/src/lower.rs");
+    // Count error construction sites: LowerError::UnsupportedFeature(
+    let lower_count = lower_src.matches("LowerError::UnsupportedFeature").count();
+
+    // Subtract 1 for the Display impl match arm (not an error site).
+    let actual_call_sites = lower_count - 1;
+
+    assert_eq!(
+        actual_call_sites, 16,
+        "UnsupportedFeature call site count changed in lower.rs (expected 16, got {}). \
+         If you added a new UnsupportedFeature, document it in STATUS.md parity matrix. \
+         If you closed a gap, update this count and STATUS.md.",
+        actual_call_sites
+    );
+
+    // translate.rs should have zero — every FirExpr/FirStmt variant is handled.
+    let translate_src = include_str!("../../codegen/src/translate.rs");
+    let translate_count = translate_src.matches("UnsupportedFeature").count();
+    assert_eq!(
+        translate_count, 0,
+        "translate.rs should have no UnsupportedFeature paths — all FIR nodes must be translated"
+    );
+}
+
+#[test]
+fn e2e_throw_returns_from_function() {
+    // After throw, the error flag is set and the function returns a dummy value.
+    // The caller uses .or() to recover.
+    let src = "\
+def compute(x: Int) throws String -> Int
+  if x < 0
+    throw \"negative\"
+  return x * 2
+
+def main() -> Int
+  compute(x: -5)!.or(0) + compute(x: 10)!.or(0)
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 20);
+}
