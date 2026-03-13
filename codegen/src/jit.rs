@@ -353,7 +353,7 @@ impl Default for CraneliftJIT {
 
 /// Count Ptr/Struct-typed Let bindings in a function body (recursive).
 /// These need root slots in the GC shadow stack frame.
-pub fn count_body_gc_roots(stmts: &[fir::stmts::FirStmt]) -> usize {
+pub(crate) fn count_body_gc_roots(stmts: &[fir::stmts::FirStmt]) -> usize {
     use fir::stmts::FirStmt;
     let mut count = 0;
     for stmt in stmts {
@@ -382,7 +382,7 @@ pub fn count_body_gc_roots(stmts: &[fir::stmts::FirStmt]) -> usize {
 
 // --- String literal collection ---
 
-pub fn collect_string_lits_stmts(
+pub(crate) fn collect_string_lits_stmts(
     stmts: &[fir::stmts::FirStmt],
     strings: &mut std::collections::HashSet<String>,
 ) {
@@ -423,7 +423,10 @@ pub fn collect_string_lits_stmts(
     }
 }
 
-pub fn collect_string_lits_expr(expr: &FirExpr, strings: &mut std::collections::HashSet<String>) {
+pub(crate) fn collect_string_lits_expr(
+    expr: &FirExpr,
+    strings: &mut std::collections::HashSet<String>,
+) {
     match expr {
         FirExpr::StringLit(s) => {
             strings.insert(s.clone());

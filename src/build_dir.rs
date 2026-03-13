@@ -13,9 +13,6 @@ pub struct BuildPaths {
     pub gen_dir: PathBuf,
     /// Binary output directory: `<root>/bin/`
     pub bin_dir: PathBuf,
-    /// The profile used.
-    #[allow(dead_code)]
-    pub profile: Profile,
 }
 
 impl BuildPaths {
@@ -115,7 +112,6 @@ pub fn resolve_build_paths(
         gen_dir: root.join("gen"),
         bin_dir: root.join("bin"),
         root,
-        profile,
     }
 }
 
