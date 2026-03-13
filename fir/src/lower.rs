@@ -782,8 +782,7 @@ impl Lowerer {
                             .insert(name.clone(), Type::Custom(class_name.clone(), vec![]));
                     // Infer class type from function call that returns a class instance
                     } else if let Expr::Ident(func_name, _) = func.as_ref()
-                        && let Some(Type::Function { ret, .. }) =
-                            self.type_env.get_var(func_name)
+                        && let Some(Type::Function { ret, .. }) = self.type_env.get_var(func_name)
                         && let Type::Custom(class_name, type_args) = ret.as_ref()
                         && self.classes.contains_key(class_name.as_str())
                     {
@@ -1580,49 +1579,46 @@ impl Lowerer {
             && let FirType::TaggedUnion { ref variants, .. } = fir_object_ty
             && !variants.is_empty()
         {
-                let inner_ty = variants[0].clone();
-                let default_expr = if let Some((_, default_arg)) = args.first() {
-                    self.lower_expr(default_arg)?
-                } else {
-                    self.default_value_for_type(&inner_ty)
-                };
+            let inner_ty = variants[0].clone();
+            let default_expr = if let Some((_, default_arg)) = args.first() {
+                self.lower_expr(default_arg)?
+            } else {
+                self.default_value_for_type(&inner_ty)
+            };
 
-                let nullable_id = self.alloc_local();
-                self.local_types.insert(nullable_id, fir_object_ty.clone());
-                self.pending_stmts.push(FirStmt::Let {
-                    name: nullable_id,
-                    ty: fir_object_ty.clone(),
-                    value: fir_object,
-                });
+            let nullable_id = self.alloc_local();
+            self.local_types.insert(nullable_id, fir_object_ty.clone());
+            self.pending_stmts.push(FirStmt::Let {
+                name: nullable_id,
+                ty: fir_object_ty.clone(),
+                value: fir_object,
+            });
 
-                let result_id = self.alloc_local();
-                self.local_types.insert(result_id, inner_ty.clone());
-                self.pending_stmts.push(FirStmt::Let {
-                    name: result_id,
-                    ty: inner_ty.clone(),
-                    value: default_expr,
-                });
+            let result_id = self.alloc_local();
+            self.local_types.insert(result_id, inner_ty.clone());
+            self.pending_stmts.push(FirStmt::Let {
+                name: result_id,
+                ty: inner_ty.clone(),
+                value: default_expr,
+            });
 
-                self.pending_stmts.push(FirStmt::If {
-                    cond: FirExpr::TagCheck {
-                        value: Box::new(FirExpr::LocalVar(
-                            nullable_id,
-                            fir_object_ty.clone(),
-                        )),
-                        tag: 0,
+            self.pending_stmts.push(FirStmt::If {
+                cond: FirExpr::TagCheck {
+                    value: Box::new(FirExpr::LocalVar(nullable_id, fir_object_ty.clone())),
+                    tag: 0,
+                },
+                then_body: vec![FirStmt::Assign {
+                    target: FirPlace::Local(result_id),
+                    value: FirExpr::TagUnwrap {
+                        value: Box::new(FirExpr::LocalVar(nullable_id, fir_object_ty)),
+                        expected_tag: 0,
+                        ty: inner_ty.clone(),
                     },
-                    then_body: vec![FirStmt::Assign {
-                        target: FirPlace::Local(result_id),
-                        value: FirExpr::TagUnwrap {
-                            value: Box::new(FirExpr::LocalVar(nullable_id, fir_object_ty)),
-                            expected_tag: 0,
-                            ty: inner_ty.clone(),
-                        },
-                    }],
-                    else_body: vec![],
-                });
+                }],
+                else_body: vec![],
+            });
 
-                return Ok(FirExpr::LocalVar(result_id, inner_ty));
+            return Ok(FirExpr::LocalVar(result_id, inner_ty));
         }
 
         // Check for list built-in methods
@@ -2398,9 +2394,7 @@ impl Lowerer {
                 }
                 // Inside a method body, bare field names resolve via self
                 // e.g. `addr.zip` where `addr` is a field of the current class
-                if let Some(Type::Custom(self_class, _)) =
-                    self.local_ast_types.get("self")
-                {
+                if let Some(Type::Custom(self_class, _)) = self.local_ast_types.get("self") {
                     let self_class = self_class.clone();
                     if let Some(class_info) = self.type_env.get_class(&self_class) {
                         for (fname, ftype) in &class_info.fields {
@@ -2493,7 +2487,9 @@ impl Lowerer {
                     }
                 }
                 Err(LowerError::UnsupportedFeature(
-                    UnsupportedFeatureKind::Other("cannot determine class type of expression".into()),
+                    UnsupportedFeatureKind::Other(
+                        "cannot determine class type of expression".into(),
+                    ),
                 ))
             }
             // List index: points[i] — element type from list's AST type
@@ -2523,7 +2519,9 @@ impl Lowerer {
                     }
                 }
                 Err(LowerError::UnsupportedFeature(
-                    UnsupportedFeatureKind::Other("cannot determine class type of expression".into()),
+                    UnsupportedFeatureKind::Other(
+                        "cannot determine class type of expression".into(),
+                    ),
                 ))
             }
             _ => Err(LowerError::UnsupportedFeature(
