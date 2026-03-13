@@ -896,7 +896,7 @@ def main() -> Int
 // ===========================================================================
 
 #[test]
-fn lower_async_call_to_eager_exec() {
+fn lower_async_call_to_spawn() {
     let src = "\
 def fetch() -> Int
   42
@@ -907,9 +907,44 @@ def main() throws CancelledError -> Int
 ";
     let fir = lower_ok(src);
     let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
-    // async should lower to an eager call (no true concurrency yet)
-    // resolve should lower to reading the already-computed result
-    assert!(!main_func.body.is_empty());
+    let has_spawn = main_func.body.iter().any(|stmt| {
+        matches!(
+            stmt,
+            FirStmt::Let {
+                value: FirExpr::Spawn { .. },
+                ..
+            }
+        )
+    });
+    assert!(has_spawn, "expected Spawn in lowered body: {:?}", main_func.body);
+}
+
+#[test]
+fn lower_blocking_call_to_block_on() {
+    let src = "\
+def fetch_child() -> Int
+  7
+
+def fetch() -> Int
+  async fetch_child()
+  42
+
+def main() -> Int
+  blocking fetch()
+";
+    let fir = lower_ok(src);
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    let has_block_on = main_func.body.iter().any(|stmt| {
+        matches!(
+            stmt,
+            FirStmt::Return(FirExpr::BlockOn { .. }) | FirStmt::Expr(FirExpr::BlockOn { .. })
+        )
+    });
+    assert!(
+        has_block_on,
+        "expected BlockOn in lowered body: {:?}",
+        main_func.body
+    );
 }
 
 // ===========================================================================
@@ -1453,7 +1488,7 @@ def main() -> Int
 // ===========================================================================
 
 #[test]
-fn detached_call_lowers_as_eager_call() {
+fn detached_call_lowers_to_spawn() {
     let src = "\
 def work() -> Int
   42
@@ -1464,14 +1499,13 @@ def main() -> Int
 ";
     let fir = lower_ok(src);
     let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
-    // Detached async should produce a Call to work() (eager execution)
-    let has_call = main_func
+    let has_spawn = main_func
         .body
         .iter()
-        .any(|s| matches!(s, FirStmt::Expr(FirExpr::Call { .. })));
+        .any(|s| matches!(s, FirStmt::Expr(FirExpr::Spawn { .. })));
     assert!(
-        has_call,
-        "expected eager Call for detached async: {:?}",
+        has_spawn,
+        "expected Spawn for detached async: {:?}",
         main_func.body
     );
 }

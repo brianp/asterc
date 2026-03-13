@@ -348,6 +348,21 @@ fn translate_expr(
             }
         }
 
+        FirExpr::Spawn { func, args, .. } | FirExpr::BlockOn { func, args, .. } => {
+            if let Some(&func_ref) = state.func_refs.get(func) {
+                let arg_vals: Vec<Value> = args
+                    .iter()
+                    .map(|a| translate_expr(builder, state, a))
+                    .collect();
+                let call = builder.ins().call(func_ref, &arg_vals);
+                builder.inst_results(call)[0]
+            } else {
+                builder.ins().iconst(types::I64, 0)
+            }
+        }
+
+        FirExpr::ResolveTask { task, .. } => translate_expr(builder, state, task),
+
         FirExpr::RuntimeCall { name, args, .. } => {
             translate_runtime_call(builder, state, name, args)
         }
@@ -790,6 +805,9 @@ fn infer_operand_type(_state: &TranslationState, expr: &FirExpr) -> FirType {
         FirExpr::BinaryOp { result_ty, .. } => result_ty.clone(),
         FirExpr::UnaryOp { result_ty, .. } => result_ty.clone(),
         FirExpr::Call { ret_ty, .. } => ret_ty.clone(),
+        FirExpr::Spawn { ret_ty, .. } => ret_ty.clone(),
+        FirExpr::BlockOn { ret_ty, .. } => ret_ty.clone(),
+        FirExpr::ResolveTask { ret_ty, .. } => ret_ty.clone(),
         FirExpr::RuntimeCall { ret_ty, .. } => ret_ty.clone(),
         FirExpr::FieldGet { ty, .. } => ty.clone(),
         FirExpr::Construct { ty, .. } => ty.clone(),

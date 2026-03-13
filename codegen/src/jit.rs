@@ -442,10 +442,16 @@ pub(crate) fn collect_string_lits_expr(
         FirExpr::UnaryOp { operand, .. } => {
             collect_string_lits_expr(operand, strings);
         }
-        FirExpr::Call { args, .. } | FirExpr::RuntimeCall { args, .. } => {
+        FirExpr::Call { args, .. }
+        | FirExpr::Spawn { args, .. }
+        | FirExpr::BlockOn { args, .. }
+        | FirExpr::RuntimeCall { args, .. } => {
             for arg in args {
                 collect_string_lits_expr(arg, strings);
             }
+        }
+        FirExpr::ResolveTask { task, .. } => {
+            collect_string_lits_expr(task, strings);
         }
         FirExpr::ListNew { elements, .. } => {
             for elem in elements {
