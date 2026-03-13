@@ -2,6 +2,7 @@ pub mod diagnostic;
 pub mod expr;
 pub mod span;
 pub mod type_env;
+pub mod type_table;
 pub mod types;
 
 pub use diagnostic::{Diagnostic, Label, Severity};
@@ -10,6 +11,7 @@ pub use expr::{
 };
 pub use span::Span;
 pub use type_env::{ClassInfo, EnumInfo, NamespaceInfo, TraitInfo, TypeEnv};
+pub use type_table::TypeTable;
 pub use types::{Type, TypeConstraint};
 
 /// Result of parsing with error recovery — best-effort AST plus all diagnostics.

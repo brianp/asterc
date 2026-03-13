@@ -1,4 +1,6 @@
-use ast::{ClassInfo, Diagnostic, EnumInfo, Expr, MatchPattern, Stmt, TraitInfo, Type, TypeEnv};
+use ast::{
+    ClassInfo, Diagnostic, EnumInfo, Expr, MatchPattern, Stmt, TraitInfo, Type, TypeEnv, TypeTable,
+};
 use indexmap::IndexMap;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -33,6 +35,8 @@ pub struct TypeChecker {
     pub(crate) const_names: std::collections::HashSet<String>,
     /// For functions with default parameters: maps function name -> set of param names that have defaults.
     pub(crate) default_params: HashMap<String, std::collections::HashSet<String>>,
+    /// Maps expression spans to their resolved types. Consumed by FIR lowerer.
+    pub type_table: TypeTable,
 }
 
 impl Default for TypeChecker {
@@ -314,6 +318,7 @@ impl TypeChecker {
             expected_type: None,
             const_names: std::collections::HashSet::new(),
             default_params: HashMap::new(),
+            type_table: TypeTable::new(),
         }
     }
 
@@ -354,6 +359,7 @@ impl TypeChecker {
             expected_type: self.expected_type.clone(),
             const_names: self.const_names.clone(),
             default_params: self.default_params.clone(),
+            type_table: TypeTable::new(),
         }
     }
 
