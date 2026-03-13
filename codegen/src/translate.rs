@@ -474,6 +474,7 @@ fn translate_expr(
             );
 
             // Build signature for the indirect call: (env_ptr: i64, args...) -> ret_ty
+            let call_conv = builder.func.signature.call_conv;
             let sig = builder.func.import_signature(ir::Signature {
                 params: {
                     let mut params = vec![AbiParam::new(types::I64)]; // env ptr
@@ -484,7 +485,7 @@ fn translate_expr(
                     params
                 },
                 returns: vec![AbiParam::new(fir_type_to_clif(ret_ty))],
-                call_conv: cranelift_codegen::isa::CallConv::Fast,
+                call_conv,
             });
 
             // Build args: env_ptr first, then explicit args
