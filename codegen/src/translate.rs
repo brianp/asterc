@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::immediates::Offset32;
+use cranelift_codegen::ir::instructions::BlockArg;
 use cranelift_codegen::ir::types;
 use cranelift_codegen::ir::{self, AbiParam, InstBuilder, Value};
 use cranelift_frontend::{FunctionBuilder, Variable};
@@ -17,7 +18,6 @@ use crate::types::{fir_type_to_clif, is_float};
 pub struct TranslationState {
     pub locals: HashMap<LocalId, Variable>,
     pub local_types: HashMap<LocalId, FirType>,
-    pub next_var: usize,
     pub func_refs: HashMap<FunctionId, ir::FuncRef>,
     pub runtime_refs: HashMap<String, ir::FuncRef>,
     pub string_data: HashMap<String, (ir::GlobalValue, usize)>,
@@ -38,7 +38,6 @@ impl TranslationState {
         Self {
             locals: HashMap::new(),
             local_types: HashMap::new(),
-            next_var: 0,
             func_refs,
             runtime_refs,
             string_data,
@@ -47,14 +46,6 @@ impl TranslationState {
             terminated: false,
             gc_pop_ref: None,
         }
-    }
-
-    fn new_variable(&mut self) -> Variable {
-        let v = Variable::from_u32(
-            u32::try_from(self.next_var).expect("codegen: too many variables (exceeded u32::MAX)"),
-        );
-        self.next_var += 1;
-        v
     }
 }
 
@@ -67,14 +58,12 @@ pub fn declare_params(
 ) {
     let params = builder.block_params(entry_block).to_vec();
     for (i, (_name, ty)) in func.params.iter().enumerate() {
-        let var = state.new_variable();
         let clif_ty = fir_type_to_clif(ty);
-        builder.declare_var(var, clif_ty);
+        let var = builder.declare_var(clif_ty);
         builder.def_var(var, params[i]);
         state.locals.insert(LocalId(i as u32), var);
         state.local_types.insert(LocalId(i as u32), ty.clone());
     }
-    state.next_var = func.params.len();
 }
 
 pub fn translate_body(
@@ -94,9 +83,8 @@ fn translate_stmt(builder: &mut FunctionBuilder, state: &mut TranslationState, s
     match stmt {
         FirStmt::Let { name, ty, value } => {
             let val = translate_expr(builder, state, value);
-            let var = state.new_variable();
             let clif_ty = fir_type_to_clif(ty);
-            builder.declare_var(var, clif_ty);
+            let var = builder.declare_var(clif_ty);
             builder.def_var(var, val);
             state.locals.insert(*name, var);
             state.local_types.insert(*name, ty.clone());
@@ -560,12 +548,14 @@ fn translate_binop(
             builder.switch_to_block(trap_block);
             builder.seal_block(trap_block);
             let zero_result = builder.ins().iconst(types::I64, 0);
-            builder.ins().jump(merge_block, &[zero_result]);
+            builder
+                .ins()
+                .jump(merge_block, &[BlockArg::Value(zero_result)]);
 
             builder.switch_to_block(safe_block);
             builder.seal_block(safe_block);
             let result = builder.ins().sdiv(lhs, rhs);
-            builder.ins().jump(merge_block, &[result]);
+            builder.ins().jump(merge_block, &[BlockArg::Value(result)]);
 
             builder.switch_to_block(merge_block);
             builder.seal_block(merge_block);
@@ -594,12 +584,14 @@ fn translate_binop(
             builder.switch_to_block(trap_block);
             builder.seal_block(trap_block);
             let zero_result = builder.ins().iconst(types::I64, 0);
-            builder.ins().jump(merge_block, &[zero_result]);
+            builder
+                .ins()
+                .jump(merge_block, &[BlockArg::Value(zero_result)]);
 
             builder.switch_to_block(safe_block);
             builder.seal_block(safe_block);
             let result = builder.ins().srem(lhs, rhs);
-            builder.ins().jump(merge_block, &[result]);
+            builder.ins().jump(merge_block, &[BlockArg::Value(result)]);
 
             builder.switch_to_block(merge_block);
             builder.seal_block(merge_block);
@@ -661,11 +653,15 @@ fn translate_short_circuit(
     match op {
         BinOp::And => {
             // If lhs is false, short-circuit to merge with false; otherwise evaluate rhs
-            builder.ins().brif(lhs, rhs_block, &[], merge_block, &[lhs]);
+            builder
+                .ins()
+                .brif(lhs, rhs_block, &[], merge_block, &[BlockArg::Value(lhs)]);
         }
         BinOp::Or => {
             // If lhs is true, short-circuit to merge with true; otherwise evaluate rhs
-            builder.ins().brif(lhs, merge_block, &[lhs], rhs_block, &[]);
+            builder
+                .ins()
+                .brif(lhs, merge_block, &[BlockArg::Value(lhs)], rhs_block, &[]);
         }
         _ => unreachable!(),
     }
@@ -674,7 +670,7 @@ fn translate_short_circuit(
     builder.switch_to_block(rhs_block);
     builder.seal_block(rhs_block);
     let rhs = translate_expr(builder, state, right);
-    builder.ins().jump(merge_block, &[rhs]);
+    builder.ins().jump(merge_block, &[BlockArg::Value(rhs)]);
 
     // merge_block: result is the block parameter
     builder.switch_to_block(merge_block);

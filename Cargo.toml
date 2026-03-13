@@ -11,7 +11,7 @@ typecheck = { path = "typecheck" }
 fir = { path = "fir" }
 codegen = { path = "codegen" }
 aster-fmt = { path = "aster-fmt" }
-ariadne = "0.4"
+ariadne = "0.4.1"
 sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

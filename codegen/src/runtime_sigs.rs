@@ -56,11 +56,7 @@ pub static RUNTIME_SIGS: &[RuntimeSig] = &[
     ("aster_error_set", &[], None),
     ("aster_error_check", &[], Some(types::I8)),
     ("aster_panic", &[], None),
-    (
-        "aster_gc_push_roots",
-        &[types::I64, types::I64],
-        None,
-    ),
+    ("aster_gc_push_roots", &[types::I64, types::I64], None),
     ("aster_gc_pop_roots", &[], None),
     ("aster_gc_collect", &[], None),
 ];

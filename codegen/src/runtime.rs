@@ -465,7 +465,9 @@ unsafe fn obj_mark(header: *const u8) -> u8 {
 /// Set the mark byte on an object header.
 #[inline]
 unsafe fn obj_set_mark(header: *mut u8, mark: u8) {
-    unsafe { *header = mark; }
+    unsafe {
+        *header = mark;
+    }
 }
 
 /// Read the object type from a header.
@@ -489,7 +491,9 @@ unsafe fn obj_next(header: *const u8) -> *mut u8 {
 /// Set the next pointer on a header.
 #[inline]
 unsafe fn obj_set_next(header: *mut u8, next: *mut u8) {
-    unsafe { *(header.add(8) as *mut *mut u8) = next; }
+    unsafe {
+        *(header.add(8) as *mut *mut u8) = next;
+    }
 }
 
 /// Get the payload pointer from a header pointer.
@@ -535,7 +539,9 @@ fn gc_alloc_inner(payload_size: usize, obj_ty: u8) -> *mut u8 {
     // Link into heap list
     HEAP_HEAD.with(|head| {
         let old_head = head.get();
-        unsafe { obj_set_next(ptr, old_head); }
+        unsafe {
+            obj_set_next(ptr, old_head);
+        }
         head.set(ptr);
     });
 
@@ -761,10 +767,7 @@ pub fn register_runtime_builtins(builder: &mut JITBuilder) {
         ("aster_error_set", aster_error_set as *const u8),
         ("aster_error_check", aster_error_check as *const u8),
         ("aster_panic", aster_panic as *const u8),
-        (
-            "aster_gc_push_roots",
-            aster_gc_push_roots as *const u8,
-        ),
+        ("aster_gc_push_roots", aster_gc_push_roots as *const u8),
         ("aster_gc_pop_roots", aster_gc_pop_roots as *const u8),
         ("aster_gc_collect", aster_gc_collect as *const u8),
     ];
