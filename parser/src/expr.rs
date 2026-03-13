@@ -16,8 +16,13 @@ impl Parser {
         let mut args = Vec::new();
         let mut seen_names = HashSet::new();
         let mut positional_index = 0usize;
+        self.consume_newlines();
         if !self.at(&TokenKind::RParen) {
             loop {
+                self.consume_newlines();
+                if self.at(&TokenKind::RParen) {
+                    break; // trailing comma
+                }
                 let arg_start = self.start_span();
                 // Detect named argument: `ident: expr`
                 let is_named = matches!(self.peek_kind(), TokenKind::Ident(_))
@@ -65,6 +70,7 @@ impl Parser {
                     ))
                     .with_code("P001"));
                 }
+                self.consume_newlines();
                 if self.at(&TokenKind::Comma) {
                     self.advance();
                 } else {
@@ -72,6 +78,7 @@ impl Parser {
                 }
             }
         }
+        self.consume_newlines();
         Ok(args)
     }
 
@@ -529,9 +536,11 @@ impl Parser {
             }
             LBracket => {
                 self.advance();
+                self.consume_newlines();
                 let mut elems = Vec::new();
                 if !self.at(&RBracket) {
                     loop {
+                        self.consume_newlines();
                         if self.at(&RBracket) {
                             break; // trailing comma
                         }
@@ -543,6 +552,7 @@ impl Parser {
                             ))
                             .with_code("P001"));
                         }
+                        self.consume_newlines();
                         if self.at(&Comma) {
                             self.advance();
                         } else {
@@ -550,14 +560,17 @@ impl Parser {
                         }
                     }
                 }
+                self.consume_newlines();
                 self.expect(RBracket)?;
                 Ok(Expr::ListLiteral(elems, self.span_from(start)))
             }
             LBrace => {
                 self.advance();
+                self.consume_newlines();
                 let mut entries = Vec::new();
                 if !self.at(&RBrace) {
                     loop {
+                        self.consume_newlines();
                         if self.at(&RBrace) {
                             break; // trailing comma
                         }
@@ -572,6 +585,7 @@ impl Parser {
                             ))
                             .with_code("P001"));
                         }
+                        self.consume_newlines();
                         if self.at(&Comma) {
                             self.advance();
                         } else {
@@ -579,6 +593,7 @@ impl Parser {
                         }
                     }
                 }
+                self.consume_newlines();
                 self.expect(RBrace)?;
                 Ok(Expr::Map {
                     entries,
