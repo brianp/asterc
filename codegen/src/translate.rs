@@ -169,6 +169,13 @@ fn translate_stmt(builder: &mut FunctionBuilder, state: &mut TranslationState, s
                         builder.ins().call(func_ref, &[list_val, idx_val, val]);
                     }
                 }
+                FirPlace::MapIndex { map, key } => {
+                    let map_val = translate_expr(builder, state, map);
+                    let key_val = translate_expr(builder, state, key);
+                    if let Some(&func_ref) = state.runtime_refs.get("aster_map_set") {
+                        builder.ins().call(func_ref, &[map_val, key_val, val]);
+                    }
+                }
             }
         }
 

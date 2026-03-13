@@ -40,4 +40,8 @@ pub enum FirPlace {
         list: Box<FirExpr>,
         index: Box<FirExpr>,
     },
+    MapIndex {
+        map: Box<FirExpr>,
+        key: Box<FirExpr>,
+    },
 }

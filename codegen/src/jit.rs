@@ -415,6 +415,10 @@ pub(crate) fn collect_string_lits_stmts(
                         collect_string_lits_expr(list, strings);
                         collect_string_lits_expr(index, strings);
                     }
+                    fir::stmts::FirPlace::MapIndex { map, key } => {
+                        collect_string_lits_expr(map, strings);
+                        collect_string_lits_expr(key, strings);
+                    }
                     fir::stmts::FirPlace::Local(_) => {}
                 }
             }
