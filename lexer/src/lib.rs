@@ -3,7 +3,7 @@ mod token;
 #[cfg(test)]
 mod tests;
 
-pub use token::{Token, TokenKind};
+pub use token::{Token, TokenKind, Trivia, TriviaToken};
 
 use ast::{Diagnostic, Span};
 
@@ -647,6 +647,10 @@ pub fn lex(input: &str) -> Result<Vec<Token>, Diagnostic> {
     let line_starts = compute_line_starts(input);
     let mut tokens: Vec<Token> = Vec::new();
     let mut indent_stack: Vec<usize> = vec![0];
+    // Bracket depth tracking: suppress INDENT/DEDENT inside brackets.
+    // This follows Python's approach — implicit line continuation inside
+    // (), [], and {} means indentation changes don't create new blocks.
+    let mut bracket_depth: usize = 0;
 
     let mut last_line_idx = 0usize;
     for (line_idx, raw) in input.lines().enumerate() {
@@ -684,38 +688,43 @@ pub fn lex(input: &str) -> Result<Vec<Token>, Diagnostic> {
             continue;
         }
 
-        // Emit Indent / Dedent tokens.
-        let prev = indent_stack.last().copied().unwrap_or(0);
-        if indent_width > prev {
-            indent_stack.push(indent_width);
-            tokens.push(Token {
-                kind: Indent,
-                line: line_no,
-                col: 1,
-                start: ls,
-                end: ls + indent_width,
-            });
-        } else if indent_width < prev {
-            while let Some(&top) = indent_stack.last() {
-                if indent_width < top {
-                    indent_stack.pop();
-                    tokens.push(Token {
-                        kind: Dedent,
-                        line: line_no,
-                        col: 1,
-                        start: ls,
-                        end: ls,
-                    });
-                } else {
-                    break;
+        // Emit Indent / Dedent tokens, but only when NOT inside brackets.
+        // Inside (), [], or {}, indentation changes are ignored (implicit
+        // line continuation), matching Python's behavior.
+        if bracket_depth == 0 {
+            let prev = indent_stack.last().copied().unwrap_or(0);
+            if indent_width > prev {
+                indent_stack.push(indent_width);
+                tokens.push(Token {
+                    kind: Indent,
+                    line: line_no,
+                    col: 1,
+                    start: ls,
+                    end: ls + indent_width,
+                });
+            } else if indent_width < prev {
+                while let Some(&top) = indent_stack.last() {
+                    if indent_width < top {
+                        indent_stack.pop();
+                        tokens.push(Token {
+                            kind: Dedent,
+                            line: line_no,
+                            col: 1,
+                            start: ls,
+                            end: ls,
+                        });
+                    } else {
+                        break;
+                    }
                 }
-            }
-            if indent_stack.last().copied().unwrap_or(0) != indent_width {
-                return Err(
-                    Diagnostic::error(format!("Indentation error at line {}", line_no))
-                        .with_code("L003")
-                        .with_label(Span::new(ls, ls + indent_width), "unexpected indent level"),
-                );
+                if indent_stack.last().copied().unwrap_or(0) != indent_width {
+                    return Err(Diagnostic::error(format!(
+                        "Indentation error at line {}",
+                        line_no
+                    ))
+                    .with_code("L003")
+                    .with_label(Span::new(ls, ls + indent_width), "unexpected indent level"));
+                }
             }
         }
 
@@ -762,15 +771,33 @@ pub fn lex(input: &str) -> Result<Vec<Token>, Diagnostic> {
             match ch {
                 ' ' | '\t' => {}
 
-                '(' => push!(LParen),
-                ')' => push!(RParen),
+                '(' => {
+                    bracket_depth += 1;
+                    push!(LParen);
+                }
+                ')' => {
+                    bracket_depth = bracket_depth.saturating_sub(1);
+                    push!(RParen);
+                }
                 ',' => push!(Comma),
                 ':' => push!(Colon),
                 '.' => push!(Dot),
-                '[' => push!(LBracket),
-                ']' => push!(RBracket),
-                '{' => push!(LBrace),
-                '}' => push!(RBrace),
+                '[' => {
+                    bracket_depth += 1;
+                    push!(LBracket);
+                }
+                ']' => {
+                    bracket_depth = bracket_depth.saturating_sub(1);
+                    push!(RBracket);
+                }
+                '{' => {
+                    bracket_depth += 1;
+                    push!(LBrace);
+                }
+                '}' => {
+                    bracket_depth = bracket_depth.saturating_sub(1);
+                    push!(RBrace);
+                }
                 '+' => push!(Plus),
                 '/' => push!(Slash),
                 '%' => push!(Percent),
@@ -891,4 +918,107 @@ pub fn lex(input: &str) -> Result<Vec<Token>, Diagnostic> {
         end: input.len(),
     });
     Ok(tokens)
+}
+
+// ---------------------------------------------------------------------------
+// Trivia-aware lexer (for the formatter)
+// ---------------------------------------------------------------------------
+
+/// Extract comments from source code with their line numbers and byte offsets.
+///
+/// Returns `(line_number_1based, byte_offset, comment_text_including_hash)` for
+/// each comment found. Comments are full-line only (`# ...`) since Aster doesn't
+/// support trailing comments after code on the same line (the main lexer rejects
+/// `#` as an unexpected character).
+///
+/// This is the formatter's primary interface for comment preservation. It runs
+/// in O(n) over the source, independent of the compiler's `lex()` pipeline.
+pub fn extract_comments(input: &str) -> Vec<(usize, usize, String)> {
+    let line_starts = compute_line_starts(input);
+    let mut comments = Vec::new();
+
+    for (line_idx, raw) in input.lines().enumerate() {
+        let line_no = line_idx + 1;
+        let ls = line_starts[line_idx];
+        let trimmed = raw.trim();
+        if trimmed.starts_with('#') {
+            let indent: String = raw.chars().take_while(|c| *c == ' ').collect();
+            let comment_text = format!("{}{}", indent, trimmed);
+            comments.push((line_no, ls, comment_text));
+        }
+    }
+
+    comments
+}
+
+/// Lex with trivia attached to tokens. Uses the standard `lex()` pipeline
+/// and separately extracts comments, then attaches comments as leading trivia
+/// to the nearest following real token by line number.
+///
+/// This is used by the formatter to preserve comments while still using the
+/// AST-based formatting pipeline.
+pub fn lex_with_trivia(input: &str) -> Result<Vec<TriviaToken>, Diagnostic> {
+    let tokens = lex(input)?;
+    let comments = extract_comments(input);
+
+    if comments.is_empty() {
+        // Fast path: no comments, just wrap tokens.
+        return Ok(tokens
+            .into_iter()
+            .map(|t| TriviaToken {
+                kind: t.kind,
+                line: t.line,
+                col: t.col,
+                start: t.start,
+                end: t.end,
+                leading_trivia: Vec::new(),
+                trailing_trivia: Vec::new(),
+            })
+            .collect());
+    }
+
+    // Attach each comment as leading trivia to the next non-Newline token
+    // that appears on a line after the comment.
+    let mut trivia_tokens: Vec<TriviaToken> = tokens
+        .into_iter()
+        .map(|t| TriviaToken {
+            kind: t.kind,
+            line: t.line,
+            col: t.col,
+            start: t.start,
+            end: t.end,
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
+        })
+        .collect();
+
+    let mut comment_idx = 0;
+    for tt in &mut trivia_tokens {
+        // Skip Newline/Indent/Dedent tokens — attach to the first "real" token.
+        if matches!(
+            tt.kind,
+            TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent | TokenKind::EOF
+        ) {
+            continue;
+        }
+        // Attach all comments that appear on lines before this token.
+        while comment_idx < comments.len() && comments[comment_idx].0 < tt.line {
+            tt.leading_trivia
+                .push(Trivia::Comment(comments[comment_idx].2.clone()));
+            comment_idx += 1;
+        }
+    }
+
+    // Any remaining comments (at end of file) attach to EOF.
+    if comment_idx < comments.len()
+        && let Some(last) = trivia_tokens.last_mut()
+    {
+        while comment_idx < comments.len() {
+            last.leading_trivia
+                .push(Trivia::Comment(comments[comment_idx].2.clone()));
+            comment_idx += 1;
+        }
+    }
+
+    Ok(trivia_tokens)
 }
