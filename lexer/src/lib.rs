@@ -3,7 +3,7 @@ mod token;
 #[cfg(test)]
 mod tests;
 
-pub use token::{Token, TokenKind, Trivia, TriviaToken};
+pub use token::{Token, TokenKind};
 
 use ast::{Diagnostic, Span};
 
@@ -921,7 +921,7 @@ pub fn lex(input: &str) -> Result<Vec<Token>, Diagnostic> {
 }
 
 // ---------------------------------------------------------------------------
-// Trivia-aware lexer (for the formatter)
+// Comment extraction (for the formatter)
 // ---------------------------------------------------------------------------
 
 /// Extract comments from source code with their line numbers and byte offsets.
@@ -949,76 +949,4 @@ pub fn extract_comments(input: &str) -> Vec<(usize, usize, String)> {
     }
 
     comments
-}
-
-/// Lex with trivia attached to tokens. Uses the standard `lex()` pipeline
-/// and separately extracts comments, then attaches comments as leading trivia
-/// to the nearest following real token by line number.
-///
-/// This is used by the formatter to preserve comments while still using the
-/// AST-based formatting pipeline.
-pub fn lex_with_trivia(input: &str) -> Result<Vec<TriviaToken>, Diagnostic> {
-    let tokens = lex(input)?;
-    let comments = extract_comments(input);
-
-    if comments.is_empty() {
-        // Fast path: no comments, just wrap tokens.
-        return Ok(tokens
-            .into_iter()
-            .map(|t| TriviaToken {
-                kind: t.kind,
-                line: t.line,
-                col: t.col,
-                start: t.start,
-                end: t.end,
-                leading_trivia: Vec::new(),
-                trailing_trivia: Vec::new(),
-            })
-            .collect());
-    }
-
-    // Attach each comment as leading trivia to the next non-Newline token
-    // that appears on a line after the comment.
-    let mut trivia_tokens: Vec<TriviaToken> = tokens
-        .into_iter()
-        .map(|t| TriviaToken {
-            kind: t.kind,
-            line: t.line,
-            col: t.col,
-            start: t.start,
-            end: t.end,
-            leading_trivia: Vec::new(),
-            trailing_trivia: Vec::new(),
-        })
-        .collect();
-
-    let mut comment_idx = 0;
-    for tt in &mut trivia_tokens {
-        // Skip Newline/Indent/Dedent tokens — attach to the first "real" token.
-        if matches!(
-            tt.kind,
-            TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent | TokenKind::EOF
-        ) {
-            continue;
-        }
-        // Attach all comments that appear on lines before this token.
-        while comment_idx < comments.len() && comments[comment_idx].0 < tt.line {
-            tt.leading_trivia
-                .push(Trivia::Comment(comments[comment_idx].2.clone()));
-            comment_idx += 1;
-        }
-    }
-
-    // Any remaining comments (at end of file) attach to EOF.
-    if comment_idx < comments.len()
-        && let Some(last) = trivia_tokens.last_mut()
-    {
-        while comment_idx < comments.len() {
-            last.leading_trivia
-                .push(Trivia::Comment(comments[comment_idx].2.clone()));
-            comment_idx += 1;
-        }
-    }
-
-    Ok(trivia_tokens)
 }

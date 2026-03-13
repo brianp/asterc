@@ -866,3 +866,72 @@ fn no_trailing_comma_call_flat() {
     let out = fmt(source);
     assert!(out.contains("foo(x: 1, y: 2)"));
 }
+
+// ===========================================================================
+// Binary expression precedence tests
+// ===========================================================================
+
+#[test]
+fn binop_same_precedence_no_parens() {
+    // a + b + c doesn't need parens (left-assoc, same op)
+    let source = "let x = 1 + 2 + 3\n";
+    let out = fmt(source);
+    assert_eq!(out.trim(), "let x = 1 + 2 + 3");
+}
+
+#[test]
+fn binop_higher_prec_child_no_parens() {
+    // a + b * c: mul is higher prec, no parens needed
+    let source = "let x = 1 + 2 * 3\n";
+    let out = fmt(source);
+    assert_eq!(out.trim(), "let x = 1 + 2 * 3");
+}
+
+#[test]
+fn binop_lower_prec_child_gets_parens() {
+    // a * (b + c): add is lower prec than mul, needs parens
+    let source = "let x = 3 * (1 + 2)\n";
+    let out = fmt(source);
+    assert_eq!(out.trim(), "let x = 3 * (1 + 2)");
+}
+
+#[test]
+fn binop_right_child_different_op_same_prec() {
+    // a - (b + c): sub and add are same prec, right child differs, needs parens
+    let source = "let x = 5 - (2 + 1)\n";
+    let out = fmt(source);
+    assert_eq!(out.trim(), "let x = 5 - (2 + 1)");
+}
+
+#[test]
+fn binop_nested_lower_prec_both_sides() {
+    // (a or b) and (c or d): or is lower than and
+    let source = "let x = (true or false) and (true or false)\n";
+    let out = fmt(source);
+    assert_eq!(out.trim(), "let x = (true or false) and (true or false)");
+}
+
+#[test]
+fn binop_precedence_roundtrip() {
+    // Verify the formatter output re-parses and re-formats identically
+    let source = "let x = 3 * (1 + 2)\n";
+    let out1 = fmt(source);
+    let out2 = fmt(&out1);
+    assert_eq!(out1, out2, "binop precedence formatting must be idempotent");
+}
+
+// ===========================================================================
+// Escape string tests
+// ===========================================================================
+
+#[test]
+fn plain_string_no_brace_escape() {
+    // Plain strings should NOT escape braces
+    let source = "let x = \"hello {world}\"\n";
+    let out = fmt(source);
+    assert!(
+        out.contains("\"hello {world}\""),
+        "plain strings should not escape braces, got: {}",
+        out
+    );
+}

@@ -1,31 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-/// Trivia: whitespace, comments, and newlines that the compiler ignores
-/// but the formatter must preserve.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum Trivia {
-    /// Run of whitespace characters.
-    Whitespace(String),
-    /// Single-line comment (`# ...` to end of line), text includes the `#`.
-    Comment(String),
-    /// A newline character.
-    Newline,
-}
-
-/// A token with attached trivia for the formatter pipeline.
-#[derive(Debug, Clone)]
-pub struct TriviaToken {
-    pub kind: TokenKind,
-    pub line: usize,
-    pub col: usize,
-    pub start: usize,
-    pub end: usize,
-    /// Comments/whitespace appearing before this token.
-    pub leading_trivia: Vec<Trivia>,
-    /// Comments/whitespace appearing after this token on the same line.
-    pub trailing_trivia: Vec<Trivia>,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TokenKind {
     // keywords

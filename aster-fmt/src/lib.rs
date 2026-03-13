@@ -37,8 +37,16 @@ pub fn format_source(source: &str, config: &FormatConfig) -> Result<String, Form
     // 1. Lex
     let tokens = lexer::lex(source).map_err(|d| FormatError::LexError(d.message))?;
 
-    // 2. Detect trailing commas for magic trailing comma support
+    // 2. Detect trailing commas for magic trailing comma support.
+    //    Use a drop guard so state is always cleaned up, even on error or panic.
     rules::detect_trailing_commas(&tokens);
+    struct ClearOnDrop;
+    impl Drop for ClearOnDrop {
+        fn drop(&mut self) {
+            rules::clear_trailing_commas();
+        }
+    }
+    let _guard = ClearOnDrop;
 
     // 3. Parse
     let mut parser = parser::Parser::new(tokens);
@@ -52,9 +60,6 @@ pub fn format_source(source: &str, config: &FormatConfig) -> Result<String, Form
     // 5. Format with comment insertion
     let doc = rules::format_module_with_comments(&module, config, &comments, source);
     let output = doc::pretty(config.line_width, config.indent_size, &doc);
-
-    // 6. Clean up thread-local state
-    rules::clear_trailing_commas();
 
     Ok(output)
 }
