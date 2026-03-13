@@ -331,6 +331,7 @@ impl TypeChecker {
                                         params: params.clone(),
                                         ret: ret.clone(),
                                         throws: None,
+                                        suspendable: false,
                                     }
                                 } else {
                                     oty.clone()
@@ -382,6 +383,7 @@ impl TypeChecker {
                                     params: params.clone(),
                                     ret: ret.clone(),
                                     throws: None,
+                                    suspendable: false,
                                 },
                                 other => other.clone(),
                             };
@@ -434,6 +436,7 @@ impl TypeChecker {
                 params: vec![],
                 ret: Box::new(Type::String),
                 throws: None,
+                suspendable: false,
             };
             method_map.insert("debug".into(), debug_ty);
         }
@@ -511,6 +514,7 @@ impl TypeChecker {
                 params: all_field_types,
                 ret: Box::new(Type::Custom(name.to_string(), generic_type_args)),
                 throws: None,
+                suspendable: false,
             },
         );
     }
@@ -584,6 +588,7 @@ impl TypeChecker {
                         params: vec![class_type.clone()],
                         ret: Box::new(Type::Bool),
                         throws: None,
+                        suspendable: false,
                     },
                 )))
             }
@@ -596,6 +601,7 @@ impl TypeChecker {
                         params: vec![class_type.clone()],
                         ret: Box::new(Type::Custom("Ordering".into(), Vec::new())),
                         throws: None,
+                        suspendable: false,
                     },
                 )))
             }
@@ -614,6 +620,7 @@ impl TypeChecker {
                         params: vec![],
                         ret: Box::new(Type::String),
                         throws: None,
+                        suspendable: false,
                     },
                 )))
             }
@@ -802,6 +809,7 @@ pub(crate) fn iterable_vocabulary_methods(elem_ty: &Type) -> Vec<(String, Type)>
         params: vec![elem_ty.clone()],
         ret: Box::new(Type::Bool),
         throws: None,
+        suspendable: false,
     };
 
     vec![
@@ -815,9 +823,11 @@ pub(crate) fn iterable_vocabulary_methods(elem_ty: &Type) -> Vec<(String, Type)>
                     params: vec![elem_ty.clone()],
                     ret: Box::new(u_var()),
                     throws: None,
+                    suspendable: false,
                 }],
                 ret: Box::new(Type::List(Box::new(u_var()))),
                 throws: None,
+                suspendable: false,
             },
         ),
         // filter: (f: (T) -> Bool) -> List[T]
@@ -828,6 +838,7 @@ pub(crate) fn iterable_vocabulary_methods(elem_ty: &Type) -> Vec<(String, Type)>
                 params: vec![callback_predicate()],
                 ret: Box::new(Type::List(Box::new(elem_ty.clone()))),
                 throws: None,
+                suspendable: false,
             },
         ),
         // reduce: (init: U, f: (U, T) -> U) -> U
@@ -842,10 +853,12 @@ pub(crate) fn iterable_vocabulary_methods(elem_ty: &Type) -> Vec<(String, Type)>
                         params: vec![u_var(), elem_ty.clone()],
                         ret: Box::new(u_var()),
                         throws: None,
+                        suspendable: false,
                     },
                 ],
                 ret: Box::new(u_var()),
                 throws: None,
+                suspendable: false,
             },
         ),
         // find: (f: (T) -> Bool) -> T?
@@ -856,6 +869,7 @@ pub(crate) fn iterable_vocabulary_methods(elem_ty: &Type) -> Vec<(String, Type)>
                 params: vec![callback_predicate()],
                 ret: Box::new(Type::Nullable(Box::new(elem_ty.clone()))),
                 throws: None,
+                suspendable: false,
             },
         ),
         // any: (f: (T) -> Bool) -> Bool
@@ -866,6 +880,7 @@ pub(crate) fn iterable_vocabulary_methods(elem_ty: &Type) -> Vec<(String, Type)>
                 params: vec![callback_predicate()],
                 ret: Box::new(Type::Bool),
                 throws: None,
+                suspendable: false,
             },
         ),
         // all: (f: (T) -> Bool) -> Bool
@@ -876,6 +891,7 @@ pub(crate) fn iterable_vocabulary_methods(elem_ty: &Type) -> Vec<(String, Type)>
                 params: vec![callback_predicate()],
                 ret: Box::new(Type::Bool),
                 throws: None,
+                suspendable: false,
             },
         ),
         // count: () -> Int
@@ -886,6 +902,7 @@ pub(crate) fn iterable_vocabulary_methods(elem_ty: &Type) -> Vec<(String, Type)>
                 params: vec![],
                 ret: Box::new(Type::Int),
                 throws: None,
+                suspendable: false,
             },
         ),
         // first: () -> T?
@@ -896,6 +913,7 @@ pub(crate) fn iterable_vocabulary_methods(elem_ty: &Type) -> Vec<(String, Type)>
                 params: vec![],
                 ret: Box::new(Type::Nullable(Box::new(elem_ty.clone()))),
                 throws: None,
+                suspendable: false,
             },
         ),
         // last: () -> T?
@@ -906,6 +924,7 @@ pub(crate) fn iterable_vocabulary_methods(elem_ty: &Type) -> Vec<(String, Type)>
                 params: vec![],
                 ret: Box::new(Type::Nullable(Box::new(elem_ty.clone()))),
                 throws: None,
+                suspendable: false,
             },
         ),
         // to_list: () -> List[T]
@@ -916,6 +935,7 @@ pub(crate) fn iterable_vocabulary_methods(elem_ty: &Type) -> Vec<(String, Type)>
                 params: vec![],
                 ret: Box::new(Type::List(Box::new(elem_ty.clone()))),
                 throws: None,
+                suspendable: false,
             },
         ),
         // min: () -> T? (requires T includes Ord -- checked at call site)
@@ -926,6 +946,7 @@ pub(crate) fn iterable_vocabulary_methods(elem_ty: &Type) -> Vec<(String, Type)>
                 params: vec![],
                 ret: Box::new(Type::Nullable(Box::new(elem_ty.clone()))),
                 throws: None,
+                suspendable: false,
             },
         ),
         // max: () -> T? (requires T includes Ord -- checked at call site)
@@ -936,6 +957,7 @@ pub(crate) fn iterable_vocabulary_methods(elem_ty: &Type) -> Vec<(String, Type)>
                 params: vec![],
                 ret: Box::new(Type::Nullable(Box::new(elem_ty.clone()))),
                 throws: None,
+                suspendable: false,
             },
         ),
         // sort: () -> List[T] (requires T includes Ord -- checked at call site)
@@ -946,6 +968,7 @@ pub(crate) fn iterable_vocabulary_methods(elem_ty: &Type) -> Vec<(String, Type)>
                 params: vec![],
                 ret: Box::new(Type::List(Box::new(elem_ty.clone()))),
                 throws: None,
+                suspendable: false,
             },
         ),
     ]

@@ -5,6 +5,15 @@ use ast::{Diagnostic, Expr, Type, TypeEnv};
 use crate::typechecker::TypeChecker;
 
 impl TypeChecker {
+    fn suspendable_call_fix(func: &Expr) -> String {
+        match func {
+            Expr::Ident(name, _) => {
+                format!("Call with `blocking {name}()` or `async {name}()`.")
+            }
+            _ => "Call with `blocking f(...)` or `async f(...)`.".to_string(),
+        }
+    }
+
     pub(crate) fn is_nullable_compatible(expected: &Type, actual: &Type) -> bool {
         if let Type::Nullable(inner) = expected {
             *actual == **inner || *actual == Type::Nil
@@ -342,8 +351,17 @@ impl TypeChecker {
             params,
             ret,
             throws: fn_throws,
+            suspendable,
         } = fty
         {
+            if suspendable && !bypass_throws_check {
+                return Err(Diagnostic::error(format!(
+                    "Plain call crosses a suspension boundary. {}",
+                    Self::suspendable_call_fix(func)
+                ))
+                .with_code("E012")
+                .with_label(func.span(), "suspendable callee requires an explicit call site"));
+            }
             if fn_throws.is_some() && !bypass_throws_check {
                 return Err(Diagnostic::error(
                     "Cannot call throwing function without error handling. Use !, !.or(), !.or_else(), or !.catch".to_string()

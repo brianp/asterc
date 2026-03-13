@@ -205,7 +205,7 @@ impl Parser {
                 self.advance();
                 Ok(Stmt::Continue(self.span_from(start)))
             }
-            // Throw, Match, Resolve, Detached all start expressions -- fall through
+            // Throw, Match, Resolve, Detached, Blocking all start expressions -- fall through
             _ => {
                 let e = self.parse_expr()?;
                 // Check for assignment: expr = value

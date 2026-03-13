@@ -15,7 +15,7 @@ fn dump(tokens: &[Token]) -> String {
 #[test]
 fn lexes_keywords_and_idents() {
     let src = r#"
-def class async return if else true false nil foo bar_baz
+def class async blocking return if else true false nil foo bar_baz
 "#;
     let toks = lex(src).expect("lex ok");
     let ks = kinds(&toks);
@@ -29,6 +29,8 @@ def class async return if else true false nil foo bar_baz
     assert!(matches!(ks[i], TokenKind::Class));
     i += 1;
     assert!(matches!(ks[i], TokenKind::Async));
+    i += 1;
+    assert!(matches!(ks[i], TokenKind::Blocking));
     i += 1;
     assert!(matches!(ks[i], TokenKind::Return));
     i += 1;

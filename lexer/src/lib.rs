@@ -565,6 +565,7 @@ fn lex_ident_or_keyword(
         "def" => Def,
         "class" => Class,
         "async" => Async,
+        "blocking" => Blocking,
         "return" => Return,
         "if" => If,
         "else" => Else,

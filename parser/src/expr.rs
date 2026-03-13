@@ -647,6 +647,19 @@ impl Parser {
                     }
                 }
             }
+            Blocking => {
+                self.advance();
+                let func_expr = self.parse_postfix()?;
+                match func_expr {
+                    Expr::Call { func, args, .. } => Ok(Expr::BlockingCall {
+                        func,
+                        args,
+                        span: self.span_from(start),
+                    }),
+                    _ => Err(Diagnostic::error("Expected function call after 'blocking'")
+                        .with_code("P001")),
+                }
+            }
             Detached => {
                 self.advance();
                 if !self.at(&Async) {

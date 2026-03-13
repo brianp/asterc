@@ -199,6 +199,11 @@ pub enum Expr {
         args: Vec<(String, Expr)>,
         span: Span,
     },
+    BlockingCall {
+        func: Box<Expr>,
+        args: Vec<(String, Expr)>,
+        span: Span,
+    },
     Resolve {
         expr: Box<Expr>,
         span: Span,
@@ -266,6 +271,7 @@ impl Expr {
             Expr::Index { span, .. } => *span,
             Expr::Match { span, .. } => *span,
             Expr::AsyncCall { span, .. } => *span,
+            Expr::BlockingCall { span, .. } => *span,
             Expr::Resolve { span, .. } => *span,
             Expr::DetachedCall { span, .. } => *span,
             Expr::Propagate(_, s) => *s,

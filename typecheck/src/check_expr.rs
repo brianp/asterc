@@ -51,6 +51,7 @@ impl TypeChecker {
                 scrutinee, arms, ..
             } => self.check_match_expr(scrutinee, arms),
             Expr::AsyncCall { func, args, .. } => self.check_async_call(func, args),
+            Expr::BlockingCall { func, args, .. } => self.check_blocking_call(func, args),
             Expr::Resolve { expr, .. } => self.check_resolve(expr),
             Expr::DetachedCall { func, args, .. } => self.check_detached_call(func, args),
             Expr::Propagate(inner, _) => self.check_propagate(inner),
@@ -456,6 +457,7 @@ impl TypeChecker {
             params: final_params,
             ret: Box::new(final_ret),
             throws: throws.clone().map(Box::new),
+            suspendable: false,
         })
     }
 
@@ -913,6 +915,7 @@ impl TypeChecker {
                     params: vec![],
                     ret: Box::new(expected.clone()),
                     throws: None,
+                    suspendable: false,
                 });
             }
         }
@@ -934,6 +937,7 @@ impl TypeChecker {
                     params: vec![],
                     ret: Box::new(Type::Int),
                     throws: None,
+                    suspendable: false,
                 });
             }
             "each" => {
@@ -944,9 +948,11 @@ impl TypeChecker {
                         params: vec![inner.clone()],
                         ret: Box::new(Type::Void),
                         throws: None,
+                        suspendable: false,
                     }],
                     ret: Box::new(Type::Void),
                     throws: None,
+                    suspendable: false,
                 });
             }
             "push" => {
@@ -955,6 +961,7 @@ impl TypeChecker {
                     params: vec![inner.clone()],
                     ret: Box::new(Type::Void),
                     throws: None,
+                    suspendable: false,
                 });
             }
             _ => {}
@@ -1144,6 +1151,26 @@ impl TypeChecker {
         // Bypass throws check: error handling moves to `resolve task!`
         let ret_ty = self.check_call_inner(func, args, true)?;
         Ok(Type::Task(Box::new(ret_ty)))
+    }
+
+    fn check_blocking_call(
+        &mut self,
+        func: &Expr,
+        args: &[(String, Expr)],
+    ) -> Result<Type, Diagnostic> {
+        let ret_ty = self.check_call_inner(func, args, true)?;
+        let callee_ty = self.check_expr(func)?;
+        if callee_ty.is_error() {
+            return Ok(Type::Error);
+        }
+        if !callee_ty.is_suspendable_function() {
+            return Err(Diagnostic::error(
+                "blocking expects a suspendable callee".to_string(),
+            )
+            .with_code("E012")
+            .with_label(func.span(), "callee does not suspend"));
+        }
+        Ok(ret_ty)
     }
 
     fn check_resolve(&mut self, expr: &Expr) -> Result<Type, Diagnostic> {

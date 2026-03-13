@@ -159,6 +159,13 @@ fn format_function_multi_stmt_last_stripped() {
     assert!(out.contains("\n  y\n"));
 }
 
+#[test]
+fn format_blocking_call() {
+    let source = "def fetch() -> Int\n  async fetch_child()\n  42\n\ndef main() -> Int\n  blocking fetch()\n";
+    let out = fmt(source);
+    assert!(out.contains("blocking fetch()"));
+}
+
 // ===========================================================================
 // Class definitions
 // ===========================================================================
