@@ -161,6 +161,67 @@ impl Lowerer {
         }
     }
 
+    /// Inject the built-in `Ordering` enum (Less/Equal/Greater) into the FIR.
+    /// This must run before any user code is lowered so that synthesize_cmp can
+    /// reference `Ordering.Less`, `Ordering.Equal`, and `Ordering.Greater`.
+    fn inject_ordering_builtin(&mut self) {
+        // Ordering is a unit enum: each variant is a struct with a single tag field.
+        // Layout: alloc 8 bytes, store tag at offset 0.
+        let alloc_size = 8i64;
+        let variants = [
+            ("Ordering.Less", 0i64),
+            ("Ordering.Equal", 1),
+            ("Ordering.Greater", 2),
+        ];
+
+        for (ctor_name, tag) in variants {
+            let func_id = FunctionId(self.next_function);
+            self.next_function += 1;
+            self.functions.insert(ctor_name.to_string(), func_id);
+
+            // Body: alloc, store tag, return ptr
+            let ptr_id = LocalId(0);
+            let body = vec![
+                FirStmt::Let {
+                    name: ptr_id,
+                    ty: FirType::Ptr,
+                    value: FirExpr::RuntimeCall {
+                        name: "aster_class_alloc".to_string(),
+                        args: vec![FirExpr::IntLit(alloc_size)],
+                        ret_ty: FirType::Ptr,
+                    },
+                },
+                FirStmt::Assign {
+                    target: FirPlace::Field {
+                        object: Box::new(FirExpr::LocalVar(ptr_id, FirType::Ptr)),
+                        offset: 0,
+                    },
+                    value: FirExpr::IntLit(tag),
+                },
+                FirStmt::Return(FirExpr::LocalVar(ptr_id, FirType::Ptr)),
+            ];
+
+            self.module.add_function(FirFunction {
+                id: func_id,
+                name: ctor_name.to_string(),
+                params: vec![],
+                ret_type: FirType::Ptr,
+                body,
+                is_entry: false,
+            });
+        }
+
+        // Register enum_variants for match lowering
+        self.enum_variants.insert(
+            "Ordering".to_string(),
+            vec![
+                ("Less".to_string(), 0, vec![]),
+                ("Equal".to_string(), 1, vec![]),
+                ("Greater".to_string(), 2, vec![]),
+            ],
+        );
+    }
+
     /// Lower an entire module (compiler path).
     pub fn lower_module(&mut self, module: &Module) -> Result<(), LowerError> {
         // First pass: register all top-level function names, class names, and enum names
@@ -214,6 +275,22 @@ impl Lowerer {
                 }
                 _ => {}
             }
+        }
+
+        // Inject built-in Ordering enum only if some class includes Ord.
+        // This ensures synthesize_cmp can reference Ordering constructors
+        // without polluting programs that don't use Ord.
+        let needs_ordering = module.body.iter().any(|stmt| {
+            if let Stmt::Class { includes, .. } = stmt {
+                includes
+                    .as_ref()
+                    .is_some_and(|incls| incls.iter().any(|(name, _)| name == "Ord"))
+            } else {
+                false
+            }
+        });
+        if needs_ordering && !self.functions.contains_key("Ordering.Less") {
+            self.inject_ordering_builtin();
         }
 
         // Second pass: lower everything
@@ -306,8 +383,9 @@ impl Lowerer {
                 name,
                 fields,
                 methods,
+                extends,
                 ..
-            } => self.lower_class(name, fields, methods),
+            } => self.lower_class(name, fields, methods, extends.as_deref()),
             Stmt::Enum {
                 name,
                 variants,
@@ -464,6 +542,7 @@ impl Lowerer {
         name: &str,
         fields: &[(String, Type)],
         methods: &[Stmt],
+        extends: Option<&str>,
     ) -> Result<(), LowerError> {
         // Get or create ClassId (should already be registered from first pass)
         let class_id = if let Some(&id) = self.classes.get(name) {
@@ -475,9 +554,34 @@ impl Lowerer {
             id
         };
 
-        // Build field layout: 8 bytes per field, 8-byte aligned
+        // Build field layout including inherited fields from parent chain.
+        // Parent fields come first (so subclass instances are layout-compatible).
         let mut fir_fields = Vec::new();
         let mut offset = 0usize;
+
+        // Collect inherited fields from ancestor chain (outermost parent first)
+        let mut ancestor_chain: Vec<String> = Vec::new();
+        let mut current = extends.map(|s| s.to_string());
+        while let Some(parent_name) = current {
+            ancestor_chain.push(parent_name.clone());
+            current = self
+                .type_env
+                .get_class(&parent_name)
+                .and_then(|ci| ci.extends.clone());
+        }
+        // Reverse so outermost ancestor is processed first
+        ancestor_chain.reverse();
+        for ancestor_name in &ancestor_chain {
+            if let Some(ancestor_info) = self.type_env.get_class(ancestor_name) {
+                for (field_name, field_type) in &ancestor_info.fields {
+                    let fir_type = self.lower_type(field_type);
+                    fir_fields.push((field_name.clone(), fir_type, offset));
+                    offset += 8;
+                }
+            }
+        }
+
+        // Then the class's own fields
         for (field_name, field_type) in fields {
             let fir_type = self.lower_type(field_type);
             fir_fields.push((field_name.clone(), fir_type, offset));
@@ -661,12 +765,32 @@ impl Lowerer {
                 if let Some(ann) = type_ann {
                     self.local_ast_types.insert(name.clone(), ann.clone());
                 } else if let Expr::Call { func, .. } = value {
-                    // Infer class type from constructor call
+                    // Infer class type from constructor call: ClassName(...)
                     if let Expr::Ident(class_name, _) = func.as_ref()
                         && self.classes.contains_key(class_name.as_str())
                     {
                         self.local_ast_types
                             .insert(name.clone(), Type::Custom(class_name.clone(), vec![]));
+                    // Infer class type from static method call: ClassName.method(...)
+                    } else if let Expr::Member {
+                        object: method_obj, ..
+                    } = func.as_ref()
+                        && let Expr::Ident(class_name, _) = method_obj.as_ref()
+                        && self.classes.contains_key(class_name.as_str())
+                    {
+                        self.local_ast_types
+                            .insert(name.clone(), Type::Custom(class_name.clone(), vec![]));
+                    // Infer class type from function call that returns a class instance
+                    } else if let Expr::Ident(func_name, _) = func.as_ref()
+                        && let Some(Type::Function { ret, .. }) =
+                            self.type_env.get_var(func_name)
+                        && let Type::Custom(class_name, type_args) = ret.as_ref()
+                        && self.classes.contains_key(class_name.as_str())
+                    {
+                        self.local_ast_types.insert(
+                            name.clone(),
+                            Type::Custom(class_name.clone(), type_args.clone()),
+                        );
                     }
                 }
                 let fir_value = self.wrap_nullable_binding(type_ann.as_ref(), value, raw_value);
@@ -1373,6 +1497,26 @@ impl Lowerer {
             }
         }
 
+        // Check for static method calls on class names: ClassName.method(args)
+        // e.g. Celsius.from(value: x) — the method has a self param in FIR (all methods do),
+        // so pass nil (0) as the self pointer since no receiver instance exists.
+        if let Expr::Ident(name, _) = object
+            && self.classes.contains_key(name.as_str())
+            && !self.locals.contains_key(name.as_str())
+        {
+            let qualified_name = format!("{}.{}", name, method);
+            if let Some(&func_id) = self.functions.get(&qualified_name) {
+                let mut fir_args = vec![FirExpr::NilLit]; // nil self pointer
+                fir_args.extend(self.lower_call_args_with_defaults(&qualified_name, args)?);
+                let ret_ty = self.resolve_function_ret_type(&qualified_name);
+                return Ok(FirExpr::Call {
+                    func: func_id,
+                    args: fir_args,
+                    ret_ty,
+                });
+            }
+        }
+
         let fir_object = self.lower_expr(object)?;
         let fir_object_ty = self.infer_fir_type(&fir_object);
 
@@ -1430,6 +1574,57 @@ impl Lowerer {
             return Ok(FirExpr::LocalVar(result_id, inner_ty));
         }
 
+        // Nullable `.or(default: value)` — returns the inner value or the default if nil.
+        // TaggedUnion tag 0 = Some(value), tag 1 = nil.
+        if method == "or"
+            && let FirType::TaggedUnion { ref variants, .. } = fir_object_ty
+            && !variants.is_empty()
+        {
+                let inner_ty = variants[0].clone();
+                let default_expr = if let Some((_, default_arg)) = args.first() {
+                    self.lower_expr(default_arg)?
+                } else {
+                    self.default_value_for_type(&inner_ty)
+                };
+
+                let nullable_id = self.alloc_local();
+                self.local_types.insert(nullable_id, fir_object_ty.clone());
+                self.pending_stmts.push(FirStmt::Let {
+                    name: nullable_id,
+                    ty: fir_object_ty.clone(),
+                    value: fir_object,
+                });
+
+                let result_id = self.alloc_local();
+                self.local_types.insert(result_id, inner_ty.clone());
+                self.pending_stmts.push(FirStmt::Let {
+                    name: result_id,
+                    ty: inner_ty.clone(),
+                    value: default_expr,
+                });
+
+                self.pending_stmts.push(FirStmt::If {
+                    cond: FirExpr::TagCheck {
+                        value: Box::new(FirExpr::LocalVar(
+                            nullable_id,
+                            fir_object_ty.clone(),
+                        )),
+                        tag: 0,
+                    },
+                    then_body: vec![FirStmt::Assign {
+                        target: FirPlace::Local(result_id),
+                        value: FirExpr::TagUnwrap {
+                            value: Box::new(FirExpr::LocalVar(nullable_id, fir_object_ty)),
+                            expected_tag: 0,
+                            ty: inner_ty.clone(),
+                        },
+                    }],
+                    else_body: vec![],
+                });
+
+                return Ok(FirExpr::LocalVar(result_id, inner_ty));
+        }
+
         // Check for list built-in methods
         match method {
             "len" => {
@@ -1453,20 +1648,29 @@ impl Lowerer {
             _ => {}
         }
 
-        // Check for class method calls
+        // Check for class method calls — walk the ancestor chain to find inherited methods
         if let Ok(class_name) = self.resolve_class_name(object) {
-            let qualified_name = format!("{}.{}", class_name, method);
-            if let Some(&func_id) = self.functions.get(&qualified_name) {
-                // Build args: self + explicit args (with defaults filled in)
-                let mut call_args = vec![fir_object];
-                let method_args = self.lower_call_args_with_defaults(&qualified_name, args)?;
-                call_args.extend(method_args);
-                let ret_ty = self.resolve_function_ret_type(&qualified_name);
-                return Ok(FirExpr::Call {
-                    func: func_id,
-                    args: call_args,
-                    ret_ty,
-                });
+            // Try the class itself first, then walk parent chain
+            let mut current = Some(class_name.clone());
+            while let Some(ref cname) = current.clone() {
+                let qualified_name = format!("{}.{}", cname, method);
+                if let Some(&func_id) = self.functions.get(&qualified_name) {
+                    // Build args: self + explicit args (with defaults filled in)
+                    let mut call_args = vec![fir_object];
+                    let method_args = self.lower_call_args_with_defaults(&qualified_name, args)?;
+                    call_args.extend(method_args);
+                    let ret_ty = self.resolve_function_ret_type(&qualified_name);
+                    return Ok(FirExpr::Call {
+                        func: func_id,
+                        args: call_args,
+                        ret_ty,
+                    });
+                }
+                // Walk up to parent class
+                current = self
+                    .type_env
+                    .get_class(cname)
+                    .and_then(|ci| ci.extends.clone());
             }
         }
 
@@ -1950,9 +2154,30 @@ impl Lowerer {
                 if let Some(&local_id) = self.locals.get(name.as_str()) {
                     let ty = self.resolve_var_type(name);
                     Ok(FirExpr::LocalVar(local_id, ty))
+                } else if let Some(&self_id) = self.locals.get("self") {
+                    // Inside a method body — resolve bare field names as self.field
+                    let self_expr = Expr::Ident("self".to_string(), expr.span());
+                    match self.resolve_field_access(&self_expr, name) {
+                        Ok((offset, ty)) => Ok(FirExpr::FieldGet {
+                            object: Box::new(FirExpr::LocalVar(self_id, FirType::Ptr)),
+                            offset,
+                            ty,
+                        }),
+                        Err(_) => Err(LowerError::UnboundVariable(name.clone())),
+                    }
                 } else {
                     Err(LowerError::UnboundVariable(name.clone()))
                 }
+            }
+            // Support chained member access as object in place context: o.inner.val = x
+            Expr::Member { object, field, .. } => {
+                let fir_obj = self.lower_expr_ref(object)?;
+                let (offset, ty) = self.resolve_field_access(object, field)?;
+                Ok(FirExpr::FieldGet {
+                    object: Box::new(fir_obj),
+                    offset,
+                    ty,
+                })
             }
             _ => Err(LowerError::UnsupportedFeature(
                 UnsupportedFeatureKind::Other("complex expression in place context".into()),
@@ -2171,6 +2396,23 @@ impl Lowerer {
                 {
                     return Ok(class_name);
                 }
+                // Inside a method body, bare field names resolve via self
+                // e.g. `addr.zip` where `addr` is a field of the current class
+                if let Some(Type::Custom(self_class, _)) =
+                    self.local_ast_types.get("self")
+                {
+                    let self_class = self_class.clone();
+                    if let Some(class_info) = self.type_env.get_class(&self_class) {
+                        for (fname, ftype) in &class_info.fields {
+                            if fname == name
+                                && let Type::Custom(field_class, _) = ftype
+                                && self.classes.contains_key(field_class.as_str())
+                            {
+                                return Ok(field_class.clone());
+                            }
+                        }
+                    }
+                }
                 Err(LowerError::UnsupportedFeature(
                     UnsupportedFeatureKind::Other(format!(
                         "cannot determine class type of variable '{}'",
@@ -2179,16 +2421,109 @@ impl Lowerer {
                 ))
             }
             Expr::Call { func, .. } => {
-                // Constructor call: the function name IS the class name
-                if let Expr::Ident(name, _) = func.as_ref()
-                    && self.classes.contains_key(name.as_str())
-                {
-                    return Ok(name.clone());
+                if let Expr::Ident(name, _) = func.as_ref() {
+                    // Constructor call: the function name IS the class name
+                    if self.classes.contains_key(name.as_str()) {
+                        return Ok(name.clone());
+                    }
+                    // Function call that returns a class instance: look up return type
+                    if let Some(Type::Function { ret, .. }) = self.type_env.get_var(name)
+                        && let Type::Custom(class_name, _) = ret.as_ref()
+                        && self.classes.contains_key(class_name.as_str())
+                    {
+                        return Ok(class_name.clone());
+                    }
+                } else if let Expr::Member { object, field, .. } = func.as_ref() {
+                    // Method call chaining: obj.method(args) — look up method's return type
+                    if let Ok(class_name) = self.resolve_class_name(object) {
+                        // Look up method return type via ClassInfo.methods
+                        if let Some(class_info) = self.type_env.get_class(&class_name)
+                            && let Some(Type::Function { ret, .. }) =
+                                class_info.methods.get(field.as_str())
+                            && let Type::Custom(ret_class, _) = ret.as_ref()
+                            && self.classes.contains_key(ret_class.as_str())
+                        {
+                            return Ok(ret_class.clone());
+                        }
+                        // Fall back: check FIR function registry for return type
+                        let qualified = format!("{}.{}", class_name, field);
+                        if let Some(ret_ty) = self
+                            .functions
+                            .get(&qualified)
+                            .copied()
+                            .map(|fid| self.resolve_function_ret_type_by_id(fid))
+                            && let FirType::Struct(class_id) = ret_ty
+                        {
+                            for (cname, &cid) in &self.classes {
+                                if cid == class_id {
+                                    return Ok(cname.clone());
+                                }
+                            }
+                        }
+                    }
                 }
                 Err(LowerError::UnsupportedFeature(
                     UnsupportedFeatureKind::Other(
                         "cannot determine class type of call expression".into(),
                     ),
+                ))
+            }
+            // Chained member access: o.inner.field — resolve the field type
+            Expr::Member { object, field, .. } => {
+                let (_, field_ty) = self.resolve_field_access(object, field)?;
+                // field_ty must be a Struct (class instance) for this to be meaningful
+                if let FirType::Struct(class_id) = &field_ty {
+                    // Find the class name from the id
+                    for (cname, &cid) in &self.classes {
+                        if cid == *class_id {
+                            return Ok(cname.clone());
+                        }
+                    }
+                }
+                // Fall back: check the FIR type's associated class info via type env
+                // Walk the parent object chain to get the field's declared type
+                let parent_class = self.resolve_class_name(object)?;
+                if let Some(class_info) = self.type_env.get_class(&parent_class) {
+                    for (fname, ftype) in &class_info.fields {
+                        if fname == field
+                            && let Type::Custom(class_name, _) = ftype
+                        {
+                            return Ok(class_name.clone());
+                        }
+                    }
+                }
+                Err(LowerError::UnsupportedFeature(
+                    UnsupportedFeatureKind::Other("cannot determine class type of expression".into()),
+                ))
+            }
+            // List index: points[i] — element type from list's AST type
+            Expr::Index { object, .. } => {
+                if let Expr::Ident(name, _) = object.as_ref() {
+                    let elem_class = match self.local_ast_types.get(name.as_str()) {
+                        Some(Type::List(inner)) => {
+                            if let Type::Custom(class_name, _) = inner.as_ref() {
+                                Some(class_name.clone())
+                            } else {
+                                None
+                            }
+                        }
+                        Some(Type::Map(_, val_ty)) => {
+                            if let Type::Custom(class_name, _) = val_ty.as_ref() {
+                                Some(class_name.clone())
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let Some(class_name) = elem_class
+                        && self.classes.contains_key(class_name.as_str())
+                    {
+                        return Ok(class_name);
+                    }
+                }
+                Err(LowerError::UnsupportedFeature(
+                    UnsupportedFeatureKind::Other("cannot determine class type of expression".into()),
                 ))
             }
             _ => Err(LowerError::UnsupportedFeature(
