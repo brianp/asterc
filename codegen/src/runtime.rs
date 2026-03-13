@@ -136,7 +136,33 @@ pub extern "C" fn aster_string_len(ptr: *const u8) -> i64 {
     if raw < 0 { 0 } else { raw }
 }
 
-/// Allocate a new list. Layout: [len: i64][cap: i64][data: [i64...]]
+// ---------------------------------------------------------------------------
+// List operations — handle-based indirection for alias safety
+//
+// A list value is a *handle*: a pointer to an 8-byte cell that holds the
+// actual data block pointer. Data block layout: [len: i64][cap: i64][data...]
+// All aliases share the same handle, so reallocation updates the handle
+// target and every alias sees it.
+// ---------------------------------------------------------------------------
+
+/// Deallocate a block previously allocated by aster_alloc.
+unsafe fn aster_dealloc(ptr: *mut u8, size: usize) {
+    if size == 0 || ptr == std::ptr::NonNull::dangling().as_ptr() {
+        return;
+    }
+    unsafe {
+        let layout = std::alloc::Layout::from_size_align_unchecked(size, 8);
+        std::alloc::dealloc(ptr, layout);
+    }
+}
+
+/// Dereference a handle to get the data block pointer.
+#[inline]
+unsafe fn list_block(handle: *const u8) -> *mut u8 {
+    unsafe { *(handle as *const *mut u8) }
+}
+
+/// Allocate a new list. Returns a handle (pointer-to-pointer).
 pub extern "C" fn aster_list_new(cap: i64) -> *mut u8 {
     let cap = cap.max(4) as usize;
     let alloc_size = match cap.checked_mul(8).and_then(|n| n.checked_add(16)) {
@@ -146,57 +172,66 @@ pub extern "C" fn aster_list_new(cap: i64) -> *mut u8 {
             std::process::abort();
         }
     };
-    let ptr = aster_alloc(alloc_size);
+    let block = aster_alloc(alloc_size);
     unsafe {
-        *(ptr as *mut i64) = 0; // len = 0
-        *((ptr as *mut i64).add(1)) = cap as i64; // cap
+        *(block as *mut i64) = 0; // len = 0
+        *((block as *mut i64).add(1)) = cap as i64; // cap
     }
-    ptr
+    // Allocate an 8-byte handle and store the block pointer in it
+    let handle = aster_alloc(8);
+    unsafe {
+        *(handle as *mut *mut u8) = block;
+    }
+    handle
 }
 
 /// Get an element from a list by index. Returns the i64 value at that index.
-pub extern "C" fn aster_list_get(list: *const u8, index: i64) -> i64 {
-    if list.is_null() {
-        eprintln!("aster_list_get: null list pointer");
+pub extern "C" fn aster_list_get(handle: *const u8, index: i64) -> i64 {
+    if handle.is_null() {
+        eprintln!("aster_list_get: null list handle");
         std::process::abort();
     }
     unsafe {
-        let len = *(list as *const i64);
+        let block = list_block(handle);
+        let len = *(block as *const i64);
         if index < 0 || index >= len {
             eprintln!("list index out of bounds: {} (len {})", index, len);
             std::process::abort();
         }
-        let data = (list as *const i64).add(2);
+        let data = (block as *const i64).add(2);
         *data.add(index as usize)
     }
 }
 
 /// Set an element in a list by index.
-pub extern "C" fn aster_list_set(list: *mut u8, index: i64, value: i64) {
-    if list.is_null() {
-        eprintln!("aster_list_set: null list pointer");
+pub extern "C" fn aster_list_set(handle: *mut u8, index: i64, value: i64) {
+    if handle.is_null() {
+        eprintln!("aster_list_set: null list handle");
         std::process::abort();
     }
     unsafe {
-        let len = *(list as *const i64);
+        let block = list_block(handle);
+        let len = *(block as *const i64);
         if index < 0 || index >= len {
             eprintln!("list index out of bounds: {} (len {})", index, len);
             std::process::abort();
         }
-        let data = (list as *mut i64).add(2);
+        let data = (block as *mut i64).add(2);
         *data.add(index as usize) = value;
     }
 }
 
-/// Push an element to a list. May reallocate.
-pub extern "C" fn aster_list_push(list: *mut u8, value: i64) -> *mut u8 {
-    if list.is_null() {
-        eprintln!("aster_list_push: null list pointer");
+/// Push an element to a list. Handle stays stable; data block may move.
+/// Returns the same handle for backward compatibility with codegen.
+pub extern "C" fn aster_list_push(handle: *mut u8, value: i64) -> *mut u8 {
+    if handle.is_null() {
+        eprintln!("aster_list_push: null list handle");
         std::process::abort();
     }
     unsafe {
-        let len = *(list as *mut i64);
-        let cap = *((list as *mut i64).add(1));
+        let block = list_block(handle);
+        let len = *(block as *mut i64);
+        let cap = *((block as *mut i64).add(1));
         if len >= cap {
             // Grow: double capacity
             let new_cap = (cap * 2).max(4) as usize;
@@ -207,28 +242,34 @@ pub extern "C" fn aster_list_push(list: *mut u8, value: i64) -> *mut u8 {
                     std::process::abort();
                 }
             };
-            let new_ptr = aster_alloc(alloc_size);
-            std::ptr::copy_nonoverlapping(list, new_ptr, 16 + (len as usize) * 8);
-            *((new_ptr as *mut i64).add(1)) = new_cap as i64;
-            let data = (new_ptr as *mut i64).add(2);
+            let old_size = 16 + (cap as usize) * 8;
+            let new_block = aster_alloc(alloc_size);
+            std::ptr::copy_nonoverlapping(block, new_block, 16 + (len as usize) * 8);
+            *((new_block as *mut i64).add(1)) = new_cap as i64;
+            // Free old block, update handle
+            aster_dealloc(block, old_size);
+            *(handle as *mut *mut u8) = new_block;
+            let data = (new_block as *mut i64).add(2);
             *data.add(len as usize) = value;
-            *(new_ptr as *mut i64) = len + 1;
-            new_ptr
+            *(new_block as *mut i64) = len + 1;
         } else {
-            let data = (list as *mut i64).add(2);
+            let data = (block as *mut i64).add(2);
             *data.add(len as usize) = value;
-            *(list as *mut i64) = len + 1;
-            list
+            *(block as *mut i64) = len + 1;
         }
     }
+    handle
 }
 
 /// Get the length of a list.
-pub extern "C" fn aster_list_len(list: *const u8) -> i64 {
-    if list.is_null() {
+pub extern "C" fn aster_list_len(handle: *const u8) -> i64 {
+    if handle.is_null() {
         return 0;
     }
-    unsafe { *(list as *const i64) }
+    unsafe {
+        let block = list_block(handle);
+        *(block as *const i64)
+    }
 }
 
 /// Integer exponentiation: base ** exp (exp >= 0).
@@ -273,12 +314,19 @@ pub extern "C" fn aster_class_alloc(size: usize) -> *mut u8 {
 }
 
 // ---------------------------------------------------------------------------
-// Map operations — linear-scan associative array
-// Layout: [len: i64][cap: i64][entries: [key_ptr: i64, value: i64]...]
+// Map operations — handle-based indirection, linear-scan associative array
+// Data block layout: [len: i64][cap: i64][entries: [key_ptr: i64, value: i64]...]
 // Each entry is 16 bytes. Keys are heap string pointers, compared by content.
+// A map value is a handle (pointer-to-pointer), same as lists.
 // ---------------------------------------------------------------------------
 
-/// Create a new map with the given initial capacity.
+/// Dereference a map handle to get the data block pointer.
+#[inline]
+unsafe fn map_block(handle: *const u8) -> *mut u8 {
+    unsafe { *(handle as *const *mut u8) }
+}
+
+/// Create a new map with the given initial capacity. Returns a handle.
 pub extern "C" fn aster_map_new(cap: i64) -> *mut u8 {
     let cap = cap.max(4) as usize;
     let alloc_size = match cap.checked_mul(16).and_then(|n| n.checked_add(16)) {
@@ -288,12 +336,16 @@ pub extern "C" fn aster_map_new(cap: i64) -> *mut u8 {
             std::process::abort();
         }
     };
-    let ptr = aster_alloc(alloc_size);
+    let block = aster_alloc(alloc_size);
     unsafe {
-        *(ptr as *mut i64) = 0; // len = 0
-        *((ptr as *mut i64).add(1)) = cap as i64; // cap
+        *(block as *mut i64) = 0; // len = 0
+        *((block as *mut i64).add(1)) = cap as i64; // cap
     }
-    ptr
+    let handle = aster_alloc(8);
+    unsafe {
+        *(handle as *mut *mut u8) = block;
+    }
+    handle
 }
 
 /// Compare two heap strings by content. Returns true if equal.
@@ -322,27 +374,28 @@ unsafe fn string_eq(a: *const u8, b: *const u8) -> bool {
 }
 
 /// Set a key-value pair in the map. Overwrites if key exists, appends otherwise.
-/// May reallocate. Returns the (possibly new) map pointer.
-pub extern "C" fn aster_map_set(map: *mut u8, key: i64, value: i64) -> *mut u8 {
-    if map.is_null() {
-        eprintln!("aster_map_set: null map pointer");
+/// Handle stays stable; data block may move. Returns the same handle.
+pub extern "C" fn aster_map_set(handle: *mut u8, key: i64, value: i64) -> *mut u8 {
+    if handle.is_null() {
+        eprintln!("aster_map_set: null map handle");
         std::process::abort();
     }
     unsafe {
-        let len = *(map as *const i64) as usize;
-        let entries = map.add(16) as *mut i64;
+        let block = map_block(handle);
+        let len = *(block as *const i64) as usize;
+        let entries = block.add(16) as *mut i64;
 
         // Linear scan for existing key
         for i in 0..len {
             let entry_key = *entries.add(i * 2);
             if string_eq(entry_key as *const u8, key as *const u8) {
                 *entries.add(i * 2 + 1) = value;
-                return map;
+                return handle;
             }
         }
 
         // Key not found — append
-        let cap = *((map as *const i64).add(1)) as usize;
+        let cap = *((block as *const i64).add(1)) as usize;
         if len >= cap {
             // Grow: double capacity
             let new_cap = (cap * 2).max(4);
@@ -353,32 +406,35 @@ pub extern "C" fn aster_map_set(map: *mut u8, key: i64, value: i64) -> *mut u8 {
                     std::process::abort();
                 }
             };
-            let new_ptr = aster_alloc(alloc_size);
-            std::ptr::copy_nonoverlapping(map, new_ptr, 16 + len * 16);
-            *((new_ptr as *mut i64).add(1)) = new_cap as i64;
-            let new_entries = new_ptr.add(16) as *mut i64;
+            let old_size = 16 + cap * 16;
+            let new_block = aster_alloc(alloc_size);
+            std::ptr::copy_nonoverlapping(block, new_block, 16 + len * 16);
+            *((new_block as *mut i64).add(1)) = new_cap as i64;
+            aster_dealloc(block, old_size);
+            *(handle as *mut *mut u8) = new_block;
+            let new_entries = new_block.add(16) as *mut i64;
             *new_entries.add(len * 2) = key;
             *new_entries.add(len * 2 + 1) = value;
-            *(new_ptr as *mut i64) = (len + 1) as i64;
-            new_ptr
+            *(new_block as *mut i64) = (len + 1) as i64;
         } else {
             *entries.add(len * 2) = key;
             *entries.add(len * 2 + 1) = value;
-            *(map as *mut i64) = (len + 1) as i64;
-            map
+            *(block as *mut i64) = (len + 1) as i64;
         }
     }
+    handle
 }
 
 /// Get a value from the map by key. Returns the value or 0 if not found.
-pub extern "C" fn aster_map_get(map: *const u8, key: i64) -> i64 {
-    if map.is_null() {
-        eprintln!("aster_map_get: null map pointer");
+pub extern "C" fn aster_map_get(handle: *const u8, key: i64) -> i64 {
+    if handle.is_null() {
+        eprintln!("aster_map_get: null map handle");
         std::process::abort();
     }
     unsafe {
-        let len = *(map as *const i64) as usize;
-        let entries = map.add(16) as *const i64;
+        let block = map_block(handle);
+        let len = *(block as *const i64) as usize;
+        let entries = block.add(16) as *const i64;
         for i in 0..len {
             let entry_key = *entries.add(i * 2);
             if string_eq(entry_key as *const u8, key as *const u8) {
