@@ -65,7 +65,7 @@ fn import_group(path: &[String]) -> u8 {
 }
 
 /// Format an entire module, with import merging/sorting/grouping.
-pub fn format_module(module: &Module, config: &FormatConfig) -> Doc {
+pub(crate) fn format_module(module: &Module, config: &FormatConfig) -> Doc {
     // Separate imports from other statements
     let mut imports: Vec<&Stmt> = Vec::new();
     let mut others: Vec<&Stmt> = Vec::new();
@@ -1057,7 +1057,7 @@ pub fn format_expr(expr: &Expr, config: &FormatConfig) -> Doc {
             s.push(q);
             for part in parts {
                 match part {
-                    StringPart::Literal(lit) => s.push_str(&escape_string(lit)),
+                    StringPart::Literal(lit) => s.push_str(&escape_interp_literal(lit)),
                     StringPart::Expr(inner_expr) => {
                         s.push('{');
                         let rendered = crate::doc::pretty(
@@ -1128,7 +1128,7 @@ pub fn format_expr(expr: &Expr, config: &FormatConfig) -> Doc {
 // ---------------------------------------------------------------------------
 
 fn format_float(f: f64) -> String {
-    debug_assert!(
+    assert!(
         !f.is_nan() && !f.is_infinite(),
         "NaN/Infinity cannot appear in Aster float literals"
     );
@@ -1146,8 +1146,10 @@ fn escape_string(s: &str) -> String {
         .replace('\r', "\\r")
         .replace('\t', "\\t")
         .replace('"', "\\\"")
-        .replace('{', "\\{")
-        .replace('}', "\\}")
+}
+
+fn escape_interp_literal(s: &str) -> String {
+    escape_string(s).replace('{', "\\{").replace('}', "\\}")
 }
 
 /// Pack items into lines with paren-alignment wrapping.
@@ -1208,9 +1210,9 @@ fn format_lambda(
     params: &[(String, Type)],
     ret_type: &Type,
     body: &[Stmt],
-    generic_params: &Option<Vec<String>>,
-    throws: &Option<Type>,
-    type_constraints: &[(String, Vec<TypeConstraint>)],
+    _generic_params: &Option<Vec<String>>,
+    _throws: &Option<Type>,
+    _type_constraints: &[(String, Vec<TypeConstraint>)],
     defaults: &[Option<Expr>],
     config: &FormatConfig,
 ) -> Doc {
@@ -1247,19 +1249,36 @@ fn format_lambda(
         return group(concat(parts));
     }
 
-    // Multi-statement: format as anonymous def block
-    format_function_def(
-        "<lambda>",
-        params,
-        ret_type,
-        body,
-        generic_params,
-        throws,
-        type_constraints,
-        defaults,
-        false,
-        config,
-    )
+    // Multi-statement lambda: (params) -> RetType:
+    //     stmt1
+    //     stmt2
+    let mut parts = Vec::new();
+    parts.push(text("("));
+    let param_docs: Vec<Doc> = params
+        .iter()
+        .enumerate()
+        .map(|(i, (pname, ptype))| {
+            let mut p = vec![text(pname.as_str())];
+            if !matches!(ptype, Type::Inferred) {
+                p.push(text(": "));
+                p.push(format_type(ptype));
+            }
+            if let Some(Some(default_expr)) = defaults.get(i) {
+                p.push(text(" = "));
+                p.push(format_expr(default_expr, config));
+            }
+            concat(p)
+        })
+        .collect();
+    parts.push(join(param_docs, text(", ")));
+    parts.push(text(")"));
+    if !matches!(ret_type, Type::Void | Type::Inferred) {
+        parts.push(text(" -> "));
+        parts.push(format_type(ret_type));
+    }
+    parts.push(text(":"));
+    let header = concat(parts);
+    format_block(&header, body, config)
 }
 
 fn format_call(
@@ -1328,6 +1347,19 @@ fn format_call_inner_with_span(
     concat(vec![func_doc, text(format!("({})", packed))])
 }
 
+/// Precedence level for a binary operator (higher = tighter binding).
+fn binop_precedence(op: &BinOp) -> u8 {
+    match op {
+        BinOp::Or => 0,
+        BinOp::And => 1,
+        BinOp::Eq | BinOp::Neq => 2,
+        BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => 3,
+        BinOp::Add | BinOp::Sub => 4,
+        BinOp::Mul | BinOp::Div | BinOp::Mod => 5,
+        BinOp::Pow => 6,
+    }
+}
+
 fn format_binop(left: &Expr, op: &BinOp, right: &Expr, config: &FormatConfig) -> Doc {
     let op_str = match op {
         BinOp::Add => "+",
@@ -1346,12 +1378,50 @@ fn format_binop(left: &Expr, op: &BinOp, right: &Expr, config: &FormatConfig) ->
         BinOp::Or => "or",
     };
 
+    let prec = binop_precedence(op);
+
+    // Parenthesize child if it's a binop with lower precedence, or if it's
+    // a right-child with equal precedence and the operator is left-associative
+    // (all except Pow which is right-associative).
+    let needs_parens = |child: &Expr, is_right: bool| -> bool {
+        if let Expr::BinaryOp { op: child_op, .. } = child {
+            let child_prec = binop_precedence(child_op);
+            if child_prec < prec {
+                return true;
+            }
+            // Right child of left-associative op at same precedence needs parens
+            // e.g. a - (b + c)
+            if is_right && child_prec == prec && !matches!(op, BinOp::Pow) {
+                // Only if the child op differs (a + b + c doesn't need parens)
+                return child_op != op;
+            }
+            // Left child of right-associative Pow at same precedence needs parens
+            // e.g. (a ** b) ** c
+            if !is_right && child_prec == prec && matches!(op, BinOp::Pow) {
+                return true;
+            }
+        }
+        false
+    };
+
+    let left_doc = if needs_parens(left, false) {
+        concat(vec![text("("), format_expr(left, config), text(")")])
+    } else {
+        format_expr(left, config)
+    };
+
+    let right_doc = if needs_parens(right, true) {
+        concat(vec![text("("), format_expr(right, config), text(")")])
+    } else {
+        format_expr(right, config)
+    };
+
     group(concat(vec![
-        format_expr(left, config),
+        left_doc,
         text(" "),
         text(op_str),
         line(),
-        format_expr(right, config),
+        right_doc,
     ]))
 }
 
