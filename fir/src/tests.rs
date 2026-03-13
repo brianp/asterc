@@ -1350,3 +1350,158 @@ def f() throws AppError -> Int
         f_func.body
     );
 }
+
+// ===========================================================================
+// Top-level statement lowering
+// ===========================================================================
+
+#[test]
+fn top_level_if_injected_into_function() {
+    let src = "\
+let x = 10
+if x > 5
+  let y = x + 1
+
+def main() -> Int
+  x
+";
+    let fir = lower_ok(src);
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    // Top-level if should be injected into main's body (in the global prelude)
+    let has_if = main_func
+        .body
+        .iter()
+        .any(|s| matches!(s, FirStmt::If { .. }));
+    assert!(
+        has_if,
+        "expected If injected into main body: {:?}",
+        main_func.body
+    );
+}
+
+#[test]
+fn top_level_while_injected_into_function() {
+    let src = "\
+let x = 0
+while x < 3
+  x = x + 1
+
+def main() -> Int
+  x
+";
+    let fir = lower_ok(src);
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    let has_while = main_func
+        .body
+        .iter()
+        .any(|s| matches!(s, FirStmt::While { .. }));
+    assert!(
+        has_while,
+        "expected While injected into main body: {:?}",
+        main_func.body
+    );
+}
+
+#[test]
+fn top_level_for_injected_into_function() {
+    let src = "\
+let nums = [1, 2, 3]
+for n in nums
+  let doubled = n * 2
+
+def main() -> Int
+  0
+";
+    let fir = lower_ok(src);
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    // For loops lower to If(true, [setup..., While { ... }]), so check for If
+    let has_for = main_func
+        .body
+        .iter()
+        .any(|s| matches!(s, FirStmt::If { .. }));
+    assert!(
+        has_for,
+        "expected If (from for loop) injected into main body: {:?}",
+        main_func.body
+    );
+}
+
+#[test]
+fn top_level_assignment_injected_into_function() {
+    let src = "\
+let x = 10
+x = 20
+
+def main() -> Int
+  x
+";
+    let fir = lower_ok(src);
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    let has_assign = main_func
+        .body
+        .iter()
+        .any(|s| matches!(s, FirStmt::Assign { .. }));
+    assert!(
+        has_assign,
+        "expected Assign injected into main body: {:?}",
+        main_func.body
+    );
+}
+
+// ===========================================================================
+// Async expression lowering (eager semantics)
+// ===========================================================================
+
+#[test]
+fn detached_call_lowers_as_eager_call() {
+    let src = "\
+def work() -> Int
+  42
+
+def main() -> Int
+  detached async work()
+  1
+";
+    let fir = lower_ok(src);
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    // Detached async should produce a Call to work() (eager execution)
+    let has_call = main_func
+        .body
+        .iter()
+        .any(|s| matches!(s, FirStmt::Expr(FirExpr::Call { .. })));
+    assert!(
+        has_call,
+        "expected eager Call for detached async: {:?}",
+        main_func.body
+    );
+}
+
+#[test]
+fn async_scope_lowers_body_sequentially() {
+    let src = "\
+def fetch() -> Int
+  42
+
+def main() -> Int
+  async scope
+    let a = async fetch()
+    let b = async fetch()
+  1
+";
+    let fir = lower_ok(src);
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    // Async scope should lower its body statements into the enclosing function
+    // The body has two lets (async calls → eager calls), so we should see Let stmts
+    let let_count = main_func
+        .body
+        .iter()
+        .filter(|s| matches!(s, FirStmt::Let { .. }))
+        .count();
+    // At least 2 lets from the async scope body (a and b), plus any globals
+    assert!(
+        let_count >= 2,
+        "expected at least 2 Let stmts from async scope body, got {}: {:?}",
+        let_count,
+        main_func.body
+    );
+}

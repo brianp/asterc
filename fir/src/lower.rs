@@ -13,7 +13,6 @@ use crate::types::{ClassId, FirType, FunctionId, LocalId};
 pub enum UnsupportedFeatureKind {
     TopLevelStatement(&'static str),
     Statement(&'static str),
-    Expression(&'static str),
     Other(String),
 }
 
@@ -24,7 +23,6 @@ impl UnsupportedFeatureKind {
                 format!("top-level `{name}` statements")
             }
             UnsupportedFeatureKind::Statement(name) => format!("`{name}` statements"),
-            UnsupportedFeatureKind::Expression(name) => format!("`{name}` expressions"),
             UnsupportedFeatureKind::Other(msg) => msg.clone(),
         }
     }
@@ -51,10 +49,6 @@ fn unsupported_top_level_stmt(stmt: &Stmt) -> LowerError {
     let name = match stmt {
         Stmt::Trait { .. } => "trait",
         Stmt::Return(..) => "return",
-        Stmt::If { .. } => "if",
-        Stmt::While { .. } => "while",
-        Stmt::For { .. } => "for",
-        Stmt::Assignment { .. } => "assignment",
         Stmt::Break(..) => "break",
         Stmt::Continue(..) => "continue",
         Stmt::Use { .. } => "use",
@@ -73,23 +67,6 @@ fn unsupported_stmt(stmt: &Stmt) -> LowerError {
         _ => "statement",
     };
     LowerError::UnsupportedFeature(UnsupportedFeatureKind::Statement(name))
-}
-
-fn unsupported_expr(expr: &Expr) -> LowerError {
-    let name = match expr {
-        Expr::Match { .. } => "match",
-        Expr::AsyncCall { .. } => "async call",
-        Expr::Resolve { .. } => "resolve",
-        Expr::DetachedCall { .. } => "detached async",
-        Expr::Propagate(..) => "error propagation",
-        Expr::Throw(..) => "throw",
-        Expr::ErrorOr { .. } => "!.or",
-        Expr::ErrorOrElse { .. } => "!.or_else",
-        Expr::ErrorCatch { .. } => "!.catch",
-        Expr::AsyncScope { .. } => "async scope",
-        _ => "expression",
-    };
-    LowerError::UnsupportedFeature(UnsupportedFeatureKind::Expression(name))
 }
 
 pub struct Lowerer {
@@ -119,6 +96,9 @@ pub struct Lowerer {
     /// Maps top-level non-function let binding names to their FirExprs.
     /// These are collected during lowering and injected into __init.
     top_level_lets: Vec<(String, FirType, FirExpr)>,
+    /// Top-level control flow statements (if, while, for, assignment)
+    /// stored as AST and re-lowered inside each function's scope.
+    top_level_stmts: Vec<Stmt>,
     /// Tracks which variables are top-level globals (accessible from any function).
     globals: HashMap<String, LocalId>,
     next_local: u32,
@@ -151,6 +131,7 @@ impl Lowerer {
             enum_variants: HashMap::new(),
             closure_info: HashMap::new(),
             top_level_lets: Vec::new(),
+            top_level_stmts: Vec::new(),
             globals: HashMap::new(),
             next_local: 0,
             next_function: 0,
@@ -361,8 +342,7 @@ impl Lowerer {
                 ..
             } => {
                 // Top-level let binding outside a function.
-                // Collect these; they will be injected into an __init thunk
-                // that runs at the start of main.
+                // Collected and injected into every function's global prelude.
                 let raw_value = self.lower_expr(value)?;
                 let fir_value = self.wrap_nullable_binding(type_ann.as_ref(), value, raw_value);
                 let fir_type = if let Some(ann) = type_ann {
@@ -431,6 +411,11 @@ impl Lowerer {
                 self.module.entry = Some(id);
                 Ok(())
             }
+            // Top-level control flow and assignment → store AST for injection into functions
+            Stmt::If { .. } | Stmt::While { .. } | Stmt::For { .. } | Stmt::Assignment { .. } => {
+                self.top_level_stmts.push(stmt.clone());
+                Ok(())
+            }
             _ => Err(unsupported_top_level_stmt(stmt)),
         }
     }
@@ -481,6 +466,14 @@ impl Lowerer {
                 ty: tl_ty,
                 value: tl_value,
             });
+        }
+
+        // Lower top-level control flow stmts in this function's scope
+        let tl_stmts: Vec<_> = self.top_level_stmts.clone();
+        for tl_stmt in &tl_stmts {
+            let fir_stmt = self.lower_stmt_inner(tl_stmt)?;
+            global_prelude.append(&mut self.pending_stmts);
+            global_prelude.push(fir_stmt);
         }
 
         // Lower body, converting last expression to implicit return
@@ -1239,6 +1232,24 @@ impl Lowerer {
                 })
             }
 
+            // Detached async: `detached async f(args)` → eager call, discard result
+            Expr::DetachedCall { func, args, .. } => self.lower_expr(&Expr::Call {
+                func: func.clone(),
+                args: args.clone(),
+                span: expr.span(),
+            }),
+
+            // Async scope: execute body statements sequentially (no concurrency yet).
+            // Body is lifted into pending_stmts; the expression itself returns a
+            // dummy value since async scope is always used in statement position.
+            Expr::AsyncScope { body, .. } => {
+                let fir_body = self.lower_body(body)?;
+                for stmt in fir_body {
+                    self.pending_stmts.push(stmt);
+                }
+                Ok(FirExpr::IntLit(0))
+            }
+
             // Resolve: `resolve expr!` → identity (already computed eagerly)
             Expr::Resolve { expr: inner, .. } => self.lower_expr(inner),
 
@@ -1467,8 +1478,6 @@ impl Lowerer {
                 }
                 Ok(result)
             }
-
-            _ => Err(unsupported_expr(expr)),
         }
     }
 
