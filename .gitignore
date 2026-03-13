@@ -1,8 +1,8 @@
 /target
-/plans
 /docs/node_modules
 /docs/dist
 /docs/.astro
 .DS_Store
 .idea/
 .claude/
+workingfiles/

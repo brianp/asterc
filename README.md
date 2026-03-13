@@ -41,7 +41,7 @@ let message = match status
   _ => "Unknown"
 ```
 
-Pattern matching, async that isn't viral (`async f()` at the call site, not in the function signature), traits, generics, nullable types that force you to deal with them. Strong opinions, fewer decisions for you to make.
+Pattern matching, async that isn't viral (`async f()` at the call site, not in the function signature), traits, generics, nullable types that force you to deal with them. Some of that is still front-end-only in the executable pipeline today. Strong opinions, fewer decisions for you to make.
 
 ## Why
 
@@ -57,15 +57,22 @@ The goal is that you spend your time thinking about what the code should do, not
 
 ## Status
 
-The compiler works end-to-end. You write Aster, it type-checks, lowers to FIR, compiles through Cranelift, and produces a running binary. Both JIT and ahead-of-time compilation are working.
-
-629 tests passing, zero warnings.
+The compiler works end-to-end for a small executable slice today. `check` is ahead of `run` and `build`, and the repo now treats that as an explicit contract instead of pretending the whole surface executes.
 
 ```
-asterc check examples/hello.aster   # type-check only
-asterc run examples/hello.aster     # JIT compile and run
-asterc build examples/hello.aster   # produce a native binary
+asterc check examples/spec/12_async_errors_matching.aster   # front-end only
+asterc run examples/executable/hello.aster                  # JIT compile and run
+asterc build examples/executable/hello.aster                # produce a native binary
 ```
+
+### Execution support matrix
+
+| Surface | `check` | `run` | `build` |
+|---------|---------|-------|---------|
+| Basic functions, arithmetic, conditionals, recursion | Yes | Yes | Yes |
+| `examples/executable/*` contract programs | Yes | Yes | Yes |
+| Collections, modules, traits, async/error tours in `examples/spec/*` | Yes | Not yet | Not yet |
+| Unsupported executable paths | N/A | Explicit `E028` diagnostic | Explicit `E028` diagnostic |
 
 ## Build and run
 
@@ -88,7 +95,7 @@ codegen/     Cranelift JIT + AOT backends, C runtime, GC
 aster-fmt/   Opinionated formatter
 src/         Compiler driver (check/run/build)
 tests/       Integration tests
-examples/    .aster files covering each language feature
+examples/    executable contracts plus front-end-only spec examples
 docs/design/ Design RFCs
 ```
 
@@ -97,10 +104,10 @@ docs/design/ Design RFCs
 - Indent-based syntax (no braces, no semicolons)
 - Functions, classes, single inheritance (`extends`), traits (`includes`)
 - Generics with constraints (`T extends Class`, `T includes Trait`)
-- Pattern matching (`match`/`=>`)
-- Error handling: `throws`/`throw`/`!`, `!.or()`, `!.or_else()`, `!.catch`
+- Pattern matching (`match`/`=>`) in the front-end, executable support in progress
+- Error handling: `throws`/`throw`/`!`, `!.or()`, `!.or_else()`, `!.catch` in the front-end, executable support in progress
 - Nullable types (`T?`) with `.or()`, `.or_else()`, `.or_throw()`, `match`
-- Call-site async: `async f()` returns `Task[T]`, `resolve` to wait
+- Call-site async: `async f()` returns `Task[T]`, `resolve` to wait, executable support in progress
 - Closures with capture and type inference
 - Protocols: Eq, Ord, Printable, Iterable, From/Into (auto-derivable)
 - Lists, maps, indexing
@@ -116,6 +123,8 @@ The backend compiles FIR (a flat intermediate representation) through Cranelift.
 
 - **JIT** (`asterc run`): Compiles in-memory and executes immediately. Good for development.
 - **AOT** (`asterc build`): Emits an object file, links against a C runtime, produces a native binary.
+
+The runtime contract for those backends now lives in `codegen`, including the embedded C runtime source used by `build`, so the JIT and AOT paths stop drifting apart.
 
 Memory management uses a non-moving mark-and-sweep garbage collector with a shadow stack for root tracking. Lists and maps use handle-based indirection so reallocation doesn't invalidate references.
 
