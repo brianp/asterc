@@ -11,6 +11,7 @@ use ariadne::{Color, Label, Report, ReportKind, Source};
 
 use ast::{Diagnostic, Severity};
 use codegen::config::{BuildConfig, OptLevel, Profile};
+use fir::lower::LowerError;
 use lexer::lex;
 use parser::Parser;
 use typecheck::module_loader::{FsResolver, ModuleLoader};
@@ -60,6 +61,10 @@ fn print_usage() {
     eprintln!("  run <file>                  Compile and execute via JIT");
     eprintln!("  build <file> [options]      Compile to a native executable");
     eprintln!("  fmt [file] [options]        Format source files");
+    eprintln!("    --check                   Check if files are formatted (exit 1 if not)");
+    eprintln!("    --diff                    Show what would change");
+    eprintln!("    --stdin                   Read from stdin, write to stdout");
+    eprintln!("    --output-format json      Machine-readable JSON output (with --check/--diff)");
     eprintln!("  clean                       Remove build artifacts");
     eprintln!();
     eprintln!("Build options:");
@@ -143,7 +148,7 @@ fn cmd_run(filename: &str) {
     // Lower AST → FIR
     let mut lowerer = fir::Lowerer::new(checker.env, checker.type_table);
     if let Err(e) = lowerer.lower_module(&module_ast) {
-        eprintln!("Lowering error: {}", e);
+        render_execution_error(&source, filename, &e);
         std::process::exit(2);
     }
     let fir_module = lowerer.finish();
@@ -192,7 +197,7 @@ fn cmd_build(opts: &BuildOptions) {
     // Lower AST → FIR
     let mut lowerer = fir::Lowerer::new(checker.env, checker.type_table);
     if let Err(e) = lowerer.lower_module(&module_ast) {
-        eprintln!("Lowering error: {}", e);
+        render_execution_error(&source, &opts.filename, &e);
         std::process::exit(2);
     }
     let fir_module = lowerer.finish();
@@ -261,7 +266,7 @@ fn cmd_build(opts: &BuildOptions) {
     }
 
     // Step 2: Compile runtime (skip if cached)
-    let runtime_source = c_runtime_source();
+    let runtime_source = codegen::runtime_source::c_runtime_source();
     let runtime_hash = sha256_hex(runtime_source.as_bytes());
     let runtime_o = paths.runtime_o();
 
@@ -373,257 +378,79 @@ fn cmd_clean(all: bool) {
     }
 }
 
-fn c_runtime_source() -> &'static str {
-    r#"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdint.h>
-
-void* aster_alloc(int64_t size) {
-    if (size == 0) return (void*)8; /* aligned dangling */
-    if (size < 0) { fprintf(stderr, "aster_alloc: negative size\n"); abort(); }
-    void* p = malloc((size_t)size);
-    if (!p) { fprintf(stderr, "out of memory\n"); abort(); }
-    return p;
-}
-
-void* aster_class_alloc(int64_t size) { return aster_alloc(size); }
-
-void aster_print_str(void* ptr) {
-    if (!ptr) { printf("nil\n"); return; }
-    int64_t len = *(int64_t*)ptr;
-    if (len < 0) { printf("<invalid string>\n"); return; }
-    char* data = (char*)ptr + 8;
-    printf("%.*s\n", (int)len, data);
-}
-
-void aster_print_int(int64_t val) { printf("%lld\n", (long long)val); }
-void aster_print_float(double val) { printf("%g\n", val); }
-void aster_print_bool(int8_t val) { printf("%s\n", val ? "true" : "false"); }
-
-void* aster_string_new(void* data, int64_t len) {
-    void* p = aster_alloc(8 + len);
-    *(int64_t*)p = len;
-    if (len > 0) memcpy((char*)p + 8, data, (size_t)len);
-    return p;
-}
-
-void* aster_string_concat(void* a, void* b) {
-    int64_t a_len = a ? *(int64_t*)a : 0;
-    int64_t b_len = b ? *(int64_t*)b : 0;
-    if (a_len < 0) a_len = 0;
-    if (b_len < 0) b_len = 0;
-    void* r = aster_alloc(8 + a_len + b_len);
-    *(int64_t*)r = a_len + b_len;
-    if (a_len > 0) memcpy((char*)r + 8, (char*)a + 8, (size_t)a_len);
-    if (b_len > 0) memcpy((char*)r + 8 + a_len, (char*)b + 8, (size_t)b_len);
-    return r;
-}
-
-int64_t aster_string_len(void* ptr) {
-    if (!ptr) return 0;
-    int64_t len = *(int64_t*)ptr;
-    return len < 0 ? 0 : len;
-}
-
-int64_t aster_pow_int(int64_t base, int64_t exp) {
-    if (exp < 0) return 0;
-    int64_t result = 1;
-    while (exp > 0) {
-        if (exp & 1) result *= base;
-        base *= base;
-        exp >>= 1;
+fn render_execution_error(source: &str, filename: &str, err: &LowerError) {
+    if let LowerError::UnsupportedFeature(feature) = err {
+        let detail = execution_feature_detail(feature);
+        let diag = Diagnostic::error(format!("execution support for {detail} is not executable yet"))
+            .with_code("E028")
+            .with_note(format!("execution support is missing for {detail}"))
+            .with_note("this file can still pass `asterc check` while `run` and `build` reject it")
+            .with_note(format!("lowering detail: {feature}"));
+        render_diagnostic(source, filename, &diag);
+        return;
     }
-    return result;
+
+    eprintln!("Lowering error: {}", err);
 }
 
-void* aster_int_to_string(int64_t val) {
-    char buf[32];
-    int len = snprintf(buf, sizeof(buf), "%lld", (long long)val);
-    if (len < 0) len = 0;
-    return aster_string_new(buf, (int64_t)len);
-}
-
-void* aster_float_to_string(double val) {
-    char buf[64];
-    int len = snprintf(buf, sizeof(buf), "%g", val);
-    if (len < 0) len = 0;
-    return aster_string_new(buf, (int64_t)len);
-}
-
-void* aster_bool_to_string(int8_t val) {
-    const char* s = val ? "true" : "false";
-    return aster_string_new((void*)s, val ? 4 : 5);
-}
-
-/* List handle indirection: list value = handle (ptr to ptr to data block).
-   Data block: [len: i64][cap: i64][data: i64...] */
-
-void* aster_list_new(int64_t cap) {
-    if (cap < 4) cap = 4;
-    void* block = aster_alloc(16 + cap * 8);
-    *(int64_t*)block = 0;              /* len */
-    *((int64_t*)block + 1) = cap;     /* cap */
-    void* handle = aster_alloc(8);
-    *(void**)handle = block;
-    return handle;
-}
-
-int64_t aster_list_get(void* handle, int64_t index) {
-    if (!handle) { fprintf(stderr, "aster_list_get: null list\n"); abort(); }
-    void* block = *(void**)handle;
-    int64_t len = *(int64_t*)block;
-    if (index < 0 || index >= len) {
-        fprintf(stderr, "list index out of bounds: %lld (len %lld)\n", (long long)index, (long long)len);
-        abort();
+fn execution_feature_detail(feature: &str) -> &'static str {
+    match feature {
+        "top-level statement: Discriminant(2)" => "top-level `trait` declarations",
+        "top-level statement: Discriminant(7)" => "top-level `for` statements",
+        "top-level statement: Discriminant(10)" => "top-level `use` declarations",
+        "expression: Discriminant(13)" => "`match` expressions",
+        "expression: Discriminant(14)" => "`async` calls",
+        "expression: Discriminant(15)" => "`resolve` expressions",
+        "expression: Discriminant(16)" => "`detached async` expressions",
+        "expression: Discriminant(22)" => "`async scope` expressions",
+        _ => "this language feature",
     }
-    return *((int64_t*)block + 2 + index);
-}
-
-void aster_list_set(void* handle, int64_t index, int64_t value) {
-    if (!handle) { fprintf(stderr, "aster_list_set: null list\n"); abort(); }
-    void* block = *(void**)handle;
-    int64_t len = *(int64_t*)block;
-    if (index < 0 || index >= len) {
-        fprintf(stderr, "list index out of bounds: %lld (len %lld)\n", (long long)index, (long long)len);
-        abort();
-    }
-    *((int64_t*)block + 2 + index) = value;
-}
-
-void* aster_list_push(void* handle, int64_t value) {
-    if (!handle) { fprintf(stderr, "aster_list_push: null list\n"); abort(); }
-    void* block = *(void**)handle;
-    int64_t len = *(int64_t*)block;
-    int64_t cap = *((int64_t*)block + 1);
-    if (len >= cap) {
-        int64_t new_cap = cap * 2;
-        if (new_cap < 4) new_cap = 4;
-        void* new_block = aster_alloc(16 + new_cap * 8);
-        memcpy(new_block, block, (size_t)(16 + len * 8));
-        *((int64_t*)new_block + 1) = new_cap;
-        free(block);
-        *(void**)handle = new_block;
-        block = new_block;
-    }
-    *((int64_t*)block + 2 + len) = value;
-    *(int64_t*)block = len + 1;
-    return handle;
-}
-
-int64_t aster_list_len(void* handle) {
-    if (!handle) return 0;
-    void* block = *(void**)handle;
-    return *(int64_t*)block;
-}
-
-static int aster_string_eq(void* a, void* b) {
-    if (a == b) return 1;
-    if (!a || !b) return 0;
-    int64_t a_len = *(int64_t*)a;
-    int64_t b_len = *(int64_t*)b;
-    if (a_len != b_len || a_len < 0) return 0;
-    return memcmp((char*)a + 8, (char*)b + 8, (size_t)a_len) == 0;
-}
-
-/* Map handle indirection: map value = handle (ptr to ptr to data block).
-   Data block: [len: i64][cap: i64][entries: [key: i64, val: i64]...] */
-
-void* aster_map_new(int64_t cap) {
-    if (cap < 4) cap = 4;
-    void* block = aster_alloc(16 + cap * 16);
-    *(int64_t*)block = 0;              /* len */
-    *((int64_t*)block + 1) = cap;     /* cap */
-    void* handle = aster_alloc(8);
-    *(void**)handle = block;
-    return handle;
-}
-
-void* aster_map_set(void* handle, int64_t key, int64_t value) {
-    if (!handle) { fprintf(stderr, "aster_map_set: null map\n"); abort(); }
-    void* block = *(void**)handle;
-    int64_t len = *(int64_t*)block;
-    int64_t cap = *((int64_t*)block + 1);
-    int64_t* entries = ((int64_t*)block) + 2;
-    for (int64_t i = 0; i < len; i++) {
-        if (aster_string_eq((void*)entries[i * 2], (void*)key)) {
-            entries[i * 2 + 1] = value;
-            return handle;
-        }
-    }
-    if (len >= cap) {
-        int64_t new_cap = cap * 2;
-        if (new_cap < 4) new_cap = 4;
-        void* new_block = aster_alloc(16 + new_cap * 16);
-        memcpy(new_block, block, (size_t)(16 + len * 16));
-        *((int64_t*)new_block + 1) = new_cap;
-        free(block);
-        *(void**)handle = new_block;
-        block = new_block;
-        entries = ((int64_t*)block) + 2;
-    }
-    entries[len * 2] = key;
-    entries[len * 2 + 1] = value;
-    *(int64_t*)block = len + 1;
-    return handle;
-}
-
-int64_t aster_map_get(void* handle, int64_t key) {
-    if (!handle) { fprintf(stderr, "aster_map_get: null map\n"); abort(); }
-    void* block = *(void**)handle;
-    int64_t len = *(int64_t*)block;
-    int64_t* entries = ((int64_t*)block) + 2;
-    for (int64_t i = 0; i < len; i++) {
-        if (aster_string_eq((void*)entries[i * 2], (void*)key)) {
-            return entries[i * 2 + 1];
-        }
-    }
-    return 0;
-}
-
-static int aster_error_flag = 0;
-
-void aster_error_set(void) { aster_error_flag = 1; }
-
-int8_t aster_error_check(void) {
-    int8_t was_set = aster_error_flag ? 1 : 0;
-    aster_error_flag = 0;
-    return was_set;
-}
-
-void aster_panic(void) {
-    fprintf(stderr, "aster: uncaught error\n");
-    abort();
-}
-
-// GC stubs — the JIT runtime has real GC; the C AOT runtime
-// uses a simple no-op strategy (OS reclaims on exit).
-void aster_gc_push_roots(int64_t frame_addr, int64_t count) {
-    (void)frame_addr; (void)count;
-}
-void aster_gc_pop_roots(void) {}
-void aster_gc_collect(void) {}
-
-int main(int argc, char** argv) {
-    (void)argc; (void)argv;
-    extern int64_t aster_main(void);
-    int64_t result = aster_main();
-    return (int)result;
-}
-"#
 }
 
 fn cmd_fmt(args: &[String]) {
     let config = aster_fmt::config::FormatConfig::default();
     let mut check_only = false;
+    let mut diff_mode = false;
+    let mut stdin_mode = false;
+    let mut json_output = false;
     let mut files = Vec::new();
 
-    for arg in args {
-        match arg.as_str() {
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
             "--check" => check_only = true,
-            _ => files.push(arg.clone()),
+            "--diff" => diff_mode = true,
+            "--stdin" => stdin_mode = true,
+            "--output-format" => {
+                i += 1;
+                if i < args.len() && args[i] == "json" {
+                    json_output = true;
+                } else {
+                    eprintln!("Unknown output format. Supported: json");
+                    std::process::exit(1);
+                }
+            }
+            _ => files.push(args[i].clone()),
         }
+        i += 1;
+    }
+
+    // --stdin: read from stdin, write to stdout
+    if stdin_mode {
+        use std::io::Read;
+        let mut source = String::new();
+        std::io::stdin().read_to_string(&mut source).unwrap_or_else(|e| {
+            eprintln!("Failed to read stdin: {}", e);
+            std::process::exit(1);
+        });
+        match aster_fmt::format_source(&source, &config) {
+            Ok(formatted) => print!("{}", formatted),
+            Err(e) => {
+                eprintln!("Error formatting stdin: {}", e);
+                std::process::exit(1);
+            }
+        }
+        return;
     }
 
     // If no files given, find all .aster files in cwd
@@ -644,13 +471,56 @@ fn cmd_fmt(args: &[String]) {
     }
 
     let mut any_changed = false;
+    let mut json_results: Vec<serde_json::Value> = Vec::new();
+
     for file in &files {
         let source = read_source(file);
+
+        if json_output && (check_only || diff_mode) {
+            // JSON diff output (Phase 6A)
+            match aster_fmt::format_diff(&source, &config) {
+                Ok(diffs) => {
+                    let is_formatted = diffs.is_empty();
+                    let diff_entries: Vec<serde_json::Value> = diffs
+                        .iter()
+                        .map(|d| {
+                            serde_json::json!({
+                                "line": d.line,
+                                "original": d.original,
+                                "formatted": d.formatted,
+                            })
+                        })
+                        .collect();
+                    json_results.push(serde_json::json!({
+                        "file": file,
+                        "formatted": is_formatted,
+                        "diff": diff_entries,
+                    }));
+                    if !is_formatted {
+                        any_changed = true;
+                    }
+                }
+                Err(e) => {
+                    json_results.push(serde_json::json!({
+                        "file": file,
+                        "error": e.to_string(),
+                    }));
+                    any_changed = true;
+                }
+            }
+            continue;
+        }
+
         match aster_fmt::format_source(&source, &config) {
             Ok(formatted) => {
                 if check_only {
                     if formatted != source {
                         eprintln!("{}: needs formatting", file);
+                        any_changed = true;
+                    }
+                } else if diff_mode {
+                    if formatted != source {
+                        print_unified_diff(file, &source, &formatted);
                         any_changed = true;
                     }
                 } else if formatted != source {
@@ -668,8 +538,57 @@ fn cmd_fmt(args: &[String]) {
         }
     }
 
-    if check_only && any_changed {
+    if json_output {
+        let output = if json_results.len() == 1 {
+            serde_json::to_string_pretty(&json_results[0]).unwrap()
+        } else {
+            serde_json::to_string_pretty(&json_results).unwrap()
+        };
+        println!("{}", output);
+    }
+
+    if (check_only || diff_mode) && any_changed {
         std::process::exit(1);
+    }
+}
+
+fn print_unified_diff(filename: &str, original: &str, formatted: &str) {
+    let orig_lines: Vec<&str> = original.lines().collect();
+    let fmt_lines: Vec<&str> = formatted.lines().collect();
+
+    println!("--- {}", filename);
+    println!("+++ {}", filename);
+
+    let max = orig_lines.len().max(fmt_lines.len());
+    let mut i = 0;
+    while i < max {
+        let orig = orig_lines.get(i).copied().unwrap_or("");
+        let fmt = fmt_lines.get(i).copied().unwrap_or("");
+        if orig != fmt {
+            // Find the extent of this change hunk
+            let start = i;
+            while i < max {
+                let o = orig_lines.get(i).copied().unwrap_or("");
+                let f = fmt_lines.get(i).copied().unwrap_or("");
+                if o == f {
+                    break;
+                }
+                i += 1;
+            }
+            println!("@@ -{},{} +{},{} @@", start + 1, i - start, start + 1, i - start);
+            for j in start..i {
+                if let Some(&line) = orig_lines.get(j) {
+                    println!("-{}", line);
+                }
+            }
+            for j in start..i {
+                if let Some(&line) = fmt_lines.get(j) {
+                    println!("+{}", line);
+                }
+            }
+        } else {
+            i += 1;
+        }
     }
 }
 
@@ -813,11 +732,9 @@ fn main() {
 
 #[cfg(test)]
 mod runtime_tests {
-    use super::c_runtime_source;
-
     #[test]
     fn c_runtime_exports_every_declared_runtime_symbol() {
-        let runtime = c_runtime_source();
+        let runtime = codegen::runtime_source::c_runtime_source();
         for (name, _, _) in codegen::runtime_sigs::RUNTIME_SIGS {
             assert!(
                 runtime.contains(name),

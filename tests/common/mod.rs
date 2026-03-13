@@ -3,9 +3,14 @@
 use ast::{Diagnostic, ParseResult};
 use lexer::lex;
 use parser::Parser;
+use std::ffi::OsString;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 use typecheck::module_loader::{ModuleLoader, VirtualResolver};
 use typecheck::typechecker::TypeChecker;
 
@@ -94,4 +99,65 @@ pub fn compile_file(path: &str) {
     let mut tc = TypeChecker::new();
     tc.check_module(&module)
         .unwrap_or_else(|e| panic!("Type error in {}: {}", path, e));
+}
+
+fn binary_path() -> PathBuf {
+    std::env::var_os("CARGO_BIN_EXE_asterc")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("target/debug/asterc"))
+}
+
+pub fn cli(args: &[&str]) -> Output {
+    Command::new(binary_path())
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run asterc {:?}: {}", args, e))
+}
+
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+pub fn temp_path(prefix: &str, ext: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after epoch")
+        .as_nanos();
+    let pid = std::process::id();
+    let seq = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let suffix = if ext.is_empty() {
+        OsString::from(format!("{prefix}-{pid}-{nanos}-{seq}"))
+    } else {
+        OsString::from(format!("{prefix}-{pid}-{nanos}-{seq}.{ext}"))
+    };
+    std::env::temp_dir().join(suffix)
+}
+
+pub fn make_temp_dir(prefix: &str) -> PathBuf {
+    let dir = temp_path(prefix, "");
+    std::fs::create_dir_all(&dir)
+        .unwrap_or_else(|e| panic!("failed to create temp dir {}: {}", dir.display(), e));
+    dir
+}
+
+pub fn output_text(output: &Output) -> String {
+    let mut text = String::new();
+    text.push_str(&String::from_utf8_lossy(&output.stdout));
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    text
+}
+
+pub fn build_and_run<P: AsRef<Path>>(source: P) -> Output {
+    let output_path = temp_path("asterc-bin", "out");
+    let source_arg = source.as_ref().to_string_lossy().into_owned();
+    let output_arg = output_path.to_string_lossy().into_owned();
+    let build = cli(&["build", &source_arg, "-o", &output_arg]);
+    assert!(
+        build.status.success(),
+        "build failed for {}:\n{}",
+        source_arg,
+        output_text(&build)
+    );
+
+    Command::new(&output_path)
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run {}: {}", output_path.display(), e))
 }

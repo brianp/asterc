@@ -22,7 +22,7 @@ fn example_04_functions_using_vars() {
 
 #[test]
 fn example_hello() {
-    common::compile_file("examples/hello.aster");
+    common::compile_file("examples/executable/hello.aster");
 }
 
 #[test]
@@ -47,25 +47,25 @@ fn example_08_float_promotion() {
 
 #[test]
 fn example_09_collections() {
-    common::compile_file("examples/09_collections.aster");
+    common::compile_file("examples/spec/09_collections.aster");
 }
 
 #[test]
 fn example_10_modules_and_builtins() {
-    common::compile_file("examples/10_modules_and_builtins.aster");
+    common::compile_file("examples/spec/10_modules_and_builtins.aster");
 }
 
 #[test]
 fn example_11_generics_and_traits() {
-    common::compile_file("examples/11_generics_and_traits.aster");
+    common::compile_file("examples/spec/11_generics_and_traits.aster");
 }
 
 #[test]
 fn example_12_async_errors_matching() {
-    common::compile_file("examples/12_async_errors_matching.aster");
+    common::compile_file("examples/spec/12_async_errors_matching.aster");
 }
 
 #[test]
 fn example_13_throws_and_extends() {
-    common::compile_file("examples/13_throws_and_extends.aster");
+    common::compile_file("examples/spec/13_throws_and_extends.aster");
 }

@@ -1,0 +1,42 @@
+# Phase 5: Generics and Traits
+
+# Generic class with a type parameter
+class Box[T]
+  value: Int
+
+# Generic function (type params inferred inline)
+def identity(x: T) -> T
+  x
+
+# Generic function with multiple type params
+def first(a: A, b: B) -> A
+  a
+
+# Trait definition with required and default methods
+trait Displayable
+  def display() -> String
+  def show()
+    log(message: "showing")
+
+# Class that includes a trait
+class Item includes Displayable
+  label: String
+  def display() -> String
+    "item"
+
+# Generic class with includes
+class Container[T] includes Displayable
+  size: Int
+  def display() -> String
+    "container"
+
+# Multiple trait includes
+trait Countable
+  def count() -> Int
+
+class Collection includes Displayable, Countable
+  items: List[Int]
+  def display() -> String
+    "collection"
+  def count() -> Int
+    0
