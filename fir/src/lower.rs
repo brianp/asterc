@@ -1232,27 +1232,37 @@ impl Lowerer {
 
             // Async: `async f(args)` → eager call (no true concurrency yet)
             Expr::AsyncCall { func, args, .. } => {
-                // Lower as a regular call — the result IS the task (eager execution)
-                self.lower_expr(&Expr::Call {
-                    func: func.clone(),
-                    args: args.clone(),
-                    span: expr.span(),
+                let args = self.lower_explicit_call_args(func, args)?;
+                let func_id = self.resolve_called_function_id(func)?;
+                Ok(FirExpr::Spawn {
+                    func: func_id,
+                    args,
+                    ret_ty: FirType::Ptr,
                 })
             }
 
-            // Blocking: `blocking f(args)` currently reuses eager call lowering.
-            Expr::BlockingCall { func, args, .. } => self.lower_expr(&Expr::Call {
-                func: func.clone(),
-                args: args.clone(),
-                span: expr.span(),
-            }),
+            // Blocking: explicit suspendable call that returns the callee's value.
+            Expr::BlockingCall { func, args, .. } => {
+                let args = self.lower_explicit_call_args(func, args)?;
+                let func_id = self.resolve_called_function_id(func)?;
+                let ret_ty = self.resolve_called_function_ret_type(func, func_id);
+                Ok(FirExpr::BlockOn {
+                    func: func_id,
+                    args,
+                    ret_ty,
+                })
+            }
 
-            // Detached async: `detached async f(args)` → eager call, discard result
-            Expr::DetachedCall { func, args, .. } => self.lower_expr(&Expr::Call {
-                func: func.clone(),
-                args: args.clone(),
-                span: expr.span(),
-            }),
+            // Detached async remains explicit in FIR even though runtime stays eager for now.
+            Expr::DetachedCall { func, args, .. } => {
+                let args = self.lower_explicit_call_args(func, args)?;
+                let func_id = self.resolve_called_function_id(func)?;
+                Ok(FirExpr::Spawn {
+                    func: func_id,
+                    args,
+                    ret_ty: FirType::Ptr,
+                })
+            }
 
             // Async scope: execute body statements sequentially (no concurrency yet).
             // Body is lifted into pending_stmts; the expression itself returns a
@@ -1265,8 +1275,18 @@ impl Lowerer {
                 Ok(FirExpr::IntLit(0))
             }
 
-            // Resolve: `resolve expr!` → identity (already computed eagerly)
-            Expr::Resolve { expr: inner, .. } => self.lower_expr(inner),
+            // Resolve is explicit in FIR even while codegen still maps it eagerly.
+            Expr::Resolve { expr: inner, .. } => {
+                let task = self.lower_expr(inner)?;
+                let ret_ty = match self.type_table.get(&inner.span()) {
+                    Some(Type::Task(inner_ty)) => self.lower_type(inner_ty),
+                    _ => self.infer_fir_type(&task),
+                };
+                Ok(FirExpr::ResolveTask {
+                    task: Box::new(task),
+                    ret_ty,
+                })
+            }
 
             // Propagate: `expr!` → evaluate, check error flag, trap if error
             Expr::Propagate(inner, _) => {
@@ -2279,6 +2299,9 @@ impl Lowerer {
             FirExpr::BinaryOp { result_ty, .. } => result_ty.clone(),
             FirExpr::UnaryOp { result_ty, .. } => result_ty.clone(),
             FirExpr::Call { ret_ty, .. } => ret_ty.clone(),
+            FirExpr::Spawn { ret_ty, .. } => ret_ty.clone(),
+            FirExpr::BlockOn { ret_ty, .. } => ret_ty.clone(),
+            FirExpr::ResolveTask { ret_ty, .. } => ret_ty.clone(),
             FirExpr::FieldGet { ty, .. } => ty.clone(),
             FirExpr::FieldSet { .. } => FirType::Void,
             FirExpr::Construct { ty, .. } => ty.clone(),
@@ -2349,6 +2372,37 @@ impl Lowerer {
             self.lower_type(&ret)
         } else {
             FirType::Void
+        }
+    }
+
+    fn lower_explicit_call_args(
+        &mut self,
+        func: &Expr,
+        args: &[(String, Expr)],
+    ) -> Result<Vec<FirExpr>, LowerError> {
+        match func {
+            Expr::Ident(name, _) => self.lower_call_args_with_defaults(name, args),
+            _ => args.iter().map(|(_, arg)| self.lower_expr(arg)).collect(),
+        }
+    }
+
+    fn resolve_called_function_id(&self, func: &Expr) -> Result<FunctionId, LowerError> {
+        match func {
+            Expr::Ident(name, _) => self
+                .functions
+                .get(name)
+                .copied()
+                .ok_or_else(|| LowerError::UnboundVariable(name.clone())),
+            _ => Err(LowerError::UnsupportedFeature(
+                UnsupportedFeatureKind::Other("indirect async/blocking call".into()),
+            )),
+        }
+    }
+
+    fn resolve_called_function_ret_type(&self, func: &Expr, func_id: FunctionId) -> FirType {
+        match func {
+            Expr::Ident(name, _) => self.resolve_function_ret_type(name),
+            _ => self.resolve_function_ret_type_by_id(func_id),
         }
     }
 

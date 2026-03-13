@@ -49,6 +49,20 @@ pub enum FirExpr {
         args: Vec<FirExpr>,
         ret_ty: FirType,
     },
+    Spawn {
+        func: FunctionId,
+        args: Vec<FirExpr>,
+        ret_ty: FirType,
+    },
+    BlockOn {
+        func: FunctionId,
+        args: Vec<FirExpr>,
+        ret_ty: FirType,
+    },
+    ResolveTask {
+        task: Box<FirExpr>,
+        ret_ty: FirType,
+    },
     FieldGet {
         object: Box<FirExpr>,
         offset: usize,
