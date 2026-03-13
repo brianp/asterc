@@ -57,18 +57,19 @@ The goal is that you spend your time thinking about what the code should do, not
 
 ## Status
 
-Early. The compiler front-end works (lexer, parser, type checker) but there's no codegen yet. It validates your program and tells you if it's correct. That's it for now.
+The compiler works end-to-end. You write Aster, it type-checks, lowers to FIR, compiles through Cranelift, and produces a running binary. Both JIT and ahead-of-time compilation are working.
 
-212 tests passing, zero warnings.
+629 tests passing, zero warnings.
 
 ```
-cargo run -- examples/hello.aster
-# => Type checking passed for examples/hello.aster
+asterc check examples/hello.aster   # type-check only
+asterc run examples/hello.aster     # JIT compile and run
+asterc build examples/hello.aster   # produce a native binary
 ```
 
 ## Build and run
 
-You'll need a Rust toolchain.
+You'll need a Rust toolchain and a C compiler (for the runtime).
 
 ```
 cargo build
@@ -79,29 +80,44 @@ cargo test
 
 ```
 lexer/       Tokenizer, indent/dedent handling
-ast/         AST nodes, types, type environment
+ast/         AST nodes, types, type environment, diagnostics
 parser/      Recursive descent + Pratt precedence
-typecheck/   Type inference, unification, generics, traits
-src/         Compiler driver (lex -> parse -> typecheck)
+typecheck/   Type inference, unification, generics, traits, modules
+fir/         Flat intermediate representation (FIR) lowering
+codegen/     Cranelift JIT + AOT backends, C runtime, GC
+aster-fmt/   Opinionated formatter
+src/         Compiler driver (check/run/build)
 tests/       Integration tests
 examples/    .aster files covering each language feature
 docs/design/ Design RFCs
 ```
 
-## Features (what's working)
+## Features
 
-- Indent-based syntax
+- Indent-based syntax (no braces, no semicolons)
 - Functions, classes, single inheritance (`extends`), traits (`includes`)
-- Generics with constraints
+- Generics with constraints (`T extends Class`, `T includes Trait`)
 - Pattern matching (`match`/`=>`)
 - Error handling: `throws`/`throw`/`!`, `!.or()`, `!.or_else()`, `!.catch`
 - Nullable types (`T?`) with `.or()`, `.or_else()`, `.or_throw()`, `match`
-- Call-site async: `async f()` returns `Task[T]`, `resolve` to wait, `detached async` for fire-and-forget
-- Structured concurrency with `async scope`
-- Lists, indexing, `List[T]`
-- Modules (`use`/`pub`), builtins (`log`, `print`, `len`, `to_string`)
+- Call-site async: `async f()` returns `Task[T]`, `resolve` to wait
+- Closures with capture and type inference
+- Protocols: Eq, Ord, Printable, Iterable, From/Into (auto-derivable)
+- Lists, maps, indexing
+- Modules (`use`/`pub`), selective and wildcard imports, re-exports
+- Virtual stdlib with prelude (`use std/cmp { Eq, Ord }`, etc.)
+- Named arguments everywhere, order independent
 - Control flow: `while`, `for`, `break`, `continue`, `elif`
 - Structured diagnostics with span-based error reporting
+
+## Codegen
+
+The backend compiles FIR (a flat intermediate representation) through Cranelift. Two modes:
+
+- **JIT** (`asterc run`): Compiles in-memory and executes immediately. Good for development.
+- **AOT** (`asterc build`): Emits an object file, links against a C runtime, produces a native binary.
+
+Memory management uses a non-moving mark-and-sweep garbage collector with a shadow stack for root tracking. Lists and maps use handle-based indirection so reallocation doesn't invalidate references.
 
 ## Design decisions
 
@@ -111,11 +127,14 @@ All the "why" lives in the design RFCs:
 - [Error Handling](docs/design/error-handling-rfc.md) - `throws`/`!`/`T?`
 - [Async](docs/design/async-rfc.md) - green threads, channels, mutexes
 - [Type System](docs/design/type-system-rfc.md) - inheritance, traits, generics, the 3-arg rule
+- [Protocols](docs/design/protocols-rfc.md) - Eq, Ord, Printable, Iterable, From/Into
+- [Closures](docs/design/closures-rfc.md) - capture, lambda lifting
+- [Modules](docs/design/modules-rfc.md) - imports, namespacing, re-exports
 - [Introspection](docs/design/introspection-rfc.md) - runtime type info, Ruby-inspired
 
 ## What's next
 
-Codegen with Cranelift, a REPL, LSP support, an opinionated formatter, and an MCP server that gives AI agents direct access to compiler artifacts.
+A REPL, LSP support, an opinionated formatter, and an MCP server that gives AI agents direct access to compiler artifacts.
 
 ## License
 
