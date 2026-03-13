@@ -21,18 +21,3 @@ pub fn fir_type_to_clif(ty: &FirType) -> ClifType {
 pub fn is_float(ty: &FirType) -> bool {
     matches!(ty, FirType::F64)
 }
-
-/// Returns the byte size of a FIR type.
-pub fn type_size(ty: &FirType) -> usize {
-    match ty {
-        FirType::I64 => 8,
-        FirType::F64 => 8,
-        FirType::Bool => 1,
-        FirType::Ptr => 8,
-        FirType::Void => 0,
-        FirType::Never => 0,
-        FirType::TaggedUnion { .. } => 8, // heap pointer (matches fir_type_to_clif mapping)
-        FirType::Struct(_) => 8,          // pointer
-        FirType::FnPtr(_) => 8,
-    }
-}

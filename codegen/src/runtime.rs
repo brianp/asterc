@@ -447,6 +447,7 @@ const GC_MAGIC: [u8; 2] = [0xA5, 0x7E];
 
 const HEADER_SIZE: usize = 16;
 const GC_THRESHOLD: usize = 256 * 1024; // 256 KB before first collection
+const MAX_GC_ROOTS: i64 = 1024; // defensive upper bound on root count per frame
 
 thread_local! {
     /// Linked list of all GC-tracked objects (via header.next).
@@ -716,7 +717,7 @@ fn gc_collect_inner() {
 /// Push a shadow stack frame. Layout: [prev: *mut u8][count: i64][roots: [i64; count]]
 /// The frame must live on the caller's stack (passed as a pointer).
 pub extern "C" fn aster_gc_push_roots(frame: *mut u8, count: i64) {
-    if frame.is_null() || !(0..=1024).contains(&count) {
+    if frame.is_null() || !(0..=MAX_GC_ROOTS).contains(&count) {
         return;
     }
     SHADOW_STACK.with(|ss| {
