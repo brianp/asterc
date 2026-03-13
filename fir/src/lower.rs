@@ -757,6 +757,13 @@ impl Lowerer {
                 // Track AST type for class resolution in field access
                 if let Some(ann) = type_ann {
                     self.local_ast_types.insert(name.clone(), ann.clone());
+                } else if let Expr::AsyncCall { func, .. } = value {
+                    if let Some(async_ty) = self.resolve_async_call_ast_type(func) {
+                        self.local_ast_types.insert(name.clone(), async_ty);
+                    }
+                } else if let Some(inferred_ty) = self.type_table.get(&value.span()) {
+                    self.local_ast_types
+                        .insert(name.clone(), inferred_ty.clone());
                 } else if let Expr::Call { func, .. } = value {
                     // Infer class type from constructor call: ClassName(...)
                     if let Expr::Ident(class_name, _) = func.as_ref()
@@ -1278,10 +1285,7 @@ impl Lowerer {
             // Resolve is explicit in FIR even while codegen still maps it eagerly.
             Expr::Resolve { expr: inner, .. } => {
                 let task = self.lower_expr(inner)?;
-                let ret_ty = match self.type_table.get(&inner.span()) {
-                    Some(Type::Task(inner_ty)) => self.lower_type(inner_ty),
-                    _ => self.infer_fir_type(&task),
-                };
+                let ret_ty = self.resolve_task_result_type(inner, &task);
                 Ok(FirExpr::ResolveTask {
                     task: Box::new(task),
                     ret_ty,
@@ -2403,6 +2407,31 @@ impl Lowerer {
         match func {
             Expr::Ident(name, _) => self.resolve_function_ret_type(name),
             _ => self.resolve_function_ret_type_by_id(func_id),
+        }
+    }
+
+    fn resolve_task_result_type(&self, expr: &Expr, task: &FirExpr) -> FirType {
+        if let Some(Type::Task(inner_ty)) = self.type_table.get(&expr.span()) {
+            return self.lower_type(inner_ty);
+        }
+        if let Expr::Ident(name, _) = expr {
+            if let Some(Type::Task(inner_ty)) = self.local_ast_types.get(name) {
+                return self.lower_type(inner_ty);
+            }
+            if let Some(Type::Task(inner_ty)) = self.type_env.get_var(name) {
+                return self.lower_type(&inner_ty);
+            }
+        }
+        self.infer_fir_type(task)
+    }
+
+    fn resolve_async_call_ast_type(&self, func: &Expr) -> Option<Type> {
+        match func {
+            Expr::Ident(name, _) => match self.type_env.get_var(name) {
+                Some(Type::Function { ret, .. }) => Some(Type::Task(Box::new((*ret).clone()))),
+                _ => None,
+            },
+            _ => None,
         }
     }
 

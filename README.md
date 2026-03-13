@@ -107,7 +107,7 @@ docs/design/ Design RFCs
 - Pattern matching (`match`/`=>`) in the front-end, executable support in progress
 - Error handling: `throws`/`throw`/`!`, `!.or()`, `!.or_else()`, `!.catch` in the front-end, executable support in progress
 - Nullable types (`T?`) with `.or()`, `.or_else()`, `.or_throw()`, `match`
-- Call-site async: `async f()` returns `Task[T]`, `resolve` to wait, executable support in progress
+- Call-site async: `async f()` returns `Task[T]`, `blocking f()` waits on suspendable calls, `resolve task` consumes task handles, executable support in progress
 - Closures with capture and type inference
 - Protocols: Eq, Ord, Printable, Iterable, From/Into (auto-derivable)
 - Lists, maps, indexing

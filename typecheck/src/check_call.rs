@@ -360,7 +360,10 @@ impl TypeChecker {
                     Self::suspendable_call_fix(func)
                 ))
                 .with_code("E012")
-                .with_label(func.span(), "suspendable callee requires an explicit call site"));
+                .with_label(
+                    func.span(),
+                    "suspendable callee requires an explicit call site",
+                ));
             }
             if fn_throws.is_some() && !bypass_throws_check {
                 return Err(Diagnostic::error(

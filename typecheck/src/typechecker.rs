@@ -635,9 +635,9 @@ impl TypeChecker {
                 scrutinee, arms, ..
             } => {
                 self.expr_is_suspendable(scrutinee)
-                    || arms
-                        .iter()
-                        .any(|(pattern, expr)| self.pattern_is_suspendable(pattern) || self.expr_is_suspendable(expr))
+                    || arms.iter().any(|(pattern, expr)| {
+                        self.pattern_is_suspendable(pattern) || self.expr_is_suspendable(expr)
+                    })
             }
             Expr::Propagate(inner, _) | Expr::Throw(inner, _) => self.expr_is_suspendable(inner),
             Expr::ErrorOr { expr, default, .. } => {
@@ -671,7 +671,9 @@ impl TypeChecker {
     fn pattern_is_suspendable(&self, pattern: &MatchPattern) -> bool {
         match pattern {
             MatchPattern::Literal(expr, _) => self.expr_is_suspendable(expr),
-            MatchPattern::Ident(..) | MatchPattern::Wildcard(_) | MatchPattern::EnumVariant { .. } => false,
+            MatchPattern::Ident(..)
+            | MatchPattern::Wildcard(_)
+            | MatchPattern::EnumVariant { .. } => false,
         }
     }
 

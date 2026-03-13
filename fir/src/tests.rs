@@ -916,7 +916,11 @@ def main() throws CancelledError -> Int
             }
         )
     });
-    assert!(has_spawn, "expected Spawn in lowered body: {:?}", main_func.body);
+    assert!(
+        has_spawn,
+        "expected Spawn in lowered body: {:?}",
+        main_func.body
+    );
 }
 
 #[test]
