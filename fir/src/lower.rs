@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use ast::type_env::TypeEnv;
+use ast::type_table::TypeTable;
 use ast::{EnumVariant, Expr, MatchPattern, Module, Stmt, Type};
 
 use crate::exprs::{BinOp, FirExpr, UnaryOp};
@@ -27,6 +28,8 @@ impl std::error::Error for LowerError {}
 
 pub struct Lowerer {
     type_env: TypeEnv,
+    /// Resolved types from the typechecker, keyed by expression span.
+    type_table: TypeTable,
     module: FirModule,
     /// Maps variable names to their LocalIds within the current function scope.
     locals: HashMap<String, LocalId>,
@@ -68,9 +71,10 @@ pub struct Lowerer {
 }
 
 impl Lowerer {
-    pub fn new(type_env: TypeEnv) -> Self {
+    pub fn new(type_env: TypeEnv, type_table: TypeTable) -> Self {
         Self {
             type_env,
+            type_table,
             module: FirModule::new(),
             locals: HashMap::new(),
             local_types: HashMap::new(),
@@ -913,8 +917,40 @@ impl Lowerer {
                 params,
                 ret_type,
                 body,
+                span,
                 ..
-            } => self.lower_lambda(params, ret_type, body),
+            } => {
+                // If the typechecker resolved this lambda's types (e.g. inferred
+                // params from call context), use the resolved function type.
+                if let Some(Type::Function {
+                    params: resolved_param_types,
+                    ret: resolved_ret,
+                    ..
+                }) = self.type_table.get(span)
+                {
+                    let resolved_params: Vec<(String, Type)> = params
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (name, ty))| {
+                            if *ty == Type::Inferred {
+                                let resolved =
+                                    resolved_param_types.get(i).cloned().unwrap_or(ty.clone());
+                                (name.clone(), resolved)
+                            } else {
+                                (name.clone(), ty.clone())
+                            }
+                        })
+                        .collect();
+                    let resolved_ret = if *ret_type == Type::Inferred {
+                        resolved_ret.as_ref().clone()
+                    } else {
+                        ret_type.clone()
+                    };
+                    self.lower_lambda(&resolved_params, &resolved_ret, body)
+                } else {
+                    self.lower_lambda(params, ret_type, body)
+                }
+            }
 
             Expr::Match {
                 scrutinee, arms, ..
@@ -1190,7 +1226,9 @@ impl Lowerer {
 
         if method == "or_throw" {
             let inner_ty = match &fir_object_ty {
-                FirType::TaggedUnion { variants, .. } if !variants.is_empty() => variants[0].clone(),
+                FirType::TaggedUnion { variants, .. } if !variants.is_empty() => {
+                    variants[0].clone()
+                }
                 other => {
                     return Err(LowerError::UnsupportedFeature(format!(
                         ".or_throw() on non-nullable FIR type: {:?}",
@@ -1749,14 +1787,11 @@ impl Lowerer {
                 debug_assert!(false, "Type::Error should not survive past typechecking");
                 FirType::Void
             }
-            // Type::Inferred may survive in inline lambda parameters where the
-            // typechecker resolves the type in the env but doesn't mutate the AST.
-            // Default to I64 — correct for Int/String/Class (all 64-bit), but wrong
-            // for Float (F64) and Bool (I8). Proper fix requires type info threading.
+            // Inferred/TypeVar should be resolved via TypeTable before reaching here.
+            // The I64 fallback is correct for Int/String/Class (all 64-bit pointers)
+            // but wrong for Float (F64) and Bool (I8). Lambda params are resolved
+            // in lower_expr's Lambda arm via the TypeTable.
             Type::Inferred => FirType::I64,
-            // TypeVar should be resolved by monomorphization. Defaulting to I64 is
-            // correct for most types (all 64-bit), but wrong for Float/Bool.
-            // This is expected until monomorphization is implemented.
             Type::TypeVar(_, _) => FirType::I64,
         }
     }

@@ -141,7 +141,7 @@ fn cmd_run(filename: &str) {
     };
 
     // Lower AST → FIR
-    let mut lowerer = fir::Lowerer::new(checker.env);
+    let mut lowerer = fir::Lowerer::new(checker.env, checker.type_table);
     if let Err(e) = lowerer.lower_module(&module_ast) {
         eprintln!("Lowering error: {}", e);
         std::process::exit(2);
@@ -190,7 +190,7 @@ fn cmd_build(opts: &BuildOptions) {
     };
 
     // Lower AST → FIR
-    let mut lowerer = fir::Lowerer::new(checker.env);
+    let mut lowerer = fir::Lowerer::new(checker.env, checker.type_table);
     if let Err(e) = lowerer.lower_module(&module_ast) {
         eprintln!("Lowering error: {}", e);
         std::process::exit(2);

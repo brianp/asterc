@@ -189,7 +189,7 @@ impl TypeChecker {
                         throws.clone()
                     };
 
-                    return self.check_lambda(
+                    let result = self.check_lambda(
                         &resolved_params,
                         &resolved_ret,
                         body,
@@ -198,6 +198,11 @@ impl TypeChecker {
                         type_constraints,
                         defaults,
                     );
+                    // Record the resolved function type for the FIR lowerer
+                    if let Ok(ref resolved_ty) = result {
+                        self.type_table.insert(expr.span(), resolved_ty.clone());
+                    }
+                    return result;
                 } else if has_inferred_params {
                     return Err(Diagnostic::error(
                         "Cannot infer lambda parameter types without a function type context. Add type annotations or pass to a function with known parameter types"

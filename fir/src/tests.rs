@@ -17,7 +17,7 @@ fn lower_ok(src: &str) -> FirModule {
     let module = parser.parse_module("test").expect("parse ok");
     let mut tc = typecheck::TypeChecker::new();
     tc.check_module(&module).expect("typecheck ok");
-    let mut lowerer = Lowerer::new(tc.env);
+    let mut lowerer = Lowerer::new(tc.env, tc.type_table);
     lowerer.lower_module(&module).expect("lower ok");
     lowerer.finish()
 }
@@ -619,7 +619,7 @@ fn lower_list_index() {
 #[test]
 fn repl_incremental_lowering() {
     let env = TypeEnv::new();
-    let mut lowerer = Lowerer::new(env);
+    let mut lowerer = Lowerer::new(env, ast::TypeTable::new());
 
     // First REPL input: an expression
     let expr = ast::Expr::Int(42, ast::span::Span::dummy());
