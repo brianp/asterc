@@ -25,6 +25,8 @@ pub struct TranslationState {
     pub loop_header: Option<ir::Block>,
     /// True if the current block has been terminated (return/break/continue/jump).
     pub terminated: bool,
+    /// FuncRef for aster_gc_pop_roots — emitted before every return.
+    pub gc_pop_ref: Option<ir::FuncRef>,
 }
 
 impl TranslationState {
@@ -43,6 +45,7 @@ impl TranslationState {
             loop_exit: None,
             loop_header: None,
             terminated: false,
+            gc_pop_ref: None,
         }
     }
 
@@ -129,6 +132,10 @@ fn translate_stmt(builder: &mut FunctionBuilder, state: &mut TranslationState, s
 
         FirStmt::Return(expr) => {
             let val = translate_expr(builder, state, expr);
+            // Pop GC shadow stack frame before returning
+            if let Some(pop_ref) = state.gc_pop_ref {
+                builder.ins().call(pop_ref, &[]);
+            }
             builder.ins().return_(&[val]);
             state.terminated = true;
         }

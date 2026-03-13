@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::types;
-use cranelift_codegen::ir::{AbiParam, InstBuilder};
+use cranelift_codegen::ir::{AbiParam, InstBuilder, StackSlotData, StackSlotKind};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataDescription, Linkage, Module, default_libcall_names};
@@ -190,9 +190,53 @@ impl CraneliftAOT {
 
             let mut state = TranslationState::new(func_refs, runtime_refs, string_gv_map);
             translate::declare_params(&mut builder, &mut state, func, entry_block);
+
+            // Count Ptr-typed params for GC root frame
+            let gc_root_count = func
+                .params
+                .iter()
+                .filter(|(_, ty)| matches!(ty, fir::FirType::Ptr | fir::FirType::Struct(_)))
+                .count();
+
+            // Allocate shadow stack frame: [prev: i64][count: i64][roots: i64 * N]
+            let gc_frame_size = (2 + gc_root_count) * 8;
+            let gc_frame_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                gc_frame_size as u32,
+                0,
+            ));
+            let gc_frame_addr = builder.ins().stack_addr(types::I64, gc_frame_slot, 0);
+
+            // Push GC frame with initial roots (Ptr-typed params)
+            if let Some(&push_ref) = state.runtime_refs.get("aster_gc_push_roots") {
+                let count_val = builder.ins().iconst(types::I64, gc_root_count as i64);
+                builder.ins().call(push_ref, &[gc_frame_addr, count_val]);
+
+                // Store Ptr-typed params into root slots
+                let mut root_idx = 0;
+                for (i, (_, ty)) in func.params.iter().enumerate() {
+                    if matches!(ty, fir::FirType::Ptr | fir::FirType::Struct(_)) {
+                        let local_id = fir::LocalId(i as u32);
+                        if let Some(&var) = state.locals.get(&local_id) {
+                            let val = builder.use_var(var);
+                            let slot_offset = ((2 + root_idx) * 8) as i32;
+                            builder.ins().stack_store(val, gc_frame_slot, slot_offset);
+                        }
+                        root_idx += 1;
+                    }
+                }
+            }
+
+            // Store GC frame info for pop-before-return
+            state.gc_pop_ref = state.runtime_refs.get("aster_gc_pop_roots").copied();
+
             translate::translate_body(&mut builder, &mut state, &func.body);
 
             if !state.terminated {
+                // Pop GC frame before return
+                if let Some(pop_ref) = state.gc_pop_ref {
+                    builder.ins().call(pop_ref, &[]);
+                }
                 let ret_ty = fir_type_to_clif(&func.ret_type);
                 let default_val = if ret_ty == types::F64 {
                     builder.ins().f64const(0.0)

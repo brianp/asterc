@@ -597,6 +597,14 @@ void aster_panic(void) {
     abort();
 }
 
+// GC stubs — the JIT runtime has real GC; the C AOT runtime
+// uses a simple no-op strategy (OS reclaims on exit).
+void aster_gc_push_roots(int64_t frame_addr, int64_t count) {
+    (void)frame_addr; (void)count;
+}
+void aster_gc_pop_roots(void) {}
+void aster_gc_collect(void) {}
+
 int main(int argc, char** argv) {
     (void)argc; (void)argv;
     extern int64_t aster_main(void);
