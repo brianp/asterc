@@ -1161,12 +1161,14 @@ def f() -> Void
     assert_eq!(lambda_func.params[0].0, "__env");
 
     // Lambda body should start with EnvLoad for the captured variable x
-    let has_env_load = lambda_func.body.iter().any(|s| match s {
-        FirStmt::Let {
-            value: FirExpr::EnvLoad { .. },
-            ..
-        } => true,
-        _ => false,
+    let has_env_load = lambda_func.body.iter().any(|s| {
+        matches!(
+            s,
+            FirStmt::Let {
+                value: FirExpr::EnvLoad { .. },
+                ..
+            }
+        )
     });
     assert!(
         has_env_load,

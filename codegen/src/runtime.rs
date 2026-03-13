@@ -793,9 +793,8 @@ pub extern "C" fn aster_panic() {
     std::process::abort();
 }
 
-/// Register all runtime builtins with a JIT builder.
-pub fn register_runtime_builtins(builder: &mut JITBuilder) {
-    let symbols: Vec<(&str, *const u8)> = vec![
+pub fn runtime_builtin_symbols() -> Vec<(&'static str, *const u8)> {
+    vec![
         ("aster_alloc", aster_alloc as *const u8),
         ("aster_print_str", aster_print_str as *const u8),
         ("aster_print_int", aster_print_int as *const u8),
@@ -823,6 +822,10 @@ pub fn register_runtime_builtins(builder: &mut JITBuilder) {
         ("aster_gc_push_roots", aster_gc_push_roots as *const u8),
         ("aster_gc_pop_roots", aster_gc_pop_roots as *const u8),
         ("aster_gc_collect", aster_gc_collect as *const u8),
-    ];
-    builder.symbols(symbols);
+    ]
+}
+
+/// Register all runtime builtins with a JIT builder.
+pub fn register_runtime_builtins(builder: &mut JITBuilder) {
+    builder.symbols(runtime_builtin_symbols());
 }
