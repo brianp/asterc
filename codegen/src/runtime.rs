@@ -442,6 +442,9 @@ const OBJ_CLASS: u8 = 3; // all fields are i64 slots (may be ptrs)
 const OBJ_CLOSURE: u8 = 4; // [func_ptr, env_ptr] — env_ptr is traceable
 const OBJ_DATA_BLOCK: u8 = 5; // raw data block owned by a handle (not independently traced)
 
+/// Magic bytes in header slots [2..3] to identify valid GC objects.
+const GC_MAGIC: [u8; 2] = [0xA5, 0x7E];
+
 const HEADER_SIZE: usize = 16;
 const GC_THRESHOLD: usize = 256 * 1024; // 256 KB before first collection
 
@@ -454,6 +457,8 @@ thread_local! {
     static GC_NEXT_THRESHOLD: Cell<usize> = const { Cell::new(GC_THRESHOLD) };
     /// Shadow stack head — linked list of GcFrame pointers.
     static SHADOW_STACK: Cell<*mut u8> = const { Cell::new(std::ptr::null_mut()) };
+    /// Guard against reentrant collection.
+    static GC_COLLECTING: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Read the mark byte from an object header.
@@ -508,6 +513,20 @@ fn payload_header(payload: *const u8) -> *mut u8 {
     unsafe { (payload as *mut u8).sub(HEADER_SIZE) }
 }
 
+/// Check if a raw i64 value looks like a valid GC payload pointer by
+/// verifying the magic bytes in the header. This enables conservative
+/// tracing of untyped slots (list elements, class fields).
+#[inline]
+unsafe fn is_gc_payload(val: i64) -> bool {
+    if val == 0 {
+        return false;
+    }
+    let payload = val as *const u8;
+    let header = unsafe { payload.sub(HEADER_SIZE) };
+    // Check magic bytes at offset 2 and 3
+    unsafe { *header.add(2) == GC_MAGIC[0] && *header.add(3) == GC_MAGIC[1] }
+}
+
 /// Allocate a GC-tracked object. Returns a pointer to the payload (after the header).
 fn gc_alloc_inner(payload_size: usize, obj_ty: u8) -> *mut u8 {
     // Check if GC is needed
@@ -528,12 +547,12 @@ fn gc_alloc_inner(payload_size: usize, obj_ty: u8) -> *mut u8 {
     let ptr = aster_alloc(total_size);
 
     unsafe {
-        // Write header
+        // Write header: [mark: u8][type: u8][magic: u8; 2][size: u32][next: *mut u8]
         *ptr = 0; // mark = 0 (white)
         *ptr.add(1) = obj_ty; // object type
-        *ptr.add(2) = 0; // pad
-        *ptr.add(3) = 0; // pad
-        *(ptr.add(4) as *mut u32) = payload_size as u32; // size
+        *ptr.add(2) = GC_MAGIC[0];
+        *ptr.add(3) = GC_MAGIC[1];
+        *(ptr.add(4) as *mut u32) = payload_size as u32; // size (safe: objects < 4GB)
     }
 
     // Link into heap list
@@ -566,36 +585,55 @@ unsafe fn gc_mark(payload: *const u8) {
                 // No children to trace
             }
             OBJ_LIST_HANDLE => {
-                // Handle points to a data block. Mark the data block.
+                // Handle points to a data block. Mark it, then trace elements.
                 let block = *(payload as *const *const u8);
                 if !block.is_null() {
                     let block_header = payload_header(block);
-                    obj_set_mark(block_header, 1);
-                    // Don't trace list elements — they could be ints or ptrs.
-                    // Conservative: skip element tracing for now (safe, just doesn't
-                    // collect objects only reachable through list elements).
-                    // Full tracing would need element type info.
+                    if obj_mark(block_header) == 0 {
+                        obj_set_mark(block_header, 1);
+                    }
+                    // List block layout: [cap: i64][len: i64][elements: i64 * cap]
+                    let len = *((block as *const i64).add(1)) as usize;
+                    let elements = (block as *const i64).add(2);
+                    for i in 0..len {
+                        let val = *elements.add(i);
+                        if is_gc_payload(val) {
+                            gc_mark(val as *const u8);
+                        }
+                    }
                 }
             }
             OBJ_MAP_HANDLE => {
+                // Handle points to a data block. Mark it, then trace entries.
                 let block = *(payload as *const *const u8);
                 if !block.is_null() {
                     let block_header = payload_header(block);
-                    obj_set_mark(block_header, 1);
-                    // Same as lists — don't trace entries for now.
+                    if obj_mark(block_header) == 0 {
+                        obj_set_mark(block_header, 1);
+                    }
+                    // Map block layout: [cap: i64][len: i64][entries: (key: i64, val: i64) * cap]
+                    let len = *((block as *const i64).add(1)) as usize;
+                    let entries = (block as *const i64).add(2);
+                    for i in 0..len {
+                        let key = *entries.add(i * 2);
+                        let val = *entries.add(i * 2 + 1);
+                        if is_gc_payload(key) {
+                            gc_mark(key as *const u8);
+                        }
+                        if is_gc_payload(val) {
+                            gc_mark(val as *const u8);
+                        }
+                    }
                 }
             }
             OBJ_CLASS => {
-                // All fields are i64 slots. Conservatively trace each as a potential pointer.
+                // All fields are i64 slots — conservatively trace each using magic check.
                 let num_fields = obj_size(header) as usize / 8;
                 let fields = payload as *const i64;
                 for i in 0..num_fields {
                     let val = *fields.add(i);
-                    if val != 0 {
-                        // Try to mark if it's a valid GC pointer
-                        // We can't distinguish ints from pointers without type info,
-                        // so skip field tracing for safety. This is conservative —
-                        // it may keep objects alive longer but won't crash.
+                    if is_gc_payload(val) {
+                        gc_mark(val as *const u8);
                     }
                 }
             }
@@ -614,6 +652,18 @@ unsafe fn gc_mark(payload: *const u8) {
 
 /// Run mark-and-sweep collection.
 fn gc_collect_inner() {
+    // Guard against reentrant collection (e.g., finalizer triggering alloc)
+    let already_collecting = GC_COLLECTING.with(|g| {
+        if g.get() {
+            return true;
+        }
+        g.set(true);
+        false
+    });
+    if already_collecting {
+        return;
+    }
+
     // Mark phase: trace from shadow stack roots
     SHADOW_STACK.with(|ss| {
         let mut frame = ss.get();
@@ -659,12 +709,14 @@ fn gc_collect_inner() {
             }
         }
     });
+
+    GC_COLLECTING.with(|g| g.set(false));
 }
 
 /// Push a shadow stack frame. Layout: [prev: *mut u8][count: i64][roots: [i64; count]]
 /// The frame must live on the caller's stack (passed as a pointer).
 pub extern "C" fn aster_gc_push_roots(frame: *mut u8, count: i64) {
-    if frame.is_null() {
+    if frame.is_null() || !(0..=1024).contains(&count) {
         return;
     }
     SHADOW_STACK.with(|ss| {
