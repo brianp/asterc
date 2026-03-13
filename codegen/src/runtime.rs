@@ -94,7 +94,7 @@ pub extern "C" fn aster_string_concat(a: *const u8, b: *const u8) -> *mut u8 {
             let raw = *(b as *const i64);
             if raw < 0 { 0usize } else { raw as usize }
         };
-        let concat_len = a_len + b_len;
+        let concat_len = a_len.saturating_add(b_len);
         let result = gc_alloc_string(std::ptr::null(), concat_len);
         // Manually fill data (gc_alloc_string zero-inits since data is null)
         if a_len > 0 {
