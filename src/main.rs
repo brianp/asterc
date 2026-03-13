@@ -11,7 +11,7 @@ use ariadne::{Color, Label, Report, ReportKind, Source};
 
 use ast::{Diagnostic, Severity};
 use codegen::config::{BuildConfig, OptLevel, Profile};
-use fir::lower::LowerError;
+use fir::lower::{LowerError, UnsupportedFeatureKind};
 use lexer::lex;
 use parser::Parser;
 use typecheck::module_loader::{FsResolver, ModuleLoader};
@@ -379,32 +379,23 @@ fn cmd_clean(all: bool) {
 }
 
 fn render_execution_error(source: &str, filename: &str, err: &LowerError) {
-    if let LowerError::UnsupportedFeature(feature) = err {
-        let detail = execution_feature_detail(feature);
-        let diag = Diagnostic::error(format!("execution support for {detail} is not executable yet"))
-            .with_code("E028")
-            .with_note(format!("execution support is missing for {detail}"))
-            .with_note("this file can still pass `asterc check` while `run` and `build` reject it")
-            .with_note(format!("lowering detail: {feature}"));
+    if let LowerError::UnsupportedFeature(kind) = err {
+        let detail = kind.detail();
+        let diag = Diagnostic::error(format!(
+            "execution support for {detail} is not executable yet"
+        ))
+        .with_code("E028")
+        .with_note(format!("execution support is missing for {detail}"))
+        .with_note("this file can still pass `asterc check` while `run` and `build` reject it")
+        .with_note(match kind {
+            UnsupportedFeatureKind::Other(feature) => format!("lowering detail: {feature}"),
+            _ => format!("lowering detail: {}", err),
+        });
         render_diagnostic(source, filename, &diag);
         return;
     }
 
     eprintln!("Lowering error: {}", err);
-}
-
-fn execution_feature_detail(feature: &str) -> &'static str {
-    match feature {
-        "top-level statement: Discriminant(2)" => "top-level `trait` declarations",
-        "top-level statement: Discriminant(7)" => "top-level `for` statements",
-        "top-level statement: Discriminant(10)" => "top-level `use` declarations",
-        "expression: Discriminant(13)" => "`match` expressions",
-        "expression: Discriminant(14)" => "`async` calls",
-        "expression: Discriminant(15)" => "`resolve` expressions",
-        "expression: Discriminant(16)" => "`detached async` expressions",
-        "expression: Discriminant(22)" => "`async scope` expressions",
-        _ => "this language feature",
-    }
 }
 
 fn cmd_fmt(args: &[String]) {
@@ -439,10 +430,12 @@ fn cmd_fmt(args: &[String]) {
     if stdin_mode {
         use std::io::Read;
         let mut source = String::new();
-        std::io::stdin().read_to_string(&mut source).unwrap_or_else(|e| {
-            eprintln!("Failed to read stdin: {}", e);
-            std::process::exit(1);
-        });
+        std::io::stdin()
+            .read_to_string(&mut source)
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to read stdin: {}", e);
+                std::process::exit(1);
+            });
         match aster_fmt::format_source(&source, &config) {
             Ok(formatted) => print!("{}", formatted),
             Err(e) => {
@@ -575,7 +568,13 @@ fn print_unified_diff(filename: &str, original: &str, formatted: &str) {
                 }
                 i += 1;
             }
-            println!("@@ -{},{} +{},{} @@", start + 1, i - start, start + 1, i - start);
+            println!(
+                "@@ -{},{} +{},{} @@",
+                start + 1,
+                i - start,
+                start + 1,
+                i - start
+            );
             for j in start..i {
                 if let Some(&line) = orig_lines.get(j) {
                     println!("-{}", line);
