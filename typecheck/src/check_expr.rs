@@ -1164,11 +1164,11 @@ impl TypeChecker {
             return Ok(Type::Error);
         }
         if !callee_ty.is_suspendable_function() {
-            return Err(Diagnostic::error(
-                "blocking expects a suspendable callee".to_string(),
-            )
-            .with_code("E012")
-            .with_label(func.span(), "callee does not suspend"));
+            return Err(
+                Diagnostic::error("blocking expects a suspendable callee".to_string())
+                    .with_code("E012")
+                    .with_label(func.span(), "callee does not suspend"),
+            );
         }
         Ok(ret_ty)
     }
