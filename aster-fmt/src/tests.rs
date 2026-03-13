@@ -725,3 +725,144 @@ fn format_lex_error() {
     let result = format_source("let x = @@@\n", &FormatConfig::default());
     assert!(result.is_err());
 }
+
+// ===========================================================================
+// Comment preservation
+// ===========================================================================
+
+#[test]
+fn comment_before_let() {
+    let source = "# this is a comment\nlet x = 1\n";
+    let out = fmt(source);
+    assert!(
+        out.contains("# this is a comment"),
+        "comment should be preserved"
+    );
+    assert!(out.contains("let x = 1"));
+    // Comment should appear before the let
+    let comment_pos = out.find("# this is a comment").unwrap();
+    let let_pos = out.find("let x = 1").unwrap();
+    assert!(comment_pos < let_pos);
+}
+
+#[test]
+fn comment_between_stmts() {
+    let source = "let x = 1\n# between\nlet y = 2\n";
+    let out = fmt(source);
+    assert!(out.contains("# between"));
+    let x_pos = out.find("let x = 1").unwrap();
+    let comment_pos = out.find("# between").unwrap();
+    let y_pos = out.find("let y = 2").unwrap();
+    assert!(x_pos < comment_pos);
+    assert!(comment_pos < y_pos);
+}
+
+#[test]
+fn multiple_comments_before_stmt() {
+    let source = "# first\n# second\nlet x = 1\n";
+    let out = fmt(source);
+    assert!(out.contains("# first"));
+    assert!(out.contains("# second"));
+    let first_pos = out.find("# first").unwrap();
+    let second_pos = out.find("# second").unwrap();
+    let let_pos = out.find("let x = 1").unwrap();
+    assert!(first_pos < second_pos);
+    assert!(second_pos < let_pos);
+}
+
+#[test]
+fn comment_preserved_roundtrip() {
+    let source = "# hello\nlet x = 1\n";
+    let first = fmt(source);
+    let second = fmt(&first);
+    assert_eq!(first, second, "comment formatting should be idempotent");
+}
+
+#[test]
+fn comment_before_function() {
+    let source = "# greets a person\ndef greet(name: String)\n  let x = 1\n";
+    let out = fmt(source);
+    assert!(out.contains("# greets a person"));
+    assert!(out.contains("def greet(name: String)"));
+}
+
+// ===========================================================================
+// Diff output
+// ===========================================================================
+
+#[test]
+fn diff_no_changes() {
+    let source = "let x = 1\n";
+    let formatted = fmt(source);
+    assert_eq!(source, formatted);
+    let diffs = crate::format_diff(source, &FormatConfig::default()).unwrap();
+    assert!(diffs.is_empty());
+}
+
+#[test]
+fn diff_with_changes() {
+    // Extra return that gets stripped
+    let source = "def f() -> Int\n  return 42\n";
+    let diffs = crate::format_diff(source, &FormatConfig::default()).unwrap();
+    assert!(!diffs.is_empty());
+    // Line 2 should show the return being stripped
+    let line2_diff = diffs.iter().find(|d| d.line == 2);
+    assert!(line2_diff.is_some());
+    assert!(line2_diff.unwrap().original.contains("return 42"));
+    assert_eq!(line2_diff.unwrap().formatted.trim(), "42");
+}
+
+// ===========================================================================
+// Magic trailing comma
+// ===========================================================================
+
+#[test]
+fn trailing_comma_list_forces_vertical() {
+    let source = "let items = [1, 2, 3,]\n";
+    let out = fmt(source);
+    // Should be vertical layout with trailing comma preserved
+    assert!(
+        out.contains("[\n"),
+        "trailing comma should force vertical layout"
+    );
+    assert!(out.contains(",\n"), "items should be on separate lines");
+}
+
+#[test]
+fn no_trailing_comma_list_can_be_flat() {
+    let source = "let items = [1, 2, 3]\n";
+    let out = fmt(source);
+    // Short list without trailing comma can be on one line
+    assert!(
+        out.contains("[1, 2, 3]"),
+        "short list should stay on one line"
+    );
+}
+
+#[test]
+fn trailing_comma_list_idempotent() {
+    let source = "let items = [1, 2, 3,]\n";
+    let first = fmt(source);
+    let second = fmt(&first);
+    assert_eq!(
+        first, second,
+        "trailing comma formatting should be idempotent"
+    );
+}
+
+#[test]
+fn trailing_comma_call_forces_vertical() {
+    let source = "foo(x: 1, y: 2,)\n";
+    let out = fmt(source);
+    assert!(
+        out.contains("(\n"),
+        "trailing comma should force vertical call layout"
+    );
+}
+
+#[test]
+fn no_trailing_comma_call_flat() {
+    let source = "foo(x: 1, y: 2)\n";
+    let out = fmt(source);
+    assert!(out.contains("foo(x: 1, y: 2)"));
+}

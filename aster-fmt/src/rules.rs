@@ -1,4 +1,5 @@
-use std::collections::BTreeMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashSet};
 
 use ast::expr::{
     BinOp, EnumVariant, ErrorCatchPattern, Expr, MatchPattern, Module, Stmt, StringPart, UnaryOp,
@@ -7,6 +8,51 @@ use ast::types::{Type, TypeConstraint};
 
 use crate::config::FormatConfig;
 use crate::doc::*;
+use crate::trivia::{self, Comment};
+
+// Magic trailing comma: stores byte offsets of closing brackets/parens
+// that are preceded by a trailing comma in the source.
+thread_local! {
+    static TRAILING_COMMAS: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+}
+
+/// Detect trailing commas from a token stream and store their positions.
+/// A trailing comma is a Comma token followed (skipping Newlines/Dedents) by
+/// a closing RBracket or RParen.
+pub(crate) fn detect_trailing_commas(tokens: &[lexer::Token]) {
+    let mut positions = HashSet::new();
+    for i in 0..tokens.len() {
+        if !matches!(tokens[i].kind, lexer::TokenKind::Comma) {
+            continue;
+        }
+        let mut j = i + 1;
+        while j < tokens.len()
+            && matches!(
+                tokens[j].kind,
+                lexer::TokenKind::Newline | lexer::TokenKind::Dedent
+            )
+        {
+            j += 1;
+        }
+        if j < tokens.len()
+            && matches!(
+                tokens[j].kind,
+                lexer::TokenKind::RBracket | lexer::TokenKind::RParen
+            )
+        {
+            positions.insert(tokens[j].end);
+        }
+    }
+    TRAILING_COMMAS.with(|tc| *tc.borrow_mut() = positions);
+}
+
+pub(crate) fn clear_trailing_commas() {
+    TRAILING_COMMAS.with(|tc| tc.borrow_mut().clear());
+}
+
+fn has_trailing_comma(span_end: usize) -> bool {
+    TRAILING_COMMAS.with(|tc| tc.borrow().contains(&span_end))
+}
 
 /// Classify an import path into one of three groups.
 /// Group 0: stdlib (`std` or `std/...`), Group 1: third-party, Group 2: app/relative.
@@ -137,6 +183,172 @@ pub fn format_module(module: &Module, config: &FormatConfig) -> Doc {
 
     let body = join_stmts(&result_docs);
     concat(vec![body, hardline()])
+}
+
+/// Format a module with comment preservation.
+///
+/// Comments are extracted from the source and re-inserted at their original
+/// positions relative to the AST statements.
+pub(crate) fn format_module_with_comments(
+    module: &Module,
+    config: &FormatConfig,
+    comments: &[Comment],
+    source: &str,
+) -> Doc {
+    if comments.is_empty() {
+        return format_module(module, config);
+    }
+
+    // Get statement spans for comment assignment.
+    let stmt_spans: Vec<ast::Span> = module.body.iter().map(stmt_span).collect();
+    let assigned = trivia::assign_comments_to_stmts(comments, &stmt_spans, source);
+
+    // Separate imports from other statements (same as format_module).
+    let mut imports: Vec<(usize, &Stmt)> = Vec::new();
+    let mut others: Vec<(usize, &Stmt)> = Vec::new();
+
+    for (i, stmt) in module.body.iter().enumerate() {
+        if matches!(stmt, Stmt::Use { .. }) {
+            imports.push((i, stmt));
+        } else {
+            others.push((i, stmt));
+        }
+    }
+
+    let mut result_docs: Vec<Doc> = Vec::new();
+
+    if !imports.is_empty() {
+        // Same import merging/sorting logic as format_module.
+        let mut merged: BTreeMap<(bool, Vec<String>), Vec<String>> = BTreeMap::new();
+        let mut aliases: Vec<&Stmt> = Vec::new();
+        let mut first_import_idx: Option<usize> = None;
+
+        for &(i, imp) in &imports {
+            if first_import_idx.is_none() {
+                first_import_idx = Some(i);
+            }
+            if let Stmt::Use {
+                path,
+                names,
+                alias,
+                is_public,
+                ..
+            } = imp
+            {
+                if alias.is_some() || names.is_none() {
+                    aliases.push(imp);
+                    continue;
+                }
+                let key = (*is_public, path.clone());
+                let entry = merged.entry(key).or_default();
+                if let Some(ns) = names {
+                    for n in ns {
+                        if !entry.contains(n) {
+                            entry.push(n.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        for names in merged.values_mut() {
+            names.sort();
+        }
+
+        struct ImportEntry {
+            group: u8,
+            path_str: String,
+            doc: Doc,
+        }
+
+        let mut entries: Vec<ImportEntry> = Vec::new();
+
+        for ((is_public, path), names) in &merged {
+            let doc = if names.is_empty() {
+                format_use(path, &None, &None, *is_public)
+            } else {
+                format_use(path, &Some(names.clone()), &None, *is_public)
+            };
+            entries.push(ImportEntry {
+                group: import_group(path),
+                path_str: path.join("/"),
+                doc,
+            });
+        }
+
+        for imp in &aliases {
+            if let Stmt::Use {
+                path,
+                names,
+                alias,
+                is_public,
+                ..
+            } = imp
+            {
+                let doc = format_use(path, names, alias, *is_public);
+                entries.push(ImportEntry {
+                    group: import_group(path),
+                    path_str: path.join("/"),
+                    doc,
+                });
+            }
+        }
+
+        entries.sort_by(|a, b| a.group.cmp(&b.group).then(a.path_str.cmp(&b.path_str)));
+
+        // Insert comments before the first import.
+        if let Some(idx) = first_import_idx {
+            for c in &assigned[idx] {
+                result_docs.push(text(c.trim()));
+            }
+        }
+
+        let mut last_group: Option<u8> = None;
+        for entry in &entries {
+            if let Some(lg) = last_group
+                && lg != entry.group
+            {
+                result_docs.push(hardline());
+            }
+            result_docs.push(entry.doc.clone());
+            last_group = Some(entry.group);
+        }
+    }
+
+    for &(i, stmt) in &others {
+        if !result_docs.is_empty() {
+            result_docs.push(hardline());
+        }
+        // Insert comments that belong before this statement.
+        for c in &assigned[i] {
+            result_docs.push(text(c.trim()));
+            result_docs.push(hardline());
+        }
+        result_docs.push(format_stmt(stmt, config));
+    }
+
+    let body = join_stmts(&result_docs);
+    concat(vec![body, hardline()])
+}
+
+/// Extract the span from a statement.
+fn stmt_span(stmt: &Stmt) -> ast::Span {
+    match stmt {
+        Stmt::Let { span, .. }
+        | Stmt::Class { span, .. }
+        | Stmt::Trait { span, .. }
+        | Stmt::Return(_, span)
+        | Stmt::Expr(_, span)
+        | Stmt::If { span, .. }
+        | Stmt::While { span, .. }
+        | Stmt::For { span, .. }
+        | Stmt::Assignment { span, .. }
+        | Stmt::Break(span)
+        | Stmt::Continue(span)
+        | Stmt::Use { span, .. }
+        | Stmt::Enum { span, .. }
+        | Stmt::Const { span, .. } => *span,
+    }
 }
 
 /// Join top-level statements with newlines between them.
@@ -739,7 +951,9 @@ pub fn format_expr(expr: &Expr, config: &FormatConfig) -> Doc {
             config,
         ),
 
-        Expr::Call { func, args, .. } => format_call(func, args, config),
+        Expr::Call {
+            func, args, span, ..
+        } => format_call(func, args, *span, config),
 
         Expr::BinaryOp {
             left, op, right, ..
@@ -747,9 +961,22 @@ pub fn format_expr(expr: &Expr, config: &FormatConfig) -> Doc {
 
         Expr::UnaryOp { op, operand, .. } => format_unaryop(op, operand, config),
 
-        Expr::ListLiteral(elems, _) => {
+        Expr::ListLiteral(elems, span) => {
             if elems.is_empty() {
                 text("[]")
+            } else if has_trailing_comma(span.end) {
+                // Magic trailing comma: force vertical layout with trailing comma.
+                let elem_docs: Vec<Doc> = elems.iter().map(|e| format_expr(e, config)).collect();
+                concat(vec![
+                    text("["),
+                    indent(concat(vec![
+                        hardline(),
+                        join(elem_docs, concat(vec![text(","), hardline()])),
+                        text(","),
+                    ])),
+                    hardline(),
+                    text("]"),
+                ])
             } else {
                 let elem_docs: Vec<Doc> = elems.iter().map(|e| format_expr(e, config)).collect();
                 group(concat(vec![
@@ -847,9 +1074,30 @@ pub fn format_expr(expr: &Expr, config: &FormatConfig) -> Doc {
             text(s)
         }
 
-        Expr::Map { entries, .. } => {
+        Expr::Map { entries, span } => {
             if entries.is_empty() {
                 text("{}")
+            } else if has_trailing_comma(span.end) {
+                let entry_docs: Vec<Doc> = entries
+                    .iter()
+                    .map(|(k, v)| {
+                        concat(vec![
+                            format_expr(k, config),
+                            text(": "),
+                            format_expr(v, config),
+                        ])
+                    })
+                    .collect();
+                concat(vec![
+                    text("{"),
+                    indent(concat(vec![
+                        hardline(),
+                        join(entry_docs, concat(vec![text(","), hardline()])),
+                        text(","),
+                    ])),
+                    hardline(),
+                    text("}"),
+                ])
             } else {
                 let entry_docs: Vec<Doc> = entries
                     .iter()
@@ -1014,14 +1262,55 @@ fn format_lambda(
     )
 }
 
-fn format_call(func: &Expr, args: &[(String, Expr)], config: &FormatConfig) -> Doc {
-    format_call_inner(func, args, config)
+fn format_call(
+    func: &Expr,
+    args: &[(String, Expr)],
+    span: ast::Span,
+    config: &FormatConfig,
+) -> Doc {
+    format_call_inner_with_span(func, args, Some(span), config)
 }
 
 fn format_call_inner(func: &Expr, args: &[(String, Expr)], config: &FormatConfig) -> Doc {
+    format_call_inner_with_span(func, args, None, config)
+}
+
+fn format_call_inner_with_span(
+    func: &Expr,
+    args: &[(String, Expr)],
+    span: Option<ast::Span>,
+    config: &FormatConfig,
+) -> Doc {
     let func_doc = format_expr(func, config);
     if args.is_empty() {
         return concat(vec![func_doc, text("()")]);
+    }
+
+    // Magic trailing comma: force vertical layout for calls with trailing comma.
+    if let Some(sp) = span
+        && has_trailing_comma(sp.end)
+    {
+        let arg_docs: Vec<Doc> = args
+            .iter()
+            .map(|(name, expr)| {
+                concat(vec![
+                    text(name.as_str()),
+                    text(": "),
+                    format_expr(expr, config),
+                ])
+            })
+            .collect();
+        return concat(vec![
+            func_doc,
+            text("("),
+            indent(concat(vec![
+                hardline(),
+                join(arg_docs, concat(vec![text(","), hardline()])),
+                text(","),
+            ])),
+            hardline(),
+            text(")"),
+        ]);
     }
 
     let func_str = render_doc(&func_doc, config);
