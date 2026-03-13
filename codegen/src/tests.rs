@@ -2737,9 +2737,8 @@ fn coverage_all_expr_variants() {
         ("ErrorOr", "e2e_error_or_fallback"),
         ("ErrorOrElse", "e2e_error_or_else_fallback"),
         ("ErrorCatch", "e2e_error_catch_fallback"),
-        // These two are blocked on async runtime — documented as known gaps:
-        ("DetachedCall", "KNOWN_GAP_async_runtime"),
-        ("AsyncScope", "KNOWN_GAP_async_runtime"),
+        ("DetachedCall", "e2e_detached_async_executes_eagerly"),
+        ("AsyncScope", "e2e_async_scope_executes_sequentially"),
     ];
 
     // Verify the count matches the actual Expr enum variant count.
@@ -2789,8 +2788,8 @@ fn unsupported_feature_audit() {
     // UnsupportedFeature path, you MUST document it in the STATUS.md parity
     // matrix. If you close a gap, decrement the count here.
     //
-    // Current breakdown (18 sites in lower.rs, 0 in translate.rs):
-    //   3 — generic catch-alls (unsupported_top_level_stmt, unsupported_stmt, unsupported_expr)
+    // Current breakdown (17 sites in lower.rs, 0 in translate.rs):
+    //   2 — generic catch-alls (unsupported_top_level_stmt, unsupported_stmt)
     //   2 — assignment/place edge cases (complex target, complex place expr)
     //   1 — non-ident call target
     //   1 — .or_throw() on non-nullable FIR type
@@ -2808,7 +2807,7 @@ fn unsupported_feature_audit() {
     let actual_call_sites = lower_count - 1;
 
     assert_eq!(
-        actual_call_sites, 18,
+        actual_call_sites, 17,
         "UnsupportedFeature call site count changed in lower.rs (expected 18, got {}). \
          If you added a new UnsupportedFeature, document it in STATUS.md parity matrix. \
          If you closed a gap, update this count and STATUS.md.",
@@ -3191,4 +3190,123 @@ def main() -> Int
     let jit = jit_compile(&fir);
     let result = jit.call_i64(fir.entry.unwrap());
     assert_eq!(result, 20);
+}
+
+// ===========================================================================
+// Top-level control flow
+// ===========================================================================
+
+#[test]
+fn e2e_top_level_if_executes() {
+    // Top-level if should execute in the init thunk before main
+    let src = "\
+let x = 10
+let y = 0
+if x > 5
+  y = x + 1
+
+def main() -> Int
+  y
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 11);
+}
+
+#[test]
+fn e2e_top_level_while_executes() {
+    // Top-level while loops should execute
+    let src = "\
+let x = 0
+let sum = 0
+while x < 5
+  sum = sum + x
+  x = x + 1
+
+def main() -> Int
+  sum
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 10);
+}
+
+#[test]
+fn e2e_top_level_for_executes() {
+    // Top-level for-in loops should execute
+    let src = "\
+let nums = [10, 20, 12]
+let total = 0
+for n in nums
+  total = total + n
+
+def main() -> Int
+  total
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn e2e_top_level_assignment_executes() {
+    // Top-level assignment should execute
+    let src = "\
+let x = 10
+x = 42
+
+def main() -> Int
+  x
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+// ===========================================================================
+// Async (eager semantics)
+// ===========================================================================
+
+#[test]
+fn e2e_detached_async_executes_eagerly() {
+    // detached async f() should call f() eagerly (result discarded, no crash)
+    let src = "\
+def work() -> Int
+  42
+
+def main() -> Int
+  detached async work()
+  1
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 1);
+}
+
+#[test]
+fn e2e_async_scope_executes_sequentially() {
+    // async calls with resolve — eager execution returns the value
+    let src = "\
+def fetch_a() -> Int
+  20
+
+def fetch_b() -> Int
+  22
+
+def main() throws CancelledError -> Int
+  let ta = async fetch_a()
+  let tb = async fetch_b()
+  let a = resolve ta!
+  let b = resolve tb!
+  a + b
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
 }
