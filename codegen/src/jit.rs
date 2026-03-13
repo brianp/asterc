@@ -228,7 +228,7 @@ impl CraneliftJIT {
                         let local_id = fir::LocalId(i as u32);
                         if let Some(&var) = state.locals.get(&local_id) {
                             let val = builder.use_var(var);
-                            let slot_offset = ((2 + root_idx) * 8) as i32;
+                            let slot_offset = (2 + root_idx) * 8;
                             builder.ins().stack_store(val, gc_frame_slot, slot_offset);
                         }
                         root_idx += 1;

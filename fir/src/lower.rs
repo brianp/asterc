@@ -756,11 +756,11 @@ impl Lowerer {
 
                 // Resolve function name
                 if let Expr::Ident(name, _) = func.as_ref() {
-                    if name == "to_string" {
-                        if let Some((_, arg)) = args.first() {
-                            let fir_arg = self.lower_expr(arg)?;
-                            return Ok(self.to_string_expr(arg, fir_arg));
-                        }
+                    if name == "to_string"
+                        && let Some((_, arg)) = args.first()
+                    {
+                        let fir_arg = self.lower_expr(arg)?;
+                        return Ok(self.to_string_expr(arg, fir_arg));
                     }
 
                     // Check if this is a closure call (statically resolved)
