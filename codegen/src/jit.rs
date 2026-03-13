@@ -200,15 +200,17 @@ impl CraneliftJIT {
             let mut state = TranslationState::new(func_refs, runtime_refs, string_gv_map);
             translate::declare_params(&mut builder, &mut state, func, entry_block);
 
-            // Count Ptr-typed params for GC root frame
-            let gc_root_count = func
+            // Count ALL Ptr-typed locals (params + body lets) for GC root frame
+            let param_roots: usize = func
                 .params
                 .iter()
                 .filter(|(_, ty)| matches!(ty, fir::FirType::Ptr | fir::FirType::Struct(_)))
                 .count();
+            let body_roots = count_body_gc_roots(&func.body);
+            let total_gc_roots = param_roots + body_roots;
 
             // Allocate shadow stack frame: [prev: i64][count: i64][roots: i64 * N]
-            let gc_frame_size = (2 + gc_root_count) * 8;
+            let gc_frame_size = (2 + total_gc_roots) * 8;
             let gc_frame_slot = builder.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
                 gc_frame_size as u32,
@@ -216,28 +218,33 @@ impl CraneliftJIT {
             ));
             let gc_frame_addr = builder.ins().stack_addr(types::I64, gc_frame_slot, 0);
 
-            // Push GC frame with initial roots (Ptr-typed params)
+            // Push GC frame with total root count
             if let Some(&push_ref) = state.runtime_refs.get("aster_gc_push_roots") {
-                let count_val = builder.ins().iconst(types::I64, gc_root_count as i64);
+                let count_val = builder.ins().iconst(types::I64, total_gc_roots as i64);
                 builder.ins().call(push_ref, &[gc_frame_addr, count_val]);
 
-                // Store Ptr-typed params into root slots
-                let mut root_idx = 0;
+                // Store Ptr-typed params into initial root slots
+                let mut root_idx: i32 = 0;
                 for (i, (_, ty)) in func.params.iter().enumerate() {
                     if matches!(ty, fir::FirType::Ptr | fir::FirType::Struct(_)) {
                         let local_id = fir::LocalId(i as u32);
+                        let slot_offset = (2 + root_idx) * 8;
+                        state.gc_root_slots.insert(local_id, slot_offset);
                         if let Some(&var) = state.locals.get(&local_id) {
                             let val = builder.use_var(var);
-                            let slot_offset = (2 + root_idx) * 8;
                             builder.ins().stack_store(val, gc_frame_slot, slot_offset);
                         }
                         root_idx += 1;
                     }
                 }
+
+                // Pre-assign root slots for body Let bindings (they'll be filled during translation)
+                translate::assign_body_gc_root_slots(&func.body, &mut state, &mut root_idx);
             }
 
-            // Store GC frame info for pop-before-return
+            // Store GC frame info for pop-before-return and root slot updates
             state.gc_pop_ref = state.runtime_refs.get("aster_gc_pop_roots").copied();
+            state.gc_frame_slot = Some(gc_frame_slot);
 
             translate::translate_body(&mut builder, &mut state, &func.body);
 
@@ -340,6 +347,37 @@ impl Default for CraneliftJIT {
     fn default() -> Self {
         Self::new()
     }
+}
+
+// --- GC root counting ---
+
+/// Count Ptr/Struct-typed Let bindings in a function body (recursive).
+/// These need root slots in the GC shadow stack frame.
+pub fn count_body_gc_roots(stmts: &[fir::stmts::FirStmt]) -> usize {
+    use fir::stmts::FirStmt;
+    let mut count = 0;
+    for stmt in stmts {
+        match stmt {
+            FirStmt::Let { ty, .. } => {
+                if matches!(ty, fir::FirType::Ptr | fir::FirType::Struct(_)) {
+                    count += 1;
+                }
+            }
+            FirStmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                count += count_body_gc_roots(then_body);
+                count += count_body_gc_roots(else_body);
+            }
+            FirStmt::While { body, .. } => {
+                count += count_body_gc_roots(body);
+            }
+            _ => {}
+        }
+    }
+    count
 }
 
 // --- String literal collection ---

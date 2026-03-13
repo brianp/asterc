@@ -27,6 +27,11 @@ pub struct TranslationState {
     pub terminated: bool,
     /// FuncRef for aster_gc_pop_roots — emitted before every return.
     pub gc_pop_ref: Option<ir::FuncRef>,
+    /// GC root slot tracking: maps LocalId → offset in the GC frame's root array.
+    /// Only populated for Ptr/Struct-typed locals.
+    pub gc_root_slots: HashMap<LocalId, i32>,
+    /// Stack slot for the GC shadow stack frame (if any).
+    pub gc_frame_slot: Option<ir::StackSlot>,
 }
 
 impl TranslationState {
@@ -45,6 +50,41 @@ impl TranslationState {
             loop_header: None,
             terminated: false,
             gc_pop_ref: None,
+            gc_root_slots: HashMap::new(),
+            gc_frame_slot: None,
+        }
+    }
+}
+
+/// Pre-assign GC root slot offsets for Ptr-typed Let bindings in a function body.
+/// Called before translation so that when translate_stmt encounters a Let, the
+/// root slot offset is already in state.gc_root_slots.
+pub fn assign_body_gc_root_slots(
+    stmts: &[FirStmt],
+    state: &mut TranslationState,
+    next_root_idx: &mut i32,
+) {
+    for stmt in stmts {
+        match stmt {
+            FirStmt::Let { name, ty, .. } => {
+                if matches!(ty, FirType::Ptr | FirType::Struct(_)) {
+                    let slot_offset = (2 + *next_root_idx) * 8;
+                    state.gc_root_slots.insert(*name, slot_offset);
+                    *next_root_idx += 1;
+                }
+            }
+            FirStmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                assign_body_gc_root_slots(then_body, state, next_root_idx);
+                assign_body_gc_root_slots(else_body, state, next_root_idx);
+            }
+            FirStmt::While { body, .. } => {
+                assign_body_gc_root_slots(body, state, next_root_idx);
+            }
+            _ => {}
         }
     }
 }
@@ -88,6 +128,13 @@ fn translate_stmt(builder: &mut FunctionBuilder, state: &mut TranslationState, s
             builder.def_var(var, val);
             state.locals.insert(*name, var);
             state.local_types.insert(*name, ty.clone());
+
+            // Update GC root slot if this is a Ptr-typed local
+            if let (Some(slot), Some(&offset)) =
+                (state.gc_frame_slot, state.gc_root_slots.get(name))
+            {
+                builder.ins().stack_store(val, slot, offset);
+            }
         }
 
         FirStmt::Assign { target, value } => {
@@ -99,6 +146,13 @@ fn translate_stmt(builder: &mut FunctionBuilder, state: &mut TranslationState, s
                         .get(id)
                         .unwrap_or_else(|| panic!("codegen: assign to undefined local {:?}", id));
                     builder.def_var(var, val);
+
+                    // Update GC root slot on reassignment
+                    if let (Some(slot), Some(&offset)) =
+                        (state.gc_frame_slot, state.gc_root_slots.get(id))
+                    {
+                        builder.ins().stack_store(val, slot, offset);
+                    }
                 }
                 FirPlace::Field { object, offset } => {
                     let obj_ptr = translate_expr(builder, state, object);
