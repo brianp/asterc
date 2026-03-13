@@ -457,54 +457,65 @@ void* aster_bool_to_string(int8_t val) {
     return aster_string_new((void*)s, val ? 4 : 5);
 }
 
+/* List handle indirection: list value = handle (ptr to ptr to data block).
+   Data block: [len: i64][cap: i64][data: i64...] */
+
 void* aster_list_new(int64_t cap) {
     if (cap < 4) cap = 4;
-    void* p = aster_alloc(16 + cap * 8);
-    *(int64_t*)p = 0;              /* len */
-    *((int64_t*)p + 1) = cap;     /* cap */
-    return p;
+    void* block = aster_alloc(16 + cap * 8);
+    *(int64_t*)block = 0;              /* len */
+    *((int64_t*)block + 1) = cap;     /* cap */
+    void* handle = aster_alloc(8);
+    *(void**)handle = block;
+    return handle;
 }
 
-int64_t aster_list_get(void* list, int64_t index) {
-    if (!list) { fprintf(stderr, "aster_list_get: null list\n"); abort(); }
-    int64_t len = *(int64_t*)list;
+int64_t aster_list_get(void* handle, int64_t index) {
+    if (!handle) { fprintf(stderr, "aster_list_get: null list\n"); abort(); }
+    void* block = *(void**)handle;
+    int64_t len = *(int64_t*)block;
     if (index < 0 || index >= len) {
         fprintf(stderr, "list index out of bounds: %lld (len %lld)\n", (long long)index, (long long)len);
         abort();
     }
-    return *((int64_t*)list + 2 + index);
+    return *((int64_t*)block + 2 + index);
 }
 
-void aster_list_set(void* list, int64_t index, int64_t value) {
-    if (!list) { fprintf(stderr, "aster_list_set: null list\n"); abort(); }
-    int64_t len = *(int64_t*)list;
+void aster_list_set(void* handle, int64_t index, int64_t value) {
+    if (!handle) { fprintf(stderr, "aster_list_set: null list\n"); abort(); }
+    void* block = *(void**)handle;
+    int64_t len = *(int64_t*)block;
     if (index < 0 || index >= len) {
         fprintf(stderr, "list index out of bounds: %lld (len %lld)\n", (long long)index, (long long)len);
         abort();
     }
-    *((int64_t*)list + 2 + index) = value;
+    *((int64_t*)block + 2 + index) = value;
 }
 
-void* aster_list_push(void* list, int64_t value) {
-    if (!list) { fprintf(stderr, "aster_list_push: null list\n"); abort(); }
-    int64_t len = *(int64_t*)list;
-    int64_t cap = *((int64_t*)list + 1);
+void* aster_list_push(void* handle, int64_t value) {
+    if (!handle) { fprintf(stderr, "aster_list_push: null list\n"); abort(); }
+    void* block = *(void**)handle;
+    int64_t len = *(int64_t*)block;
+    int64_t cap = *((int64_t*)block + 1);
     if (len >= cap) {
         int64_t new_cap = cap * 2;
         if (new_cap < 4) new_cap = 4;
-        void* new_list = aster_alloc(16 + new_cap * 8);
-        memcpy(new_list, list, (size_t)(16 + len * 8));
-        *((int64_t*)new_list + 1) = new_cap;
-        list = new_list;
+        void* new_block = aster_alloc(16 + new_cap * 8);
+        memcpy(new_block, block, (size_t)(16 + len * 8));
+        *((int64_t*)new_block + 1) = new_cap;
+        free(block);
+        *(void**)handle = new_block;
+        block = new_block;
     }
-    *((int64_t*)list + 2 + len) = value;
-    *(int64_t*)list = len + 1;
-    return list;
+    *((int64_t*)block + 2 + len) = value;
+    *(int64_t*)block = len + 1;
+    return handle;
 }
 
-int64_t aster_list_len(void* list) {
-    if (!list) return 0;
-    return *(int64_t*)list;
+int64_t aster_list_len(void* handle) {
+    if (!handle) return 0;
+    void* block = *(void**)handle;
+    return *(int64_t*)block;
 }
 
 static int aster_string_eq(void* a, void* b) {
@@ -516,44 +527,53 @@ static int aster_string_eq(void* a, void* b) {
     return memcmp((char*)a + 8, (char*)b + 8, (size_t)a_len) == 0;
 }
 
+/* Map handle indirection: map value = handle (ptr to ptr to data block).
+   Data block: [len: i64][cap: i64][entries: [key: i64, val: i64]...] */
+
 void* aster_map_new(int64_t cap) {
     if (cap < 4) cap = 4;
-    void* p = aster_alloc(16 + cap * 16);
-    *(int64_t*)p = 0;              /* len */
-    *((int64_t*)p + 1) = cap;     /* cap */
-    return p;
+    void* block = aster_alloc(16 + cap * 16);
+    *(int64_t*)block = 0;              /* len */
+    *((int64_t*)block + 1) = cap;     /* cap */
+    void* handle = aster_alloc(8);
+    *(void**)handle = block;
+    return handle;
 }
 
-void* aster_map_set(void* map, int64_t key, int64_t value) {
-    if (!map) { fprintf(stderr, "aster_map_set: null map\n"); abort(); }
-    int64_t len = *(int64_t*)map;
-    int64_t cap = *((int64_t*)map + 1);
-    int64_t* entries = ((int64_t*)map) + 2;
+void* aster_map_set(void* handle, int64_t key, int64_t value) {
+    if (!handle) { fprintf(stderr, "aster_map_set: null map\n"); abort(); }
+    void* block = *(void**)handle;
+    int64_t len = *(int64_t*)block;
+    int64_t cap = *((int64_t*)block + 1);
+    int64_t* entries = ((int64_t*)block) + 2;
     for (int64_t i = 0; i < len; i++) {
         if (aster_string_eq((void*)entries[i * 2], (void*)key)) {
             entries[i * 2 + 1] = value;
-            return map;
+            return handle;
         }
     }
     if (len >= cap) {
         int64_t new_cap = cap * 2;
         if (new_cap < 4) new_cap = 4;
-        void* new_map = aster_alloc(16 + new_cap * 16);
-        memcpy(new_map, map, (size_t)(16 + len * 16));
-        *((int64_t*)new_map + 1) = new_cap;
-        map = new_map;
-        entries = ((int64_t*)map) + 2;
+        void* new_block = aster_alloc(16 + new_cap * 16);
+        memcpy(new_block, block, (size_t)(16 + len * 16));
+        *((int64_t*)new_block + 1) = new_cap;
+        free(block);
+        *(void**)handle = new_block;
+        block = new_block;
+        entries = ((int64_t*)block) + 2;
     }
     entries[len * 2] = key;
     entries[len * 2 + 1] = value;
-    *(int64_t*)map = len + 1;
-    return map;
+    *(int64_t*)block = len + 1;
+    return handle;
 }
 
-int64_t aster_map_get(void* map, int64_t key) {
-    if (!map) { fprintf(stderr, "aster_map_get: null map\n"); abort(); }
-    int64_t len = *(int64_t*)map;
-    int64_t* entries = ((int64_t*)map) + 2;
+int64_t aster_map_get(void* handle, int64_t key) {
+    if (!handle) { fprintf(stderr, "aster_map_get: null map\n"); abort(); }
+    void* block = *(void**)handle;
+    int64_t len = *(int64_t*)block;
+    int64_t* entries = ((int64_t*)block) + 2;
     for (int64_t i = 0; i < len; i++) {
         if (aster_string_eq((void*)entries[i * 2], (void*)key)) {
             return entries[i * 2 + 1];
