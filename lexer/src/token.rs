@@ -6,6 +6,7 @@ pub enum TokenKind {
     Def,
     Class,
     Async,
+    Blocking,
     Return,
     If,
     Else,

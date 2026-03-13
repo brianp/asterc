@@ -101,6 +101,24 @@ fn async_def_is_parse_error() {
 }
 
 #[test]
+fn parses_blocking_call_expr() {
+    let m = parse_ok(
+        r#"def fetch() -> Int
+  42
+
+blocking fetch()
+"#,
+    );
+    match &m.body[1] {
+        Stmt::Expr(Expr::BlockingCall { func, args, .. }, _) => {
+            assert!(matches!(func.as_ref(), Expr::Ident(name, _) if name == "fetch"));
+            assert!(args.is_empty());
+        }
+        other => panic!("expected blocking call expr, got {other:?}"),
+    }
+}
+
+#[test]
 fn parses_if_else_stmt() {
     let m = parse_ok("if true\n  foo\nelse\n  bar\n");
     assert_eq!(m.body.len(), 1);

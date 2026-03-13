@@ -34,6 +34,7 @@ pub enum Type {
         params: Vec<Type>,
         ret: Box<Type>,
         throws: Option<Box<Type>>,
+        suspendable: bool,
     },
     Task(Box<Type>),
     Nullable(Box<Type>),
@@ -80,11 +81,13 @@ impl Type {
                 params,
                 ret,
                 throws,
+                suspendable,
             } => Type::Function {
                 param_names: param_names.clone(),
                 params: params.iter().map(|p| p.map_type(f)).collect(),
                 ret: Box::new(ret.map_type(f)),
                 throws: throws.as_ref().map(|t| Box::new(t.map_type(f))),
+                suspendable: *suspendable,
             },
             Type::Custom(name, args) => {
                 Type::Custom(name.clone(), args.iter().map(|a| a.map_type(f)).collect())
@@ -116,6 +119,13 @@ impl Type {
                     || throws.as_ref().is_some_and(|t| t.any_type(f))
             }
             Type::Custom(_, args) => args.iter().any(|a| a.any_type(f)),
+            _ => false,
+        }
+    }
+
+    pub fn is_suspendable_function(&self) -> bool {
+        match self {
+            Type::Function { suspendable, .. } => *suspendable,
             _ => false,
         }
     }
@@ -186,12 +196,16 @@ impl fmt::Display for Type {
                 params,
                 ret,
                 throws,
+                suspendable,
                 ..
             } => {
                 let ps: Vec<std::string::String> = params.iter().map(|p| p.to_string()).collect();
                 write!(f, "({}) -> {}", ps.join(", "), ret)?;
                 if let Some(t) = throws {
                     write!(f, " throws {}", t)?;
+                }
+                if *suspendable {
+                    write!(f, " suspendable")?;
                 }
                 Ok(())
             }

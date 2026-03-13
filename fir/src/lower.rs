@@ -993,6 +993,14 @@ impl Lowerer {
                 let fir_right = self.lower_expr(right)?;
                 let fir_op = self.lower_binop(op);
                 let result_ty = self.infer_binop_type(&fir_op, &fir_left, &fir_right);
+                // String + String → aster_string_concat runtime call
+                if matches!(fir_op, BinOp::Add) && matches!(result_ty, FirType::Ptr) {
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_string_concat".to_string(),
+                        args: vec![fir_left, fir_right],
+                        ret_ty: FirType::Ptr,
+                    });
+                }
                 Ok(FirExpr::BinaryOp {
                     left: Box::new(fir_left),
                     op: fir_op,
@@ -1231,6 +1239,13 @@ impl Lowerer {
                     span: expr.span(),
                 })
             }
+
+            // Blocking: `blocking f(args)` currently reuses eager call lowering.
+            Expr::BlockingCall { func, args, .. } => self.lower_expr(&Expr::Call {
+                func: func.clone(),
+                args: args.clone(),
+                span: expr.span(),
+            }),
 
             // Detached async: `detached async f(args)` → eager call, discard result
             Expr::DetachedCall { func, args, .. } => self.lower_expr(&Expr::Call {

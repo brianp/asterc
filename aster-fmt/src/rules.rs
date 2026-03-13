@@ -1006,6 +1006,10 @@ pub fn format_expr(expr: &Expr, config: &FormatConfig) -> Doc {
             concat(vec![text("async "), format_call_inner(func, args, config)])
         }
 
+        Expr::BlockingCall { func, args, .. } => {
+            concat(vec![text("blocking "), format_call_inner(func, args, config)])
+        }
+
         Expr::Resolve { expr: inner, .. } => {
             concat(vec![text("resolve "), format_expr(inner, config)])
         }
@@ -1544,6 +1548,7 @@ pub fn format_type(ty: &Type) -> Doc {
             params,
             ret,
             throws,
+            ..
         } => {
             let param_docs: Vec<Doc> = param_names
                 .iter()

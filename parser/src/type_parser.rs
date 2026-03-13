@@ -24,6 +24,7 @@ impl Parser {
                 params,
                 ret: Box::new(ret),
                 throws: None,
+                suspendable: false,
             });
         }
 

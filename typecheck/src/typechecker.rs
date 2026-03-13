@@ -57,6 +57,7 @@ impl TypeChecker {
                 params: vec![Type::String],
                 ret: Box::new(Type::Void),
                 throws: None,
+                suspendable: false,
             },
         );
         env.set_var(
@@ -66,6 +67,7 @@ impl TypeChecker {
                 params: vec![Type::String],
                 ret: Box::new(Type::Void),
                 throws: None,
+                suspendable: false,
             },
         );
         // Note: `len` and `to_string` are handled as polymorphic builtins
@@ -93,6 +95,7 @@ impl TypeChecker {
                 params: vec![Type::String],
                 ret: Box::new(Type::Custom("Exception".into(), Vec::new())),
                 throws: None,
+                suspendable: false,
             },
         );
         env.set_class(
@@ -115,6 +118,7 @@ impl TypeChecker {
                 params: vec![Type::String],
                 ret: Box::new(Type::Custom("Error".into(), Vec::new())),
                 throws: None,
+                suspendable: false,
             },
         );
         // Built-in CancelledError for async task cancellation
@@ -138,6 +142,7 @@ impl TypeChecker {
                 params: vec![Type::String],
                 ret: Box::new(Type::Custom("CancelledError".into(), Vec::new())),
                 throws: None,
+                suspendable: false,
             },
         );
 
@@ -166,6 +171,7 @@ impl TypeChecker {
                         params: vec![Type::Custom("Self".into(), Vec::new())],
                         ret: Box::new(Type::Bool),
                         throws: None,
+                        suspendable: false,
                     },
                 )]),
                 required_methods: vec!["eq".into()],
@@ -184,6 +190,7 @@ impl TypeChecker {
                         params: vec![Type::Custom("Self".into(), Vec::new())],
                         ret: Box::new(Type::Custom("Ordering".into(), Vec::new())),
                         throws: None,
+                        suspendable: false,
                     },
                 )]),
                 required_methods: vec!["cmp".into()],
@@ -203,6 +210,7 @@ impl TypeChecker {
                             params: vec![],
                             ret: Box::new(Type::String),
                             throws: None,
+                            suspendable: false,
                         },
                     ),
                     (
@@ -212,6 +220,7 @@ impl TypeChecker {
                             params: vec![],
                             ret: Box::new(Type::String),
                             throws: None,
+                            suspendable: false,
                         },
                     ),
                 ]),
@@ -231,6 +240,7 @@ impl TypeChecker {
                         params: vec![Type::TypeVar("T".into(), vec![])],
                         ret: Box::new(Type::Custom("Self".into(), Vec::new())),
                         throws: None,
+                        suspendable: false,
                     },
                 )]),
                 required_methods: vec!["from".into()],
@@ -249,6 +259,7 @@ impl TypeChecker {
                         params: vec![],
                         ret: Box::new(Type::TypeVar("T".into(), vec![])),
                         throws: None,
+                        suspendable: false,
                     },
                 )]),
                 required_methods: vec!["into".into()],
@@ -267,6 +278,7 @@ impl TypeChecker {
                         params: vec![],
                         ret: Box::new(Type::Nullable(Box::new(Type::TypeVar("T".into(), vec![])))),
                         throws: None,
+                        suspendable: false,
                     },
                 )]),
                 required_methods: vec!["next".into()],
@@ -287,9 +299,11 @@ impl TypeChecker {
                             params: vec![Type::TypeVar("T".into(), vec![])],
                             ret: Box::new(Type::Void),
                             throws: None,
+                            suspendable: false,
                         }],
                         ret: Box::new(Type::Void),
                         throws: None,
+                        suspendable: false,
                     },
                 )]),
                 required_methods: vec!["each".into()],
@@ -485,10 +499,13 @@ impl TypeChecker {
                     params: final_params,
                     ret: Box::new(final_ret),
                     throws: throws.clone().map(Box::new),
+                    suspendable: false,
                 };
                 self.env.set_var(name.clone(), fn_type);
             }
         }
+
+        self.infer_suspendable_functions(m);
 
         // Second pass: typecheck all statements (function bodies can now see all signatures).
         for s in &m.body {
@@ -515,6 +532,160 @@ impl TypeChecker {
         errors
     }
 
+    fn infer_suspendable_functions(&mut self, m: &ast::Module) {
+        loop {
+            let mut changed = false;
+            for stmt in &m.body {
+                let Stmt::Let {
+                    name,
+                    value: Expr::Lambda { body, .. },
+                    ..
+                } = stmt
+                else {
+                    continue;
+                };
+                if !self.body_is_suspendable(body) {
+                    continue;
+                }
+                let Some(Type::Function {
+                    param_names,
+                    params,
+                    ret,
+                    throws,
+                    suspendable,
+                }) = self.env.get_var(name)
+                else {
+                    continue;
+                };
+                if suspendable {
+                    continue;
+                }
+                self.env.set_var(
+                    name.clone(),
+                    Type::Function {
+                        param_names,
+                        params,
+                        ret,
+                        throws,
+                        suspendable: true,
+                    },
+                );
+                changed = true;
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+
+    fn body_is_suspendable(&self, body: &[Stmt]) -> bool {
+        body.iter().any(|stmt| self.stmt_is_suspendable(stmt))
+    }
+
+    fn stmt_is_suspendable(&self, stmt: &Stmt) -> bool {
+        match stmt {
+            Stmt::Let { value, .. } => self.expr_is_suspendable(value),
+            Stmt::Return(expr, _) | Stmt::Expr(expr, _) => self.expr_is_suspendable(expr),
+            Stmt::If {
+                cond,
+                then_body,
+                elif_branches,
+                else_body,
+                ..
+            } => {
+                self.expr_is_suspendable(cond)
+                    || self.body_is_suspendable(then_body)
+                    || elif_branches.iter().any(|(expr, body)| {
+                        self.expr_is_suspendable(expr) || self.body_is_suspendable(body)
+                    })
+                    || self.body_is_suspendable(else_body)
+            }
+            Stmt::While { cond, body, .. } => {
+                self.expr_is_suspendable(cond) || self.body_is_suspendable(body)
+            }
+            Stmt::For { iter, body, .. } => {
+                self.expr_is_suspendable(iter) || self.body_is_suspendable(body)
+            }
+            Stmt::Assignment { target, value, .. } => {
+                self.expr_is_suspendable(target) || self.expr_is_suspendable(value)
+            }
+            _ => false,
+        }
+    }
+
+    fn expr_is_suspendable(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::AsyncCall { .. } | Expr::BlockingCall { .. } | Expr::DetachedCall { .. } => true,
+            Expr::Resolve { .. } => true,
+            Expr::Call { func, args, .. } => {
+                self.expr_refers_to_suspendable_function(func)
+                    || self.expr_is_suspendable(func)
+                    || args.iter().any(|(_, arg)| self.expr_is_suspendable(arg))
+            }
+            Expr::Member { object, .. } => self.expr_is_suspendable(object),
+            Expr::BinaryOp { left, right, .. } => {
+                self.expr_is_suspendable(left) || self.expr_is_suspendable(right)
+            }
+            Expr::UnaryOp { operand, .. } => self.expr_is_suspendable(operand),
+            Expr::ListLiteral(items, _) => items.iter().any(|item| self.expr_is_suspendable(item)),
+            Expr::Index { object, index, .. } => {
+                self.expr_is_suspendable(object) || self.expr_is_suspendable(index)
+            }
+            Expr::Match {
+                scrutinee, arms, ..
+            } => {
+                self.expr_is_suspendable(scrutinee)
+                    || arms
+                        .iter()
+                        .any(|(pattern, expr)| self.pattern_is_suspendable(pattern) || self.expr_is_suspendable(expr))
+            }
+            Expr::Propagate(inner, _) | Expr::Throw(inner, _) => self.expr_is_suspendable(inner),
+            Expr::ErrorOr { expr, default, .. } => {
+                self.expr_is_suspendable(expr) || self.expr_is_suspendable(default)
+            }
+            Expr::ErrorOrElse { expr, handler, .. } => {
+                self.expr_is_suspendable(expr) || self.expr_is_suspendable(handler)
+            }
+            Expr::ErrorCatch { expr, arms, .. } => {
+                self.expr_is_suspendable(expr)
+                    || arms.iter().any(|(_, arm)| self.expr_is_suspendable(arm))
+            }
+            Expr::AsyncScope { body, .. } => self.body_is_suspendable(body),
+            Expr::StringInterpolation { parts, .. } => parts.iter().any(|part| match part {
+                ast::StringPart::Literal(_) => false,
+                ast::StringPart::Expr(expr) => self.expr_is_suspendable(expr),
+            }),
+            Expr::Map { entries, .. } => entries.iter().any(|(key, value)| {
+                self.expr_is_suspendable(key) || self.expr_is_suspendable(value)
+            }),
+            Expr::Lambda { body, .. } => self.body_is_suspendable(body),
+            Expr::Int(..)
+            | Expr::Float(..)
+            | Expr::Str(..)
+            | Expr::Bool(..)
+            | Expr::Nil(_)
+            | Expr::Ident(..) => false,
+        }
+    }
+
+    fn pattern_is_suspendable(&self, pattern: &MatchPattern) -> bool {
+        match pattern {
+            MatchPattern::Literal(expr, _) => self.expr_is_suspendable(expr),
+            MatchPattern::Ident(..) | MatchPattern::Wildcard(_) | MatchPattern::EnumVariant { .. } => false,
+        }
+    }
+
+    fn expr_refers_to_suspendable_function(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Ident(name, _) => self
+                .env
+                .get_var(name)
+                .is_some_and(|ty| ty.is_suspendable_function()),
+            Expr::Member { .. } => false,
+            _ => false,
+        }
+    }
+
     pub fn check_stmt(&mut self, stmt: &Stmt) -> Result<Type, Diagnostic> {
         let stmt_span = stmt.span();
         match stmt {
@@ -535,11 +706,33 @@ impl TypeChecker {
                 if let Some(ann) = type_ann {
                     self.expected_type = Some(ann.clone());
                 }
-                let ty = if matches!(value, Expr::Lambda { .. }) {
+                let mut ty = if matches!(value, Expr::Lambda { .. }) {
                     self.check_lambda_with_expected(value, type_ann.as_ref())?
                 } else {
                     self.check_expr(value)?
                 };
+                if matches!(value, Expr::Lambda { .. })
+                    && let (
+                        Type::Function {
+                            param_names,
+                            params,
+                            ret,
+                            throws,
+                            suspendable: false,
+                        },
+                        Some(Type::Function {
+                            suspendable: true, ..
+                        }),
+                    ) = (&ty, self.env.get_var(name))
+                {
+                    ty = Type::Function {
+                        param_names: param_names.clone(),
+                        params: params.clone(),
+                        ret: ret.clone(),
+                        throws: throws.clone(),
+                        suspendable: true,
+                    };
+                }
                 self.expected_type = prev_expected;
                 self.current_function = prev_fn;
                 if ty.is_error() {

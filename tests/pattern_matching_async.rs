@@ -169,6 +169,64 @@ def main() -> Void
 }
 
 #[test]
+fn blocking_call_returns_plain_value() {
+    common::check_ok(
+        r#"def fetch() -> Int
+  async fetch_child()
+  42
+
+def fetch_child() -> Int
+  42
+
+def main() -> Int
+  blocking fetch()
+"#,
+    );
+}
+
+#[test]
+fn plain_call_to_suspendable_callee_is_compile_error() {
+    let err = common::check_err(
+        r#"def fetch() -> Int
+  async fetch_child()
+  42
+
+def fetch_child() -> Int
+  7
+
+def main() -> Int
+  fetch()
+"#,
+    );
+    assert!(err.contains("blocking fetch()") || err.contains("async fetch()"));
+}
+
+#[test]
+fn cross_module_suspendable_metadata_rejects_plain_call() {
+    let mut files = std::collections::HashMap::new();
+    files.insert(
+        "worker".to_string(),
+        r#"pub def fetch_child() -> Int
+  7
+
+pub def fetch() -> Int
+  async fetch_child()
+  42
+"#
+        .to_string(),
+    );
+    let err = common::check_err_with_files(
+        r#"use worker { fetch }
+
+def main() -> Int
+  fetch()
+"#,
+        files,
+    );
+    assert!(err.contains("blocking fetch()") || err.contains("async fetch()"));
+}
+
+#[test]
 fn detached_async_call() {
     common::check_ok(
         r#"def background_job() -> Void
