@@ -1857,6 +1857,24 @@ def main() -> String
     }
 }
 
+#[test]
+fn builtin_to_string_int_returns_heap_string() {
+    let src = "\
+def main() -> String
+  to_string(value: 42)
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.call_i64(fir.entry.unwrap());
+    assert_ne!(ptr, 0);
+    unsafe {
+        let len = *(ptr as *const i64) as usize;
+        let data = (ptr as *const u8).add(8);
+        let s = std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, len));
+        assert_eq!(s, "42");
+    }
+}
+
 // String interpolation — class to_string
 
 #[test]
@@ -2031,6 +2049,22 @@ def main() -> Int
     let jit = jit_compile(&fir);
     let result = jit.call_i64(fir.entry.unwrap());
     assert_eq!(result, 77);
+}
+
+#[test]
+fn nullable_or_throw_success_path() {
+    let src = "\
+class AppError extends Error
+  code: Int
+
+def main() throws AppError -> Int
+  let x: Int? = 42
+  x.or_throw(error: AppError(message: \"missing\", code: 1))
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
 }
 
 // ===========================================================================
