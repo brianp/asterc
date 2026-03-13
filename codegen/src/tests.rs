@@ -2522,6 +2522,74 @@ def main() -> Int
 }
 
 // ---------------------------------------------------------------------------
+// Ord protocol on custom types
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e2e_class_ord_less_than() {
+    let src = "\
+class Score includes Ord
+  val: Int
+
+def main() -> Int
+  let a: Score = Score(val: 3)
+  let b: Score = Score(val: 7)
+  if a < b
+    return 1
+  return 0
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 1);
+}
+
+#[test]
+fn e2e_class_ord_greater_than() {
+    let src = "\
+class Score includes Ord
+  val: Int
+
+def main() -> Int
+  let a: Score = Score(val: 9)
+  let b: Score = Score(val: 3)
+  if a > b
+    return 1
+  return 0
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Inheritance: method override
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e2e_inheritance_method_override() {
+    // Subclass overrides parent method — subclass version is called
+    let src = "\
+class Animal
+  def sound() -> Int
+    0
+
+class Cat extends Animal
+  def sound() -> Int
+    42
+
+def main() -> Int
+  let c: Cat = Cat()
+  c.sound()
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+// ---------------------------------------------------------------------------
 // M24: Iterator protocol — custom for-loop
 // ---------------------------------------------------------------------------
 
@@ -2721,7 +2789,7 @@ fn unsupported_feature_audit() {
     // UnsupportedFeature path, you MUST document it in the STATUS.md parity
     // matrix. If you close a gap, decrement the count here.
     //
-    // Current breakdown (16 sites in lower.rs, 0 in translate.rs):
+    // Current breakdown (18 sites in lower.rs, 0 in translate.rs):
     //   3 — generic catch-alls (unsupported_top_level_stmt, unsupported_stmt, unsupported_expr)
     //   2 — assignment/place edge cases (complex target, complex place expr)
     //   1 — non-ident call target
@@ -2730,7 +2798,7 @@ fn unsupported_feature_audit() {
     //   1 — missing argument with no default
     //   1 — Iterator class missing next() method
     //   3 — class field resolution errors (unknown class, no layout, unknown field)
-    //   3 — resolve_class_name failures (variable, call expr, other expr)
+    //   5 — resolve_class_name failures (variable, call expr, member-fallback, index-fallback, other expr)
     //
     let lower_src = include_str!("../../fir/src/lower.rs");
     // Count error construction sites: LowerError::UnsupportedFeature(
@@ -2740,8 +2808,8 @@ fn unsupported_feature_audit() {
     let actual_call_sites = lower_count - 1;
 
     assert_eq!(
-        actual_call_sites, 16,
-        "UnsupportedFeature call site count changed in lower.rs (expected 16, got {}). \
+        actual_call_sites, 18,
+        "UnsupportedFeature call site count changed in lower.rs (expected 18, got {}). \
          If you added a new UnsupportedFeature, document it in STATUS.md parity matrix. \
          If you closed a gap, update this count and STATUS.md.",
         actual_call_sites
@@ -2754,6 +2822,356 @@ fn unsupported_feature_audit() {
         translate_count, 0,
         "translate.rs should have no UnsupportedFeature paths — all FIR nodes must be translated"
     );
+}
+
+#[test]
+fn e2e_into_method_dispatch() {
+    // into() on a class calls the user-defined into() method.
+    // Field names are accessed directly (not self.field) as the typechecker
+    // injects fields into the method scope.
+    let src = "\
+class Wrapper
+  val: Int
+  def into() -> Int
+    val * 2
+
+def main() -> Int
+  let w = Wrapper(val: 21)
+  w.into()
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn e2e_from_static_call() {
+    // Type.from(value: x) intrinsic — class must include From[T]
+    let src = "\
+class Doubled includes From[Int]
+  val: Int
+  def from(value: Int) -> Self
+    Doubled(val: value * 2)
+
+def main() -> Int
+  let d = Doubled.from(value: 21)
+  d.val
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn e2e_inheritance_parent_method_call() {
+    // Subclass inherits method from parent — calling the inherited method on subclass instance
+    let src = "\
+class Animal
+  sound: String
+  def speak() -> Int
+    42
+
+class Dog extends Animal
+  name: String
+
+def main() -> Int
+  let d: Dog = Dog(sound: \"woof\", name: \"Rex\")
+  d.speak()
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn e2e_inheritance_subclass_field_access() {
+    // Subclass inherits fields from parent — access both parent and child fields
+    let src = "\
+class Shape
+  color: Int
+
+class Circle extends Shape
+  radius: Int
+  def area() -> Int
+    radius * radius
+
+def main() -> Int
+  let c: Circle = Circle(color: 1, radius: 7)
+  c.color + c.radius
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 8);
+}
+
+#[test]
+fn e2e_method_call_on_return_value() {
+    // Method call on the return value of a function: f().method()
+    let src = "\
+class Wrapper
+  val: Int
+  def doubled() -> Int
+    val * 2
+
+def make_wrapper(n: Int) -> Wrapper
+  Wrapper(val: n)
+
+def main() -> Int
+  make_wrapper(n: 21).doubled()
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn e2e_map_three_entries() {
+    // Map with 3 entries — look up middle key
+    let src = r#"
+def main() -> Int
+  let m: Map[String, Int] = {"a": 1, "b": 2, "c": 3}
+  m["b"]
+"#;
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 2);
+}
+
+#[test]
+fn e2e_class_default_field_in_method() {
+    // A method that uses a field directly (field is in scope in method body)
+    let src = "\
+class Counter
+  count: Int
+  def value() -> Int
+    count * 3
+
+def main() -> Int
+  let c = Counter(count: 14)
+  c.value()
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn e2e_multiple_inheritance_levels() {
+    // Three-level inheritance: GrandChild → Child → Parent
+    // Access fields and methods across all levels
+    let src = "\
+class A
+  x: Int
+  def x_value() -> Int
+    x
+
+class B extends A
+  y: Int
+  def y_value() -> Int
+    y
+
+class C extends B
+  z: Int
+
+def main() -> Int
+  let c: C = C(x: 1, y: 10, z: 100)
+  c.x_value() + c.y_value() + c.z
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 111);
+}
+
+#[test]
+fn e2e_nullable_or_with_method_call() {
+    // Nullable .or() with a fallback value
+    let src = "\
+def maybe_get(flag: Bool) -> Int?
+  if flag
+    return 42
+  nil
+
+def main() -> Int
+  maybe_get(flag: false).or(default: 99)
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 99);
+}
+
+#[test]
+fn e2e_nullable_or_present() {
+    let src = "\
+def maybe_get(flag: Bool) -> Int?
+  if flag
+    return 42
+  nil
+
+def main() -> Int
+  maybe_get(flag: true).or(default: 0)
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn e2e_nested_field_assignment() {
+    // Assignment to a chained field path: o.inner.val = x
+    let src = "\
+class Inner
+  val: Int
+
+class Outer
+  inner: Inner
+
+def main() -> Int
+  let o = Outer(inner: Inner(val: 0))
+  o.inner.val = 42
+  o.inner.val
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn e2e_class_returned_from_function_field_access() {
+    // Field access on value returned from a factory function (not a constructor)
+    let src = "\
+class Point
+  x: Int
+  y: Int
+
+def make_point(x: Int, y: Int) -> Point
+  Point(x: x, y: y)
+
+def main() -> Int
+  let p = make_point(x: 10, y: 32)
+  p.x + p.y
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn e2e_method_chain_returns_self() {
+    // Builder-style method chaining where each method returns a class instance
+    let src = "\
+class Builder
+  val: Int
+
+  def set(n: Int) -> Builder
+    Builder(val: n)
+
+  def doubled() -> Builder
+    Builder(val: val * 2)
+
+  def result() -> Int
+    val
+
+def main() -> Int
+  Builder(val: 0).set(n: 3).doubled().result()
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 6);
+}
+
+#[test]
+fn e2e_field_access_on_list_element() {
+    // Field access on a class instance obtained via list indexing
+    let src = "\
+class Point
+  x: Int
+
+def main() -> Int
+  let points: List[Point] = [Point(x: 10), Point(x: 32)]
+  points[0].x + points[1].x
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn e2e_nested_class_field_in_method() {
+    // Method that accesses a field of class type via bare name (not self.field)
+    // e.g. `addr.zip` where addr is a field of type Address
+    let src = "\
+class Address
+  zip: Int
+
+class Person
+  addr: Address
+
+  def get_zip() -> Int
+    addr.zip
+
+def main() -> Int
+  let p = Person(addr: Address(zip: 42))
+  p.get_zip()
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn e2e_nested_field_assignment_in_method() {
+    // Assignment to a nested field from inside a method body (addr.zip = x where addr is self.addr)
+    let src = "\
+class Address
+  zip: Int
+
+class Person
+  addr: Address
+
+  def move_to(new_zip: Int) -> Int
+    addr.zip = new_zip
+    addr.zip
+
+def main() -> Int
+  let p = Person(addr: Address(zip: 10))
+  p.move_to(new_zip: 42)
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn e2e_map_of_class_field_access() {
+    // Field access on a class instance obtained via map lookup
+    let src = r#"
+class Item
+  value: Int
+
+def main() -> Int
+  let m: Map[String, Item] = {"a": Item(value: 42)}
+  m["a"].value
+"#;
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
 }
 
 #[test]
