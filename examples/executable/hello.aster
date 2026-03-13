@@ -1,0 +1,6 @@
+def main() -> Void
+  log(message: "Hello")
+  if true
+    log(message: "Yes")
+  else
+    log(message: "No")

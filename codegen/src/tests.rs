@@ -4,6 +4,8 @@ use fir::types::FunctionId;
 
 use crate::aot::CraneliftAOT;
 use crate::jit::CraneliftJIT;
+use crate::runtime_sigs::RUNTIME_SIGS;
+use crate::runtime_source::c_runtime_source;
 
 // ---------------------------------------------------------------------------
 // Helper: source → FIR → JIT compile
@@ -24,6 +26,18 @@ fn jit_compile(fir: &FirModule) -> CraneliftJIT {
     let mut jit = CraneliftJIT::new();
     jit.compile_module(fir).expect("JIT compile ok");
     jit
+}
+
+#[test]
+fn c_runtime_source_covers_runtime_signatures() {
+    let source = c_runtime_source();
+    for (name, _, _) in RUNTIME_SIGS {
+        let needle = format!("{name}(");
+        assert!(
+            source.contains(&needle),
+            "runtime source is missing {name} from the shared symbol table"
+        );
+    }
 }
 
 // ===========================================================================

@@ -1,0 +1,27 @@
+# Phase 3: Collections and Type Annotations
+
+# Let with type annotations
+let x: Int = 42
+let name: String = "aster"
+let flag: Bool = true
+
+# List literals
+let nums = [1, 2, 3]
+let words = ["hello", "world"]
+
+# List with type annotation
+let scores: List[Int] = [100, 95, 87]
+
+# Empty list with annotation
+let empty: List[String] = []
+
+# Indexing
+let first = nums[0]
+let second = words[1]
+
+# For-in over lists
+for n in nums
+  let doubled = n * 2
+
+for word in words
+  log(message: word)

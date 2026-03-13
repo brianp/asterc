@@ -1,0 +1,21 @@
+# Phase 4: Modules, Imports, Builtins
+
+use io
+
+# pub keyword on definitions
+pub let VERSION = 1
+
+pub def greet(name: String) -> String
+  "Hello " + name
+
+pub class Config
+  debug: Bool
+
+# Builtins
+log(message: "starting up")
+print(message: "hello world")
+
+let xs = [1, 2, 3]
+let n = len(value: xs)
+let s = len(value: "hello")
+let num_str = to_string(value: 42)

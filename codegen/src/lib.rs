@@ -3,6 +3,7 @@ pub mod config;
 pub mod jit;
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub mod runtime;
+pub mod runtime_source;
 pub mod runtime_sigs;
 pub mod translate;
 pub mod types;
