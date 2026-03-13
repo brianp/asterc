@@ -216,7 +216,8 @@ impl Lowerer {
                 // Top-level let binding outside a function.
                 // Collect these; they will be injected into an __init thunk
                 // that runs at the start of main.
-                let fir_value = self.lower_expr(value)?;
+                let raw_value = self.lower_expr(value)?;
+                let fir_value = self.wrap_nullable_binding(type_ann.as_ref(), value, raw_value);
                 let fir_type = if let Some(ann) = type_ann {
                     self.lower_type(ann)
                 } else {
@@ -250,7 +251,8 @@ impl Lowerer {
                 value,
                 ..
             } => {
-                let fir_value = self.lower_expr(value)?;
+                let raw_value = self.lower_expr(value)?;
+                let fir_value = self.wrap_nullable_binding(type_ann.as_ref(), value, raw_value);
                 let fir_type = if let Some(ann) = type_ann {
                     self.lower_type(ann)
                 } else {
@@ -531,11 +533,11 @@ impl Lowerer {
                     None
                 };
 
-                let fir_value = self.lower_expr(value)?;
+                let raw_value = self.lower_expr(value)?;
                 let fir_type = if let Some(ann) = type_ann {
                     self.lower_type(ann)
                 } else {
-                    self.infer_fir_type(&fir_value)
+                    self.infer_fir_type(&raw_value)
                 };
                 let local_id = self.alloc_local();
                 self.locals.insert(name.clone(), local_id);
@@ -548,7 +550,7 @@ impl Lowerer {
                     } else {
                         // The env local was created by lower_lambda in pending_stmts
                         // Extract it from the ClosureCreate's env field
-                        if let FirExpr::ClosureCreate { env, .. } = &fir_value {
+                        if let FirExpr::ClosureCreate { env, .. } = &raw_value {
                             if let FirExpr::LocalVar(env_id, _) = env.as_ref() {
                                 Some(*env_id)
                             } else {
@@ -574,6 +576,7 @@ impl Lowerer {
                             .insert(name.clone(), Type::Custom(class_name.clone(), vec![]));
                     }
                 }
+                let fir_value = self.wrap_nullable_binding(type_ann.as_ref(), value, raw_value);
                 Ok(FirStmt::Let {
                     name: local_id,
                     ty: fir_type,
@@ -624,7 +627,8 @@ impl Lowerer {
                 value,
                 ..
             } => {
-                let fir_value = self.lower_expr(value)?;
+                let raw_value = self.lower_expr(value)?;
+                let fir_value = self.wrap_nullable_binding(type_ann.as_ref(), value, raw_value);
                 let fir_type = if let Some(ann) = type_ann {
                     self.lower_type(ann)
                 } else {
@@ -748,6 +752,13 @@ impl Lowerer {
 
                 // Resolve function name
                 if let Expr::Ident(name, _) = func.as_ref() {
+                    if name == "to_string" {
+                        if let Some((_, arg)) = args.first() {
+                            let fir_arg = self.lower_expr(arg)?;
+                            return Ok(self.to_string_expr(arg, fir_arg));
+                        }
+                    }
+
                     // Check if this is a closure call (statically resolved)
                     if let Some((func_id, env_local, _captures)) =
                         self.closure_info.get(name).cloned()
@@ -1175,6 +1186,57 @@ impl Lowerer {
         }
 
         let fir_object = self.lower_expr(object)?;
+        let fir_object_ty = self.infer_fir_type(&fir_object);
+
+        if method == "or_throw" {
+            let inner_ty = match &fir_object_ty {
+                FirType::TaggedUnion { variants, .. } if !variants.is_empty() => variants[0].clone(),
+                other => {
+                    return Err(LowerError::UnsupportedFeature(format!(
+                        ".or_throw() on non-nullable FIR type: {:?}",
+                        other
+                    )));
+                }
+            };
+
+            let nullable_id = self.alloc_local();
+            self.local_types.insert(nullable_id, fir_object_ty.clone());
+            self.pending_stmts.push(FirStmt::Let {
+                name: nullable_id,
+                ty: fir_object_ty.clone(),
+                value: fir_object,
+            });
+
+            let result_id = self.alloc_local();
+            self.local_types.insert(result_id, inner_ty.clone());
+            self.pending_stmts.push(FirStmt::Let {
+                name: result_id,
+                ty: inner_ty.clone(),
+                value: self.default_value_for_type(&inner_ty),
+            });
+
+            self.pending_stmts.push(FirStmt::If {
+                cond: FirExpr::TagCheck {
+                    value: Box::new(FirExpr::LocalVar(nullable_id, fir_object_ty.clone())),
+                    tag: 1,
+                },
+                then_body: vec![FirStmt::Expr(FirExpr::RuntimeCall {
+                    name: "aster_error_set".to_string(),
+                    args: vec![],
+                    ret_ty: FirType::Void,
+                })],
+                else_body: vec![FirStmt::Assign {
+                    target: FirPlace::Local(result_id),
+                    value: FirExpr::TagUnwrap {
+                        value: Box::new(FirExpr::LocalVar(nullable_id, fir_object_ty)),
+                        expected_tag: 0,
+                        ty: inner_ty.clone(),
+                    },
+                }],
+            });
+
+            return Ok(FirExpr::LocalVar(result_id, inner_ty));
+        }
 
         // Check for list built-in methods
         match method {
@@ -1222,6 +1284,51 @@ impl Lowerer {
         )))
     }
 
+    fn to_string_expr(&self, ast_expr: &Expr, fir_expr: FirExpr) -> FirExpr {
+        match self.infer_fir_type(&fir_expr) {
+            FirType::Ptr => {
+                if let Ok(class_name) = self.resolve_class_name(ast_expr) {
+                    let qualified = format!("{}.to_string", class_name);
+                    if let Some(&func_id) = self.functions.get(&qualified) {
+                        return FirExpr::Call {
+                            func: func_id,
+                            args: vec![fir_expr],
+                            ret_ty: FirType::Ptr,
+                        };
+                    }
+                }
+                fir_expr
+            }
+            FirType::I64 => FirExpr::RuntimeCall {
+                name: "aster_int_to_string".to_string(),
+                args: vec![fir_expr],
+                ret_ty: FirType::Ptr,
+            },
+            FirType::F64 => FirExpr::RuntimeCall {
+                name: "aster_float_to_string".to_string(),
+                args: vec![fir_expr],
+                ret_ty: FirType::Ptr,
+            },
+            FirType::Bool => FirExpr::RuntimeCall {
+                name: "aster_bool_to_string".to_string(),
+                args: vec![fir_expr],
+                ret_ty: FirType::Ptr,
+            },
+            _ => fir_expr,
+        }
+    }
+
+    fn default_value_for_type(&self, ty: &FirType) -> FirExpr {
+        match ty {
+            FirType::F64 => FirExpr::FloatLit(0.0),
+            FirType::Bool => FirExpr::BoolLit(false),
+            FirType::Ptr | FirType::TaggedUnion { .. } | FirType::Struct(_) | FirType::FnPtr(_) => {
+                FirExpr::NilLit
+            }
+            _ => FirExpr::IntLit(0),
+        }
+    }
+
     /// Wrap a return value in TagWrap if the current function returns a nullable type.
     /// `return nil` → TagWrap(tag=1, NilLit)  [nil]
     /// `return expr` → TagWrap(tag=0, expr)    [Some(value)]
@@ -1237,6 +1344,32 @@ impl Lowerer {
                 }
             } else {
                 // return value → TagWrap(0, value)
+                FirExpr::TagWrap {
+                    tag: 0,
+                    value: Box::new(fir_expr),
+                    ty: result_ty,
+                }
+            }
+        } else {
+            fir_expr
+        }
+    }
+
+    fn wrap_nullable_binding(
+        &self,
+        type_ann: Option<&Type>,
+        ast_expr: &Expr,
+        fir_expr: FirExpr,
+    ) -> FirExpr {
+        if let Some(Type::Nullable(inner)) = type_ann {
+            let result_ty = self.lower_type(inner);
+            if matches!(ast_expr, Expr::Nil(_)) {
+                FirExpr::TagWrap {
+                    tag: 1,
+                    value: Box::new(FirExpr::NilLit),
+                    ty: FirType::Ptr,
+                }
+            } else {
                 FirExpr::TagWrap {
                     tag: 0,
                     value: Box::new(fir_expr),
