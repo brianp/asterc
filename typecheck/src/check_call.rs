@@ -203,6 +203,74 @@ impl TypeChecker {
                         }
                     }
                 }
+                "resolve_all" => {
+                    if args.len() != 1 {
+                        return Err(Diagnostic::error(format!(
+                            "resolve_all() takes 1 argument, got {}",
+                            args.len()
+                        ))
+                        .with_code("E006")
+                        .with_label(func.span(), "expected 1 argument"));
+                    }
+                    let aty = self.check_expr(&args[0].1)?;
+                    if aty.is_error() {
+                        return Ok(Type::Error);
+                    }
+                    match aty {
+                        Type::List(inner) => match *inner {
+                            Type::Task(result) => {
+                                return Ok(Type::List(result));
+                            }
+                            other => {
+                                return Err(Diagnostic::error(format!(
+                                    "resolve_all() expects List[Task[T]], got List[{other:?}]"
+                                ))
+                                .with_code("E005")
+                                .with_label(args[0].1.span(), "expected List[Task[T]]"));
+                            }
+                        },
+                        other => {
+                            return Err(Diagnostic::error(format!(
+                                "resolve_all() expects List[Task[T]], got {other:?}"
+                            ))
+                            .with_code("E005")
+                            .with_label(args[0].1.span(), "expected List[Task[T]]"));
+                        }
+                    }
+                }
+                "resolve_first" => {
+                    if args.len() != 1 {
+                        return Err(Diagnostic::error(format!(
+                            "resolve_first() takes 1 argument, got {}",
+                            args.len()
+                        ))
+                        .with_code("E006")
+                        .with_label(func.span(), "expected 1 argument"));
+                    }
+                    let aty = self.check_expr(&args[0].1)?;
+                    if aty.is_error() {
+                        return Ok(Type::Error);
+                    }
+                    match aty {
+                        Type::List(inner) => match *inner {
+                            Type::Task(result) => return Ok(*result),
+                            other => {
+                                return Err(Diagnostic::error(format!(
+                                    "resolve_first() expects List[Task[T]], got List[{other:?}]"
+                                ))
+                                .with_code("E005")
+                                .with_label(args[0].1.span(), "expected List[Task[T]]"));
+                            }
+                        },
+                        other => {
+                            return Err(Diagnostic::error(format!(
+                                "resolve_first() expects List[Task[T]], got {other:?}"
+                            ))
+                            .with_code("E005")
+                            .with_label(args[0].1.span(), "expected List[Task[T]]"));
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -844,6 +912,20 @@ impl TypeChecker {
                     // inspect the `throws` field of Type::Function, so non-Function
                     // types correctly signal "no throws".
                     "len" | "to_string" | "log" | "print" => Ok(Type::Void),
+                    "resolve_all" => Ok(Type::Function {
+                        param_names: vec!["tasks".into()],
+                        params: vec![Type::List(Box::new(Type::Task(Box::new(Type::Int))))],
+                        ret: Box::new(Type::Void),
+                        throws: Some(Box::new(Type::Custom("CancelledError".into(), Vec::new()))),
+                        suspendable: true,
+                    }),
+                    "resolve_first" => Ok(Type::Function {
+                        param_names: vec!["tasks".into()],
+                        params: vec![Type::List(Box::new(Type::Task(Box::new(Type::Int))))],
+                        ret: Box::new(Type::Void),
+                        throws: Some(Box::new(Type::Custom("CancelledError".into(), Vec::new()))),
+                        suspendable: true,
+                    }),
                     _ => self.env.get_var(name).ok_or_else(|| {
                         let mut diag = Diagnostic::error(format!("Unknown identifier '{}'", name))
                             .with_code("E002")

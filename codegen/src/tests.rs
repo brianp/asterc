@@ -1,10 +1,17 @@
 use fir::lower::Lowerer;
 use fir::module::FirModule;
 use fir::types::FunctionId;
+use std::sync::{Arc, Mutex};
 
 use crate::aot::CraneliftAOT;
+use crate::async_runtime::{
+    AsyncRuntime, BlockingKind, BlockingRequest, CoroutineBody, CoroutineContext, CoroutineStep,
+    GcError, RuntimeTaskState, SegmentedStack, WakeupSource,
+};
 use crate::jit::CraneliftJIT;
-use crate::runtime::runtime_builtin_symbols;
+use crate::runtime::{
+    aster_task_from_i64, aster_task_is_ready, aster_task_resolve_i64, runtime_builtin_symbols,
+};
 use crate::runtime_sigs::RUNTIME_SIGS;
 use crate::runtime_source::c_runtime_source;
 
@@ -27,6 +34,592 @@ fn jit_compile(fir: &FirModule) -> CraneliftJIT {
     let mut jit = CraneliftJIT::new();
     jit.compile_module(fir).expect("JIT compile ok");
     jit
+}
+
+struct ScriptedCoroutine {
+    steps: Vec<CoroutineStep>,
+    log: Arc<Mutex<Vec<&'static str>>>,
+    label: &'static str,
+}
+
+impl ScriptedCoroutine {
+    fn new(
+        label: &'static str,
+        log: Arc<Mutex<Vec<&'static str>>>,
+        steps: Vec<CoroutineStep>,
+    ) -> Self {
+        Self { steps, log, label }
+    }
+}
+
+impl CoroutineBody for ScriptedCoroutine {
+    fn resume(&mut self, cx: &mut CoroutineContext<'_>) -> CoroutineStep {
+        self.log.lock().unwrap().push(self.label);
+        cx.stack()
+            .push_bytes(1)
+            .expect("scripted coroutine stack push");
+        if cx.is_cancelled() {
+            return CoroutineStep::Cancelled;
+        }
+        if self.steps.is_empty() {
+            CoroutineStep::Complete(0)
+        } else {
+            self.steps.remove(0)
+        }
+    }
+}
+
+struct BlockingCoroutine {
+    started: bool,
+}
+
+impl BlockingCoroutine {
+    fn new() -> Self {
+        Self { started: false }
+    }
+}
+
+impl CoroutineBody for BlockingCoroutine {
+    fn resume(&mut self, cx: &mut CoroutineContext<'_>) -> CoroutineStep {
+        if !self.started {
+            self.started = true;
+            return CoroutineStep::Block(BlockingRequest::native(41));
+        }
+        CoroutineStep::Complete(
+            cx.take_blocking_result()
+                .expect("blocking result should be available on resume"),
+        )
+    }
+}
+
+struct DiskCoroutine {
+    started: bool,
+}
+
+impl DiskCoroutine {
+    fn new() -> Self {
+        Self { started: false }
+    }
+}
+
+impl CoroutineBody for DiskCoroutine {
+    fn resume(&mut self, cx: &mut CoroutineContext<'_>) -> CoroutineStep {
+        if !self.started {
+            self.started = true;
+            return CoroutineStep::Block(BlockingRequest::disk(99));
+        }
+        CoroutineStep::Complete(
+            cx.take_blocking_result()
+                .expect("disk result should be available on resume"),
+        )
+    }
+}
+
+struct PollerCoroutine {
+    started: bool,
+}
+
+impl PollerCoroutine {
+    fn new() -> Self {
+        Self { started: false }
+    }
+}
+
+impl CoroutineBody for PollerCoroutine {
+    fn resume(&mut self, cx: &mut CoroutineContext<'_>) -> CoroutineStep {
+        if !self.started {
+            self.started = true;
+            return CoroutineStep::WaitForNetwork(7);
+        }
+        CoroutineStep::Complete(
+            cx.take_network_result()
+                .expect("network result should be available on resume"),
+        )
+    }
+}
+
+#[test]
+fn segmented_stack_growth_keeps_existing_segments_stable() {
+    let mut stack = SegmentedStack::new(16, 64);
+    stack.push_bytes(12).expect("initial stack push");
+    let initial_base = stack.segment_bases()[0];
+
+    stack.push_bytes(24).expect("growth stack push");
+
+    let bases = stack.segment_bases();
+    assert_eq!(bases[0], initial_base);
+    assert_eq!(bases.len(), 2);
+}
+
+#[test]
+fn segmented_stack_rejects_segment_larger_than_max() {
+    let mut stack = SegmentedStack::new(16, 64);
+    assert!(stack.push_bytes(65).is_err());
+}
+
+#[test]
+fn coroutine_yield_requeues_task_and_later_publishes_result() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut runtime = AsyncRuntime::new(1);
+    let task = runtime.bootstrap_main(Box::new(ScriptedCoroutine::new(
+        "main",
+        Arc::clone(&log),
+        vec![CoroutineStep::Yield, CoroutineStep::Complete(42)],
+    )));
+
+    runtime.run_one_tick();
+
+    assert_eq!(runtime.task_state(task), Some(RuntimeTaskState::Running));
+    assert_eq!(runtime.local_queue_len(0), 1);
+
+    let terminal = runtime
+        .await_task_terminal(task)
+        .expect("task reaches terminal state");
+    assert_eq!(terminal, RuntimeTaskState::Ready(42));
+    assert_eq!(log.lock().unwrap().as_slice(), &["main", "main"]);
+}
+
+#[test]
+fn cancelling_runnable_task_publishes_cancelled_terminal_state() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut runtime = AsyncRuntime::new(1);
+    let task = runtime.spawn_external(Box::new(ScriptedCoroutine::new(
+        "cancelled",
+        Arc::clone(&log),
+        vec![CoroutineStep::Complete(99)],
+    )));
+
+    runtime.mark_task_cancelled(task);
+
+    let terminal = runtime
+        .await_task_terminal(task)
+        .expect("task reaches terminal state");
+    assert_eq!(terminal, RuntimeTaskState::Cancelled);
+    assert!(log.lock().unwrap().is_empty());
+}
+
+#[test]
+fn bootstrap_main_runs_before_injected_work() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut runtime = AsyncRuntime::new(2);
+    runtime.bootstrap_main(Box::new(ScriptedCoroutine::new(
+        "main",
+        Arc::clone(&log),
+        vec![CoroutineStep::Complete(1)],
+    )));
+    runtime.spawn_external(Box::new(ScriptedCoroutine::new(
+        "external",
+        Arc::clone(&log),
+        vec![CoroutineStep::Complete(2)],
+    )));
+
+    runtime.run_one_tick();
+
+    assert_eq!(log.lock().unwrap().as_slice(), &["main"]);
+}
+
+#[test]
+fn steal_half_moves_work_from_busy_worker_to_idle_worker() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut runtime = AsyncRuntime::new(2);
+    for _ in 0..4 {
+        runtime.spawn_on_worker(
+            0,
+            Box::new(ScriptedCoroutine::new(
+                "worker0",
+                Arc::clone(&log),
+                vec![CoroutineStep::Complete(1)],
+            )),
+        );
+    }
+
+    let stolen = runtime.steal_half(1, 0);
+
+    assert_eq!(stolen, 2);
+    assert_eq!(runtime.local_queue_len(0), 2);
+    assert_eq!(runtime.local_queue_len(1), 2);
+}
+
+#[test]
+fn failed_coroutine_publishes_failed_terminal_state() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut runtime = AsyncRuntime::new(1);
+    let task = runtime.bootstrap_main(Box::new(ScriptedCoroutine::new(
+        "failed",
+        Arc::clone(&log),
+        vec![CoroutineStep::Fail(7)],
+    )));
+
+    let terminal = runtime
+        .await_task_terminal(task)
+        .expect("task reaches terminal state");
+    assert_eq!(terminal, RuntimeTaskState::Failed(7));
+    assert_eq!(log.lock().unwrap().as_slice(), &["failed"]);
+}
+
+#[test]
+fn poller_and_blocking_wakeups_enqueue_into_global_injector() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut runtime = AsyncRuntime::new(2);
+    let task = runtime.spawn_external(Box::new(ScriptedCoroutine::new(
+        "wakeup",
+        Arc::clone(&log),
+        vec![CoroutineStep::Suspend, CoroutineStep::Complete(1)],
+    )));
+
+    runtime.run_one_tick();
+    assert_eq!(runtime.injector_len(), 0);
+
+    runtime.wake_task(task, WakeupSource::Poller);
+    runtime.wake_task(task, WakeupSource::BlockingPool);
+    runtime.wake_task(task, WakeupSource::Cancellation);
+
+    assert_eq!(runtime.injector_len(), 3);
+}
+
+#[test]
+fn same_worker_wakeup_uses_local_queue() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut runtime = AsyncRuntime::new(2);
+    let task = runtime.spawn_on_worker(
+        1,
+        Box::new(ScriptedCoroutine::new(
+            "local-wakeup",
+            Arc::clone(&log),
+            vec![CoroutineStep::Suspend, CoroutineStep::Complete(1)],
+        )),
+    );
+
+    runtime.run_one_tick();
+    runtime.wake_task(task, WakeupSource::SameWorkerSpawn);
+
+    assert_eq!(runtime.local_queue_len(1), 1);
+    assert_eq!(runtime.injector_len(), 0);
+}
+
+#[test]
+fn reaped_tasks_release_slots_and_stale_handles_stop_resolving() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut runtime = AsyncRuntime::new(1);
+    let first = runtime.bootstrap_main(Box::new(ScriptedCoroutine::new(
+        "first",
+        Arc::clone(&log),
+        vec![CoroutineStep::Complete(1)],
+    )));
+    assert_eq!(
+        runtime.await_task_terminal(first),
+        Some(RuntimeTaskState::Ready(1))
+    );
+    assert_eq!(runtime.reap_task(first), Some(RuntimeTaskState::Ready(1)));
+    assert_eq!(runtime.task_state(first), None);
+
+    let second = runtime.bootstrap_main(Box::new(ScriptedCoroutine::new(
+        "second",
+        Arc::clone(&log),
+        vec![CoroutineStep::Complete(2)],
+    )));
+    assert_eq!(
+        runtime.await_task_terminal(second),
+        Some(RuntimeTaskState::Ready(2))
+    );
+    assert_eq!(runtime.task_state(first), None);
+}
+
+#[test]
+fn blocking_operation_suspends_task_and_enqueues_native_job() {
+    let mut runtime = AsyncRuntime::new(1);
+    let task = runtime.bootstrap_main(Box::new(BlockingCoroutine::new()));
+
+    runtime.run_one_tick();
+
+    assert_eq!(runtime.task_state(task), Some(RuntimeTaskState::Running));
+    assert_eq!(runtime.pending_blocking_job_count(), 1);
+    assert_eq!(
+        runtime.first_pending_blocking_job_kind(),
+        Some(BlockingKind::Native)
+    );
+    assert!(runtime.task_is_suspended(task).expect("task should exist"));
+    assert_eq!(runtime.injector_len(), 0);
+}
+
+#[test]
+fn completing_blocking_job_wakes_task_through_injector_and_publishes_result() {
+    let mut runtime = AsyncRuntime::new(1);
+    let task = runtime.bootstrap_main(Box::new(BlockingCoroutine::new()));
+
+    runtime.run_one_tick();
+    let job = runtime
+        .first_pending_blocking_job()
+        .expect("blocking job should be queued");
+
+    runtime.complete_blocking_job(job, 77);
+
+    assert_eq!(runtime.injector_len(), 1);
+    assert_eq!(
+        runtime.await_task_terminal(task),
+        Some(RuntimeTaskState::Ready(77))
+    );
+}
+
+#[test]
+fn network_wait_registers_with_poller_and_resumes_on_readiness() {
+    let mut runtime = AsyncRuntime::new(1);
+    let task = runtime.bootstrap_main(Box::new(PollerCoroutine::new()));
+
+    runtime.run_one_tick();
+
+    assert_eq!(runtime.pending_network_wait_count(), 1);
+    assert!(runtime.task_is_suspended(task).expect("task should exist"));
+    assert_eq!(runtime.injector_len(), 0);
+
+    let wait = runtime
+        .first_pending_network_wait()
+        .expect("network wait should be registered");
+    runtime.complete_network_wait(wait, 55);
+
+    assert_eq!(runtime.injector_len(), 1);
+    assert_eq!(
+        runtime.await_task_terminal(task),
+        Some(RuntimeTaskState::Ready(55))
+    );
+}
+
+#[test]
+fn disk_requests_route_to_blocking_pool_before_resuming_task() {
+    let mut runtime = AsyncRuntime::new(1);
+    let task = runtime.bootstrap_main(Box::new(DiskCoroutine::new()));
+
+    runtime.run_one_tick();
+
+    assert_eq!(runtime.pending_blocking_job_count(), 1);
+    assert_eq!(
+        runtime.first_pending_blocking_job_kind(),
+        Some(BlockingKind::Disk)
+    );
+    assert!(runtime.task_is_suspended(task).expect("task should exist"));
+
+    let job = runtime
+        .first_pending_blocking_job()
+        .expect("disk job should be queued");
+    runtime.complete_blocking_job(job, 123);
+
+    assert_eq!(
+        runtime.await_task_terminal(task),
+        Some(RuntimeTaskState::Ready(123))
+    );
+}
+
+#[test]
+fn resolve_all_collects_values_in_input_order() {
+    let mut runtime = AsyncRuntime::new(1);
+    let first = runtime.spawn_external(Box::new(ScriptedCoroutine::new(
+        "first",
+        Arc::new(Mutex::new(Vec::new())),
+        vec![CoroutineStep::Complete(20)],
+    )));
+    let second = runtime.spawn_external(Box::new(ScriptedCoroutine::new(
+        "second",
+        Arc::new(Mutex::new(Vec::new())),
+        vec![CoroutineStep::Complete(22)],
+    )));
+
+    let resolved = runtime
+        .resolve_all(&[first, second])
+        .expect("resolve_all should complete both tasks");
+
+    assert_eq!(resolved, vec![20, 22]);
+    assert_eq!(runtime.task_state(first), Some(RuntimeTaskState::Ready(20)));
+    assert_eq!(
+        runtime.task_state(second),
+        Some(RuntimeTaskState::Ready(22))
+    );
+}
+
+#[test]
+fn resolve_all_errors_when_any_task_fails_or_is_cancelled() {
+    let mut runtime = AsyncRuntime::new(1);
+    let failed = runtime.spawn_external(Box::new(ScriptedCoroutine::new(
+        "failed",
+        Arc::new(Mutex::new(Vec::new())),
+        vec![CoroutineStep::Fail(7)],
+    )));
+    let cancelled = runtime.spawn_external(Box::new(ScriptedCoroutine::new(
+        "cancelled",
+        Arc::new(Mutex::new(Vec::new())),
+        vec![CoroutineStep::Complete(1)],
+    )));
+    runtime.mark_task_cancelled(cancelled);
+
+    let failed_result = runtime.resolve_all(&[failed]);
+    let cancelled_result = runtime.resolve_all(&[cancelled]);
+
+    assert_eq!(
+        failed_result,
+        Err(crate::async_runtime::TaskResolveError::Failed(7))
+    );
+    assert_eq!(
+        cancelled_result,
+        Err(crate::async_runtime::TaskResolveError::Cancelled)
+    );
+}
+
+#[test]
+fn resolve_first_returns_winner_and_cancels_losers() {
+    let mut runtime = AsyncRuntime::new(1);
+    let winner = runtime.spawn_external(Box::new(ScriptedCoroutine::new(
+        "winner",
+        Arc::new(Mutex::new(Vec::new())),
+        vec![CoroutineStep::Complete(42)],
+    )));
+    let loser = runtime.spawn_external(Box::new(ScriptedCoroutine::new(
+        "loser",
+        Arc::new(Mutex::new(Vec::new())),
+        vec![CoroutineStep::Yield, CoroutineStep::Complete(99)],
+    )));
+
+    let resolved = runtime
+        .resolve_first(&[winner, loser])
+        .expect("resolve_first should return the first ready task");
+
+    assert_eq!(resolved, 42);
+    assert_eq!(
+        runtime.task_state(winner),
+        Some(RuntimeTaskState::Ready(42))
+    );
+    assert_eq!(runtime.task_state(loser), Some(RuntimeTaskState::Cancelled));
+}
+
+#[test]
+fn resolve_first_surfaces_winner_failure_and_cancels_losers() {
+    let mut runtime = AsyncRuntime::new(1);
+    let failed = runtime.spawn_external(Box::new(ScriptedCoroutine::new(
+        "failed",
+        Arc::new(Mutex::new(Vec::new())),
+        vec![CoroutineStep::Fail(9)],
+    )));
+    let loser = runtime.spawn_external(Box::new(ScriptedCoroutine::new(
+        "loser",
+        Arc::new(Mutex::new(Vec::new())),
+        vec![CoroutineStep::Yield, CoroutineStep::Complete(1)],
+    )));
+
+    let resolved = runtime.resolve_first(&[failed, loser]);
+
+    assert_eq!(
+        resolved,
+        Err(crate::async_runtime::TaskResolveError::Failed(9))
+    );
+    assert_eq!(runtime.task_state(loser), Some(RuntimeTaskState::Cancelled));
+}
+
+#[test]
+fn stop_the_world_gc_waits_for_all_workers_to_reach_safepoints() {
+    let mut runtime = AsyncRuntime::new(2);
+    let unreachable = runtime.allocate_heap_object(Vec::new());
+
+    runtime.request_stop_the_world_collection();
+    runtime.worker_reach_safepoint(0);
+
+    assert_eq!(
+        runtime.collect_garbage(),
+        Err(GcError::WorkersNotSafepointed)
+    );
+
+    runtime.worker_reach_safepoint(1);
+
+    assert_eq!(runtime.collect_garbage(), Ok(1));
+    assert!(!runtime.heap_object_is_live(unreachable));
+}
+
+#[test]
+fn stop_the_world_gc_traces_worker_stack_result_and_task_record_roots() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut runtime = AsyncRuntime::new(2);
+
+    let child = runtime.allocate_heap_object(Vec::new());
+    let worker_root = runtime.allocate_heap_object(Vec::new());
+    let stack_root = runtime.allocate_heap_object(Vec::new());
+    let result_root = runtime.allocate_heap_object(vec![child]);
+    let record_root = runtime.allocate_heap_object(Vec::new());
+    let garbage = runtime.allocate_heap_object(Vec::new());
+
+    runtime.add_worker_root(0, worker_root);
+
+    let suspended = runtime.spawn_on_worker(
+        0,
+        Box::new(ScriptedCoroutine::new(
+            "suspended",
+            Arc::clone(&log),
+            vec![CoroutineStep::Suspend],
+        )),
+    );
+    runtime.run_one_tick();
+    runtime.add_task_stack_root(suspended, stack_root);
+    runtime.add_task_record_root(suspended, record_root);
+
+    let completed = runtime.spawn_external(Box::new(ScriptedCoroutine::new(
+        "completed",
+        Arc::clone(&log),
+        vec![CoroutineStep::Complete(1)],
+    )));
+    assert_eq!(
+        runtime.await_task_terminal(completed),
+        Some(RuntimeTaskState::Ready(1))
+    );
+    runtime.store_task_result_root(completed, result_root);
+
+    runtime.request_stop_the_world_collection();
+    runtime.worker_reach_safepoint(0);
+    runtime.worker_reach_safepoint(1);
+
+    assert_eq!(runtime.collect_garbage(), Ok(1));
+    assert!(runtime.heap_object_is_live(worker_root));
+    assert!(runtime.heap_object_is_live(stack_root));
+    assert!(runtime.heap_object_is_live(result_root));
+    assert!(runtime.heap_object_is_live(record_root));
+    assert!(runtime.heap_object_is_live(child));
+    assert!(!runtime.heap_object_is_live(garbage));
+}
+
+#[test]
+fn stop_the_world_gc_traces_stack_roots_from_multiple_suspended_tasks() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut runtime = AsyncRuntime::new(2);
+
+    let first_root = runtime.allocate_heap_object(Vec::new());
+    let second_root = runtime.allocate_heap_object(Vec::new());
+    let garbage = runtime.allocate_heap_object(Vec::new());
+
+    let first = runtime.spawn_on_worker(
+        0,
+        Box::new(ScriptedCoroutine::new(
+            "first-suspended",
+            Arc::clone(&log),
+            vec![CoroutineStep::Suspend],
+        )),
+    );
+    let second = runtime.spawn_on_worker(
+        1,
+        Box::new(ScriptedCoroutine::new(
+            "second-suspended",
+            Arc::clone(&log),
+            vec![CoroutineStep::Suspend],
+        )),
+    );
+
+    runtime.run_one_tick();
+    runtime.run_one_tick();
+    runtime.add_task_stack_root(first, first_root);
+    runtime.add_task_stack_root(second, second_root);
+
+    runtime.request_stop_the_world_collection();
+    runtime.worker_reach_safepoint(0);
+    runtime.worker_reach_safepoint(1);
+
+    assert_eq!(runtime.collect_garbage(), Ok(1));
+    assert!(runtime.heap_object_is_live(first_root));
+    assert!(runtime.heap_object_is_live(second_root));
+    assert!(!runtime.heap_object_is_live(garbage));
 }
 
 #[test]
@@ -54,6 +647,44 @@ fn jit_runtime_symbols_cover_runtime_signatures() {
             "JIT runtime registration is missing {name} from the shared symbol table"
         );
     }
+}
+
+#[test]
+fn runtime_task_handle_reports_ready_and_resolves_value() {
+    let task = aster_task_from_i64(42, 0);
+    assert_eq!(aster_task_is_ready(task), 1);
+    assert_eq!(aster_task_resolve_i64(task), 42);
+}
+
+#[test]
+fn bool_returning_function_works_in_if_condition() {
+    let src = "\
+def ready() -> Bool
+  true
+
+def main() throws CancelledError -> Int
+  if ready()
+    return 1
+  else
+    return 0
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 1);
+}
+
+#[test]
+fn bool_returning_function_returns_true_via_jit_pointer() {
+    let src = "\
+def ready() -> Bool
+  true
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.get_function_ptr(FunctionId(0)).unwrap();
+    let ready: fn() -> i8 = unsafe { std::mem::transmute(ptr) };
+    assert_eq!(ready(), 1);
 }
 
 // ===========================================================================
@@ -216,7 +847,7 @@ fn float_multiply() {
 fn float_comparison() {
     // 3.14 > 2.71 should return true (1)
     let src = "\
-def main() -> Int
+def main() throws CancelledError -> Int
   if 3.14 > 2.71
     return 1
   else
@@ -431,7 +1062,7 @@ fn call_another_function() {
 def double(x: Int) -> Int
   x * 2
 
-def main() -> Int
+def main() throws CancelledError -> Int
   double(x: 21)
 ";
     let fir = compile_and_run(src);
@@ -1084,6 +1715,198 @@ def main() throws CancelledError -> Int
     let jit = jit_compile(&fir);
     let result = jit.call_i64(fir.entry.unwrap());
     assert_eq!(result, 42);
+}
+
+#[test]
+fn async_task_is_not_ready_before_worker_runs() {
+    let src = "\
+def compute() -> Int
+  42
+
+def main() -> Int
+  let t: Task[Int] = async compute()
+  if t.is_ready()
+    return 1
+  else
+    return 0
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 0);
+}
+
+#[test]
+fn async_task_cancel_keeps_terminal_task_ready() {
+    let src = "\
+def compute() -> Int
+  42
+
+def main() -> Int
+  let t: Task[Int] = async compute()
+  t.cancel()
+  if t.is_ready()
+    return 1
+  else
+    return 0
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 1);
+}
+
+#[test]
+fn async_task_wait_cancel_keeps_terminal_task_ready() {
+    let src = "\
+def compute() -> Int
+  42
+
+def main() -> Int
+  let t: Task[Int] = async compute()
+  t.wait_cancel()
+  if t.is_ready()
+    return 1
+  else
+    return 0
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 1);
+}
+
+#[test]
+fn resolve_after_wait_cancel_surfaces_cancelled_state() {
+    let src = "\
+def compute() -> Int
+  let i: Int = 0
+  let total: Int = 0
+  while i < 20000000
+    total = total + i
+    i = i + 1
+  42
+
+def main() -> Int
+  let t: Task[Int] = async compute()
+  t.wait_cancel()
+  resolve t!.catch
+    _ -> 99
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 99);
+}
+
+#[test]
+fn async_resolve_all_returns_list_values() {
+    let src = "\
+def fetch(value: Int) -> Int
+  value
+
+def main() throws CancelledError -> Int
+  let tasks: List[Task[Int]] = [async fetch(value: 20), async fetch(value: 22)]
+  let values: List[Int] = resolve_all(tasks: tasks)!
+  values[0] + values[1]
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn async_resolve_preserves_gc_managed_list_result() {
+    let src = "\
+def make_numbers() -> List[Int]
+  [10, 20, 12]
+
+def main() throws CancelledError -> Int
+  let t: Task[List[Int]] = async make_numbers()
+  let values: List[Int] = resolve t!
+  values.len() + values[1]
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 23);
+}
+
+#[test]
+fn async_resolve_first_returns_fastest_value() {
+    let src = "\
+def slow() -> Int
+  let i: Int = 0
+  let total: Int = 0
+  while i < 20000000
+    total = total + i
+    i = i + 1
+  10
+
+def fast() -> Int
+  42
+
+def main() throws CancelledError -> Int
+  let tasks: List[Task[Int]] = [async slow(), async fast()]
+  resolve_first(tasks: tasks)!
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn async_wait_cancel_publishes_cancelled_terminal_state() {
+    let src = "\
+def slow() -> Int
+  let i: Int = 0
+  let total: Int = 0
+  while i < 20000000
+    total = total + i
+    i = i + 1
+  42
+
+def main() throws CancelledError -> Int
+  let t: Task[Int] = async slow()
+  t.wait_cancel()
+  resolve t!.catch
+    _ -> 99
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 99);
+}
+
+#[test]
+fn async_scope_exit_cancels_unresolved_tasks() {
+    let src = "\
+def fast() -> Int
+  0
+
+def slow() -> Int
+  let i: Int = 0
+  let total: Int = 0
+  while i < 20000000
+    total = total + i
+    i = i + 1
+  42
+
+def main() throws CancelledError -> Int
+  let t: Task[Int] = async fast()
+  async scope
+    t = async slow()
+  let blocker: Task[Int] = async slow()
+  let waited = resolve blocker!
+  resolve t!.catch
+    _ -> 99
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 99);
 }
 
 // ===========================================================================
@@ -2730,15 +3553,15 @@ fn coverage_all_expr_variants() {
         ("Match", "m9_match_int_literal"),
         ("StringInterpolation", "m13_string_interpolation"),
         ("Map", "e2e_map_literal_with_entries"),
-        ("AsyncCall", "m15_async_eager_call"),
+        ("AsyncCall", "async_call_and_resolve"),
         ("Resolve", "m16_resolve_identity"),
         ("Propagate", "e2e_error_or_fallback"),
         ("Throw", "e2e_throw_returns_from_function"),
         ("ErrorOr", "e2e_error_or_fallback"),
         ("ErrorOrElse", "e2e_error_or_else_fallback"),
         ("ErrorCatch", "e2e_error_catch_fallback"),
-        ("DetachedCall", "e2e_detached_async_executes_eagerly"),
-        ("AsyncScope", "e2e_async_scope_executes_sequentially"),
+        ("DetachedCall", "e2e_detached_async_executes"),
+        ("AsyncScope", "e2e_async_scope_resolves_tasks"),
     ];
 
     // Verify the count matches the actual Expr enum variant count.
@@ -3268,12 +4091,12 @@ def main() -> Int
 }
 
 // ===========================================================================
-// Async (eager semantics)
+// Async
 // ===========================================================================
 
 #[test]
-fn e2e_detached_async_executes_eagerly() {
-    // detached async f() should call f() eagerly (result discarded, no crash)
+fn e2e_detached_async_executes() {
+    // detached async f() should execute without materializing a task handle
     let src = "\
 def work() -> Int
   42
@@ -3289,8 +4112,8 @@ def main() -> Int
 }
 
 #[test]
-fn e2e_async_scope_executes_sequentially() {
-    // async calls with resolve — eager execution returns the value
+fn e2e_async_scope_resolves_tasks() {
+    // async scope keeps spawned tasks explicit and resolve consumes the handles
     let src = "\
 def fetch_a() -> Int
   20

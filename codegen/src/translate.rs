@@ -18,7 +18,9 @@ use crate::types::{fir_type_to_clif, is_float};
 pub struct TranslationState {
     pub locals: HashMap<LocalId, Variable>,
     pub local_types: HashMap<LocalId, FirType>,
+    pub function_params: HashMap<FunctionId, Vec<FirType>>,
     pub func_refs: HashMap<FunctionId, ir::FuncRef>,
+    pub async_entry_refs: HashMap<FunctionId, ir::FuncRef>,
     pub runtime_refs: HashMap<String, ir::FuncRef>,
     pub string_data: HashMap<String, (ir::GlobalValue, usize)>,
     pub loop_exit: Option<ir::Block>,
@@ -36,14 +38,18 @@ pub struct TranslationState {
 
 impl TranslationState {
     pub fn new(
+        function_params: HashMap<FunctionId, Vec<FirType>>,
         func_refs: HashMap<FunctionId, ir::FuncRef>,
+        async_entry_refs: HashMap<FunctionId, ir::FuncRef>,
         runtime_refs: HashMap<String, ir::FuncRef>,
         string_data: HashMap<String, (ir::GlobalValue, usize)>,
     ) -> Self {
         Self {
             locals: HashMap::new(),
             local_types: HashMap::new(),
+            function_params,
             func_refs,
+            async_entry_refs,
             runtime_refs,
             string_data,
             loop_exit: None,
@@ -54,6 +60,58 @@ impl TranslationState {
             gc_frame_slot: None,
         }
     }
+}
+
+fn pack_async_arg(
+    builder: &mut FunctionBuilder,
+    state: &mut TranslationState,
+    arg: &FirExpr,
+    ty: &FirType,
+) -> Value {
+    let value = translate_expr(builder, state, arg);
+    match ty {
+        FirType::F64 => builder
+            .ins()
+            .bitcast(types::I64, ir::MemFlags::new(), value),
+        FirType::Bool => builder.ins().uextend(types::I64, value),
+        _ => value,
+    }
+}
+
+fn unpack_async_result(builder: &mut FunctionBuilder, raw: Value, ty: &FirType) -> Value {
+    match ty {
+        FirType::F64 => builder.ins().bitcast(types::F64, ir::MemFlags::new(), raw),
+        FirType::Bool => builder.ins().ireduce(types::I8, raw),
+        _ => raw,
+    }
+}
+
+fn lower_async_call_packet(
+    builder: &mut FunctionBuilder,
+    state: &mut TranslationState,
+    args: &[FirExpr],
+    param_types: &[FirType],
+) -> Value {
+    let size = (args.len() * 8) as i64;
+    let packet_ptr = if let Some(&alloc_ref) = state.runtime_refs.get("aster_alloc") {
+        let alloc_size = builder.ins().iconst(types::I64, size.max(1));
+        let call = builder.ins().call(alloc_ref, &[alloc_size]);
+        builder.inst_results(call)[0]
+    } else {
+        builder.ins().iconst(types::I64, 0)
+    };
+
+    for (index, (arg, ty)) in args.iter().zip(param_types.iter()).enumerate() {
+        let packed = pack_async_arg(builder, state, arg, ty);
+        let offset = i32::try_from(index * 8).expect("async call packet offset fits in i32");
+        builder.ins().store(
+            ir::MemFlags::new(),
+            packed,
+            packet_ptr,
+            Offset32::new(offset),
+        );
+    }
+    packet_ptr
 }
 
 /// Pre-assign GC root slot offsets for Ptr-typed Let bindings in a function body.
@@ -82,6 +140,9 @@ pub fn assign_body_gc_root_slots(
                 assign_body_gc_root_slots(else_body, state, next_root_idx);
             }
             FirStmt::While { body, .. } => {
+                assign_body_gc_root_slots(body, state, next_root_idx);
+            }
+            FirStmt::AsyncScope { body, .. } => {
                 assign_body_gc_root_slots(body, state, next_root_idx);
             }
             _ => {}
@@ -195,13 +256,14 @@ fn translate_stmt(builder: &mut FunctionBuilder, state: &mut TranslationState, s
             else_body,
         } => {
             let cond_val = translate_expr(builder, state, cond);
+            let branch_cond = normalize_branch_condition(builder, cond_val);
             let then_block = builder.create_block();
             let else_block = builder.create_block();
             let merge_block = builder.create_block();
 
             builder
                 .ins()
-                .brif(cond_val, then_block, &[], else_block, &[]);
+                .brif(branch_cond, then_block, &[], else_block, &[]);
 
             builder.switch_to_block(then_block);
             builder.seal_block(then_block);
@@ -239,9 +301,10 @@ fn translate_stmt(builder: &mut FunctionBuilder, state: &mut TranslationState, s
 
             builder.switch_to_block(header_block);
             let cond_val = translate_expr(builder, state, cond);
+            let branch_cond = normalize_branch_condition(builder, cond_val);
             builder
                 .ins()
-                .brif(cond_val, body_block, &[], exit_block, &[]);
+                .brif(branch_cond, body_block, &[], exit_block, &[]);
 
             builder.switch_to_block(body_block);
             builder.seal_block(body_block);
@@ -258,6 +321,25 @@ fn translate_stmt(builder: &mut FunctionBuilder, state: &mut TranslationState, s
             state.loop_exit = saved_exit;
             state.loop_header = saved_header;
             state.terminated = false; // while exit is always reachable
+        }
+
+        FirStmt::AsyncScope { scope, body } => {
+            let scope_var = builder.declare_var(types::I64);
+            let scope_value =
+                if let Some(&enter_ref) = state.runtime_refs.get("aster_async_scope_enter") {
+                    let call = builder.ins().call(enter_ref, &[]);
+                    builder.inst_results(call)[0]
+                } else {
+                    builder.ins().iconst(types::I64, 0)
+                };
+            builder.def_var(scope_var, scope_value);
+            state.locals.insert(*scope, scope_var);
+            state.local_types.insert(*scope, FirType::Ptr);
+            translate_body(builder, state, body);
+            if let Some(&exit_ref) = state.runtime_refs.get("aster_async_scope_exit") {
+                let scope_handle = builder.use_var(scope_var);
+                builder.ins().call(exit_ref, &[scope_handle]);
+            }
         }
 
         FirStmt::Break => {
@@ -348,20 +430,85 @@ fn translate_expr(
             }
         }
 
-        FirExpr::Spawn { func, args, .. } | FirExpr::BlockOn { func, args, .. } => {
-            if let Some(&func_ref) = state.func_refs.get(func) {
-                let arg_vals: Vec<Value> = args
-                    .iter()
-                    .map(|a| translate_expr(builder, state, a))
-                    .collect();
-                let call = builder.ins().call(func_ref, &arg_vals);
+        FirExpr::Spawn {
+            func, args, scope, ..
+        } => {
+            let entry_ref = state.async_entry_refs.get(func).copied();
+            let param_types = state.function_params.get(func).cloned();
+            let spawn_ref = state.runtime_refs.get("aster_task_spawn").copied();
+            if let (Some(entry_ref), Some(param_types), Some(spawn_ref)) =
+                (entry_ref, param_types, spawn_ref)
+            {
+                let packet_ptr = lower_async_call_packet(builder, state, args, &param_types);
+                let entry_ptr = builder.ins().func_addr(types::I64, entry_ref);
+                let scope_ptr = scope
+                    .and_then(|scope_id| state.locals.get(&scope_id).copied())
+                    .map(|var| builder.use_var(var))
+                    .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+                let call = builder
+                    .ins()
+                    .call(spawn_ref, &[entry_ptr, packet_ptr, scope_ptr]);
                 builder.inst_results(call)[0]
             } else {
                 builder.ins().iconst(types::I64, 0)
             }
         }
 
-        FirExpr::ResolveTask { task, .. } => translate_expr(builder, state, task),
+        FirExpr::BlockOn { func, args, ret_ty } => {
+            let entry_ref = state.async_entry_refs.get(func).copied();
+            let param_types = state.function_params.get(func).cloned();
+            let block_on_ref = state.runtime_refs.get("aster_task_block_on").copied();
+            if let (Some(entry_ref), Some(param_types), Some(block_on_ref)) =
+                (entry_ref, param_types, block_on_ref)
+            {
+                let packet_ptr = lower_async_call_packet(builder, state, args, &param_types);
+                let entry_ptr = builder.ins().func_addr(types::I64, entry_ref);
+                let call = builder.ins().call(block_on_ref, &[entry_ptr, packet_ptr]);
+                let raw = builder.inst_results(call)[0];
+                unpack_async_result(builder, raw, ret_ty)
+            } else {
+                builder.ins().iconst(types::I64, 0)
+            }
+        }
+
+        FirExpr::ResolveTask { task, ret_ty } => {
+            let task_val = translate_expr(builder, state, task);
+            let resolve_name = task_resolve_runtime_name(ret_ty);
+            if let Some(&resolve_ref) = state.runtime_refs.get(resolve_name) {
+                let call = builder.ins().call(resolve_ref, &[task_val]);
+                let results = builder.inst_results(call);
+                if !results.is_empty() {
+                    results[0]
+                } else {
+                    builder.ins().iconst(types::I64, 0)
+                }
+            } else {
+                builder.ins().iconst(types::I64, 0)
+            }
+        }
+
+        FirExpr::CancelTask { task } => {
+            let task_val = translate_expr(builder, state, task);
+            if let Some(&cancel_ref) = state.runtime_refs.get("aster_task_cancel") {
+                builder.ins().call(cancel_ref, &[task_val]);
+            }
+            builder.ins().iconst(types::I64, 0)
+        }
+
+        FirExpr::WaitCancel { task } => {
+            let task_val = translate_expr(builder, state, task);
+            if let Some(&wait_ref) = state.runtime_refs.get("aster_task_wait_cancel") {
+                builder.ins().call(wait_ref, &[task_val]);
+            }
+            builder.ins().iconst(types::I64, 0)
+        }
+
+        FirExpr::Safepoint => {
+            if let Some(&safepoint_ref) = state.runtime_refs.get("aster_safepoint") {
+                builder.ins().call(safepoint_ref, &[]);
+            }
+            builder.ins().iconst(types::I64, 0)
+        }
 
         FirExpr::RuntimeCall { name, args, .. } => {
             translate_runtime_call(builder, state, name, args)
@@ -794,6 +941,16 @@ fn translate_runtime_call(
     }
 }
 
+fn normalize_branch_condition(builder: &mut FunctionBuilder, cond: Value) -> Value {
+    let ty = builder.func.dfg.value_type(cond);
+    if ty == types::I8 || ty == types::I16 || ty == types::I32 || ty == types::I64 {
+        let zero = builder.ins().iconst(ty, 0);
+        builder.ins().icmp(IntCC::NotEqual, cond, zero)
+    } else {
+        cond
+    }
+}
+
 fn infer_operand_type(_state: &TranslationState, expr: &FirExpr) -> FirType {
     match expr {
         FirExpr::IntLit(_) => FirType::I64,
@@ -808,6 +965,9 @@ fn infer_operand_type(_state: &TranslationState, expr: &FirExpr) -> FirType {
         FirExpr::Spawn { ret_ty, .. } => ret_ty.clone(),
         FirExpr::BlockOn { ret_ty, .. } => ret_ty.clone(),
         FirExpr::ResolveTask { ret_ty, .. } => ret_ty.clone(),
+        FirExpr::CancelTask { .. } | FirExpr::WaitCancel { .. } | FirExpr::Safepoint => {
+            FirType::Void
+        }
         FirExpr::RuntimeCall { ret_ty, .. } => ret_ty.clone(),
         FirExpr::FieldGet { ty, .. } => ty.clone(),
         FirExpr::Construct { ty, .. } => ty.clone(),
@@ -821,5 +981,13 @@ fn infer_operand_type(_state: &TranslationState, expr: &FirExpr) -> FirType {
         FirExpr::TagWrap { ty, .. } => ty.clone(),
         FirExpr::TagUnwrap { ty, .. } => ty.clone(),
         FirExpr::TagCheck { .. } => FirType::Bool,
+    }
+}
+
+fn task_resolve_runtime_name(result_ty: &FirType) -> &'static str {
+    match result_ty {
+        FirType::F64 => "aster_task_resolve_f64",
+        FirType::Bool => "aster_task_resolve_i8",
+        _ => "aster_task_resolve_i64",
     }
 }

@@ -296,6 +296,7 @@ fn cmd_build(opts: &BuildOptions) {
         };
         let status = std::process::Command::new("cc")
             .args(cc_flags)
+            .arg("-pthread")
             .arg(runtime_c.to_string_lossy().as_ref())
             .arg("-o")
             .arg(runtime_o.to_string_lossy().as_ref())
@@ -327,6 +328,7 @@ fn cmd_build(opts: &BuildOptions) {
     let status = std::process::Command::new("cc")
         .arg(obj_path.to_string_lossy().as_ref())
         .arg(runtime_o.to_string_lossy().as_ref())
+        .arg("-pthread")
         .arg("-o")
         .arg(&final_output)
         .status();

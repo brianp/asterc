@@ -539,7 +539,7 @@ impl Parser {
             ret_type: ret,
             body,
             generic_params,
-            throws,
+            throws: throws.map(Box::new),
             type_constraints,
             defaults: Box::new(defaults),
             span: lambda_span,

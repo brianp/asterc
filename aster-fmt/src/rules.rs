@@ -528,7 +528,7 @@ fn format_function_def(
     ret_type: &Type,
     body: &[Stmt],
     generic_params: &Option<Vec<String>>,
-    throws: &Option<Type>,
+    throws: &Option<Box<Type>>,
     type_constraints: &[(String, Vec<TypeConstraint>)],
     defaults: &[Option<Expr>],
     is_public: bool,
@@ -580,7 +580,7 @@ fn format_function_def(
     header.push(text(format!("({})", packed)));
 
     // throws comes BEFORE -> in Aster syntax
-    if let Some(throw_ty) = throws {
+    if let Some(throw_ty) = throws.as_deref() {
         header.push(text(" throws "));
         header.push(format_type(throw_ty));
     }
@@ -1216,7 +1216,7 @@ fn format_lambda(
     ret_type: &Type,
     body: &[Stmt],
     _generic_params: &Option<Vec<String>>,
-    _throws: &Option<Type>,
+    _throws: &Option<Box<Type>>,
     _type_constraints: &[(String, Vec<TypeConstraint>)],
     defaults: &[Option<Expr>],
     config: &FormatConfig,

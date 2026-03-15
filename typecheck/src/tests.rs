@@ -28,6 +28,20 @@ fn err_msg(r: Result<Type, ast::Diagnostic>) -> String {
     r.unwrap_err().to_string()
 }
 
+fn module_err(src: &str) -> String {
+    let tokens = lexer::lex(src).expect("lex ok");
+    let mut parser = parser::Parser::new(tokens);
+    let module = parser.parse_module("test").expect("parse ok");
+    let mut tc = TypeChecker::new();
+    tc.check_module(&module).unwrap_err().to_string()
+}
+
+fn module_ok(src: &str) -> ast::Module {
+    let tokens = lexer::lex(src).expect("lex ok");
+    let mut parser = parser::Parser::new(tokens);
+    parser.parse_module("test").expect("parse ok")
+}
+
 // ─── Core: let, lambda, call, if, class ─────────────────────────────
 
 #[test]
@@ -257,6 +271,111 @@ fn binary_add_string_string() {
         .unwrap(),
         Type::String
     );
+}
+
+#[test]
+fn task_resolve_rejects_detectable_double_consumption() {
+    let src = "\
+def fetch() -> Int
+  42
+
+def main() throws CancelledError -> Int
+  let t: Task[Int] = async fetch()
+  let first = resolve t!
+  let second = resolve t!
+  second
+";
+    let err = module_err(src);
+    assert!(err.contains("Task 't' is already consumed"));
+}
+
+#[test]
+fn task_resolve_inside_async_scope_marks_binding_consumed() {
+    let src = "\
+def fetch() -> Int
+  42
+
+def main() throws CancelledError -> Int
+  let t: Task[Int] = async fetch()
+  async scope
+    let first = resolve t!
+  let second = resolve t!
+  second
+";
+    let err = module_err(src);
+    assert!(err.contains("Task 't' is already consumed"));
+}
+
+#[test]
+fn plain_call_rejects_suspendability_inferred_from_nested_branch() {
+    let src = "\
+def fetch() -> Int
+  42
+
+def parent() -> Int
+  if true
+    async fetch()
+  7
+
+def main() -> Int
+  parent()
+";
+    let err = module_err(src);
+    assert!(err.contains("blocking parent()") || err.contains("async parent()"));
+}
+
+#[test]
+fn resolve_all_returns_list_of_task_results() {
+    let src = "\
+def fetch() -> Int
+  42
+
+def main() throws CancelledError -> List[Int]
+  let tasks: List[Task[Int]] = [async fetch()]
+  resolve_all(tasks: tasks)!
+";
+    let module = module_ok(src);
+    let mut tc = TypeChecker::new();
+    tc.check_module(&module).expect("typecheck ok");
+}
+
+#[test]
+fn resolve_first_returns_task_result_type() {
+    let src = "\
+def fetch() -> Int
+  42
+
+def main() throws CancelledError -> Int
+  let tasks: List[Task[Int]] = [async fetch()]
+  resolve_first(tasks: tasks)!
+";
+    let module = module_ok(src);
+    let mut tc = TypeChecker::new();
+    tc.check_module(&module).expect("typecheck ok");
+}
+
+#[test]
+fn resolve_all_rejects_non_task_lists() {
+    let src = "\
+def main() throws CancelledError -> List[Int]
+  let values: List[Int] = [1, 2]
+  resolve_all(tasks: values)!
+";
+    let err = module_err(src);
+    assert!(err.contains("resolve_all"));
+    assert!(err.contains("Task"));
+}
+
+#[test]
+fn resolve_first_rejects_non_task_lists() {
+    let src = "\
+def main() throws CancelledError -> Int
+  let values: List[Int] = [1, 2]
+  resolve_first(tasks: values)!
+";
+    let err = module_err(src);
+    assert!(err.contains("resolve_first"));
+    assert!(err.contains("Task"));
 }
 
 #[test]

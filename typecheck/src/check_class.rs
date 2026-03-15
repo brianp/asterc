@@ -654,7 +654,7 @@ impl TypeChecker {
                 ret_type: resolved_ret,
                 body: body.clone(),
                 generic_params: generic_params.clone(),
-                throws: resolved_throws,
+                throws: resolved_throws.map(Box::new),
                 type_constraints: type_constraints.clone(),
                 defaults: defaults.clone(),
                 span: *span,

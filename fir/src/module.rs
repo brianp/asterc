@@ -35,6 +35,7 @@ impl FirModule {
                 ret_type: FirType::Void,
                 body: vec![],
                 is_entry: false,
+                suspendable: false,
             });
         }
         self.functions[idx] = func;
@@ -85,6 +86,7 @@ pub struct FirFunction {
     pub ret_type: FirType,
     pub body: Vec<FirStmt>,
     pub is_entry: bool,
+    pub suspendable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

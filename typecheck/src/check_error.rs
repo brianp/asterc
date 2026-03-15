@@ -3,6 +3,23 @@ use ast::{Diagnostic, Expr, Type};
 use crate::typechecker::TypeChecker;
 
 impl TypeChecker {
+    fn mark_task_consumed(&mut self, expr: &Expr) -> Result<(), Diagnostic> {
+        let Expr::Ident(name, span) = expr else {
+            return Ok(());
+        };
+        if !matches!(self.env.get_var(name), Some(Type::Task(_))) {
+            return Ok(());
+        }
+        if self.consumed_tasks.insert(name.clone()) {
+            return Ok(());
+        }
+        Err(
+            Diagnostic::error(format!("Task '{}' is already consumed by resolve", name))
+                .with_code("E012")
+                .with_label(*span, "task handles are single-consumer"),
+        )
+    }
+
     pub(crate) fn check_propagate(&mut self, inner: &Expr) -> Result<Type, Diagnostic> {
         // Handle resolve expr! — resolve on Task[T] propagates CancelledError
         if let Expr::Resolve { expr, .. } = inner {
@@ -28,6 +45,7 @@ impl TypeChecker {
                     .with_code("E013")
                     .with_label(inner.span(), "incompatible error type"));
                 }
+                self.mark_task_consumed(expr)?;
                 return Ok(*inner_ty);
             } else {
                 return Err(Diagnostic::error(format!(

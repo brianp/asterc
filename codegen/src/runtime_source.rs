@@ -3,6 +3,8 @@ pub const C_RUNTIME_SOURCE: &str = r#"
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <pthread.h>
+#include <sched.h>
 
 void* aster_alloc(int64_t size) {
     if (size == 0) return (void*)8; /* aligned dangling */
@@ -206,7 +208,7 @@ int64_t aster_map_get(void* handle, int64_t key) {
     return 0;
 }
 
-static int aster_error_flag = 0;
+static _Thread_local int aster_error_flag = 0;
 
 void aster_error_set(void) { aster_error_flag = 1; }
 
@@ -219,6 +221,315 @@ int8_t aster_error_check(void) {
 void aster_panic(void) {
     fprintf(stderr, "aster: uncaught error\n");
     abort();
+}
+
+void aster_safepoint(void) {}
+
+typedef struct AsterTask AsterTask;
+typedef struct AsterAsyncScope AsterAsyncScope;
+
+struct AsterTask {
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    int64_t state;
+    int64_t consumed;
+    int64_t payload;
+    int64_t cancel_requested;
+    int64_t entry_ptr;
+    int64_t args_ptr;
+};
+
+struct AsterAsyncScope {
+    pthread_mutex_t mu;
+    int64_t len;
+    int64_t cap;
+    AsterTask** tasks;
+};
+
+enum {
+    ASTER_TASK_QUEUED = 0,
+    ASTER_TASK_RUNNING = 1,
+    ASTER_TASK_READY = 2,
+    ASTER_TASK_FAILED = 3,
+    ASTER_TASK_CANCELLED = 4
+};
+
+static int64_t aster_task_wait_terminal(AsterTask* task) {
+    pthread_mutex_lock(&task->mu);
+    while (task->state == ASTER_TASK_QUEUED || task->state == ASTER_TASK_RUNNING) {
+        pthread_cond_wait(&task->cv, &task->mu);
+    }
+    int64_t state = task->state;
+    pthread_mutex_unlock(&task->mu);
+    return state;
+}
+
+static void* aster_task_runner(void* raw_task) {
+    AsterTask* task = (AsterTask*)raw_task;
+    pthread_mutex_lock(&task->mu);
+    if (task->cancel_requested) {
+        task->state = ASTER_TASK_CANCELLED;
+        pthread_cond_broadcast(&task->cv);
+        pthread_mutex_unlock(&task->mu);
+        return 0;
+    }
+    task->state = ASTER_TASK_RUNNING;
+    int64_t entry_ptr = task->entry_ptr;
+    int64_t args_ptr = task->args_ptr;
+    pthread_mutex_unlock(&task->mu);
+
+    int64_t (*entry)(const void*) = (int64_t (*)(const void*))entry_ptr;
+    aster_error_check();
+    int64_t value = entry((const void*)args_ptr);
+    int8_t failed = aster_error_check();
+
+    pthread_mutex_lock(&task->mu);
+    if (task->cancel_requested) {
+        task->state = ASTER_TASK_CANCELLED;
+    } else if (failed) {
+        task->state = ASTER_TASK_FAILED;
+        task->payload = value;
+    } else {
+        task->state = ASTER_TASK_READY;
+        task->payload = value;
+    }
+    pthread_cond_broadcast(&task->cv);
+    pthread_mutex_unlock(&task->mu);
+    return 0;
+}
+
+static void aster_scope_register(AsterAsyncScope* scope, AsterTask* task) {
+    if (!scope) return;
+    pthread_mutex_lock(&scope->mu);
+    if (scope->len >= scope->cap) {
+        int64_t next_cap = scope->cap == 0 ? 4 : scope->cap * 2;
+        AsterTask** next = (AsterTask**)realloc(scope->tasks, (size_t)(next_cap * (int64_t)sizeof(AsterTask*)));
+        if (!next) {
+            fprintf(stderr, "out of memory\n");
+            abort();
+        }
+        scope->tasks = next;
+        scope->cap = next_cap;
+    }
+    scope->tasks[scope->len++] = task;
+    pthread_mutex_unlock(&scope->mu);
+}
+
+void* aster_async_scope_enter(void) {
+    AsterAsyncScope* scope = (AsterAsyncScope*)aster_alloc((int64_t)sizeof(AsterAsyncScope));
+    pthread_mutex_init(&scope->mu, 0);
+    scope->len = 0;
+    scope->cap = 0;
+    scope->tasks = 0;
+    return scope;
+}
+
+void aster_async_scope_exit(void* scope_ptr) {
+    if (!scope_ptr) return;
+    AsterAsyncScope* scope = (AsterAsyncScope*)scope_ptr;
+    pthread_mutex_lock(&scope->mu);
+    int64_t len = scope->len;
+    AsterTask** tasks = scope->tasks;
+    scope->len = 0;
+    scope->cap = 0;
+    scope->tasks = 0;
+    pthread_mutex_unlock(&scope->mu);
+
+    for (int64_t i = 0; i < len; i++) {
+        AsterTask* task = tasks[i];
+        if (!task) continue;
+        pthread_mutex_lock(&task->mu);
+        task->cancel_requested = 1;
+        if (task->state == ASTER_TASK_QUEUED) {
+            task->state = ASTER_TASK_CANCELLED;
+            pthread_cond_broadcast(&task->cv);
+        }
+        pthread_mutex_unlock(&task->mu);
+    }
+    for (int64_t i = 0; i < len; i++) {
+        if (tasks[i]) aster_task_wait_terminal(tasks[i]);
+    }
+    free(tasks);
+}
+
+static void* aster_task_new_raw(int64_t payload, int8_t failed) {
+    AsterTask* task = (AsterTask*)aster_alloc((int64_t)sizeof(AsterTask));
+    pthread_mutex_init(&task->mu, 0);
+    pthread_cond_init(&task->cv, 0);
+    task->state = failed ? ASTER_TASK_FAILED : ASTER_TASK_READY;
+    task->consumed = 0;
+    task->payload = payload;
+    task->cancel_requested = 0;
+    task->entry_ptr = 0;
+    task->args_ptr = 0;
+    return task;
+}
+
+int64_t aster_task_spawn(int64_t entry_ptr, int64_t args_ptr, int64_t scope_ptr) {
+    AsterTask* task = (AsterTask*)aster_alloc((int64_t)sizeof(AsterTask));
+    pthread_mutex_init(&task->mu, 0);
+    pthread_cond_init(&task->cv, 0);
+    task->state = ASTER_TASK_QUEUED;
+    task->consumed = 0;
+    task->payload = 0;
+    task->cancel_requested = 0;
+    task->entry_ptr = entry_ptr;
+    task->args_ptr = args_ptr;
+    aster_scope_register((AsterAsyncScope*)scope_ptr, task);
+
+    pthread_t thread;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    if (pthread_create(&thread, &attr, aster_task_runner, task) != 0) {
+        pthread_attr_destroy(&attr);
+        fprintf(stderr, "failed to create task thread\n");
+        abort();
+    }
+    pthread_attr_destroy(&attr);
+    return (int64_t)task;
+}
+
+int64_t aster_task_block_on(int64_t entry_ptr, int64_t args_ptr) {
+    AsterTask* task = (AsterTask*)aster_task_spawn(entry_ptr, args_ptr, 0);
+    int64_t state = aster_task_wait_terminal(task);
+    if (state == ASTER_TASK_READY) {
+        return task->payload;
+    }
+    aster_error_set();
+    return 0;
+}
+
+void* aster_task_from_i64(int64_t value, int8_t failed) {
+    return aster_task_new_raw(value, failed);
+}
+
+void* aster_task_from_f64(double value, int8_t failed) {
+    int64_t bits = 0;
+    memcpy(&bits, &value, sizeof(bits));
+    return aster_task_new_raw(bits, failed);
+}
+
+void* aster_task_from_i8(int8_t value, int8_t failed) {
+    return aster_task_new_raw((int64_t)value, failed);
+}
+
+int8_t aster_task_is_ready(void* task_ptr) {
+    if (!task_ptr) return 0;
+    AsterTask* task = (AsterTask*)task_ptr;
+    pthread_mutex_lock(&task->mu);
+    int8_t ready = task->state != ASTER_TASK_QUEUED && task->state != ASTER_TASK_RUNNING;
+    pthread_mutex_unlock(&task->mu);
+    return ready;
+}
+
+int64_t aster_task_cancel(void* task_ptr) {
+    if (!task_ptr) return 0;
+    AsterTask* task = (AsterTask*)task_ptr;
+    pthread_mutex_lock(&task->mu);
+    task->cancel_requested = 1;
+    if (task->state == ASTER_TASK_QUEUED) {
+        task->state = ASTER_TASK_CANCELLED;
+        pthread_cond_broadcast(&task->cv);
+    }
+    pthread_mutex_unlock(&task->mu);
+    return 0;
+}
+
+int64_t aster_task_wait_cancel(void* task_ptr) {
+    aster_task_cancel(task_ptr);
+    if (task_ptr) aster_task_wait_terminal((AsterTask*)task_ptr);
+    return 0;
+}
+
+static int64_t aster_task_consume_payload(void* task_ptr) {
+    if (!task_ptr) {
+        aster_error_set();
+        return 0;
+    }
+    AsterTask* task = (AsterTask*)task_ptr;
+    int64_t state = aster_task_wait_terminal(task);
+    pthread_mutex_lock(&task->mu);
+    if (task->consumed) {
+        pthread_mutex_unlock(&task->mu);
+        aster_error_set();
+        return 0;
+    }
+    task->consumed = 1;
+    if (state == ASTER_TASK_READY) {
+        int64_t payload = task->payload;
+        pthread_mutex_unlock(&task->mu);
+        return payload;
+    }
+    pthread_mutex_unlock(&task->mu);
+    aster_error_set();
+    return 0;
+}
+
+int64_t aster_task_resolve_i64(void* task_ptr) {
+    return aster_task_consume_payload(task_ptr);
+}
+
+double aster_task_resolve_f64(void* task_ptr) {
+    int64_t bits = aster_task_consume_payload(task_ptr);
+    double value = 0.0;
+    memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+int8_t aster_task_resolve_i8(void* task_ptr) {
+    return (int8_t)aster_task_consume_payload(task_ptr);
+}
+
+void* aster_task_resolve_all_i64(void* tasks) {
+    if (!tasks) {
+        aster_error_set();
+        return 0;
+    }
+    int64_t len = aster_list_len(tasks);
+    void* out = aster_list_new(len);
+    for (int64_t i = 0; i < len; i++) {
+        int64_t task = aster_list_get(tasks, i);
+        int64_t value = aster_task_resolve_i64((void*)task);
+        if (aster_error_flag) return out;
+        aster_list_push(out, value);
+    }
+    return out;
+}
+
+int64_t aster_task_resolve_first_i64(void* tasks) {
+    if (!tasks) {
+        aster_error_set();
+        return 0;
+    }
+    int64_t len = aster_list_len(tasks);
+    if (len == 0) {
+        aster_error_set();
+        return 0;
+    }
+    AsterTask* winner = 0;
+    int64_t winner_index = -1;
+    for (;;) {
+        for (int64_t i = 0; i < len; i++) {
+            AsterTask* task = (AsterTask*)aster_list_get(tasks, i);
+            pthread_mutex_lock(&task->mu);
+            int64_t state = task->state;
+            pthread_mutex_unlock(&task->mu);
+            if (state == ASTER_TASK_READY || state == ASTER_TASK_FAILED || state == ASTER_TASK_CANCELLED) {
+                winner = task;
+                winner_index = i;
+                break;
+            }
+        }
+        if (winner) break;
+        sched_yield();
+    }
+    for (int64_t i = 0; i < len; i++) {
+        if (i != winner_index) {
+            aster_task_cancel((void*)aster_list_get(tasks, i));
+        }
+    }
+    return aster_task_resolve_i64((void*)winner);
 }
 
 // GC stubs, the JIT runtime has real GC; the C AOT runtime

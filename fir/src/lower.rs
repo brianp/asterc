@@ -114,6 +114,8 @@ pub struct Lowerer {
     /// The AST return type of the function currently being lowered.
     /// Used to wrap return values in TagWrap for nullable return types.
     current_return_type: Option<Type>,
+    /// Tracks the current async-scope ownership context.
+    async_scope_stack: Vec<LocalId>,
 }
 
 impl Lowerer {
@@ -139,6 +141,7 @@ impl Lowerer {
             pending_stmts: Vec::new(),
             function_defaults: HashMap::new(),
             current_return_type: None,
+            async_scope_stack: Vec::new(),
         }
     }
 
@@ -189,6 +192,7 @@ impl Lowerer {
                 ret_type: FirType::Ptr,
                 body,
                 is_entry: false,
+                suspendable: false,
             });
         }
 
@@ -304,6 +308,7 @@ impl Lowerer {
             ret_type,
             body: vec![FirStmt::Return(fir_expr)],
             is_entry: true,
+            suspendable: false,
         };
         self.module.add_function(func);
         Ok(id)
@@ -406,6 +411,7 @@ impl Lowerer {
                     ret_type: FirType::Void,
                     body: vec![FirStmt::Expr(fir_expr)],
                     is_entry: false,
+                    suspendable: false,
                 };
                 self.module.add_function(func);
                 self.module.entry = Some(id);
@@ -512,6 +518,7 @@ impl Lowerer {
             ret_type: self.lower_type(ret_type),
             body: fir_body,
             is_entry: name == "main",
+            suspendable: self.function_is_suspendable(name),
         };
         self.module.add_function(func);
 
@@ -814,7 +821,8 @@ impl Lowerer {
             } => self.lower_if(cond, then_body, elif_branches, else_body),
             Stmt::While { cond, body, .. } => {
                 let fir_cond = self.lower_expr(cond)?;
-                let fir_body = self.lower_body(body)?;
+                let mut fir_body = self.lower_body(body)?;
+                fir_body.push(FirStmt::Expr(FirExpr::Safepoint));
                 Ok(FirStmt::While {
                     cond: fir_cond,
                     body: fir_body,
@@ -1028,6 +1036,7 @@ impl Lowerer {
             }
 
             Expr::Call { func, args, .. } => {
+                self.pending_stmts.push(FirStmt::Expr(FirExpr::Safepoint));
                 // Method call: obj.method(args)
                 if let Expr::Member { object, field, .. } = func.as_ref() {
                     return self.lower_method_call(object, field, args);
@@ -1040,6 +1049,38 @@ impl Lowerer {
                     {
                         let fir_arg = self.lower_expr(arg)?;
                         return Ok(self.to_string_expr(arg, fir_arg));
+                    }
+
+                    if name == "resolve_all"
+                        && let Some((_, arg)) = args.first()
+                    {
+                        let fir_arg = self.lower_expr(arg)?;
+                        let ret_ty = self
+                            .type_table
+                            .get(&expr.span())
+                            .map(|ty| self.lower_type(ty))
+                            .unwrap_or(FirType::Ptr);
+                        return Ok(FirExpr::RuntimeCall {
+                            name: self.resolve_all_runtime_name(arg).to_string(),
+                            args: vec![fir_arg],
+                            ret_ty,
+                        });
+                    }
+
+                    if name == "resolve_first"
+                        && let Some((_, arg)) = args.first()
+                    {
+                        let fir_arg = self.lower_expr(arg)?;
+                        let ret_ty = self
+                            .type_table
+                            .get(&expr.span())
+                            .map(|ty| self.lower_type(ty))
+                            .unwrap_or(FirType::I64);
+                        return Ok(FirExpr::RuntimeCall {
+                            name: self.resolve_first_runtime_name(arg).to_string(),
+                            args: vec![fir_arg],
+                            ret_ty,
+                        });
                     }
 
                     // Check if this is a closure call (statically resolved)
@@ -1237,18 +1278,19 @@ impl Lowerer {
 
             Expr::StringInterpolation { parts, .. } => self.lower_string_interpolation(parts),
 
-            // Async: `async f(args)` → eager call (no true concurrency yet)
             Expr::AsyncCall { func, args, .. } => {
                 let args = self.lower_explicit_call_args(func, args)?;
                 let func_id = self.resolve_called_function_id(func)?;
+                let result_ty = self.resolve_called_function_ret_type(func, func_id);
                 Ok(FirExpr::Spawn {
                     func: func_id,
                     args,
                     ret_ty: FirType::Ptr,
+                    result_ty,
+                    scope: self.async_scope_stack.last().copied(),
                 })
             }
 
-            // Blocking: explicit suspendable call that returns the callee's value.
             Expr::BlockingCall { func, args, .. } => {
                 let args = self.lower_explicit_call_args(func, args)?;
                 let func_id = self.resolve_called_function_id(func)?;
@@ -1260,29 +1302,32 @@ impl Lowerer {
                 })
             }
 
-            // Detached async remains explicit in FIR even though runtime stays eager for now.
             Expr::DetachedCall { func, args, .. } => {
                 let args = self.lower_explicit_call_args(func, args)?;
                 let func_id = self.resolve_called_function_id(func)?;
+                let result_ty = self.resolve_called_function_ret_type(func, func_id);
                 Ok(FirExpr::Spawn {
                     func: func_id,
                     args,
                     ret_ty: FirType::Ptr,
+                    result_ty,
+                    scope: self.async_scope_stack.last().copied(),
                 })
             }
 
-            // Async scope: execute body statements sequentially (no concurrency yet).
-            // Body is lifted into pending_stmts; the expression itself returns a
-            // dummy value since async scope is always used in statement position.
             Expr::AsyncScope { body, .. } => {
+                let scope_id = self.alloc_local();
+                self.local_types.insert(scope_id, FirType::Ptr);
+                self.async_scope_stack.push(scope_id);
                 let fir_body = self.lower_body(body)?;
-                for stmt in fir_body {
-                    self.pending_stmts.push(stmt);
-                }
+                self.async_scope_stack.pop();
+                self.pending_stmts.push(FirStmt::AsyncScope {
+                    scope: scope_id,
+                    body: fir_body,
+                });
                 Ok(FirExpr::IntLit(0))
             }
 
-            // Resolve is explicit in FIR even while codegen still maps it eagerly.
             Expr::Resolve { expr: inner, .. } => {
                 let task = self.lower_expr(inner)?;
                 let ret_ty = self.resolve_task_result_type(inner, &task);
@@ -1566,6 +1611,44 @@ impl Lowerer {
 
         let fir_object = self.lower_expr(object)?;
         let fir_object_ty = self.infer_fir_type(&fir_object);
+        let object_ast_ty = self
+            .type_table
+            .get(&object.span())
+            .cloned()
+            .or_else(|| match object {
+                Expr::Ident(name, _) => self.local_ast_types.get(name).cloned(),
+                _ => None,
+            });
+
+        if matches!(object_ast_ty, Some(Type::Task(_)))
+            && let Some((runtime_name, ret_ty)) = match method {
+                "is_ready" => Some(("aster_task_is_ready", FirType::Bool)),
+                "cancel" => None,
+                "wait_cancel" => None,
+                _ => None,
+            }
+        {
+            return Ok(FirExpr::RuntimeCall {
+                name: runtime_name.to_string(),
+                args: vec![fir_object],
+                ret_ty,
+            });
+        }
+        if matches!(object_ast_ty, Some(Type::Task(_))) {
+            match method {
+                "cancel" => {
+                    return Ok(FirExpr::CancelTask {
+                        task: Box::new(fir_object),
+                    });
+                }
+                "wait_cancel" => {
+                    return Ok(FirExpr::WaitCancel {
+                        task: Box::new(fir_object),
+                    });
+                }
+                _ => {}
+            }
+        }
 
         if method == "or_throw" {
             let inner_ty = match &fir_object_ty {
@@ -1959,6 +2042,7 @@ impl Lowerer {
                 result_ty: FirType::I64,
             },
         });
+        while_body.push(FirStmt::Expr(FirExpr::Safepoint));
 
         // Build: let __iter = iter; let __len = len(iter); let __idx = 0; while __idx < __len { ... }
         // We need to emit multiple statements but lower_stmt_inner returns one.
@@ -2111,6 +2195,7 @@ impl Lowerer {
         for stmt in body {
             while_body.push(self.lower_stmt_inner(stmt)?);
         }
+        while_body.push(FirStmt::Expr(FirExpr::Safepoint));
 
         // Setup: let __iter = iterable, then while(true) { ... }
         let setup_and_loop = vec![
@@ -2306,6 +2391,9 @@ impl Lowerer {
             FirExpr::Spawn { ret_ty, .. } => ret_ty.clone(),
             FirExpr::BlockOn { ret_ty, .. } => ret_ty.clone(),
             FirExpr::ResolveTask { ret_ty, .. } => ret_ty.clone(),
+            FirExpr::CancelTask { .. } | FirExpr::WaitCancel { .. } | FirExpr::Safepoint => {
+                FirType::Void
+            }
             FirExpr::FieldGet { ty, .. } => ty.clone(),
             FirExpr::FieldSet { .. } => FirType::Void,
             FirExpr::Construct { ty, .. } => ty.clone(),
@@ -2410,6 +2498,16 @@ impl Lowerer {
         }
     }
 
+    fn function_is_suspendable(&self, name: &str) -> bool {
+        matches!(
+            self.type_env.get_var(name),
+            Some(Type::Function {
+                suspendable: true,
+                ..
+            })
+        )
+    }
+
     fn resolve_task_result_type(&self, expr: &Expr, task: &FirExpr) -> FirType {
         if let Some(Type::Task(inner_ty)) = self.type_table.get(&expr.span()) {
             return self.lower_type(inner_ty);
@@ -2433,6 +2531,37 @@ impl Lowerer {
             },
             _ => None,
         }
+    }
+
+    fn resolve_all_runtime_name(&self, expr: &Expr) -> &'static str {
+        match self.task_list_result_type(expr) {
+            Some(Type::Float) => "aster_task_resolve_all_f64",
+            Some(Type::Bool) => "aster_task_resolve_all_i8",
+            _ => "aster_task_resolve_all_i64",
+        }
+    }
+
+    fn resolve_first_runtime_name(&self, expr: &Expr) -> &'static str {
+        match self.task_list_result_type(expr) {
+            Some(Type::Float) => "aster_task_resolve_first_f64",
+            Some(Type::Bool) => "aster_task_resolve_first_i8",
+            _ => "aster_task_resolve_first_i64",
+        }
+    }
+
+    fn task_list_result_type(&self, expr: &Expr) -> Option<&Type> {
+        if let Some(Type::List(inner)) = self.type_table.get(&expr.span())
+            && let Type::Task(result) = inner.as_ref()
+        {
+            return Some(result.as_ref());
+        }
+        if let Expr::Ident(name, _) = expr
+            && let Some(Type::List(inner)) = self.local_ast_types.get(name)
+            && let Type::Task(result) = inner.as_ref()
+        {
+            return Some(result.as_ref());
+        }
+        None
     }
 
     fn resolve_function_ret_type_by_id(&self, id: FunctionId) -> FirType {
@@ -2910,6 +3039,7 @@ impl Lowerer {
                 ret_type: FirType::Ptr,
                 body,
                 is_entry: false,
+                suspendable: false,
             };
             self.module.add_function(func);
         }
@@ -3027,6 +3157,7 @@ impl Lowerer {
             ret_type: FirType::Ptr,
             body: vec![FirStmt::Return(result_expr)],
             is_entry: false,
+            suspendable: false,
         };
         self.module.add_function(func);
         Ok(())
@@ -3090,6 +3221,7 @@ impl Lowerer {
             ret_type: FirType::Bool,
             body: vec![FirStmt::Return(body_expr)],
             is_entry: false,
+            suspendable: false,
         };
         self.module.add_function(func);
         Ok(())
@@ -3180,6 +3312,7 @@ impl Lowerer {
             ret_type: FirType::Ptr,
             body,
             is_entry: false,
+            suspendable: false,
         };
         self.module.add_function(func);
         Ok(())
@@ -3309,6 +3442,7 @@ impl Lowerer {
             ret_type: self.lower_type(ret_type),
             body: fir_body,
             is_entry: false,
+            suspendable: false,
         };
         self.module.add_function(func);
 
