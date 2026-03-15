@@ -24,6 +24,10 @@ pub enum FirStmt {
         cond: FirExpr,
         body: Vec<FirStmt>,
     },
+    AsyncScope {
+        scope: LocalId,
+        body: Vec<FirStmt>,
+    },
     Break,
     Continue,
     Expr(FirExpr),

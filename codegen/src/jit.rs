@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::types;
-use cranelift_codegen::ir::{AbiParam, InstBuilder, StackSlotData, StackSlotKind};
+use cranelift_codegen::ir::{self, AbiParam, InstBuilder, MemFlags, StackSlotData, StackSlotKind};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
@@ -10,7 +10,7 @@ use cranelift_module::{DataDescription, Linkage, Module, default_libcall_names};
 
 use fir::exprs::FirExpr;
 use fir::module::{FirFunction, FirModule};
-use fir::types::FunctionId;
+use fir::types::{FirType, FunctionId};
 
 use crate::runtime::register_runtime_builtins;
 use crate::translate::{self, TranslationState};
@@ -26,6 +26,8 @@ pub struct CraneliftJIT {
     declared: HashMap<FunctionId, cranelift_module::FuncId>,
     /// Maps runtime function names → cranelift FuncId.
     runtime_declared: HashMap<String, cranelift_module::FuncId>,
+    async_entry_declared: HashMap<FunctionId, cranelift_module::FuncId>,
+    function_param_types: HashMap<FunctionId, Vec<FirType>>,
 }
 
 impl CraneliftJIT {
@@ -56,6 +58,8 @@ impl CraneliftJIT {
             compiled: HashMap::new(),
             declared: HashMap::new(),
             runtime_declared: HashMap::new(),
+            async_entry_declared: HashMap::new(),
+            function_param_types: HashMap::new(),
         }
     }
 
@@ -65,6 +69,21 @@ impl CraneliftJIT {
 
     /// Compile an entire FIR module.
     pub fn compile_module(&mut self, fir: &FirModule) -> Result<(), String> {
+        self.function_param_types = fir
+            .functions
+            .iter()
+            .filter(|func| !func.name.is_empty())
+            .map(|func| {
+                (
+                    func.id,
+                    func.params
+                        .iter()
+                        .map(|(_, ty)| ty.clone())
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+
         // Phase 1: Declare all functions (skip placeholders from out-of-order insertion)
         for func in &fir.functions {
             if func.name.is_empty() {
@@ -76,13 +95,19 @@ impl CraneliftJIT {
         // Phase 2: Declare runtime functions
         self.declare_runtime_functions()?;
 
-        // Phase 3: Compile all functions
+        // Phase 3: Declare async entry shims.
+        self.declare_async_entry_shims(fir)?;
+
+        // Phase 4: Compile all functions
         for func in &fir.functions {
             if func.name.is_empty() {
                 continue;
             }
             self.compile_function(func)?;
         }
+
+        // Phase 5: Compile async entry shims.
+        self.compile_async_entry_shims(fir)?;
 
         // Finalize
         self.module
@@ -141,6 +166,23 @@ impl CraneliftJIT {
         Ok(())
     }
 
+    fn declare_async_entry_shims(&mut self, fir: &FirModule) -> Result<(), String> {
+        for func in &fir.functions {
+            if func.name.is_empty() {
+                continue;
+            }
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            let func_id = self
+                .module
+                .declare_function(&format!("{}__async_entry", func.name), Linkage::Local, &sig)
+                .map_err(|e| e.to_string())?;
+            self.async_entry_declared.insert(func.id, func_id);
+        }
+        Ok(())
+    }
+
     fn compile_function(&mut self, func: &FirFunction) -> Result<(), String> {
         let clif_func_id = *self
             .declared
@@ -189,6 +231,12 @@ impl CraneliftJIT {
                 runtime_refs.insert(name.clone(), func_ref);
             }
 
+            let mut async_entry_refs = HashMap::new();
+            for (&fir_id, &cf_id) in &self.async_entry_declared {
+                let func_ref = self.module.declare_func_in_func(cf_id, builder.func);
+                async_entry_refs.insert(fir_id, func_ref);
+            }
+
             // Build string_data global value map
             let mut string_gv_map = HashMap::new();
             for (s, (data_id, len)) in &string_data {
@@ -197,7 +245,13 @@ impl CraneliftJIT {
             }
 
             // Translate
-            let mut state = TranslationState::new(func_refs, runtime_refs, string_gv_map);
+            let mut state = TranslationState::new(
+                self.function_param_types.clone(),
+                func_refs,
+                async_entry_refs,
+                runtime_refs,
+                string_gv_map,
+            );
             translate::declare_params(&mut builder, &mut state, func, entry_block);
 
             // Count ALL Ptr-typed locals (params + body lets) for GC root frame
@@ -270,6 +324,71 @@ impl CraneliftJIT {
             .define_function(clif_func_id, &mut self.ctx)
             .map_err(|e| format!("compile error in {}: {}", func.name, e))?;
 
+        self.module.clear_context(&mut self.ctx);
+        Ok(())
+    }
+
+    fn compile_async_entry_shims(&mut self, fir: &FirModule) -> Result<(), String> {
+        for func in &fir.functions {
+            if func.name.is_empty() {
+                continue;
+            }
+            self.compile_async_entry_shim(func)?;
+        }
+        Ok(())
+    }
+
+    fn compile_async_entry_shim(&mut self, func: &FirFunction) -> Result<(), String> {
+        let shim_id = *self
+            .async_entry_declared
+            .get(&func.id)
+            .ok_or_else(|| format!("missing async entry shim for {}", func.name))?;
+        let target_id = *self
+            .declared
+            .get(&func.id)
+            .ok_or_else(|| format!("missing function declaration for {}", func.name))?;
+
+        self.ctx.func.signature.params.clear();
+        self.ctx.func.signature.returns.clear();
+        self.ctx
+            .func
+            .signature
+            .params
+            .push(AbiParam::new(types::I64));
+        self.ctx
+            .func
+            .signature
+            .returns
+            .push(AbiParam::new(types::I64));
+
+        let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_context);
+        let entry_block = builder.create_block();
+        builder.append_block_params_for_function_params(entry_block);
+        builder.switch_to_block(entry_block);
+        builder.seal_block(entry_block);
+
+        let packet = builder.block_params(entry_block)[0];
+        let target_ref = self.module.declare_func_in_func(target_id, builder.func);
+        let mut args = Vec::with_capacity(func.params.len());
+        for (index, (_, ty)) in func.params.iter().enumerate() {
+            let raw = builder.ins().load(
+                types::I64,
+                MemFlags::new(),
+                packet,
+                ir::immediates::Offset32::new((index * 8) as i32),
+            );
+            args.push(unpack_shim_arg(&mut builder, raw, ty));
+        }
+
+        let call = builder.ins().call(target_ref, &args);
+        let value = builder.inst_results(call)[0];
+        let packed = pack_shim_result(&mut builder, value, &func.ret_type);
+        builder.ins().return_(&[packed]);
+        builder.finalize();
+
+        self.module
+            .define_function(shim_id, &mut self.ctx)
+            .map_err(|e| format!("compile error in {}__async_entry: {}", func.name, e))?;
         self.module.clear_context(&mut self.ctx);
         Ok(())
     }
@@ -374,6 +493,9 @@ pub(crate) fn count_body_gc_roots(stmts: &[fir::stmts::FirStmt]) -> usize {
             FirStmt::While { body, .. } => {
                 count += count_body_gc_roots(body);
             }
+            FirStmt::AsyncScope { body, .. } => {
+                count += count_body_gc_roots(body);
+            }
             _ => {}
         }
     }
@@ -403,6 +525,9 @@ pub(crate) fn collect_string_lits_stmts(
             }
             FirStmt::While { cond, body } => {
                 collect_string_lits_expr(cond, strings);
+                collect_string_lits_stmts(body, strings);
+            }
+            FirStmt::AsyncScope { body, .. } => {
                 collect_string_lits_stmts(body, strings);
             }
             FirStmt::Assign { target, value } => {
@@ -451,6 +576,9 @@ pub(crate) fn collect_string_lits_expr(
             }
         }
         FirExpr::ResolveTask { task, .. } => {
+            collect_string_lits_expr(task, strings);
+        }
+        FirExpr::CancelTask { task } | FirExpr::WaitCancel { task } => {
             collect_string_lits_expr(task, strings);
         }
         FirExpr::ListNew { elements, .. } => {
@@ -502,8 +630,25 @@ pub(crate) fn collect_string_lits_expr(
         FirExpr::IntLit(_)
         | FirExpr::FloatLit(_)
         | FirExpr::BoolLit(_)
+        | FirExpr::Safepoint
         | FirExpr::NilLit
         | FirExpr::LocalVar(_, _)
         | FirExpr::GlobalFunc(_) => {}
+    }
+}
+
+fn unpack_shim_arg(builder: &mut FunctionBuilder, raw: ir::Value, ty: &FirType) -> ir::Value {
+    match ty {
+        FirType::F64 => builder.ins().bitcast(types::F64, MemFlags::new(), raw),
+        FirType::Bool => builder.ins().ireduce(types::I8, raw),
+        _ => raw,
+    }
+}
+
+fn pack_shim_result(builder: &mut FunctionBuilder, value: ir::Value, ty: &FirType) -> ir::Value {
+    match ty {
+        FirType::F64 => builder.ins().bitcast(types::I64, MemFlags::new(), value),
+        FirType::Bool => builder.ins().uextend(types::I64, value),
+        _ => value,
     }
 }

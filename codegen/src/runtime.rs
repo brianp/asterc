@@ -1,4 +1,8 @@
 use cranelift_jit::JITBuilder;
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex, OnceLock};
+use std::thread;
 
 // ---------------------------------------------------------------------------
 // Runtime builtins — called from JIT-compiled code via symbol registration
@@ -441,6 +445,7 @@ const OBJ_MAP_HANDLE: u8 = 2; // handle → data block with kv entries
 const OBJ_CLASS: u8 = 3; // all fields are i64 slots (may be ptrs)
 const OBJ_CLOSURE: u8 = 4; // [func_ptr, env_ptr] — env_ptr is traceable
 const OBJ_DATA_BLOCK: u8 = 5; // raw data block owned by a handle (not independently traced)
+const OBJ_TASK: u8 = 6; // [state, consumed, payload] — payload may be a GC pointer
 
 /// Magic bytes in header slots [2..3] to identify valid GC objects.
 const GC_MAGIC: [u8; 2] = [0xA5, 0x7E];
@@ -646,6 +651,15 @@ unsafe fn gc_mark(payload: *const u8) {
                     gc_mark(env_ptr);
                 }
             }
+            OBJ_TASK => {
+                let task_state = *(payload as *const i64);
+                if task_state == TASK_READY || task_state == TASK_FAILED {
+                    let val = *((payload as *const i64).add(2));
+                    if is_gc_payload(val) {
+                        gc_mark(val as *const u8);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -773,9 +787,260 @@ fn gc_alloc_data_block(size: usize) -> *mut u8 {
 // Error handling — global error flag
 // ---------------------------------------------------------------------------
 
-use std::sync::atomic::{AtomicBool, Ordering};
-
 static ERROR_FLAG: AtomicBool = AtomicBool::new(false);
+
+const TASK_READY: i64 = 1;
+const TASK_FAILED: i64 = 2;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LiveTaskStatus {
+    Queued,
+    Running,
+    Ready(i64),
+    Failed(i64),
+    Cancelled,
+}
+
+struct LiveTaskState {
+    status: LiveTaskStatus,
+    cancel_requested: bool,
+    consumed: bool,
+    entry: usize,
+    args: usize,
+}
+
+struct LiveTaskHandle {
+    state: Mutex<LiveTaskState>,
+    cv: Condvar,
+}
+
+#[derive(Clone, Copy)]
+struct TaskPtr(*mut LiveTaskHandle);
+
+unsafe impl Send for TaskPtr {}
+unsafe impl Sync for TaskPtr {}
+
+struct AsyncScopeState {
+    tasks: Vec<TaskPtr>,
+}
+
+struct AsyncScopeHandle {
+    state: Mutex<AsyncScopeState>,
+}
+
+struct WorkerQueue {
+    local: Mutex<VecDeque<TaskPtr>>,
+}
+
+struct SchedulerRuntime {
+    workers: Vec<WorkerQueue>,
+    injector: Mutex<VecDeque<TaskPtr>>,
+    cv: Condvar,
+    next_worker: AtomicUsize,
+}
+
+static SCHEDULER: OnceLock<SchedulerRuntime> = OnceLock::new();
+
+fn scheduler() -> &'static SchedulerRuntime {
+    SCHEDULER.get_or_init(|| {
+        let worker_count = std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(2)
+            .max(2);
+        let runtime = SchedulerRuntime {
+            workers: (0..worker_count)
+                .map(|_| WorkerQueue {
+                    local: Mutex::new(VecDeque::new()),
+                })
+                .collect(),
+            injector: Mutex::new(VecDeque::new()),
+            cv: Condvar::new(),
+            next_worker: AtomicUsize::new(0),
+        };
+        for worker_id in 0..worker_count {
+            thread::spawn(move || worker_loop(worker_id));
+        }
+        runtime
+    })
+}
+
+fn worker_loop(worker_id: usize) {
+    loop {
+        let Some(task) = pop_runnable_task(worker_id) else {
+            let guard = scheduler().injector.lock().unwrap();
+            let _guard = scheduler()
+                .cv
+                .wait_timeout(guard, std::time::Duration::from_millis(1))
+                .unwrap();
+            continue;
+        };
+        run_live_task(task);
+    }
+}
+
+fn pop_runnable_task(worker_id: usize) -> Option<TaskPtr> {
+    {
+        let mut local = scheduler().workers[worker_id].local.lock().unwrap();
+        if let Some(task) = local.pop_front() {
+            return Some(task);
+        }
+    }
+    {
+        let mut injector = scheduler().injector.lock().unwrap();
+        if let Some(task) = injector.pop_front() {
+            return Some(task);
+        }
+    }
+    for victim_id in 0..scheduler().workers.len() {
+        if victim_id == worker_id {
+            continue;
+        }
+        let mut victim = scheduler().workers[victim_id].local.lock().unwrap();
+        let to_steal = victim.len() / 2;
+        if to_steal == 0 {
+            continue;
+        }
+        let mut stolen = VecDeque::new();
+        for _ in 0..to_steal {
+            if let Some(task) = victim.pop_back() {
+                stolen.push_front(task);
+            }
+        }
+        drop(victim);
+        let mut local = scheduler().workers[worker_id].local.lock().unwrap();
+        local.extend(stolen);
+        return local.pop_front();
+    }
+    None
+}
+
+fn live_task(task: *const u8) -> Option<&'static LiveTaskHandle> {
+    if task.is_null() {
+        None
+    } else {
+        Some(unsafe { &*(task as *const LiveTaskHandle) })
+    }
+}
+
+fn allocate_live_task(status: LiveTaskStatus, payload: i64, failed: bool) -> *mut u8 {
+    let terminal = if failed {
+        LiveTaskStatus::Failed(payload)
+    } else {
+        match status {
+            LiveTaskStatus::Ready(_) => LiveTaskStatus::Ready(payload),
+            other => other,
+        }
+    };
+    Box::into_raw(Box::new(LiveTaskHandle {
+        state: Mutex::new(LiveTaskState {
+            status: terminal,
+            cancel_requested: false,
+            consumed: false,
+            entry: 0,
+            args: 0,
+        }),
+        cv: Condvar::new(),
+    })) as *mut u8
+}
+
+fn live_scope(scope: *const u8) -> Option<&'static AsyncScopeHandle> {
+    if scope.is_null() {
+        None
+    } else {
+        Some(unsafe { &*(scope as *const AsyncScopeHandle) })
+    }
+}
+
+fn register_task_with_scope(scope: *mut u8, task: TaskPtr) {
+    if let Some(scope) = live_scope(scope) {
+        let mut state = scope.state.lock().unwrap();
+        state.tasks.push(task);
+    }
+}
+
+fn enqueue_task(task: TaskPtr) {
+    let worker =
+        scheduler().next_worker.fetch_add(1, Ordering::Relaxed) % scheduler().workers.len();
+    scheduler().workers[worker]
+        .local
+        .lock()
+        .unwrap()
+        .push_back(task);
+    scheduler().cv.notify_one();
+}
+
+fn run_live_task(task: TaskPtr) {
+    let handle = unsafe { &*task.0 };
+    let (entry, args, cancelled_before_run) = {
+        let mut state = handle.state.lock().unwrap();
+        if state.cancel_requested {
+            state.status = LiveTaskStatus::Cancelled;
+            handle.cv.notify_all();
+            return;
+        }
+        state.status = LiveTaskStatus::Running;
+        (state.entry, state.args, state.cancel_requested)
+    };
+
+    if cancelled_before_run {
+        let mut state = handle.state.lock().unwrap();
+        state.status = LiveTaskStatus::Cancelled;
+        handle.cv.notify_all();
+        return;
+    }
+
+    let entry_fn: extern "C" fn(*const u8) -> i64 = unsafe { std::mem::transmute(entry) };
+    let _ = aster_error_check();
+    let value = entry_fn(args as *const u8);
+    let failed = aster_error_check() != 0;
+
+    let mut state = handle.state.lock().unwrap();
+    state.status = if state.cancel_requested {
+        LiveTaskStatus::Cancelled
+    } else if failed {
+        LiveTaskStatus::Failed(value)
+    } else {
+        LiveTaskStatus::Ready(value)
+    };
+    handle.cv.notify_all();
+}
+
+fn wait_for_terminal(handle: &LiveTaskHandle) -> LiveTaskStatus {
+    let mut state = handle.state.lock().unwrap();
+    loop {
+        match state.status {
+            LiveTaskStatus::Queued | LiveTaskStatus::Running => {
+                state = handle.cv.wait(state).unwrap();
+            }
+            terminal => return terminal,
+        }
+    }
+}
+
+fn consume_live_task_payload(task: *mut u8) -> i64 {
+    let Some(handle) = live_task(task) else {
+        aster_error_set();
+        return 0;
+    };
+    let terminal = wait_for_terminal(handle);
+    let mut state = handle.state.lock().unwrap();
+    if state.consumed {
+        aster_error_set();
+        return 0;
+    }
+    state.consumed = true;
+    match terminal {
+        LiveTaskStatus::Ready(value) => value,
+        LiveTaskStatus::Failed(_) | LiveTaskStatus::Cancelled => {
+            aster_error_set();
+            0
+        }
+        LiveTaskStatus::Queued | LiveTaskStatus::Running => {
+            aster_error_set();
+            0
+        }
+    }
+}
 
 /// Set the global error flag. Called by `throw`.
 pub extern "C" fn aster_error_set() {
@@ -787,10 +1052,192 @@ pub extern "C" fn aster_error_check() -> i8 {
     ERROR_FLAG.swap(false, Ordering::AcqRel) as i8
 }
 
+pub extern "C" fn aster_safepoint() {}
+
 /// Panic / abort for uncaught errors.
 pub extern "C" fn aster_panic() {
     eprintln!("aster: uncaught error");
     std::process::abort();
+}
+
+pub extern "C" fn aster_async_scope_enter() -> *mut u8 {
+    Box::into_raw(Box::new(AsyncScopeHandle {
+        state: Mutex::new(AsyncScopeState { tasks: Vec::new() }),
+    })) as *mut u8
+}
+
+pub extern "C" fn aster_async_scope_exit(scope: *mut u8) {
+    let Some(scope_handle) = live_scope(scope) else {
+        return;
+    };
+    let tasks = {
+        let mut state = scope_handle.state.lock().unwrap();
+        std::mem::take(&mut state.tasks)
+    };
+    for task in &tasks {
+        aster_task_cancel(task.0 as *mut u8);
+    }
+    for task in tasks {
+        if let Some(handle) = live_task(task.0 as *const u8) {
+            let _ = wait_for_terminal(handle);
+        }
+    }
+}
+
+pub extern "C" fn aster_task_spawn(entry: usize, args: *mut u8, scope: *mut u8) -> *mut u8 {
+    let task = Box::into_raw(Box::new(LiveTaskHandle {
+        state: Mutex::new(LiveTaskState {
+            status: LiveTaskStatus::Queued,
+            cancel_requested: false,
+            consumed: false,
+            entry,
+            args: args as usize,
+        }),
+        cv: Condvar::new(),
+    })) as *mut u8;
+    register_task_with_scope(scope, TaskPtr(task as *mut LiveTaskHandle));
+    enqueue_task(TaskPtr(task as *mut LiveTaskHandle));
+    task
+}
+
+pub extern "C" fn aster_task_block_on(entry: usize, args: *mut u8) -> i64 {
+    let task = aster_task_spawn(entry, args, std::ptr::null_mut());
+    let Some(handle) = live_task(task) else {
+        aster_error_set();
+        return 0;
+    };
+    match wait_for_terminal(handle) {
+        LiveTaskStatus::Ready(value) => value,
+        LiveTaskStatus::Failed(_) | LiveTaskStatus::Cancelled => {
+            aster_error_set();
+            0
+        }
+        LiveTaskStatus::Queued | LiveTaskStatus::Running => {
+            aster_error_set();
+            0
+        }
+    }
+}
+
+pub extern "C" fn aster_task_from_i64(value: i64, failed: i8) -> *mut u8 {
+    allocate_live_task(LiveTaskStatus::Ready(value), value, failed != 0)
+}
+
+pub extern "C" fn aster_task_from_f64(value: f64, failed: i8) -> *mut u8 {
+    allocate_live_task(
+        LiveTaskStatus::Ready(value.to_bits() as i64),
+        value.to_bits() as i64,
+        failed != 0,
+    )
+}
+
+pub extern "C" fn aster_task_from_i8(value: i8, failed: i8) -> *mut u8 {
+    allocate_live_task(
+        LiveTaskStatus::Ready(value as i64),
+        value as i64,
+        failed != 0,
+    )
+}
+
+pub extern "C" fn aster_task_is_ready(task: *const u8) -> i8 {
+    live_task(task)
+        .map(|handle| {
+            let state = handle.state.lock().unwrap();
+            (!matches!(
+                state.status,
+                LiveTaskStatus::Queued | LiveTaskStatus::Running
+            )) as i8
+        })
+        .unwrap_or(0)
+}
+
+pub extern "C" fn aster_task_cancel(task: *mut u8) -> i64 {
+    if let Some(handle) = live_task(task) {
+        let mut state = handle.state.lock().unwrap();
+        state.cancel_requested = true;
+        if matches!(state.status, LiveTaskStatus::Queued) {
+            state.status = LiveTaskStatus::Cancelled;
+            handle.cv.notify_all();
+        }
+    }
+    0
+}
+
+pub extern "C" fn aster_task_wait_cancel(task: *mut u8) -> i64 {
+    aster_task_cancel(task);
+    if let Some(handle) = live_task(task) {
+        let _ = wait_for_terminal(handle);
+    }
+    0
+}
+
+pub extern "C" fn aster_task_resolve_i64(task: *mut u8) -> i64 {
+    consume_live_task_payload(task)
+}
+
+pub extern "C" fn aster_task_resolve_f64(task: *mut u8) -> f64 {
+    let bits = consume_live_task_payload(task) as u64;
+    f64::from_bits(bits)
+}
+
+pub extern "C" fn aster_task_resolve_i8(task: *mut u8) -> i8 {
+    consume_live_task_payload(task) as i8
+}
+
+pub extern "C" fn aster_task_resolve_all_i64(tasks: *mut u8) -> *mut u8 {
+    if tasks.is_null() {
+        aster_error_set();
+        return std::ptr::null_mut();
+    }
+    let len = aster_list_len(tasks);
+    let out = aster_list_new(len);
+    for index in 0..len {
+        let task = aster_list_get(tasks, index) as *mut u8;
+        let value = aster_task_resolve_i64(task);
+        if ERROR_FLAG.load(Ordering::Acquire) {
+            return out;
+        }
+        aster_list_push(out, value);
+    }
+    out
+}
+
+pub extern "C" fn aster_task_resolve_first_i64(tasks: *mut u8) -> i64 {
+    if tasks.is_null() {
+        aster_error_set();
+        return 0;
+    }
+    let len = aster_list_len(tasks);
+    if len == 0 {
+        aster_error_set();
+        return 0;
+    }
+    let task_handles: Vec<*mut u8> = (0..len)
+        .map(|index| aster_list_get(tasks, index) as *mut u8)
+        .collect();
+    loop {
+        for (winner_index, &task) in task_handles.iter().enumerate() {
+            let Some(handle) = live_task(task) else {
+                continue;
+            };
+            let status = {
+                let state = handle.state.lock().unwrap();
+                state.status
+            };
+            if matches!(
+                status,
+                LiveTaskStatus::Ready(_) | LiveTaskStatus::Failed(_) | LiveTaskStatus::Cancelled
+            ) {
+                for (index, other) in task_handles.iter().enumerate() {
+                    if index != winner_index {
+                        aster_task_cancel(*other);
+                    }
+                }
+                return aster_task_resolve_i64(task);
+            }
+        }
+        thread::yield_now();
+    }
 }
 
 pub fn runtime_builtin_symbols() -> Vec<(&'static str, *const u8)> {
@@ -818,7 +1265,44 @@ pub fn runtime_builtin_symbols() -> Vec<(&'static str, *const u8)> {
         ("aster_map_get", aster_map_get as *const u8),
         ("aster_error_set", aster_error_set as *const u8),
         ("aster_error_check", aster_error_check as *const u8),
+        ("aster_safepoint", aster_safepoint as *const u8),
         ("aster_panic", aster_panic as *const u8),
+        (
+            "aster_async_scope_enter",
+            aster_async_scope_enter as *const u8,
+        ),
+        (
+            "aster_async_scope_exit",
+            aster_async_scope_exit as *const u8,
+        ),
+        ("aster_task_spawn", aster_task_spawn as *const u8),
+        ("aster_task_block_on", aster_task_block_on as *const u8),
+        ("aster_task_from_i64", aster_task_from_i64 as *const u8),
+        ("aster_task_from_f64", aster_task_from_f64 as *const u8),
+        ("aster_task_from_i8", aster_task_from_i8 as *const u8),
+        ("aster_task_is_ready", aster_task_is_ready as *const u8),
+        ("aster_task_cancel", aster_task_cancel as *const u8),
+        (
+            "aster_task_wait_cancel",
+            aster_task_wait_cancel as *const u8,
+        ),
+        (
+            "aster_task_resolve_i64",
+            aster_task_resolve_i64 as *const u8,
+        ),
+        (
+            "aster_task_resolve_f64",
+            aster_task_resolve_f64 as *const u8,
+        ),
+        ("aster_task_resolve_i8", aster_task_resolve_i8 as *const u8),
+        (
+            "aster_task_resolve_all_i64",
+            aster_task_resolve_all_i64 as *const u8,
+        ),
+        (
+            "aster_task_resolve_first_i64",
+            aster_task_resolve_first_i64 as *const u8,
+        ),
         ("aster_gc_push_roots", aster_gc_push_roots as *const u8),
         ("aster_gc_pop_roots", aster_gc_pop_roots as *const u8),
         ("aster_gc_collect", aster_gc_collect as *const u8),

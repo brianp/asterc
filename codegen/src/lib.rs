@@ -1,4 +1,5 @@
 pub mod aot;
+pub mod async_runtime;
 pub mod config;
 pub mod jit;
 #[allow(clippy::not_unsafe_ptr_arg_deref)]

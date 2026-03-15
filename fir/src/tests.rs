@@ -44,6 +44,7 @@ fn module_add_and_get_function() {
         ret_type: FirType::I64,
         body: vec![FirStmt::Return(FirExpr::IntLit(0))],
         is_entry: false,
+        suspendable: false,
     };
     let id = m.add_function(func);
     assert_eq!(id, FunctionId(0));
@@ -61,6 +62,7 @@ fn module_mark_and_functions_since() {
         ret_type: FirType::Void,
         body: vec![],
         is_entry: false,
+        suspendable: false,
     };
     m.add_function(f0);
 
@@ -74,6 +76,7 @@ fn module_mark_and_functions_since() {
         ret_type: FirType::Void,
         body: vec![],
         is_entry: false,
+        suspendable: false,
     };
     m.add_function(f1);
 
@@ -116,6 +119,7 @@ fn fir_module_serializes_to_json() {
         ret_type: FirType::I64,
         body: vec![FirStmt::Return(FirExpr::LocalVar(LocalId(0), FirType::I64))],
         is_entry: false,
+        suspendable: false,
     };
     m.add_function(func);
 
@@ -892,7 +896,7 @@ def main() -> Int
 }
 
 // ===========================================================================
-// Milestone 11: Async — task handles (eager execution for now)
+// Milestone 11: Async — task handles and explicit async FIR
 // ===========================================================================
 
 #[test]
@@ -949,6 +953,306 @@ def main() -> Int
         "expected BlockOn in lowered body: {:?}",
         main_func.body
     );
+}
+
+#[test]
+fn lower_task_is_ready_method_to_runtime_call() {
+    let src = "\
+def fetch() -> Int
+  42
+
+def main() -> Bool
+  let t: Task[Int] = async fetch()
+  t.is_ready()
+";
+    let fir = lower_ok(src);
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    let has_is_ready = main_func.body.iter().any(|stmt| {
+        matches!(
+            stmt,
+            FirStmt::Return(FirExpr::RuntimeCall { name, .. })
+                if name == "aster_task_is_ready"
+        )
+    });
+    assert!(
+        has_is_ready,
+        "expected aster_task_is_ready runtime call in lowered body: {:?}",
+        main_func.body
+    );
+}
+
+#[test]
+fn lower_task_cancel_method_to_cancel_task_node() {
+    let src = "\
+def fetch() -> Int
+  42
+
+def main() -> Bool
+  let t: Task[Int] = async fetch()
+  t.cancel()
+  t.is_ready()
+";
+    let fir = lower_ok(src);
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    let has_cancel = main_func
+        .body
+        .iter()
+        .any(|stmt| matches!(stmt, FirStmt::Expr(FirExpr::CancelTask { .. })));
+    assert!(
+        has_cancel,
+        "expected CancelTask node in lowered body: {:?}",
+        main_func.body
+    );
+}
+
+#[test]
+fn lower_task_wait_cancel_method_to_wait_cancel_node() {
+    let src = "\
+def fetch() -> Int
+  42
+
+def main() -> Bool
+  let t: Task[Int] = async fetch()
+  t.wait_cancel()
+  t.is_ready()
+";
+    let fir = lower_ok(src);
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    let has_wait_cancel = main_func
+        .body
+        .iter()
+        .any(|stmt| matches!(stmt, FirStmt::Expr(FirExpr::WaitCancel { .. })));
+    assert!(
+        has_wait_cancel,
+        "expected WaitCancel node in lowered body: {:?}",
+        main_func.body
+    );
+}
+
+#[test]
+fn lower_resolve_all_to_runtime_call() {
+    let src = "\
+def fetch() -> Int
+  42
+
+def main() throws CancelledError -> List[Int]
+  let tasks: List[Task[Int]] = [async fetch()]
+  resolve_all(tasks: tasks)!
+";
+    let fir = lower_ok(src);
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    let has_resolve_all = main_func.body.iter().any(|stmt| {
+        matches!(
+            stmt,
+            FirStmt::Let {
+                value: FirExpr::RuntimeCall { name, .. },
+                ..
+            }
+                if name == "aster_task_resolve_all_i64"
+        )
+    });
+    assert!(
+        has_resolve_all,
+        "expected resolve_all runtime call in lowered body: {:?}",
+        main_func.body
+    );
+}
+
+#[test]
+fn lower_blocking_call_to_block_on_without_direct_call() {
+    let src = "\
+def fetch() -> Int
+  async child()
+  42
+
+def child() -> Int
+  7
+
+def main() -> Int
+  blocking fetch()
+";
+    let fir = lower_ok(src);
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    assert!(main_func.body.iter().any(|stmt| matches!(
+        stmt,
+        FirStmt::Return(FirExpr::BlockOn { .. })
+    ) || matches!(
+        stmt,
+        FirStmt::Expr(FirExpr::BlockOn { .. })
+    ) || matches!(
+        stmt,
+        FirStmt::Let {
+            value: FirExpr::BlockOn { .. },
+            ..
+        }
+    )));
+    assert!(
+        !main_func
+            .body
+            .iter()
+            .any(|stmt| matches!(stmt, FirStmt::Return(FirExpr::Call { .. }))
+                || matches!(stmt, FirStmt::Expr(FirExpr::Call { .. }))
+                || matches!(
+                    stmt,
+                    FirStmt::Let {
+                        value: FirExpr::Call { .. },
+                        ..
+                    }
+                )),
+        "blocking call should lower through BlockOn instead of a direct eager call: {:?}",
+        main_func.body
+    );
+}
+
+#[test]
+fn lower_async_call_to_spawn_without_direct_call() {
+    let src = "\
+def fetch() -> Int
+  42
+
+def main() -> Task[Int]
+  async fetch()
+";
+    let fir = lower_ok(src);
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    assert!(main_func.body.iter().any(|stmt| matches!(
+        stmt,
+        FirStmt::Return(FirExpr::Spawn { .. })
+    ) || matches!(
+        stmt,
+        FirStmt::Expr(FirExpr::Spawn { .. })
+    ) || matches!(
+        stmt,
+        FirStmt::Let {
+            value: FirExpr::Spawn { .. },
+            ..
+        }
+    )));
+    assert!(
+        !main_func
+            .body
+            .iter()
+            .any(|stmt| matches!(stmt, FirStmt::Return(FirExpr::Call { .. }))
+                || matches!(stmt, FirStmt::Expr(FirExpr::Call { .. }))
+                || matches!(
+                    stmt,
+                    FirStmt::Let {
+                        value: FirExpr::Call { .. },
+                        ..
+                    }
+                )),
+        "async call should lower through Spawn instead of a direct eager call: {:?}",
+        main_func.body
+    );
+}
+
+#[test]
+fn lower_marks_suspendable_functions_for_codegen() {
+    let src = "\
+def child() -> Int
+  7
+
+def parent() throws CancelledError -> Int
+  let t: Task[Int] = async child()
+  resolve t!
+
+def main() throws CancelledError -> Int
+  blocking parent()
+";
+    let fir = lower_ok(src);
+    let parent = fir
+        .functions
+        .iter()
+        .find(|func| func.name == "parent")
+        .expect("parent function");
+    let child = fir
+        .functions
+        .iter()
+        .find(|func| func.name == "child")
+        .expect("child function");
+    let main = fir
+        .functions
+        .iter()
+        .find(|func| func.name == "main")
+        .expect("main function");
+
+    assert!(parent.suspendable, "parent should be marked suspendable");
+    assert!(!child.suspendable, "child should stay non-suspendable");
+    assert!(
+        main.suspendable,
+        "main should inherit blocking suspendability"
+    );
+}
+
+#[test]
+fn lower_resolve_first_to_runtime_call() {
+    let src = "\
+def fetch() -> Int
+  42
+
+def main() throws CancelledError -> Int
+  let tasks: List[Task[Int]] = [async fetch()]
+  resolve_first(tasks: tasks)!
+";
+    let fir = lower_ok(src);
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    let has_resolve_first = main_func.body.iter().any(|stmt| {
+        matches!(
+            stmt,
+            FirStmt::Let {
+                value: FirExpr::RuntimeCall { name, .. },
+                ..
+            }
+                if name == "aster_task_resolve_first_i64"
+        )
+    });
+    assert!(
+        has_resolve_first,
+        "expected resolve_first runtime call in lowered body: {:?}",
+        main_func.body
+    );
+}
+
+#[test]
+fn lower_call_inserts_safepoint_before_direct_call() {
+    let src = "\
+def child() -> Int
+  42
+
+def main() -> Int
+  child()
+";
+    let fir = lower_ok(src);
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    assert!(matches!(
+        main_func.body.first(),
+        Some(FirStmt::Expr(FirExpr::Safepoint))
+    ));
+}
+
+#[test]
+fn lower_loop_body_appends_backedge_safepoint() {
+    let src = "\
+def main() -> Int
+  let i = 0
+  while i < 1
+    i = i + 1
+  i
+";
+    let fir = lower_ok(src);
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    let loop_body = main_func
+        .body
+        .iter()
+        .find_map(|stmt| match stmt {
+            FirStmt::While { body, .. } => Some(body),
+            _ => None,
+        })
+        .expect("while loop body");
+    assert!(matches!(
+        loop_body.last(),
+        Some(FirStmt::Expr(FirExpr::Safepoint))
+    ));
 }
 
 // ===========================================================================
@@ -1048,15 +1352,6 @@ def f() -> String
 ";
     let fir = lower_ok(src);
     let f_func = fir.functions.iter().find(|f| f.name == "f").unwrap();
-    let expr = f_func
-        .body
-        .iter()
-        .find_map(|s| match s {
-            FirStmt::Expr(e) | FirStmt::Return(e) => Some(e),
-            _ => None,
-        })
-        .expect("expected expression");
-
     // The interpolation of a single class var should call ClassName.to_string
     // It could be a Call (if to_string was lowered) or a RuntimeCall fallback
     fn has_to_string_call(expr: &FirExpr) -> bool {
@@ -1069,9 +1364,12 @@ def f() -> String
         }
     }
     assert!(
-        has_to_string_call(expr),
+        f_func.body.iter().any(|stmt| match stmt {
+            FirStmt::Expr(expr) | FirStmt::Return(expr) => has_to_string_call(expr),
+            _ => false,
+        }),
         "expected Call to to_string method, got {:?}",
-        expr
+        f_func.body
     );
 }
 
@@ -1488,7 +1786,7 @@ def main() -> Int
 }
 
 // ===========================================================================
-// Async expression lowering (eager semantics)
+// Async expression lowering
 // ===========================================================================
 
 #[test]
@@ -1528,18 +1826,100 @@ def main() -> Int
 ";
     let fir = lower_ok(src);
     let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
-    // Async scope should lower its body statements into the enclosing function
-    // The body has two lets (async calls → eager calls), so we should see Let stmts
-    let let_count = main_func
+    let scopes: Vec<_> = main_func
         .body
         .iter()
-        .filter(|s| matches!(s, FirStmt::Let { .. }))
+        .filter_map(|stmt| match stmt {
+            FirStmt::AsyncScope { body, .. } => Some(body),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        scopes.len(),
+        1,
+        "expected one async scope: {:?}",
+        main_func.body
+    );
+    let let_count = scopes[0]
+        .iter()
+        .filter(|stmt| matches!(stmt, FirStmt::Let { .. }))
         .count();
-    // At least 2 lets from the async scope body (a and b), plus any globals
-    assert!(
-        let_count >= 2,
-        "expected at least 2 Let stmts from async scope body, got {}: {:?}",
-        let_count,
+    assert_eq!(
+        let_count, 2,
+        "expected two owned task lets: {:?}",
+        scopes[0]
+    );
+}
+
+#[test]
+fn async_scope_tracks_owned_spawned_tasks_explicitly() {
+    let src = "\
+def fetch() -> Int
+  42
+
+def main() -> Int
+  async scope
+    let a: Task[Int] = async fetch()
+    let b: Task[Int] = async fetch()
+  1
+";
+    let fir = lower_ok(src);
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    let scope_body = main_func
+        .body
+        .iter()
+        .find_map(|stmt| match stmt {
+            FirStmt::AsyncScope { body, .. } => Some(body),
+            _ => None,
+        })
+        .expect("async scope body");
+    let owned_spawn_count = scope_body
+        .iter()
+        .filter(|stmt| {
+            matches!(
+                stmt,
+                FirStmt::Let {
+                    value: FirExpr::Spawn { scope: Some(_), .. },
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(
+        owned_spawn_count, 2,
+        "expected explicit scope ownership: {:?}",
+        scope_body
+    );
+}
+
+#[test]
+fn async_scope_does_not_cancel_conditionally_spawned_tasks_from_outer_exit() {
+    let src = "\
+def fetch() -> Int
+  42
+
+def main() -> Int
+  async scope
+    if true
+      let a: Task[Int] = async fetch()
+  1
+";
+    let fir = lower_ok(src);
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    let cancel_count = main_func
+        .body
+        .iter()
+        .filter(|stmt| {
+            matches!(
+                stmt,
+                FirStmt::Expr(FirExpr::RuntimeCall { name, .. })
+                    if name == "aster_task_cancel"
+            )
+        })
+        .count();
+    assert_eq!(
+        cancel_count, 0,
+        "branch-local spawns need block-local cleanup, not unconditional outer cleanup: {:?}",
         main_func.body
     );
 }

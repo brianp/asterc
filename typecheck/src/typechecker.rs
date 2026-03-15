@@ -35,6 +35,8 @@ pub struct TypeChecker {
     pub(crate) const_names: std::collections::HashSet<String>,
     /// For functions with default parameters: maps function name -> set of param names that have defaults.
     pub(crate) default_params: HashMap<String, std::collections::HashSet<String>>,
+    /// Detectable single-consumer tracking for task bindings resolved in the current checker.
+    pub(crate) consumed_tasks: std::collections::HashSet<String>,
     /// Maps expression spans to their resolved types. Consumed by FIR lowerer.
     pub type_table: TypeTable,
 }
@@ -332,6 +334,7 @@ impl TypeChecker {
             expected_type: None,
             const_names: std::collections::HashSet::new(),
             default_params: HashMap::new(),
+            consumed_tasks: std::collections::HashSet::new(),
             type_table: TypeTable::new(),
         }
     }
@@ -373,6 +376,7 @@ impl TypeChecker {
             expected_type: self.expected_type.clone(),
             const_names: self.const_names.clone(),
             default_params: self.default_params.clone(),
+            consumed_tasks: self.consumed_tasks.clone(),
             type_table: TypeTable::new(),
         }
     }
@@ -391,6 +395,7 @@ impl TypeChecker {
         let saved_diagnostics = std::mem::take(&mut self.diagnostics);
         let saved_expected_type = self.expected_type.clone();
         let saved_const_names = self.const_names.clone();
+        let saved_consumed_tasks = self.consumed_tasks.clone();
 
         // Enter child scope (O(1) — moves data, no clone)
         self.env.enter_scope();
@@ -411,6 +416,7 @@ impl TypeChecker {
         self.diagnostics = saved_diagnostics;
         self.expected_type = saved_expected_type;
         self.const_names = saved_const_names;
+        self.consumed_tasks = saved_consumed_tasks;
 
         // Merge child diagnostics into parent
         self.diagnostics.extend(child_diagnostics);
@@ -498,7 +504,7 @@ impl TypeChecker {
                     param_names: params.iter().map(|(n, _)| n.clone()).collect(),
                     params: final_params,
                     ret: Box::new(final_ret),
-                    throws: throws.clone().map(Box::new),
+                    throws: throws.as_deref().cloned().map(Box::new),
                     suspendable: false,
                 };
                 self.env.set_var(name.clone(), fn_type);

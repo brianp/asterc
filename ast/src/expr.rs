@@ -160,7 +160,7 @@ pub enum Expr {
         ret_type: Type,
         body: Vec<Stmt>,
         generic_params: Option<Vec<String>>,
-        throws: Option<Type>,
+        throws: Option<Box<Type>>,
         /// Generic type parameter constraints: `T extends Foo includes Bar`.
         type_constraints: Vec<(String, Vec<crate::types::TypeConstraint>)>,
         /// Default values for parameters, indexed by position. None = no default.

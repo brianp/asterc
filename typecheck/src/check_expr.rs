@@ -185,7 +185,7 @@ impl TypeChecker {
                     };
 
                     let resolved_throws = if throws.is_none() {
-                        expected_throws.as_ref().map(|t| *t.clone())
+                        expected_throws.clone()
                     } else {
                         throws.clone()
                     };
@@ -235,7 +235,7 @@ impl TypeChecker {
         ret_type: &Type,
         body: &[ast::Stmt],
         generic_params: &Option<Vec<String>>,
-        throws: &Option<Type>,
+        throws: &Option<Box<Type>>,
         type_constraints: &[(String, Vec<ast::TypeConstraint>)],
         defaults: &[Option<Expr>],
     ) -> Result<Type, Diagnostic> {
@@ -310,7 +310,7 @@ impl TypeChecker {
         }
 
         let mut sub = self.child_checker();
-        sub.throws_type = throws.clone();
+        sub.throws_type = throws.as_deref().cloned();
         if *ret_type != Type::Void && *ret_type != Type::Inferred {
             sub.expected_return_type = Some(ret_type.clone());
         }
@@ -456,7 +456,7 @@ impl TypeChecker {
             param_names: params.iter().map(|(n, _)| n.clone()).collect(),
             params: final_params,
             ret: Box::new(final_ret),
-            throws: throws.clone().map(Box::new),
+            throws: throws.clone(),
             suspendable: false,
         })
     }
@@ -762,6 +762,29 @@ impl TypeChecker {
             ))
             .with_code("E018")
             .with_label(object.span(), "nullable type"));
+        }
+        if let Type::Task(ref inner) = obj_ty {
+            return match field {
+                "is_ready" => Ok(Type::Function {
+                    param_names: vec![],
+                    params: vec![],
+                    ret: Box::new(Type::Bool),
+                    throws: None,
+                    suspendable: false,
+                }),
+                "cancel" | "wait_cancel" => Ok(Type::Function {
+                    param_names: vec![],
+                    params: vec![],
+                    ret: Box::new(Type::Void),
+                    throws: None,
+                    suspendable: false,
+                }),
+                _ => Err(
+                    Diagnostic::error(format!("Task[{}] has no method '{}'", inner, field))
+                        .with_code("E010")
+                        .with_label(object.span(), format!("no member '{}' on Task", field)),
+                ),
+            };
         }
         // Handle List built-in methods (List implicitly includes Iterable)
         if let Type::List(ref inner) = obj_ty {
@@ -1210,6 +1233,8 @@ impl TypeChecker {
     fn check_async_scope(&mut self, body: &[ast::Stmt]) -> Result<Type, Diagnostic> {
         let mut sub = self.child_checker();
         sub.loop_depth = 0; // async scope cannot break/continue outer loops
-        sub.check_body(body)
+        let result = sub.check_body(body);
+        self.consumed_tasks.extend(sub.consumed_tasks);
+        result
     }
 }

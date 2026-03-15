@@ -53,6 +53,8 @@ pub enum FirExpr {
         func: FunctionId,
         args: Vec<FirExpr>,
         ret_ty: FirType,
+        result_ty: FirType,
+        scope: Option<LocalId>,
     },
     BlockOn {
         func: FunctionId,
@@ -63,6 +65,13 @@ pub enum FirExpr {
         task: Box<FirExpr>,
         ret_ty: FirType,
     },
+    CancelTask {
+        task: Box<FirExpr>,
+    },
+    WaitCancel {
+        task: Box<FirExpr>,
+    },
+    Safepoint,
     FieldGet {
         object: Box<FirExpr>,
         offset: usize,
