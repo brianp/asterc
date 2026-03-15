@@ -39,6 +39,11 @@ pub(crate) struct GreenThread {
 }
 
 unsafe impl Send for GreenThread {}
+// SAFETY: Non-Mutex fields (context, error_flag, shadow_stack_top) are only
+// accessed by the single worker currently running the green thread. The scheduler
+// guarantees exclusive access: a thread is either running on exactly one worker,
+// sitting in a deque, or terminal. The Mutex<TaskState> serializes all status
+// transitions that make a thread available to a different worker.
 unsafe impl Sync for GreenThread {}
 
 /// Newtype wrapper so `*mut GreenThread` can go into crossbeam deques.
