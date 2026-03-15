@@ -1,0 +1,291 @@
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+
+use super::context::MachineContext;
+use super::scheduler;
+use super::stack::GreenStack;
+
+unsafe extern "C" {
+    fn aster_context_switch(old: *mut MachineContext, new: *const MachineContext);
+    fn aster_context_init(ctx: *mut MachineContext, stack_top: *mut u8, entry: usize, arg: usize);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1: Assembly context switching
+// ---------------------------------------------------------------------------
+
+#[test]
+fn context_switch_roundtrip() {
+    static FLAG: AtomicBool = AtomicBool::new(false);
+
+    #[repr(C)]
+    struct TestArgs {
+        ctx_a: *mut MachineContext,
+        ctx_b: *mut MachineContext,
+    }
+
+    extern "C" fn test_entry(arg: *mut u8) -> i64 {
+        FLAG.store(true, Ordering::Relaxed);
+        let args = unsafe { &*(arg as *const TestArgs) };
+        // Switch back to ctx_a (the test's context)
+        unsafe {
+            aster_context_switch(args.ctx_b, args.ctx_a);
+        }
+        0
+    }
+
+    let stack = GreenStack::alloc(64 * 1024, 4096);
+    let mut ctx_a = MachineContext::new();
+    let mut ctx_b = MachineContext::new();
+
+    let mut args = TestArgs {
+        ctx_a: &raw mut ctx_a,
+        ctx_b: &raw mut ctx_b,
+    };
+
+    unsafe {
+        aster_context_init(
+            &raw mut ctx_b,
+            stack.top(),
+            test_entry as *const () as usize,
+            &raw mut args as usize,
+        );
+        aster_context_switch(&raw mut ctx_a, &raw const ctx_b);
+    }
+
+    assert!(FLAG.load(Ordering::Relaxed), "entry function did not run");
+}
+
+#[test]
+fn context_switch_preserves_return_value() {
+    static RESULT: AtomicI64 = AtomicI64::new(0);
+
+    #[repr(C)]
+    struct TestArgs {
+        ctx_a: *mut MachineContext,
+        ctx_b: *mut MachineContext,
+    }
+
+    extern "C" fn compute(arg: *mut u8) -> i64 {
+        RESULT.store(42, Ordering::Relaxed);
+        let args = unsafe { &*(arg as *const TestArgs) };
+        unsafe {
+            aster_context_switch(args.ctx_b, args.ctx_a);
+        }
+        0
+    }
+
+    let stack = GreenStack::alloc(64 * 1024, 4096);
+    let mut ctx_a = MachineContext::new();
+    let mut ctx_b = MachineContext::new();
+
+    let mut args = TestArgs {
+        ctx_a: &raw mut ctx_a,
+        ctx_b: &raw mut ctx_b,
+    };
+
+    unsafe {
+        aster_context_init(
+            &raw mut ctx_b,
+            stack.top(),
+            compute as *const () as usize,
+            &raw mut args as usize,
+        );
+        aster_context_switch(&raw mut ctx_a, &raw const ctx_b);
+    }
+
+    assert_eq!(RESULT.load(Ordering::Relaxed), 42);
+}
+
+#[test]
+fn context_switch_multiple_alternations() {
+    static COUNTER: AtomicI64 = AtomicI64::new(0);
+
+    #[repr(C)]
+    struct TestArgs {
+        ctx_a: *mut MachineContext,
+        ctx_b: *mut MachineContext,
+    }
+
+    extern "C" fn ping_pong(arg: *mut u8) -> i64 {
+        let args = unsafe { &*(arg as *const TestArgs) };
+        for _ in 0..5 {
+            COUNTER.fetch_add(1, Ordering::Relaxed);
+            unsafe {
+                aster_context_switch(args.ctx_b, args.ctx_a);
+            }
+        }
+        0
+    }
+
+    COUNTER.store(0, Ordering::Relaxed);
+
+    let stack = GreenStack::alloc(64 * 1024, 4096);
+    let mut ctx_a = MachineContext::new();
+    let mut ctx_b = MachineContext::new();
+
+    let mut args = TestArgs {
+        ctx_a: &raw mut ctx_a,
+        ctx_b: &raw mut ctx_b,
+    };
+
+    unsafe {
+        aster_context_init(
+            &raw mut ctx_b,
+            stack.top(),
+            ping_pong as *const () as usize,
+            &raw mut args as usize,
+        );
+
+        for _ in 0..5 {
+            aster_context_switch(&raw mut ctx_a, &raw const ctx_b);
+        }
+    }
+
+    assert_eq!(COUNTER.load(Ordering::Relaxed), 5);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1: Stack allocation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn stack_alloc_and_top() {
+    let stack = GreenStack::alloc(8192, 4096);
+    let top = stack.top();
+    assert!(!top.is_null());
+}
+
+#[test]
+fn stack_pool_reuse() {
+    use super::stack::StackPool;
+    let pool = StackPool::new(4);
+    let s1 = pool.get();
+    let top1 = s1.top();
+    pool.put(s1);
+    let s2 = pool.get();
+    let top2 = s2.top();
+    // Reused stack has the same top address
+    assert_eq!(top1, top2);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: Scheduler — spawn and resolve
+// ---------------------------------------------------------------------------
+
+#[test]
+fn spawn_single_green_thread() {
+    extern "C" fn add_one(arg: *mut u8) -> i64 {
+        let val = arg as i64;
+        val + 1
+    }
+
+    let thread = scheduler::spawn_green_thread(add_one as *const () as usize, 41);
+    let result = scheduler::consume_thread_result(thread);
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn spawn_many_green_threads() {
+    extern "C" fn double(arg: *mut u8) -> i64 {
+        let val = arg as i64;
+        val * 2
+    }
+
+    let threads: Vec<_> = (0..100)
+        .map(|i| scheduler::spawn_green_thread(double as *const () as usize, i))
+        .collect();
+
+    let results: Vec<i64> = threads
+        .into_iter()
+        .map(|t| scheduler::consume_thread_result(t))
+        .collect();
+
+    for (i, &result) in results.iter().enumerate() {
+        assert_eq!(result, (i as i64) * 2, "thread {i} returned wrong value");
+    }
+}
+
+#[test]
+fn terminal_thread_resolves_immediately() {
+    let thread = scheduler::allocate_terminal_thread(99, false);
+    let result = scheduler::consume_thread_result(thread);
+    assert_eq!(result, 99);
+}
+
+#[test]
+fn terminal_failed_thread_sets_error() {
+    let thread = scheduler::allocate_terminal_thread(0, true);
+    crate::runtime::error_flag_set(false);
+    let _result = scheduler::consume_thread_result(thread);
+    assert!(crate::runtime::error_flag_get());
+    crate::runtime::error_flag_set(false);
+}
+
+#[test]
+fn cancel_queued_thread() {
+    extern "C" fn slow(_arg: *mut u8) -> i64 {
+        // Tight loop — relies on safepoint preemption to yield
+        let mut i: i64 = 0;
+        while i < 1_000_000_000 {
+            i += 1;
+        }
+        i
+    }
+
+    let thread = scheduler::spawn_green_thread(slow as *const () as usize, 0);
+    scheduler::cancel_thread(thread);
+    scheduler::wait_cancel_thread(thread);
+    assert!(scheduler::is_thread_ready(thread));
+
+    crate::runtime::error_flag_set(false);
+    let _result = scheduler::consume_thread_result(thread);
+    // Cancelled tasks set error flag
+    assert!(crate::runtime::error_flag_get());
+    crate::runtime::error_flag_set(false);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: Safepoint preemption
+// ---------------------------------------------------------------------------
+
+#[test]
+fn safepoint_preemption_prevents_starvation() {
+    // Spawn a thread that runs a tight loop calling safepoint.
+    // It should yield after PREEMPT_THRESHOLD ticks, allowing other threads to run.
+    extern "C" fn busy_loop(_arg: *mut u8) -> i64 {
+        let mut sum: i64 = 0;
+        for i in 0..10_000i64 {
+            sum += i;
+            // In real code, safepoints are emitted by codegen.
+            // Here we call it manually to test preemption.
+            crate::runtime::aster_safepoint();
+        }
+        sum
+    }
+
+    // Spawn several busy threads — they should all complete thanks to preemption
+    let threads: Vec<_> = (0..4)
+        .map(|_| scheduler::spawn_green_thread(busy_loop as *const () as usize, 0))
+        .collect();
+
+    for thread in threads {
+        let result = scheduler::consume_thread_result(thread);
+        assert_eq!(result, (0..10_000i64).sum::<i64>());
+    }
+}
+
+#[test]
+fn cancellation_at_safepoint() {
+    extern "C" fn infinite_loop(_arg: *mut u8) -> i64 {
+        loop {
+            crate::runtime::aster_safepoint();
+        }
+    }
+
+    let thread = scheduler::spawn_green_thread(infinite_loop as *const () as usize, 0);
+    // Give the thread a moment to start
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    scheduler::cancel_thread(thread);
+    scheduler::wait_cancel_thread(thread);
+    assert!(scheduler::is_thread_ready(thread));
+}

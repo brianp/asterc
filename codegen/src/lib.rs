@@ -1,6 +1,7 @@
 pub mod aot;
 pub mod async_runtime;
 pub mod config;
+pub(crate) mod green;
 pub mod jit;
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub mod runtime;
