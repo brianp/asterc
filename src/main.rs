@@ -267,20 +267,24 @@ fn cmd_build(opts: &BuildOptions) {
 
     // Step 2: Compile runtime (skip if cached)
     let runtime_source = codegen::runtime_source::c_runtime_source();
-    let runtime_hash = sha256_hex(runtime_source.as_bytes());
+    let asm_source = codegen::asm_source::asm_source_for_target();
+    let combined_hash = sha256_hex(format!("{}{}", runtime_source, asm_source).as_bytes());
     let runtime_o = paths.runtime_o();
+    let asm_o = paths.gen_dir.join("asm.o");
 
-    let runtime_fresh = manifest_data
-        .as_ref()
-        .is_some_and(|m| m.is_runtime_fresh(&runtime_hash) && runtime_o.exists());
+    let runtime_fresh = manifest_data.as_ref().is_some_and(|m| {
+        m.is_runtime_fresh(&combined_hash) && runtime_o.exists() && asm_o.exists()
+    });
 
     if runtime_fresh {
         if opts.config.verbose {
-            eprintln!("[2/3] Runtime (cached)");
+            eprintln!("[2/4] Runtime (cached)");
+            eprintln!("[3/4] Assembly (cached)");
         }
     } else {
+        // Compile runtime.c → runtime.o
         if opts.config.verbose {
-            eprintln!("[2/3] Compiling runtime → {}", runtime_o.display());
+            eprintln!("[2/4] Compiling runtime → {}", runtime_o.display());
         }
 
         let runtime_c = paths.runtime_c();
@@ -289,7 +293,6 @@ fn cmd_build(opts: &BuildOptions) {
             std::process::exit(2);
         });
 
-        // Compile runtime.c → runtime.o
         let cc_flags: &[&str] = match opts.config.profile {
             Profile::Debug => &["-c", "-g"],
             Profile::Release => &["-c", "-O2"],
@@ -312,9 +315,38 @@ fn cmd_build(opts: &BuildOptions) {
                 std::process::exit(2);
             }
         }
+
+        // Compile assembly → asm.o
+        if opts.config.verbose {
+            eprintln!("[3/4] Compiling assembly → {}", asm_o.display());
+        }
+
+        let asm_s = paths.gen_dir.join("green_asm.S");
+        fs::write(&asm_s, asm_source).unwrap_or_else(|e| {
+            eprintln!("Failed to write assembly: {}", e);
+            std::process::exit(2);
+        });
+
+        let status = std::process::Command::new("cc")
+            .arg("-c")
+            .arg(asm_s.to_string_lossy().as_ref())
+            .arg("-o")
+            .arg(asm_o.to_string_lossy().as_ref())
+            .status();
+        match status {
+            Ok(s) if s.success() => {}
+            Ok(s) => {
+                eprintln!("Assembly compilation failed: {}", s);
+                std::process::exit(2);
+            }
+            Err(e) => {
+                eprintln!("Failed to run cc for assembly: {}", e);
+                std::process::exit(2);
+            }
+        }
     }
 
-    // Step 3: Link
+    // Step 4: Link
     let final_output = if let Some(ref out) = opts.output {
         out.clone()
     } else {
@@ -322,12 +354,13 @@ fn cmd_build(opts: &BuildOptions) {
     };
 
     if opts.config.verbose {
-        eprintln!("[3/3] Linking → {}", final_output);
+        eprintln!("[4/4] Linking → {}", final_output);
     }
 
     let status = std::process::Command::new("cc")
         .arg(obj_path.to_string_lossy().as_ref())
         .arg(runtime_o.to_string_lossy().as_ref())
+        .arg(asm_o.to_string_lossy().as_ref())
         .arg("-pthread")
         .arg("-o")
         .arg(&final_output)
@@ -340,7 +373,7 @@ fn cmd_build(opts: &BuildOptions) {
                 BuildManifest::new(opts.config.profile_dir(), opts.config.cranelift_opt_level())
             });
             manifest.record_file(&source_name, &source_hash, &obj_path_str);
-            manifest.runtime_hash = runtime_hash;
+            manifest.runtime_hash = combined_hash;
             let _ = manifest.save(&paths.manifest());
 
             let size = fs::metadata(&final_output).map(|m| m.len()).unwrap_or(0);
