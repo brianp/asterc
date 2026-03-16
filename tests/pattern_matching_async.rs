@@ -162,8 +162,9 @@ fn async_call_returns_task() {
         r#"def fetch() -> Int
   42
 
-def main() -> Void
+def main() -> Task[Int]
   let t: Task[Int] = async fetch()
+  t
 "#,
     );
 }
@@ -291,8 +292,9 @@ fn async_call_works_anywhere() {
         r#"def fetch() -> Int
   42
 
-def main() -> Void
+def main() -> Task[Int]
   let t = async fetch()
+  t
 "#,
     );
 }
@@ -320,8 +322,9 @@ fn task_type_annotation() {
         r#"def fetch() -> Int
   42
 
-def main() -> Void
+def main() -> Task[Int]
   let t: Task[Int] = async fetch()
+  t
 "#,
     );
 }

@@ -12,8 +12,9 @@ fn async_call_works_anywhere() {
         r#"def fetch() -> Int
   42
 
-def caller() -> Void
+def caller() -> Task[Int]
   let t = async fetch()
+  t
 "#,
     );
 }

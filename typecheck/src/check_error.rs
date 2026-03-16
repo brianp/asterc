@@ -3,6 +3,16 @@ use ast::{Diagnostic, Expr, Type};
 use crate::typechecker::TypeChecker;
 
 impl TypeChecker {
+    /// Mark a task ident as consumed for must-consume tracking (non-failable).
+    /// Used for returns, argument passing, and async scope cleanup.
+    pub(crate) fn mark_task_ident_consumed(&mut self, expr: &Expr) {
+        if let Expr::Ident(name, _) = expr
+            && self.task_bindings.contains_key(name)
+        {
+            self.consumed_tasks.insert(name.clone());
+        }
+    }
+
     fn mark_task_consumed(&mut self, expr: &Expr) -> Result<(), Diagnostic> {
         let Expr::Ident(name, span) = expr else {
             return Ok(());
@@ -233,6 +243,7 @@ impl TypeChecker {
                 return Ok(Type::Error);
             }
             if let Type::Task(inner_ty) = ty {
+                self.mark_task_ident_consumed(inner);
                 return Ok(*inner_ty);
             } else {
                 return Err(Diagnostic::error(format!(

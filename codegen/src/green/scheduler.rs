@@ -191,8 +191,12 @@ fn worker_loop(_id: usize, local: Worker<ThreadPtr>) {
                 }
             }
 
-            YieldReason::WaitingOnIo | YieldReason::WaitingOnBlockingPool => {
-                // Thread is suspended — the poller or blocking pool will re-enqueue it
+            YieldReason::WaitingOnIo
+            | YieldReason::WaitingOnBlockingPool
+            | YieldReason::WaitingOnMutex
+            | YieldReason::WaitingOnChannelSend
+            | YieldReason::WaitingOnChannelRecv => {
+                // Thread is suspended — the runtime will re-enqueue it when ready
                 thread.state.lock().unwrap().status = ThreadStatus::Suspended;
             }
 
@@ -541,6 +545,88 @@ pub(crate) fn safepoint() {
     } else {
         PREEMPT_TICKS.set(ticks);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Mutex / Channel support — Phase 7-8
+// ---------------------------------------------------------------------------
+
+/// Get the current green thread pointer (null if not on a worker).
+pub(crate) fn current_green_thread() -> *mut GreenThread {
+    WORKER_CURRENT_THREAD.get()
+}
+
+/// Get a numeric ID for the current green thread (pointer value).
+pub(crate) fn current_thread_id() -> usize {
+    WORKER_CURRENT_THREAD.get() as usize
+}
+
+/// Suspend the current green thread waiting for a mutex.
+pub(crate) fn suspend_for_mutex() {
+    yield_to_scheduler(YieldReason::WaitingOnMutex);
+}
+
+/// Suspend the current green thread waiting to send on a channel.
+pub(crate) fn suspend_for_channel_send() {
+    yield_to_scheduler(YieldReason::WaitingOnChannelSend);
+}
+
+/// Suspend the current green thread waiting to receive from a channel.
+/// Returns the value that was delivered by the sender via `wake_thread_with_value`.
+pub(crate) fn suspend_for_channel_receive() -> i64 {
+    let current = WORKER_CURRENT_THREAD.get();
+    assert!(!current.is_null(), "channel receive outside green thread");
+    yield_to_scheduler(YieldReason::WaitingOnChannelRecv);
+    // After wakeup, the sender stored the value in our result field
+    let thread = unsafe { &*current };
+    let st = thread.state.lock().unwrap();
+    st.result
+}
+
+/// Wake a suspended green thread by re-enqueueing it.
+pub(crate) fn wake_thread(thread_ptr: *mut GreenThread) {
+    if thread_ptr.is_null() {
+        return;
+    }
+    let thread = unsafe { &*thread_ptr };
+    thread.state.lock().unwrap().status = ThreadStatus::Runnable;
+    let sc = sched();
+    sc.injector.push(ThreadPtr(thread_ptr));
+    sc.park_cv.notify_all();
+}
+
+/// Wake a suspended green thread and deliver a value (for channel receive).
+pub(crate) fn wake_thread_with_value(thread_ptr: *mut GreenThread, value: i64) {
+    if thread_ptr.is_null() {
+        return;
+    }
+    let thread = unsafe { &*thread_ptr };
+    {
+        let mut st = thread.state.lock().unwrap();
+        st.result = value;
+        st.status = ThreadStatus::Runnable;
+    }
+    let sc = sched();
+    sc.injector.push(ThreadPtr(thread_ptr));
+    sc.park_cv.notify_all();
+}
+
+/// Wake a suspended green thread with an error (sets error flag).
+pub(crate) fn wake_thread_with_error(thread_ptr: *mut GreenThread) {
+    if thread_ptr.is_null() {
+        return;
+    }
+    let thread = unsafe { &*thread_ptr };
+    {
+        let mut st = thread.state.lock().unwrap();
+        st.status = ThreadStatus::Runnable;
+    }
+    // Set the error flag on the green thread so it sees the error after resume
+    let thread = unsafe { &mut *thread_ptr };
+    thread.error_flag = true;
+    let sc = sched();
+    sc.injector.push(ThreadPtr(thread_ptr));
+    sc.park_cv.notify_all();
 }
 
 // ---------------------------------------------------------------------------

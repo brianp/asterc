@@ -1033,6 +1033,309 @@ pub extern "C" fn aster_blocking_submit(entry: extern "C" fn(i64) -> i64, arg: i
     scheduler::blocking_submit(Box::new(move || entry(arg)));
 }
 
+// ---------------------------------------------------------------------------
+// Mutex — Phase 7
+// ---------------------------------------------------------------------------
+
+/// Internal representation of a green-thread-aware mutex.
+struct AsterMutex {
+    inner: Mutex<AsterMutexState>,
+}
+
+struct AsterMutexState {
+    locked: bool,
+    owner: usize,
+    value: i64,
+    wait_queue: Vec<*mut GreenThread>,
+}
+
+/// Allocate a new Mutex wrapping the given value.
+pub extern "C" fn aster_mutex_new(value: i64) -> *mut u8 {
+    let m = Box::new(AsterMutex {
+        inner: Mutex::new(AsterMutexState {
+            locked: false,
+            owner: 0,
+            value,
+            wait_queue: Vec::new(),
+        }),
+    });
+    Box::into_raw(m) as *mut u8
+}
+
+/// Acquire the mutex. If contended, suspend the current green thread.
+/// Returns the inner value.
+pub extern "C" fn aster_mutex_lock(mutex: *mut u8) -> i64 {
+    if mutex.is_null() {
+        aster_error_set();
+        return 0;
+    }
+    let m = unsafe { &*(mutex as *const AsterMutex) };
+    let mut state = m.inner.lock().unwrap();
+    if !state.locked {
+        state.locked = true;
+        state.owner = scheduler::current_thread_id();
+        return state.value;
+    }
+    // Contended — suspend on the wait queue
+    let current = scheduler::current_green_thread();
+    if !current.is_null() {
+        state.wait_queue.push(current);
+        drop(state);
+        scheduler::suspend_for_mutex();
+        // Re-read value after wakeup — we now own the lock
+        let state = m.inner.lock().unwrap();
+        return state.value;
+    }
+    // Fallback for non-green-thread context: spin
+    drop(state);
+    loop {
+        std::thread::yield_now();
+        let mut state = m.inner.lock().unwrap();
+        if !state.locked {
+            state.locked = true;
+            return state.value;
+        }
+    }
+}
+
+/// Release the mutex and store the updated value. Wakes the first waiter.
+pub extern "C" fn aster_mutex_unlock(mutex: *mut u8, value: i64) {
+    if mutex.is_null() {
+        return;
+    }
+    let m = unsafe { &*(mutex as *const AsterMutex) };
+    let mut state = m.inner.lock().unwrap();
+    state.value = value;
+    if let Some(waiter) = state.wait_queue.pop() {
+        // Transfer ownership to the waiter
+        state.owner = 0; // waiter will set on resume
+        drop(state);
+        scheduler::wake_thread(waiter);
+    } else {
+        state.locked = false;
+        state.owner = 0;
+    }
+}
+
+/// Read the current value without locking (for debug/inspection only).
+pub extern "C" fn aster_mutex_get_value(mutex: *mut u8) -> i64 {
+    if mutex.is_null() {
+        return 0;
+    }
+    let m = unsafe { &*(mutex as *const AsterMutex) };
+    let state = m.inner.lock().unwrap();
+    state.value
+}
+
+// ---------------------------------------------------------------------------
+// Channel — Phase 8
+// ---------------------------------------------------------------------------
+
+struct AsterChannel {
+    inner: Mutex<AsterChannelState>,
+}
+
+struct AsterChannelState {
+    buffer: std::collections::VecDeque<i64>,
+    capacity: usize,
+    closed: bool,
+    send_waiters: Vec<(*mut GreenThread, i64)>,
+    recv_waiters: Vec<*mut GreenThread>,
+}
+
+/// Create a new channel with the given capacity (0 = unbounded, default 64).
+pub extern "C" fn aster_channel_new(capacity: i64) -> *mut u8 {
+    let cap = if capacity <= 0 { 64 } else { capacity as usize };
+    let ch = Box::new(AsterChannel {
+        inner: Mutex::new(AsterChannelState {
+            buffer: std::collections::VecDeque::with_capacity(cap),
+            capacity: cap,
+            closed: false,
+            send_waiters: Vec::new(),
+            recv_waiters: Vec::new(),
+        }),
+    });
+    Box::into_raw(ch) as *mut u8
+}
+
+/// Non-blocking send. Drops the value silently if buffer is full or channel is closed.
+pub extern "C" fn aster_channel_send(ch: *mut u8, value: i64) {
+    if ch.is_null() {
+        return;
+    }
+    let c = unsafe { &*(ch as *const AsterChannel) };
+    let mut state = c.inner.lock().unwrap();
+    if state.closed {
+        return;
+    }
+    // Wake a receiver if one is waiting
+    if let Some(waiter) = state.recv_waiters.pop() {
+        drop(state);
+        // Store the value where the receiver can get it
+        scheduler::wake_thread_with_value(waiter, value);
+        return;
+    }
+    if state.buffer.len() < state.capacity {
+        state.buffer.push_back(value);
+    }
+    // else: drop silently (fire-and-forget send semantics)
+}
+
+/// Blocking send. Suspends if buffer is full.
+pub extern "C" fn aster_channel_wait_send(ch: *mut u8, value: i64) {
+    if ch.is_null() {
+        aster_error_set();
+        return;
+    }
+    let c = unsafe { &*(ch as *const AsterChannel) };
+    let mut state = c.inner.lock().unwrap();
+    if state.closed {
+        aster_error_set();
+        return;
+    }
+    if let Some(waiter) = state.recv_waiters.pop() {
+        drop(state);
+        scheduler::wake_thread_with_value(waiter, value);
+        return;
+    }
+    if state.buffer.len() < state.capacity {
+        state.buffer.push_back(value);
+        return;
+    }
+    // Buffer full — suspend
+    let current = scheduler::current_green_thread();
+    if !current.is_null() {
+        state.send_waiters.push((current, value));
+        drop(state);
+        scheduler::suspend_for_channel_send();
+    }
+}
+
+/// Try-send. Sets error flag if buffer full or closed.
+pub extern "C" fn aster_channel_try_send(ch: *mut u8, value: i64) {
+    if ch.is_null() {
+        aster_error_set();
+        return;
+    }
+    let c = unsafe { &*(ch as *const AsterChannel) };
+    let mut state = c.inner.lock().unwrap();
+    if state.closed {
+        aster_error_set();
+        return;
+    }
+    if let Some(waiter) = state.recv_waiters.pop() {
+        drop(state);
+        scheduler::wake_thread_with_value(waiter, value);
+        return;
+    }
+    if state.buffer.len() < state.capacity {
+        state.buffer.push_back(value);
+    } else {
+        aster_error_set();
+    }
+}
+
+/// Non-blocking receive. Returns 0 and sets error_flag=false if empty (nil semantics).
+/// Returns value if available.
+pub extern "C" fn aster_channel_receive(ch: *mut u8) -> i64 {
+    if ch.is_null() {
+        return 0;
+    }
+    let c = unsafe { &*(ch as *const AsterChannel) };
+    let mut state = c.inner.lock().unwrap();
+    if let Some(value) = state.buffer.pop_front() {
+        // Wake a send waiter if one is pending
+        if let Some((waiter, send_val)) = state.send_waiters.pop() {
+            state.buffer.push_back(send_val);
+            drop(state);
+            scheduler::wake_thread(waiter);
+        }
+        return value;
+    }
+    0 // nil
+}
+
+/// Blocking receive. Suspends if buffer is empty.
+pub extern "C" fn aster_channel_wait_receive(ch: *mut u8) -> i64 {
+    if ch.is_null() {
+        aster_error_set();
+        return 0;
+    }
+    let c = unsafe { &*(ch as *const AsterChannel) };
+    let mut state = c.inner.lock().unwrap();
+    if let Some(value) = state.buffer.pop_front() {
+        if let Some((waiter, send_val)) = state.send_waiters.pop() {
+            state.buffer.push_back(send_val);
+            drop(state);
+            scheduler::wake_thread(waiter);
+        }
+        return value;
+    }
+    if state.closed {
+        aster_error_set();
+        return 0;
+    }
+    // Empty — suspend
+    let current = scheduler::current_green_thread();
+    if !current.is_null() {
+        state.recv_waiters.push(current);
+        drop(state);
+        return scheduler::suspend_for_channel_receive();
+    }
+    // Fallback: spin
+    drop(state);
+    loop {
+        std::thread::yield_now();
+        let mut state = c.inner.lock().unwrap();
+        if let Some(value) = state.buffer.pop_front() {
+            return value;
+        }
+        if state.closed {
+            aster_error_set();
+            return 0;
+        }
+    }
+}
+
+/// Try-receive. Sets error flag if empty or closed.
+pub extern "C" fn aster_channel_try_receive(ch: *mut u8) -> i64 {
+    if ch.is_null() {
+        aster_error_set();
+        return 0;
+    }
+    let c = unsafe { &*(ch as *const AsterChannel) };
+    let mut state = c.inner.lock().unwrap();
+    if let Some(value) = state.buffer.pop_front() {
+        if let Some((waiter, send_val)) = state.send_waiters.pop() {
+            state.buffer.push_back(send_val);
+            drop(state);
+            scheduler::wake_thread(waiter);
+        }
+        return value;
+    }
+    aster_error_set();
+    0
+}
+
+/// Close the channel. Wake all waiters with errors.
+pub extern "C" fn aster_channel_close(ch: *mut u8) {
+    if ch.is_null() {
+        return;
+    }
+    let c = unsafe { &*(ch as *const AsterChannel) };
+    let mut state = c.inner.lock().unwrap();
+    state.closed = true;
+    let send_waiters: Vec<_> = state.send_waiters.drain(..).collect();
+    let recv_waiters: Vec<_> = state.recv_waiters.drain(..).collect();
+    drop(state);
+    for (waiter, _) in send_waiters {
+        scheduler::wake_thread_with_error(waiter);
+    }
+    for waiter in recv_waiters {
+        scheduler::wake_thread_with_error(waiter);
+    }
+}
+
 pub fn runtime_builtin_symbols() -> Vec<(&'static str, *const u8)> {
     vec![
         ("aster_alloc", aster_alloc as *const u8),
@@ -1102,6 +1405,30 @@ pub fn runtime_builtin_symbols() -> Vec<(&'static str, *const u8)> {
         ("aster_io_wait_read", aster_io_wait_read as *const u8),
         ("aster_io_wait_write", aster_io_wait_write as *const u8),
         ("aster_blocking_submit", aster_blocking_submit as *const u8),
+        ("aster_mutex_new", aster_mutex_new as *const u8),
+        ("aster_mutex_lock", aster_mutex_lock as *const u8),
+        ("aster_mutex_unlock", aster_mutex_unlock as *const u8),
+        ("aster_mutex_get_value", aster_mutex_get_value as *const u8),
+        ("aster_channel_new", aster_channel_new as *const u8),
+        ("aster_channel_send", aster_channel_send as *const u8),
+        (
+            "aster_channel_wait_send",
+            aster_channel_wait_send as *const u8,
+        ),
+        (
+            "aster_channel_try_send",
+            aster_channel_try_send as *const u8,
+        ),
+        ("aster_channel_receive", aster_channel_receive as *const u8),
+        (
+            "aster_channel_wait_receive",
+            aster_channel_wait_receive as *const u8,
+        ),
+        (
+            "aster_channel_try_receive",
+            aster_channel_try_receive as *const u8,
+        ),
+        ("aster_channel_close", aster_channel_close as *const u8),
     ]
 }
 

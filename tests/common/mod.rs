@@ -46,6 +46,16 @@ pub fn check_all_errors(src: &str) -> Vec<Diagnostic> {
     tc.check_module_all(&module)
 }
 
+pub fn check_warnings(src: &str) -> Vec<Diagnostic> {
+    let tokens = lex(src).expect("lex ok");
+    let mut parser = Parser::new(tokens);
+    let module = parser.parse_module("test").expect("parse ok");
+    let mut tc = TypeChecker::new();
+    let errors = tc.check_module_all(&module);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    tc.diagnostics
+}
+
 pub fn check_parse_err(src: &str) -> String {
     let tokens = lex(src).expect("lex ok");
     let mut parser = Parser::new(tokens);
