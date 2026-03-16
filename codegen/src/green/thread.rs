@@ -58,4 +58,6 @@ pub(crate) enum YieldReason {
     Completed { result: i64, failed: bool },
     Cancelled,
     WaitingOnTask(*mut GreenThread),
+    WaitingOnIo,
+    WaitingOnBlockingPool,
 }

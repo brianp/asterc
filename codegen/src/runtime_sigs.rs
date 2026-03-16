@@ -103,4 +103,8 @@ pub static RUNTIME_SIGS: &[RuntimeSig] = &[
     ("aster_gc_push_roots", &[types::I64, types::I64], None),
     ("aster_gc_pop_roots", &[], None),
     ("aster_gc_collect", &[], None),
+    // I/O suspension hooks (Phase 5)
+    ("aster_io_wait_read", &[types::I32], None),
+    ("aster_io_wait_write", &[types::I32], None),
+    ("aster_blocking_submit", &[types::I64, types::I64], None),
 ];

@@ -1,10 +1,14 @@
 use std::cell::Cell;
-use std::sync::{Condvar, Mutex, OnceLock};
+use std::os::fd::RawFd;
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
+use std::time::Duration;
 
 use crossbeam_deque::{Injector, Steal, Stealer, Worker};
 
+use super::blocking::BlockingPool;
 use super::context::MachineContext;
+use super::poller::{self, Interest, Poller, Token};
 use super::stack::StackPool;
 use super::thread::{GreenThread, TaskState, ThreadPtr, ThreadStatus, YieldReason, is_terminal};
 
@@ -21,6 +25,7 @@ thread_local! {
 }
 
 const PREEMPT_THRESHOLD: u32 = 1024;
+const BLOCKING_POOL_THREADS: usize = 4;
 
 // Error flag and shadow stack live in runtime.rs — we use accessors.
 
@@ -28,17 +33,19 @@ const PREEMPT_THRESHOLD: u32 = 1024;
 // Scheduler
 // ---------------------------------------------------------------------------
 
-struct GreenScheduler {
-    injector: Injector<ThreadPtr>,
+pub(crate) struct GreenScheduler {
+    pub(crate) injector: Injector<ThreadPtr>,
     stealers: Vec<Stealer<ThreadPtr>>,
-    stack_pool: StackPool,
-    park_mutex: Mutex<()>,
-    park_cv: Condvar,
+    pub(crate) stack_pool: StackPool,
+    pub(crate) park_mutex: Mutex<()>,
+    pub(crate) park_cv: Condvar,
+    poller: Mutex<Box<dyn Poller>>,
+    blocking_pool: Arc<BlockingPool>,
 }
 
 static SCHEDULER: OnceLock<GreenScheduler> = OnceLock::new();
 
-fn sched() -> &'static GreenScheduler {
+pub(crate) fn sched() -> &'static GreenScheduler {
     SCHEDULER.get_or_init(|| {
         let worker_count = thread::available_parallelism()
             .map(|c| c.get())
@@ -60,6 +67,8 @@ fn sched() -> &'static GreenScheduler {
             stack_pool: StackPool::new(worker_count * 16),
             park_mutex: Mutex::new(()),
             park_cv: Condvar::new(),
+            poller: Mutex::new(poller::create_poller()),
+            blocking_pool: BlockingPool::new(BLOCKING_POOL_THREADS),
         };
 
         for (id, w) in workers.into_iter().enumerate() {
@@ -95,10 +104,12 @@ fn worker_loop(_id: usize, local: Worker<ThreadPtr>) {
         let task = find_task(&local, sc);
 
         let Some(ThreadPtr(thread_ptr)) = task else {
+            // Idle path: poll I/O before parking
+            poll_io(sc);
             let guard = sc.park_mutex.lock().unwrap();
             let _ = sc
                 .park_cv
-                .wait_timeout(guard, std::time::Duration::from_millis(1))
+                .wait_timeout(guard, Duration::from_millis(1))
                 .unwrap();
             continue;
         };
@@ -180,6 +191,11 @@ fn worker_loop(_id: usize, local: Worker<ThreadPtr>) {
                 }
             }
 
+            YieldReason::WaitingOnIo | YieldReason::WaitingOnBlockingPool => {
+                // Thread is suspended — the poller or blocking pool will re-enqueue it
+                thread.state.lock().unwrap().status = ThreadStatus::Suspended;
+            }
+
             YieldReason::None => {
                 // Should not happen — treat as preempted
                 thread.state.lock().unwrap().status = ThreadStatus::Runnable;
@@ -216,6 +232,27 @@ fn find_task(local: &Worker<ThreadPtr>, sc: &GreenScheduler) -> Option<ThreadPtr
     }
 
     None
+}
+
+fn poll_io(sc: &GreenScheduler) {
+    let mut poller = match sc.poller.try_lock() {
+        Ok(p) => p,
+        Err(_) => return, // Another worker is polling
+    };
+    let mut events = Vec::new();
+    poller.poll(&mut events, Some(Duration::from_millis(0)));
+    drop(poller);
+
+    if events.is_empty() {
+        return;
+    }
+    for event in events {
+        let thread_ptr = event.token.0 as *mut GreenThread;
+        if !thread_ptr.is_null() {
+            sc.injector.push(ThreadPtr(thread_ptr));
+        }
+    }
+    sc.park_cv.notify_all();
 }
 
 fn complete_thread(thread: &GreenThread, result: i64, failed: bool) {
@@ -318,8 +355,6 @@ pub(crate) fn cancel_thread(thread_ptr: *mut GreenThread) {
 
     match st.status {
         ThreadStatus::Runnable => {
-            // Not yet running — mark terminal immediately.
-            // Worker loop's is_terminal check will skip it when dequeued.
             st.status = ThreadStatus::Cancelled;
             thread.cv.notify_all();
             let waiters = std::mem::take(&mut st.green_waiters);
@@ -330,7 +365,6 @@ pub(crate) fn cancel_thread(thread_ptr: *mut GreenThread) {
             // Currently executing — flag is set, safepoint will catch it
         }
         ThreadStatus::Suspended => {
-            // Waiting on another task — mark terminal immediately
             st.status = ThreadStatus::Cancelled;
             thread.cv.notify_all();
             let waiters = std::mem::take(&mut st.green_waiters);
@@ -403,6 +437,59 @@ fn wait_for_terminal(thread_ptr: *mut GreenThread) {
             st = thread.cv.wait(st).unwrap();
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// I/O suspension — Phase 5
+// ---------------------------------------------------------------------------
+
+/// Suspend the current green thread until `fd` is readable.
+/// Must be called from a worker thread (inside a green thread).
+pub(crate) fn io_wait_readable(fd: RawFd) {
+    let current = WORKER_CURRENT_THREAD.get();
+    assert!(!current.is_null(), "io_wait_readable outside green thread");
+
+    let sc = sched();
+    {
+        let mut poller = sc.poller.lock().unwrap();
+        poller.register(fd, Interest::Read, Token(current as usize));
+    }
+    yield_to_scheduler(YieldReason::WaitingOnIo);
+    // Resumed here when fd is readable
+    {
+        let mut poller = sc.poller.lock().unwrap();
+        poller.deregister(fd);
+    }
+}
+
+/// Suspend the current green thread until `fd` is writable.
+/// Must be called from a worker thread (inside a green thread).
+pub(crate) fn io_wait_writable(fd: RawFd) {
+    let current = WORKER_CURRENT_THREAD.get();
+    assert!(!current.is_null(), "io_wait_writable outside green thread");
+
+    let sc = sched();
+    {
+        let mut poller = sc.poller.lock().unwrap();
+        poller.register(fd, Interest::Write, Token(current as usize));
+    }
+    yield_to_scheduler(YieldReason::WaitingOnIo);
+    // Resumed here when fd is writable
+    {
+        let mut poller = sc.poller.lock().unwrap();
+        poller.deregister(fd);
+    }
+}
+
+/// Submit blocking work to the thread pool, suspending the current green thread.
+pub(crate) fn blocking_submit(work: Box<dyn FnOnce() -> i64 + Send>) {
+    let current = WORKER_CURRENT_THREAD.get();
+    assert!(!current.is_null(), "blocking_submit outside green thread");
+
+    let sc = sched();
+    sc.blocking_pool.submit(current, work);
+    yield_to_scheduler(YieldReason::WaitingOnBlockingPool);
+    // Resumed here when the blocking pool completes
 }
 
 // ---------------------------------------------------------------------------

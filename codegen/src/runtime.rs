@@ -1012,6 +1012,27 @@ pub extern "C" fn aster_task_resolve_first_i64(tasks: *mut u8) -> i64 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// I/O suspension hooks — Phase 5
+// ---------------------------------------------------------------------------
+
+/// Suspend the current green thread until `fd` is readable.
+/// Internal plumbing — not exposed to Aster code yet.
+pub extern "C" fn aster_io_wait_read(fd: i32) {
+    scheduler::io_wait_readable(fd);
+}
+
+/// Suspend the current green thread until `fd` is writable.
+pub extern "C" fn aster_io_wait_write(fd: i32) {
+    scheduler::io_wait_writable(fd);
+}
+
+/// Submit a blocking operation (entry(arg)) to the blocking thread pool.
+/// The current green thread suspends until the operation completes.
+pub extern "C" fn aster_blocking_submit(entry: extern "C" fn(i64) -> i64, arg: i64) {
+    scheduler::blocking_submit(Box::new(move || entry(arg)));
+}
+
 pub fn runtime_builtin_symbols() -> Vec<(&'static str, *const u8)> {
     vec![
         ("aster_alloc", aster_alloc as *const u8),
@@ -1078,6 +1099,9 @@ pub fn runtime_builtin_symbols() -> Vec<(&'static str, *const u8)> {
         ("aster_gc_push_roots", aster_gc_push_roots as *const u8),
         ("aster_gc_pop_roots", aster_gc_pop_roots as *const u8),
         ("aster_gc_collect", aster_gc_collect as *const u8),
+        ("aster_io_wait_read", aster_io_wait_read as *const u8),
+        ("aster_io_wait_write", aster_io_wait_write as *const u8),
+        ("aster_blocking_submit", aster_blocking_submit as *const u8),
     ]
 }
 
