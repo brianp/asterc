@@ -492,6 +492,9 @@ impl TypeChecker {
         // Collect diagnostics emitted during child scope
         let child_diagnostics = std::mem::take(&mut self.diagnostics);
 
+        // Tasks created in child scope must still be tracked for must-consume
+        let child_task_bindings = std::mem::take(&mut self.task_bindings);
+
         // Restore state
         self.loop_depth = saved_loop_depth;
         self.expected_return_type = saved_expected_return_type;
@@ -502,6 +505,9 @@ impl TypeChecker {
         self.const_names = saved_const_names;
         self.consumed_tasks = saved_consumed_tasks;
         self.task_bindings = saved_task_bindings;
+
+        // Merge child task bindings into parent (created tasks must be tracked)
+        self.task_bindings.extend(child_task_bindings);
 
         // Merge child diagnostics into parent
         self.diagnostics.extend(child_diagnostics);
@@ -979,6 +985,8 @@ impl TypeChecker {
                 if ty.is_error() {
                     return Ok(Type::Error);
                 }
+                // Mark returned task idents as consumed (caller takes responsibility)
+                self.mark_task_ident_consumed(expr);
                 if let Some(expected) = &self.expected_return_type
                     && ty != *expected
                     && !Self::is_nullable_compatible(expected, &ty)
