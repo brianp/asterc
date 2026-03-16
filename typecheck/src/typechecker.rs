@@ -289,6 +289,44 @@ impl TypeChecker {
         );
 
         builtin_traits.insert(
+            "Drop".into(),
+            TraitInfo {
+                name: "Drop".into(),
+                methods: HashMap::from([(
+                    "drop".into(),
+                    Type::Function {
+                        param_names: vec![],
+                        params: vec![],
+                        ret: Box::new(Type::Void),
+                        throws: None,
+                        suspendable: false,
+                    },
+                )]),
+                required_methods: vec!["drop".into()],
+                generic_params: None,
+            },
+        );
+
+        builtin_traits.insert(
+            "Close".into(),
+            TraitInfo {
+                name: "Close".into(),
+                methods: HashMap::from([(
+                    "close".into(),
+                    Type::Function {
+                        param_names: vec![],
+                        params: vec![],
+                        ret: Box::new(Type::Void),
+                        throws: Some(Box::new(Type::Custom("Error".into(), Vec::new()))),
+                        suspendable: false,
+                    },
+                )]),
+                required_methods: vec!["close".into()],
+                generic_params: None,
+            },
+        );
+
+        builtin_traits.insert(
             "Iterable".into(),
             TraitInfo {
                 name: "Iterable".into(),
@@ -353,6 +391,7 @@ impl TypeChecker {
             "Into",
             "Iterable",
             "Iterator",
+            // Drop and Close stay in prelude — they're fundamental lifecycle traits
         ] {
             tc.env.remove_trait(name);
         }
