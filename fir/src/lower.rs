@@ -1752,15 +1752,6 @@ impl Lowerer {
         // Mutex[T] methods → runtime calls
         if matches!(&object_ast_ty, Some(Type::Custom(name, _)) if name == "Mutex") {
             match method {
-                "lock" => {
-                    // m.lock(f: lambda) → lock, call lambda with value, unlock
-                    // For now, lower as acquire (lock returns the inner value)
-                    return Ok(FirExpr::RuntimeCall {
-                        name: "aster_mutex_lock".to_string(),
-                        args: vec![fir_object],
-                        ret_ty: FirType::I64,
-                    });
-                }
                 "acquire" => {
                     return Ok(FirExpr::RuntimeCall {
                         name: "aster_mutex_lock".to_string(),

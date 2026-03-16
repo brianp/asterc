@@ -1083,7 +1083,9 @@ pub extern "C" fn aster_mutex_lock(mutex: *mut u8) -> i64 {
         drop(state);
         scheduler::suspend_for_mutex();
         // Re-read value after wakeup — we now own the lock
-        let state = m.inner.lock().unwrap();
+        let mut state = m.inner.lock().unwrap();
+        state.locked = true;
+        state.owner = scheduler::current_thread_id();
         return state.value;
     }
     // Fallback for non-green-thread context: spin
@@ -1093,6 +1095,7 @@ pub extern "C" fn aster_mutex_lock(mutex: *mut u8) -> i64 {
         let mut state = m.inner.lock().unwrap();
         if !state.locked {
             state.locked = true;
+            state.owner = scheduler::current_thread_id();
             return state.value;
         }
     }
@@ -1168,15 +1171,21 @@ pub extern "C" fn aster_channel_send(ch: *mut u8, value: i64) {
     if state.closed {
         return;
     }
-    // Wake a receiver if one is waiting
-    if let Some(waiter) = state.recv_waiters.pop() {
+    // Direct delivery only when buffer is empty (preserves FIFO ordering)
+    if state.buffer.is_empty()
+        && let Some(waiter) = state.recv_waiters.pop()
+    {
         drop(state);
-        // Store the value where the receiver can get it
         scheduler::wake_thread_with_value(waiter, value);
         return;
     }
     if state.buffer.len() < state.capacity {
         state.buffer.push_back(value);
+        // Wake a receiver now that there's data in the buffer
+        if let Some(waiter) = state.recv_waiters.pop() {
+            drop(state);
+            scheduler::wake_thread(waiter);
+        }
     }
     // else: drop silently (fire-and-forget send semantics)
 }
@@ -1193,13 +1202,20 @@ pub extern "C" fn aster_channel_wait_send(ch: *mut u8, value: i64) {
         aster_error_set();
         return;
     }
-    if let Some(waiter) = state.recv_waiters.pop() {
+    // Direct delivery only when buffer is empty (preserves FIFO)
+    if state.buffer.is_empty()
+        && let Some(waiter) = state.recv_waiters.pop()
+    {
         drop(state);
         scheduler::wake_thread_with_value(waiter, value);
         return;
     }
     if state.buffer.len() < state.capacity {
         state.buffer.push_back(value);
+        if let Some(waiter) = state.recv_waiters.pop() {
+            drop(state);
+            scheduler::wake_thread(waiter);
+        }
         return;
     }
     // Buffer full — suspend
@@ -1208,6 +1224,19 @@ pub extern "C" fn aster_channel_wait_send(ch: *mut u8, value: i64) {
         state.send_waiters.push((current, value));
         drop(state);
         scheduler::suspend_for_channel_send();
+    } else {
+        // Fallback for non-green-thread context: spin until space
+        drop(state);
+        loop {
+            std::thread::yield_now();
+            let mut state = c.inner.lock().unwrap();
+            if state.buffer.len() < state.capacity || state.closed {
+                if !state.closed {
+                    state.buffer.push_back(value);
+                }
+                break;
+            }
+        }
     }
 }
 
@@ -1223,7 +1252,10 @@ pub extern "C" fn aster_channel_try_send(ch: *mut u8, value: i64) {
         aster_error_set();
         return;
     }
-    if let Some(waiter) = state.recv_waiters.pop() {
+    // Direct delivery only when buffer is empty (preserves FIFO)
+    if state.buffer.is_empty()
+        && let Some(waiter) = state.recv_waiters.pop()
+    {
         drop(state);
         scheduler::wake_thread_with_value(waiter, value);
         return;

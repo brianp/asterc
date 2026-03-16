@@ -839,19 +839,6 @@ impl TypeChecker {
         {
             let inner = &type_args[0];
             return match field {
-                "lock" => Ok(Type::Function {
-                    param_names: vec!["f".into()],
-                    params: vec![Type::Function {
-                        param_names: vec!["value".into()],
-                        params: vec![inner.clone()],
-                        ret: Box::new(Type::Void),
-                        throws: None,
-                        suspendable: false,
-                    }],
-                    ret: Box::new(Type::Void),
-                    throws: None,
-                    suspendable: true,
-                }),
                 "acquire" => Ok(Type::Function {
                     param_names: vec![],
                     params: vec![],

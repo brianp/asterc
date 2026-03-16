@@ -308,13 +308,17 @@ impl TypeChecker {
                             .with_label(args[0].1.span(), "expected Int"));
                         }
                     }
-                    // Type parameter inferred from expected type or defaults to Error sentinel
+                    // Type parameter inferred from expected type
                     let elem_ty = if let Some(Type::Custom(_, ref type_args)) = self.expected_type
                         && !type_args.is_empty()
                     {
                         type_args[0].clone()
                     } else {
-                        Type::Error
+                        return Err(Diagnostic::error(
+                            "cannot infer Channel element type; add a type annotation like `let ch: Channel[Int] = Channel()`"
+                        .to_string())
+                        .with_code("E005")
+                        .with_label(func.span(), "element type unknown"));
                     };
                     return Ok(Type::Custom("Channel".into(), vec![elem_ty]));
                 }
