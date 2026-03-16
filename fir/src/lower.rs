@@ -116,6 +116,10 @@ pub struct Lowerer {
     current_return_type: Option<Type>,
     /// Tracks the current async-scope ownership context.
     async_scope_stack: Vec<LocalId>,
+    /// Locals that implement Drop or Close, in declaration order.
+    /// On scope exit, cleanup calls are emitted in reverse order.
+    /// Each entry: (local_id, class_name, has_drop, has_close).
+    cleanup_locals: Vec<(LocalId, String, bool, bool)>,
 }
 
 impl Lowerer {
@@ -142,6 +146,7 @@ impl Lowerer {
             function_defaults: HashMap::new(),
             current_return_type: None,
             async_scope_stack: Vec::new(),
+            cleanup_locals: Vec::new(),
         }
     }
 
@@ -440,6 +445,7 @@ impl Lowerer {
         let saved_closure_info = std::mem::take(&mut self.closure_info);
         let saved_next_local = self.next_local;
         let saved_return_type = self.current_return_type.take();
+        let saved_cleanup_locals = std::mem::take(&mut self.cleanup_locals);
         self.next_local = 0;
         self.current_return_type = Some(ret_type.clone());
 
@@ -491,6 +497,9 @@ impl Lowerer {
                 && *ret_type != Type::Inferred
                 && let Some(FirStmt::Expr(expr)) = fir_body.pop()
             {
+                // Emit cleanup calls before implicit return
+                self.emit_cleanup_calls();
+                fir_body.append(&mut self.pending_stmts);
                 fir_body.push(FirStmt::Return(expr));
             }
         }
@@ -533,6 +542,7 @@ impl Lowerer {
         self.closure_info = saved_closure_info;
         self.next_local = saved_next_local;
         self.current_return_type = saved_return_type;
+        self.cleanup_locals = saved_cleanup_locals;
 
         Ok(id)
     }
@@ -683,6 +693,46 @@ impl Lowerer {
         Ok(())
     }
 
+    /// Emit cleanup calls for all locals that implement Close or Drop,
+    /// in reverse declaration order. Close is called before Drop.
+    /// Cleanup calls are pushed to `self.pending_stmts`.
+    fn emit_cleanup_calls(&mut self) {
+        if self.cleanup_locals.is_empty() {
+            return;
+        }
+        // Reverse declaration order: last declared = first cleaned
+        for &(local_id, ref class_name, has_drop, has_close) in self.cleanup_locals.iter().rev() {
+            // Close first (async cleanup), then Drop (sync cleanup)
+            if has_close
+                && let Some(&func_id) = self.functions.get(&format!("{}.close", class_name))
+            {
+                let fir_type = self
+                    .local_types
+                    .get(&local_id)
+                    .cloned()
+                    .unwrap_or(FirType::Ptr);
+                self.pending_stmts.push(FirStmt::Expr(FirExpr::Call {
+                    func: func_id,
+                    args: vec![FirExpr::LocalVar(local_id, fir_type)],
+                    ret_ty: FirType::Void,
+                }));
+            }
+            if has_drop && let Some(&func_id) = self.functions.get(&format!("{}.drop", class_name))
+            {
+                let fir_type = self
+                    .local_types
+                    .get(&local_id)
+                    .cloned()
+                    .unwrap_or(FirType::Ptr);
+                self.pending_stmts.push(FirStmt::Expr(FirExpr::Call {
+                    func: func_id,
+                    args: vec![FirExpr::LocalVar(local_id, fir_type)],
+                    ret_ty: FirType::Void,
+                }));
+            }
+        }
+    }
+
     fn lower_body(&mut self, stmts: &[Stmt]) -> Result<Vec<FirStmt>, LowerError> {
         let mut result = Vec::new();
         for stmt in stmts {
@@ -800,6 +850,21 @@ impl Lowerer {
                     }
                 }
                 let fir_value = self.wrap_nullable_binding(type_ann.as_ref(), value, raw_value);
+
+                // Track locals that implement Drop or Close for cleanup
+                if let Some(class_name) = self.local_ast_types.get(name).and_then(|t| match t {
+                    Type::Custom(n, _) => Some(n.clone()),
+                    _ => None,
+                }) && let Some(ci) = self.type_env.get_class(&class_name)
+                {
+                    let has_drop = ci.includes.contains(&"Drop".to_string());
+                    let has_close = ci.includes.contains(&"Close".to_string());
+                    if has_drop || has_close {
+                        self.cleanup_locals
+                            .push((local_id, class_name, has_drop, has_close));
+                    }
+                }
+
                 Ok(FirStmt::Let {
                     name: local_id,
                     ty: fir_type,
@@ -810,6 +875,8 @@ impl Lowerer {
                 let fir_expr = self.lower_expr(expr)?;
                 // Wrap return value in TagWrap for nullable return types
                 let wrapped = self.maybe_wrap_nullable_return(fir_expr, expr);
+                // Emit cleanup calls before return (reverse declaration order)
+                self.emit_cleanup_calls();
                 Ok(FirStmt::Return(wrapped))
             }
             Stmt::If {
@@ -3352,6 +3419,7 @@ impl Lowerer {
         let saved_closure_info = std::mem::take(&mut self.closure_info);
         let saved_next_local = self.next_local;
         let saved_return_type = self.current_return_type.take();
+        let saved_cleanup_locals = std::mem::take(&mut self.cleanup_locals);
         self.next_local = 0;
         self.current_return_type = Some(ret_type.clone());
 
@@ -3453,6 +3521,7 @@ impl Lowerer {
         self.closure_info = saved_closure_info;
         self.next_local = saved_next_local;
         self.current_return_type = saved_return_type;
+        self.cleanup_locals = saved_cleanup_locals;
 
         // Re-register the function name
         self.functions.insert(lambda_name, func_id);

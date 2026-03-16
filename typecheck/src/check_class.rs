@@ -267,6 +267,7 @@ impl TypeChecker {
                         "Printable" => "fmt",
                         "Iterable" | "Iterator" => "collections",
                         "From" | "Into" => "convert",
+                        "Drop" | "Close" => "lifecycle",
                         _ => "std",
                     };
                     Diagnostic::error(format!(
