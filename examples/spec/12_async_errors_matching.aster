@@ -33,8 +33,9 @@ def fetch_data() -> String
   "data"
 
 # Async call returns Task[T]
-def parallel_work() -> Void
+def parallel_work() -> Task[String]
   let task = async fetch_data()
+  task
 
 # Detached fire-and-forget
 def background() -> Void

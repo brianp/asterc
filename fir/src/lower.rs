@@ -1118,6 +1118,38 @@ impl Lowerer {
                         return Ok(self.to_string_expr(arg, fir_arg));
                     }
 
+                    // Mutex(value: x) → aster_mutex_new(x)
+                    if name == "Mutex" {
+                        let value_arg = args
+                            .iter()
+                            .find(|(n, _)| n == "value")
+                            .map(|(_, e)| e)
+                            .or_else(|| args.first().map(|(_, e)| e));
+                        if let Some(val) = value_arg {
+                            let fir_val = self.lower_expr(val)?;
+                            return Ok(FirExpr::RuntimeCall {
+                                name: "aster_mutex_new".to_string(),
+                                args: vec![fir_val],
+                                ret_ty: FirType::Ptr,
+                            });
+                        }
+                    }
+
+                    // Channel(capacity?: x) → aster_channel_new(x)
+                    if name == "Channel" {
+                        let cap_arg = args.iter().find(|(n, _)| n == "capacity").map(|(_, e)| e);
+                        let fir_cap = if let Some(cap) = cap_arg {
+                            self.lower_expr(cap)?
+                        } else {
+                            FirExpr::IntLit(0) // 0 = unbuffered
+                        };
+                        return Ok(FirExpr::RuntimeCall {
+                            name: "aster_channel_new".to_string(),
+                            args: vec![fir_cap],
+                            ret_ty: FirType::Ptr,
+                        });
+                    }
+
                     if name == "resolve_all"
                         && let Some((_, arg)) = args.first()
                     {
@@ -1711,6 +1743,114 @@ impl Lowerer {
                 "wait_cancel" => {
                     return Ok(FirExpr::WaitCancel {
                         task: Box::new(fir_object),
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        // Mutex[T] methods → runtime calls
+        if matches!(&object_ast_ty, Some(Type::Custom(name, _)) if name == "Mutex") {
+            match method {
+                "lock" => {
+                    // m.lock(f: lambda) → lock, call lambda with value, unlock
+                    // For now, lower as acquire (lock returns the inner value)
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_mutex_lock".to_string(),
+                        args: vec![fir_object],
+                        ret_ty: FirType::I64,
+                    });
+                }
+                "acquire" => {
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_mutex_lock".to_string(),
+                        args: vec![fir_object],
+                        ret_ty: FirType::I64,
+                    });
+                }
+                "release" => {
+                    let value_arg = args
+                        .iter()
+                        .find(|(n, _)| n == "value")
+                        .map(|(_, e)| e)
+                        .or_else(|| args.first().map(|(_, e)| e));
+                    let fir_value = if let Some(val) = value_arg {
+                        self.lower_expr(val)?
+                    } else {
+                        FirExpr::IntLit(0)
+                    };
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_mutex_unlock".to_string(),
+                        args: vec![fir_object, fir_value],
+                        ret_ty: FirType::Void,
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        // Channel[T] methods → runtime calls
+        if matches!(&object_ast_ty, Some(Type::Custom(name, _)) if name == "Channel") {
+            let mut fir_value_arg = || -> Result<FirExpr, LowerError> {
+                let value_expr = args
+                    .iter()
+                    .find(|(n, _)| n == "value")
+                    .map(|(_, e)| e)
+                    .or_else(|| args.first().map(|(_, e)| e));
+                if let Some(val) = value_expr {
+                    self.lower_expr(val)
+                } else {
+                    Ok(FirExpr::IntLit(0))
+                }
+            };
+            match method {
+                "send" => {
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_channel_send".to_string(),
+                        args: vec![fir_object, fir_value_arg()?],
+                        ret_ty: FirType::Void,
+                    });
+                }
+                "wait_send" => {
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_channel_wait_send".to_string(),
+                        args: vec![fir_object, fir_value_arg()?],
+                        ret_ty: FirType::Void,
+                    });
+                }
+                "try_send" => {
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_channel_try_send".to_string(),
+                        args: vec![fir_object, fir_value_arg()?],
+                        ret_ty: FirType::Void,
+                    });
+                }
+                "receive" => {
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_channel_receive".to_string(),
+                        args: vec![fir_object],
+                        ret_ty: FirType::I64,
+                    });
+                }
+                "wait_receive" => {
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_channel_wait_receive".to_string(),
+                        args: vec![fir_object],
+                        ret_ty: FirType::I64,
+                    });
+                }
+                "try_receive" => {
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_channel_try_receive".to_string(),
+                        args: vec![fir_object],
+                        ret_ty: FirType::I64,
+                    });
+                }
+                "close" => {
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_channel_close".to_string(),
+                        args: vec![fir_object],
+                        ret_ty: FirType::Void,
                     });
                 }
                 _ => {}

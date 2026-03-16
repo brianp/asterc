@@ -11,15 +11,31 @@ impl TypeChecker {
             Expr::Bool(..) => Ok(Type::Bool),
             Expr::Nil(_) => Ok(Type::Nil),
 
-            Expr::Ident(name, span) => self.env.get_var(name).ok_or_else(|| {
-                let mut diag = Diagnostic::error(format!("Unknown identifier '{}'", name))
-                    .with_code("E002")
-                    .with_label(*span, "not found in this scope");
-                if let Some(suggestion) = self.suggest_similar_name(name) {
-                    diag = diag.with_note(format!("did you mean '{}'?", suggestion));
+            Expr::Ident(name, span) => {
+                // Data sharing warning: variable used after crossing a thread boundary
+                if let Some(crossing_span) = self.boundary_crossed.get(name) {
+                    self.diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "'{}' was copied to an async context and is used afterward — mutation only affects the local copy",
+                            name
+                        ))
+                        .with_code("W002")
+                        .with_label(*crossing_span, "copied here")
+                        .with_label(*span, "used after copy"),
+                    );
+                    // Remove to warn only once per variable
+                    self.boundary_crossed.remove(name);
                 }
-                diag
-            }),
+                self.env.get_var(name).ok_or_else(|| {
+                    let mut diag = Diagnostic::error(format!("Unknown identifier '{}'", name))
+                        .with_code("E002")
+                        .with_label(*span, "not found in this scope");
+                    if let Some(suggestion) = self.suggest_similar_name(name) {
+                        diag = diag.with_note(format!("did you mean '{}'?", suggestion));
+                    }
+                    diag
+                })
+            }
 
             Expr::Lambda {
                 params,
@@ -397,10 +413,18 @@ impl TypeChecker {
                     .with_code("E004")
                     .with_label(expr.span(), format!("expected {:?}", ret_type)));
                 }
+                // Mark returned task idents as consumed (caller takes responsibility)
+                sub.mark_task_ident_consumed(expr);
                 last = ret_val_ty;
             } else {
                 last = sub.check_stmt(s)?;
             }
+        }
+        // Mark implicit return (last expression) as consumed if it's a task ident
+        if let Some(last_stmt) = body.last()
+            && let ast::Stmt::Expr(expr, _) = last_stmt
+        {
+            sub.mark_task_ident_consumed(expr);
         }
         if !is_abstract
             && &last != ret_type
@@ -433,6 +457,26 @@ impl TypeChecker {
         } else {
             ret_type.clone()
         };
+
+        // Must-consume check: emit E027 for any Task[T] binding not consumed
+        if !is_abstract {
+            for (name, span) in &sub.task_bindings {
+                if !sub.consumed_tasks.contains(name) {
+                    sub.diagnostics.push(
+                        Diagnostic::error(format!(
+                            "Task '{}' is never consumed — resolve it, return it, or wrap in `async scope`",
+                            name
+                        ))
+                        .with_code("E027")
+                        .with_label(*span, "task created here but never resolved")
+                        .with_note("use `resolve {}!` to consume, or `detached async f()` for fire-and-forget".replace("{}", name)),
+                    );
+                }
+            }
+            // Propagate diagnostics to parent
+            self.diagnostics
+                .extend(std::mem::take(&mut sub.diagnostics));
+        }
 
         // Build the Function type. Convert inferred type params from Custom to TypeVar.
         let (final_params, final_ret) = if inferred_type_params.is_empty() {
@@ -764,6 +808,8 @@ impl TypeChecker {
             .with_label(object.span(), "nullable type"));
         }
         if let Type::Task(ref inner) = obj_ty {
+            // Any method call on a Task counts as consumption
+            self.mark_task_ident_consumed(object);
             return match field {
                 "is_ready" => Ok(Type::Function {
                     param_names: vec![],
@@ -784,6 +830,117 @@ impl TypeChecker {
                         .with_code("E010")
                         .with_label(object.span(), format!("no member '{}' on Task", field)),
                 ),
+            };
+        }
+        // Handle Mutex[T] built-in methods
+        if let Type::Custom(ref name, ref type_args) = obj_ty
+            && name == "Mutex"
+            && !type_args.is_empty()
+        {
+            let inner = &type_args[0];
+            return match field {
+                "lock" => Ok(Type::Function {
+                    param_names: vec!["f".into()],
+                    params: vec![Type::Function {
+                        param_names: vec!["value".into()],
+                        params: vec![inner.clone()],
+                        ret: Box::new(Type::Void),
+                        throws: None,
+                        suspendable: false,
+                    }],
+                    ret: Box::new(Type::Void),
+                    throws: None,
+                    suspendable: true,
+                }),
+                "acquire" => Ok(Type::Function {
+                    param_names: vec![],
+                    params: vec![],
+                    ret: Box::new(inner.clone()),
+                    throws: None,
+                    suspendable: true,
+                }),
+                "release" => Ok(Type::Function {
+                    param_names: vec!["value".into()],
+                    params: vec![inner.clone()],
+                    ret: Box::new(Type::Void),
+                    throws: None,
+                    suspendable: false,
+                }),
+                _ => Err(
+                    Diagnostic::error(format!("Mutex[{}] has no method '{}'", inner, field))
+                        .with_code("E010")
+                        .with_label(object.span(), format!("no member '{}' on Mutex", field)),
+                ),
+            };
+        }
+        // Handle Channel[T] built-in methods
+        if let Type::Custom(ref name, ref type_args) = obj_ty
+            && name == "Channel"
+            && !type_args.is_empty()
+        {
+            let inner = &type_args[0];
+            return match field {
+                "send" => Ok(Type::Function {
+                    param_names: vec!["value".into()],
+                    params: vec![inner.clone()],
+                    ret: Box::new(Type::Void),
+                    throws: None,
+                    suspendable: false,
+                }),
+                "wait_send" => Ok(Type::Function {
+                    param_names: vec!["value".into()],
+                    params: vec![inner.clone()],
+                    ret: Box::new(Type::Void),
+                    throws: None,
+                    suspendable: true,
+                }),
+                "try_send" => Ok(Type::Function {
+                    param_names: vec!["value".into()],
+                    params: vec![inner.clone()],
+                    ret: Box::new(Type::Void),
+                    throws: Some(Box::new(Type::Custom(
+                        "ChannelFullError".into(),
+                        Vec::new(),
+                    ))),
+                    suspendable: false,
+                }),
+                "receive" => Ok(Type::Function {
+                    param_names: vec![],
+                    params: vec![],
+                    ret: Box::new(Type::Nullable(Box::new(inner.clone()))),
+                    throws: None,
+                    suspendable: false,
+                }),
+                "wait_receive" => Ok(Type::Function {
+                    param_names: vec![],
+                    params: vec![],
+                    ret: Box::new(inner.clone()),
+                    throws: None,
+                    suspendable: true,
+                }),
+                "try_receive" => Ok(Type::Function {
+                    param_names: vec![],
+                    params: vec![],
+                    ret: Box::new(inner.clone()),
+                    throws: Some(Box::new(Type::Custom(
+                        "ChannelEmptyError".into(),
+                        Vec::new(),
+                    ))),
+                    suspendable: false,
+                }),
+                "close" => Ok(Type::Function {
+                    param_names: vec![],
+                    params: vec![],
+                    ret: Box::new(Type::Void),
+                    throws: None,
+                    suspendable: false,
+                }),
+                _ => Err(Diagnostic::error(format!(
+                    "Channel[{}] has no method '{}'",
+                    inner, field
+                ))
+                .with_code("E010")
+                .with_label(object.span(), format!("no member '{}' on Channel", field))),
             };
         }
         // Handle List built-in methods (List implicitly includes Iterable)
@@ -1173,6 +1330,12 @@ impl TypeChecker {
     ) -> Result<Type, Diagnostic> {
         // Bypass throws check: error handling moves to `resolve task!`
         let ret_ty = self.check_call_inner(func, args, true)?;
+        // Mark arguments as boundary-crossed for data sharing warnings
+        for (_, arg_expr) in args {
+            if let Expr::Ident(name, span) = arg_expr {
+                self.boundary_crossed.insert(name.clone(), *span);
+            }
+        }
         Ok(Type::Task(Box::new(ret_ty)))
     }
 
@@ -1235,6 +1398,10 @@ impl TypeChecker {
         sub.loop_depth = 0; // async scope cannot break/continue outer loops
         let result = sub.check_body(body);
         self.consumed_tasks.extend(sub.consumed_tasks);
+        // Tasks created inside async scope are consumed by the scope's cleanup
+        for name in sub.task_bindings.keys() {
+            self.consumed_tasks.insert(name.clone());
+        }
         result
     }
 }

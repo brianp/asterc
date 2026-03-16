@@ -107,4 +107,22 @@ pub static RUNTIME_SIGS: &[RuntimeSig] = &[
     ("aster_io_wait_read", &[types::I32], None),
     ("aster_io_wait_write", &[types::I32], None),
     ("aster_blocking_submit", &[types::I64, types::I64], None),
+    // Mutex[T] (Phase 7)
+    ("aster_mutex_new", &[types::I64], Some(types::I64)),
+    ("aster_mutex_lock", &[types::I64], Some(types::I64)),
+    ("aster_mutex_unlock", &[types::I64, types::I64], None),
+    ("aster_mutex_get_value", &[types::I64], Some(types::I64)),
+    // Channel[T] (Phase 8)
+    ("aster_channel_new", &[types::I64], Some(types::I64)),
+    ("aster_channel_send", &[types::I64, types::I64], None),
+    ("aster_channel_wait_send", &[types::I64, types::I64], None),
+    ("aster_channel_try_send", &[types::I64, types::I64], None),
+    ("aster_channel_receive", &[types::I64], Some(types::I64)),
+    (
+        "aster_channel_wait_receive",
+        &[types::I64],
+        Some(types::I64),
+    ),
+    ("aster_channel_try_receive", &[types::I64], Some(types::I64)),
+    ("aster_channel_close", &[types::I64], None),
 ];

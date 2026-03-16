@@ -60,4 +60,7 @@ pub(crate) enum YieldReason {
     WaitingOnTask(*mut GreenThread),
     WaitingOnIo,
     WaitingOnBlockingPool,
+    WaitingOnMutex,
+    WaitingOnChannelSend,
+    WaitingOnChannelRecv,
 }

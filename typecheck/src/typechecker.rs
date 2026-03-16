@@ -1,5 +1,6 @@
 use ast::{
-    ClassInfo, Diagnostic, EnumInfo, Expr, MatchPattern, Stmt, TraitInfo, Type, TypeEnv, TypeTable,
+    ClassInfo, Diagnostic, EnumInfo, Expr, MatchPattern, Span, Stmt, TraitInfo, Type, TypeEnv,
+    TypeTable,
 };
 use indexmap::IndexMap;
 use std::cell::RefCell;
@@ -37,6 +38,13 @@ pub struct TypeChecker {
     pub(crate) default_params: HashMap<String, std::collections::HashSet<String>>,
     /// Detectable single-consumer tracking for task bindings resolved in the current checker.
     pub(crate) consumed_tasks: std::collections::HashSet<String>,
+    /// Task bindings created in the current scope via `let t = async f()`.
+    /// Maps variable name to creation span for must-consume enforcement.
+    pub(crate) task_bindings: HashMap<String, Span>,
+    /// Variables that have crossed a thread boundary (passed to `async f()`).
+    /// Maps variable name to the span where the crossing happened.
+    /// Used for data sharing warnings (W002).
+    pub(crate) boundary_crossed: HashMap<String, Span>,
     /// Maps expression spans to their resolved types. Consumed by FIR lowerer.
     pub type_table: TypeTable,
 }
@@ -147,6 +155,38 @@ impl TypeChecker {
                 suspendable: false,
             },
         );
+
+        // Built-in error types for Mutex and Channel
+        for (name, parent) in [
+            ("LockTimeoutError", "Error"),
+            ("ChannelFullError", "Error"),
+            ("ChannelEmptyError", "Error"),
+            ("ChannelClosedError", "Error"),
+        ] {
+            env.set_class(
+                name.into(),
+                ClassInfo {
+                    ty: Type::Custom(name.into(), Vec::new()),
+                    fields: IndexMap::new(),
+                    methods: HashMap::new(),
+                    generic_params: None,
+                    extends: Some(parent.into()),
+                    includes: Vec::new(),
+                    overloaded_methods: HashMap::new(),
+                    parametric_includes: Vec::new(),
+                },
+            );
+            env.set_var(
+                name.into(),
+                Type::Function {
+                    param_names: vec!["message".into()],
+                    params: vec![Type::String],
+                    ret: Box::new(Type::Custom(name.into(), Vec::new())),
+                    throws: None,
+                    suspendable: false,
+                },
+            );
+        }
 
         // Build protocol traits and supporting enums — stored in builtin maps.
         // In prelude mode (no loader), also installed in env.
@@ -373,6 +413,8 @@ impl TypeChecker {
             const_names: std::collections::HashSet::new(),
             default_params: HashMap::new(),
             consumed_tasks: std::collections::HashSet::new(),
+            task_bindings: HashMap::new(),
+            boundary_crossed: HashMap::new(),
             type_table: TypeTable::new(),
         }
     }
@@ -416,6 +458,8 @@ impl TypeChecker {
             const_names: self.const_names.clone(),
             default_params: self.default_params.clone(),
             consumed_tasks: self.consumed_tasks.clone(),
+            task_bindings: self.task_bindings.clone(),
+            boundary_crossed: HashMap::new(),
             type_table: TypeTable::new(),
         }
     }
@@ -435,6 +479,7 @@ impl TypeChecker {
         let saved_expected_type = self.expected_type.clone();
         let saved_const_names = self.const_names.clone();
         let saved_consumed_tasks = self.consumed_tasks.clone();
+        let saved_task_bindings = self.task_bindings.clone();
 
         // Enter child scope (O(1) — moves data, no clone)
         self.env.enter_scope();
@@ -456,6 +501,7 @@ impl TypeChecker {
         self.expected_type = saved_expected_type;
         self.const_names = saved_const_names;
         self.consumed_tasks = saved_consumed_tasks;
+        self.task_bindings = saved_task_bindings;
 
         // Merge child diagnostics into parent
         self.diagnostics.extend(child_diagnostics);
@@ -858,6 +904,10 @@ impl TypeChecker {
                     }
                 }
                 self.env.set_var(name.clone(), ty.clone());
+                // Track Task[T] bindings for must-consume enforcement
+                if matches!(ty, Type::Task(_)) {
+                    self.task_bindings.insert(name.clone(), stmt_span);
+                }
                 Ok(ty)
             }
             Stmt::Class {
@@ -1109,6 +1159,8 @@ impl TypeChecker {
                             .with_code("E001")
                             .with_label(stmt_span, format!("expected {:?}", target_ty)));
                         }
+                        // Reassignment clears boundary-crossed status (new value)
+                        self.boundary_crossed.remove(name);
                         Ok(val_ty)
                     }
                     Expr::Member { object, field, .. } => {

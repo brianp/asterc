@@ -570,6 +570,9 @@ enum {
     YIELD_WAITING_ON_TASK    = 4,
     YIELD_WAITING_ON_IO      = 5,
     YIELD_WAITING_ON_BLOCKING = 6,
+    YIELD_WAITING_ON_MUTEX    = 7,
+    YIELD_WAITING_ON_CHAN_SEND = 8,
+    YIELD_WAITING_ON_CHAN_RECV = 9,
 };
 
 /* --- Thread-local worker state --- */
@@ -867,6 +870,15 @@ static void* worker_main(void *arg) {
             pthread_mutex_unlock(&t->mu);
             /* Submit to blocking pool */
             blocking_pool_submit(t, yield_blocking_entry, yield_blocking_arg);
+            break;
+
+        case YIELD_WAITING_ON_MUTEX:
+        case YIELD_WAITING_ON_CHAN_SEND:
+        case YIELD_WAITING_ON_CHAN_RECV:
+            pthread_mutex_lock(&t->mu);
+            t->status = GT_SUSPENDED;
+            pthread_mutex_unlock(&t->mu);
+            /* Thread is on mutex/channel wait queue; will be re-enqueued when woken */
             break;
 
         default:
@@ -1291,6 +1303,284 @@ int64_t aster_task_resolve_first_i64(void* tasks) {
         }
     }
     return aster_task_resolve_i64((void*)winner);
+}
+
+/* ===================================================================
+ * Mutex[T]
+ * =================================================================== */
+
+typedef struct {
+    pthread_mutex_t mu;
+    int locked;
+    int64_t value;
+    GreenThread **waiters;
+    int64_t wait_len;
+    int64_t wait_cap;
+} AsterMutex;
+
+void* aster_mutex_new(int64_t value) {
+    AsterMutex *m = (AsterMutex*)calloc(1, sizeof(AsterMutex));
+    if (!m) { fprintf(stderr, "out of memory\n"); abort(); }
+    pthread_mutex_init(&m->mu, NULL);
+    m->locked = 0;
+    m->value = value;
+    m->waiters = NULL;
+    m->wait_len = 0;
+    m->wait_cap = 0;
+    return m;
+}
+
+int64_t aster_mutex_lock(void *ptr) {
+    AsterMutex *m = (AsterMutex*)ptr;
+    if (!m) return 0;
+    pthread_mutex_lock(&m->mu);
+    while (m->locked) {
+        /* Add self to wait queue */
+        GreenThread *self = worker_current_thread;
+        if (m->wait_len >= m->wait_cap) {
+            int64_t new_cap = m->wait_cap == 0 ? 4 : m->wait_cap * 2;
+            m->waiters = (GreenThread**)realloc(m->waiters, (size_t)(new_cap * (int64_t)sizeof(GreenThread*)));
+            m->wait_cap = new_cap;
+        }
+        m->waiters[m->wait_len++] = self;
+        pthread_mutex_unlock(&m->mu);
+        if (self) {
+            yield_to_scheduler(YIELD_WAITING_ON_MUTEX);
+        }
+        pthread_mutex_lock(&m->mu);
+    }
+    m->locked = 1;
+    int64_t val = m->value;
+    pthread_mutex_unlock(&m->mu);
+    return val;
+}
+
+void aster_mutex_unlock(void *ptr, int64_t value) {
+    AsterMutex *m = (AsterMutex*)ptr;
+    if (!m) return;
+    pthread_mutex_lock(&m->mu);
+    m->value = value;
+    m->locked = 0;
+    if (m->wait_len > 0) {
+        GreenThread *waiter = m->waiters[0];
+        /* Shift wait queue */
+        for (int64_t i = 1; i < m->wait_len; i++) {
+            m->waiters[i-1] = m->waiters[i];
+        }
+        m->wait_len--;
+        pthread_mutex_unlock(&m->mu);
+        /* Re-enqueue the waiter */
+        if (waiter) {
+            pthread_mutex_lock(&waiter->mu);
+            waiter->status = GT_RUNNABLE;
+            pthread_mutex_unlock(&waiter->mu);
+            wq_push(&worker_locals[0], waiter);
+        }
+    } else {
+        pthread_mutex_unlock(&m->mu);
+    }
+}
+
+int64_t aster_mutex_get_value(void *ptr) {
+    AsterMutex *m = (AsterMutex*)ptr;
+    if (!m) return 0;
+    pthread_mutex_lock(&m->mu);
+    int64_t val = m->value;
+    pthread_mutex_unlock(&m->mu);
+    return val;
+}
+
+/* ===================================================================
+ * Channel[T]
+ * =================================================================== */
+
+typedef struct {
+    pthread_mutex_t mu;
+    int64_t *buffer;
+    int64_t buf_len;
+    int64_t buf_cap;
+    int64_t capacity;
+    int closed;
+    GreenThread **send_waiters;
+    int64_t send_wait_len;
+    int64_t send_wait_cap;
+    int64_t *send_values;       /* pending values for waiting senders */
+    GreenThread **recv_waiters;
+    int64_t recv_wait_len;
+    int64_t recv_wait_cap;
+} AsterChannel;
+
+void* aster_channel_new(int64_t capacity) {
+    AsterChannel *ch = (AsterChannel*)calloc(1, sizeof(AsterChannel));
+    if (!ch) { fprintf(stderr, "out of memory\n"); abort(); }
+    pthread_mutex_init(&ch->mu, NULL);
+    ch->capacity = capacity > 0 ? capacity : 1;
+    ch->buffer = (int64_t*)calloc((size_t)ch->capacity, sizeof(int64_t));
+    ch->buf_len = 0;
+    ch->buf_cap = ch->capacity;
+    ch->closed = 0;
+    return ch;
+}
+
+static void channel_wake_receiver(AsterChannel *ch) {
+    if (ch->recv_wait_len > 0) {
+        GreenThread *waiter = ch->recv_waiters[0];
+        for (int64_t i = 1; i < ch->recv_wait_len; i++)
+            ch->recv_waiters[i-1] = ch->recv_waiters[i];
+        ch->recv_wait_len--;
+        if (waiter) {
+            pthread_mutex_lock(&waiter->mu);
+            waiter->status = GT_RUNNABLE;
+            pthread_mutex_unlock(&waiter->mu);
+            wq_push(&worker_locals[0], waiter);
+        }
+    }
+}
+
+static void channel_wake_sender(AsterChannel *ch) {
+    if (ch->send_wait_len > 0) {
+        GreenThread *waiter = ch->send_waiters[0];
+        for (int64_t i = 1; i < ch->send_wait_len; i++)
+            ch->send_waiters[i-1] = ch->send_waiters[i];
+        ch->send_wait_len--;
+        if (waiter) {
+            pthread_mutex_lock(&waiter->mu);
+            waiter->status = GT_RUNNABLE;
+            pthread_mutex_unlock(&waiter->mu);
+            wq_push(&worker_locals[0], waiter);
+        }
+    }
+}
+
+void aster_channel_send(void *ptr, int64_t value) {
+    AsterChannel *ch = (AsterChannel*)ptr;
+    if (!ch) return;
+    pthread_mutex_lock(&ch->mu);
+    if (ch->closed || ch->buf_len >= ch->buf_cap) {
+        /* Drop silently (fire-and-forget tier) */
+        pthread_mutex_unlock(&ch->mu);
+        return;
+    }
+    ch->buffer[ch->buf_len++] = value;
+    channel_wake_receiver(ch);
+    pthread_mutex_unlock(&ch->mu);
+}
+
+void aster_channel_wait_send(void *ptr, int64_t value) {
+    AsterChannel *ch = (AsterChannel*)ptr;
+    if (!ch) return;
+    pthread_mutex_lock(&ch->mu);
+    while (ch->buf_len >= ch->buf_cap && !ch->closed) {
+        GreenThread *self = worker_current_thread;
+        if (ch->send_wait_len >= ch->send_wait_cap) {
+            int64_t new_cap = ch->send_wait_cap == 0 ? 4 : ch->send_wait_cap * 2;
+            ch->send_waiters = (GreenThread**)realloc(ch->send_waiters, (size_t)(new_cap * (int64_t)sizeof(GreenThread*)));
+            ch->send_wait_cap = new_cap;
+        }
+        ch->send_waiters[ch->send_wait_len++] = self;
+        pthread_mutex_unlock(&ch->mu);
+        if (self) {
+            yield_to_scheduler(YIELD_WAITING_ON_CHAN_SEND);
+        }
+        pthread_mutex_lock(&ch->mu);
+    }
+    if (!ch->closed && ch->buf_len < ch->buf_cap) {
+        ch->buffer[ch->buf_len++] = value;
+        channel_wake_receiver(ch);
+    }
+    pthread_mutex_unlock(&ch->mu);
+}
+
+void aster_channel_try_send(void *ptr, int64_t value) {
+    AsterChannel *ch = (AsterChannel*)ptr;
+    if (!ch) { aster_error_set(); return; }
+    pthread_mutex_lock(&ch->mu);
+    if (ch->closed || ch->buf_len >= ch->buf_cap) {
+        pthread_mutex_unlock(&ch->mu);
+        aster_error_set();
+        return;
+    }
+    ch->buffer[ch->buf_len++] = value;
+    channel_wake_receiver(ch);
+    pthread_mutex_unlock(&ch->mu);
+}
+
+int64_t aster_channel_receive(void *ptr) {
+    AsterChannel *ch = (AsterChannel*)ptr;
+    if (!ch) return 0;
+    pthread_mutex_lock(&ch->mu);
+    if (ch->buf_len > 0) {
+        int64_t val = ch->buffer[0];
+        for (int64_t i = 1; i < ch->buf_len; i++)
+            ch->buffer[i-1] = ch->buffer[i];
+        ch->buf_len--;
+        channel_wake_sender(ch);
+        pthread_mutex_unlock(&ch->mu);
+        return val;
+    }
+    pthread_mutex_unlock(&ch->mu);
+    return 0; /* nil / nullable */
+}
+
+int64_t aster_channel_wait_receive(void *ptr) {
+    AsterChannel *ch = (AsterChannel*)ptr;
+    if (!ch) return 0;
+    pthread_mutex_lock(&ch->mu);
+    while (ch->buf_len == 0 && !ch->closed) {
+        GreenThread *self = worker_current_thread;
+        if (ch->recv_wait_len >= ch->recv_wait_cap) {
+            int64_t new_cap = ch->recv_wait_cap == 0 ? 4 : ch->recv_wait_cap * 2;
+            ch->recv_waiters = (GreenThread**)realloc(ch->recv_waiters, (size_t)(new_cap * (int64_t)sizeof(GreenThread*)));
+            ch->recv_wait_cap = new_cap;
+        }
+        ch->recv_waiters[ch->recv_wait_len++] = self;
+        pthread_mutex_unlock(&ch->mu);
+        if (self) {
+            yield_to_scheduler(YIELD_WAITING_ON_CHAN_RECV);
+        }
+        pthread_mutex_lock(&ch->mu);
+    }
+    if (ch->buf_len > 0) {
+        int64_t val = ch->buffer[0];
+        for (int64_t i = 1; i < ch->buf_len; i++)
+            ch->buffer[i-1] = ch->buffer[i];
+        ch->buf_len--;
+        channel_wake_sender(ch);
+        pthread_mutex_unlock(&ch->mu);
+        return val;
+    }
+    pthread_mutex_unlock(&ch->mu);
+    if (ch->closed) aster_error_set();
+    return 0;
+}
+
+int64_t aster_channel_try_receive(void *ptr) {
+    AsterChannel *ch = (AsterChannel*)ptr;
+    if (!ch) { aster_error_set(); return 0; }
+    pthread_mutex_lock(&ch->mu);
+    if (ch->buf_len > 0) {
+        int64_t val = ch->buffer[0];
+        for (int64_t i = 1; i < ch->buf_len; i++)
+            ch->buffer[i-1] = ch->buffer[i];
+        ch->buf_len--;
+        channel_wake_sender(ch);
+        pthread_mutex_unlock(&ch->mu);
+        return val;
+    }
+    pthread_mutex_unlock(&ch->mu);
+    aster_error_set();
+    return 0;
+}
+
+void aster_channel_close(void *ptr) {
+    AsterChannel *ch = (AsterChannel*)ptr;
+    if (!ch) return;
+    pthread_mutex_lock(&ch->mu);
+    ch->closed = 1;
+    /* Wake all waiters */
+    while (ch->recv_wait_len > 0) channel_wake_receiver(ch);
+    while (ch->send_wait_len > 0) channel_wake_sender(ch);
+    pthread_mutex_unlock(&ch->mu);
 }
 
 /* ===================================================================

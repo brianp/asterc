@@ -271,6 +271,53 @@ impl TypeChecker {
                         }
                     }
                 }
+                // Mutex(value) → Mutex[T]
+                "Mutex" => {
+                    if args.len() != 1 {
+                        return Err(Diagnostic::error(format!(
+                            "Mutex() takes 1 argument (the initial value), got {}",
+                            args.len()
+                        ))
+                        .with_code("E006")
+                        .with_label(func.span(), "expected 1 argument"));
+                    }
+                    let val_ty = self.check_expr(&args[0].1)?;
+                    if val_ty.is_error() {
+                        return Ok(Type::Error);
+                    }
+                    return Ok(Type::Custom("Mutex".into(), vec![val_ty]));
+                }
+                // Channel(capacity: N) → Channel[T] (T inferred later from send/receive)
+                "Channel" => {
+                    if args.len() > 1 {
+                        return Err(Diagnostic::error(format!(
+                            "Channel() takes 0-1 arguments (optional capacity), got {}",
+                            args.len()
+                        ))
+                        .with_code("E006")
+                        .with_label(func.span(), "expected 0-1 arguments"));
+                    }
+                    if args.len() == 1 {
+                        let cap_ty = self.check_expr(&args[0].1)?;
+                        if cap_ty != Type::Int && !cap_ty.is_error() {
+                            return Err(Diagnostic::error(format!(
+                                "Channel capacity must be Int, got {:?}",
+                                cap_ty
+                            ))
+                            .with_code("E005")
+                            .with_label(args[0].1.span(), "expected Int"));
+                        }
+                    }
+                    // Type parameter inferred from expected type or defaults to Error sentinel
+                    let elem_ty = if let Some(Type::Custom(_, ref type_args)) = self.expected_type
+                        && !type_args.is_empty()
+                    {
+                        type_args[0].clone()
+                    } else {
+                        Type::Error
+                    };
+                    return Ok(Type::Custom("Channel".into(), vec![elem_ty]));
+                }
                 _ => {}
             }
         }
@@ -564,6 +611,8 @@ impl TypeChecker {
                     return Ok(Type::Error);
                 }
                 Self::unify_type_with_env(pty, &aty, &mut bindings, Some(&self.env))?;
+                // Mark task idents as consumed when passed as arguments
+                self.mark_task_ident_consumed(arg_expr);
             }
             // Validate generic constraints after all bindings are established
             self.check_typevar_constraints(&params, &bindings)?;
