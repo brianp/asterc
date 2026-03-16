@@ -5,6 +5,13 @@ pub const C_RUNTIME_SOURCE: &str = r#"
 #include <stdint.h>
 #include <pthread.h>
 #include <sched.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <stdatomic.h>
+
+/* ===================================================================
+ * Memory allocation
+ * =================================================================== */
 
 void* aster_alloc(int64_t size) {
     if (size == 0) return (void*)8; /* aligned dangling */
@@ -15,6 +22,10 @@ void* aster_alloc(int64_t size) {
 }
 
 void* aster_class_alloc(int64_t size) { return aster_alloc(size); }
+
+/* ===================================================================
+ * Printing
+ * =================================================================== */
 
 void aster_print_str(void* ptr) {
     if (!ptr) { printf("nil\n"); return; }
@@ -27,6 +38,10 @@ void aster_print_str(void* ptr) {
 void aster_print_int(int64_t val) { printf("%lld\n", (long long)val); }
 void aster_print_float(double val) { printf("%g\n", val); }
 void aster_print_bool(int8_t val) { printf("%s\n", val ? "true" : "false"); }
+
+/* ===================================================================
+ * String operations
+ * =================================================================== */
 
 void* aster_string_new(void* data, int64_t len) {
     void* p = aster_alloc(8 + len);
@@ -83,14 +98,15 @@ void* aster_bool_to_string(int8_t val) {
     return aster_string_new((void*)s, val ? 4 : 5);
 }
 
-/* List handle indirection: list value = handle (ptr to ptr to data block).
-   Data block: [len: i64][cap: i64][data: i64...] */
+/* ===================================================================
+ * List operations (handle-based indirection)
+ * =================================================================== */
 
 void* aster_list_new(int64_t cap) {
     if (cap < 4) cap = 4;
     void* block = aster_alloc(16 + cap * 8);
-    *(int64_t*)block = 0;              /* len */
-    *((int64_t*)block + 1) = cap;     /* cap */
+    *(int64_t*)block = 0;
+    *((int64_t*)block + 1) = cap;
     void* handle = aster_alloc(8);
     *(void**)handle = block;
     return handle;
@@ -101,7 +117,8 @@ int64_t aster_list_get(void* handle, int64_t index) {
     void* block = *(void**)handle;
     int64_t len = *(int64_t*)block;
     if (index < 0 || index >= len) {
-        fprintf(stderr, "list index out of bounds: %lld (len %lld)\n", (long long)index, (long long)len);
+        fprintf(stderr, "list index out of bounds: %lld (len %lld)\n",
+                (long long)index, (long long)len);
         abort();
     }
     return *((int64_t*)block + 2 + index);
@@ -112,7 +129,8 @@ void aster_list_set(void* handle, int64_t index, int64_t value) {
     void* block = *(void**)handle;
     int64_t len = *(int64_t*)block;
     if (index < 0 || index >= len) {
-        fprintf(stderr, "list index out of bounds: %lld (len %lld)\n", (long long)index, (long long)len);
+        fprintf(stderr, "list index out of bounds: %lld (len %lld)\n",
+                (long long)index, (long long)len);
         abort();
     }
     *((int64_t*)block + 2 + index) = value;
@@ -144,6 +162,10 @@ int64_t aster_list_len(void* handle) {
     return *(int64_t*)block;
 }
 
+/* ===================================================================
+ * Map operations (handle-based, linear scan)
+ * =================================================================== */
+
 static int aster_string_eq(void* a, void* b) {
     if (a == b) return 1;
     if (!a || !b) return 0;
@@ -153,14 +175,11 @@ static int aster_string_eq(void* a, void* b) {
     return memcmp((char*)a + 8, (char*)b + 8, (size_t)a_len) == 0;
 }
 
-/* Map handle indirection: map value = handle (ptr to ptr to data block).
-   Data block: [len: i64][cap: i64][entries: [key: i64, val: i64]...] */
-
 void* aster_map_new(int64_t cap) {
     if (cap < 4) cap = 4;
     void* block = aster_alloc(16 + cap * 16);
-    *(int64_t*)block = 0;              /* len */
-    *((int64_t*)block + 1) = cap;     /* cap */
+    *(int64_t*)block = 0;
+    *((int64_t*)block + 1) = cap;
     void* handle = aster_alloc(8);
     *(void**)handle = block;
     return handle;
@@ -208,6 +227,10 @@ int64_t aster_map_get(void* handle, int64_t key) {
     return 0;
 }
 
+/* ===================================================================
+ * Error handling — per-thread flag (saved/restored per green thread)
+ * =================================================================== */
+
 static _Thread_local int aster_error_flag = 0;
 
 void aster_error_set(void) { aster_error_flag = 1; }
@@ -223,274 +246,1012 @@ void aster_panic(void) {
     abort();
 }
 
-void aster_safepoint(void) {}
+/* GC stubs — the AOT runtime uses simple malloc/free, OS reclaims on exit */
+void aster_gc_push_roots(int64_t frame_addr, int64_t count) {
+    (void)frame_addr; (void)count;
+}
+void aster_gc_pop_roots(void) {}
+void aster_gc_collect(void) {}
 
-typedef struct AsterTask AsterTask;
-typedef struct AsterAsyncScope AsterAsyncScope;
+/* ===================================================================
+ * Green thread infrastructure
+ *
+ * M:N scheduler: N OS worker threads run M green threads via assembly
+ * context switching. Same architecture as the JIT Rust runtime.
+ * =================================================================== */
 
-struct AsterTask {
+/* --- MachineContext: must match assembly layout exactly --- */
+
+#if defined(__aarch64__)
+#define CONTEXT_REGS 21
+#elif defined(__x86_64__)
+#define CONTEXT_REGS 7
+#else
+#error "Unsupported architecture for green threads"
+#endif
+
+typedef struct {
+    uint64_t regs[CONTEXT_REGS];
+} MachineContext;
+
+/* Assembly functions (linked from the .S file) */
+extern void aster_context_switch(MachineContext *old_ctx, const MachineContext *new_ctx);
+extern void aster_context_init(MachineContext *ctx, void *stack_top,
+                               uintptr_t entry, uintptr_t arg);
+
+/* --- Stack allocation --- */
+
+#define GREEN_STACK_SIZE (64 * 1024)
+#define GREEN_GUARD_SIZE 4096
+
+typedef struct {
+    void *base;
+    size_t total;   /* guard + usable */
+} GreenStack;
+
+static GreenStack* green_stack_alloc(void) {
+    size_t total = GREEN_STACK_SIZE + GREEN_GUARD_SIZE;
+    void *mem = mmap(NULL, total, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (mem == MAP_FAILED) {
+        fprintf(stderr, "mmap failed for green stack\n");
+        abort();
+    }
+    /* Guard page at bottom */
+    if (mprotect(mem, GREEN_GUARD_SIZE, PROT_NONE) != 0) {
+        fprintf(stderr, "mprotect failed for guard page\n");
+        abort();
+    }
+    GreenStack *s = (GreenStack*)malloc(sizeof(GreenStack));
+    if (!s) { fprintf(stderr, "out of memory\n"); abort(); }
+    s->base = mem;
+    s->total = total;
+    return s;
+}
+
+static void* green_stack_top(GreenStack *s) {
+    return (char*)s->base + s->total;
+}
+
+static void green_stack_free(GreenStack *s) {
+    if (s) {
+        munmap(s->base, s->total);
+        free(s);
+    }
+}
+
+/* --- Stack pool --- */
+
+#define STACK_POOL_MAX 64
+
+typedef struct {
+    GreenStack *stacks[STACK_POOL_MAX];
+    size_t len;
     pthread_mutex_t mu;
-    pthread_cond_t cv;
-    int64_t state;
-    int64_t consumed;
-    int64_t payload;
-    int64_t cancel_requested;
-    int64_t entry_ptr;
-    int64_t args_ptr;
-};
+} StackPool;
 
-struct AsterAsyncScope {
-    pthread_mutex_t mu;
-    int64_t len;
-    int64_t cap;
-    AsterTask** tasks;
-};
+static StackPool stack_pool = { .len = 0, .mu = PTHREAD_MUTEX_INITIALIZER };
+
+static GreenStack* stack_pool_get(void) {
+    pthread_mutex_lock(&stack_pool.mu);
+    if (stack_pool.len > 0) {
+        GreenStack *s = stack_pool.stacks[--stack_pool.len];
+        pthread_mutex_unlock(&stack_pool.mu);
+        return s;
+    }
+    pthread_mutex_unlock(&stack_pool.mu);
+    return green_stack_alloc();
+}
+
+static void stack_pool_put(GreenStack *s) {
+    pthread_mutex_lock(&stack_pool.mu);
+    if (stack_pool.len < STACK_POOL_MAX) {
+        stack_pool.stacks[stack_pool.len++] = s;
+        pthread_mutex_unlock(&stack_pool.mu);
+    } else {
+        pthread_mutex_unlock(&stack_pool.mu);
+        green_stack_free(s);
+    }
+}
+
+/* --- Green thread --- */
 
 enum {
-    ASTER_TASK_QUEUED = 0,
-    ASTER_TASK_RUNNING = 1,
-    ASTER_TASK_READY = 2,
-    ASTER_TASK_FAILED = 3,
-    ASTER_TASK_CANCELLED = 4
+    GT_RUNNABLE  = 0,
+    GT_RUNNING   = 1,
+    GT_SUSPENDED = 2,
+    GT_READY     = 3,
+    GT_FAILED    = 4,
+    GT_CANCELLED = 5,
 };
 
-static int64_t aster_task_wait_terminal(AsterTask* task) {
-    pthread_mutex_lock(&task->mu);
-    while (task->state == ASTER_TASK_QUEUED || task->state == ASTER_TASK_RUNNING) {
-        pthread_cond_wait(&task->cv, &task->mu);
-    }
-    int64_t state = task->state;
-    pthread_mutex_unlock(&task->mu);
-    return state;
+typedef struct GreenThread GreenThread;
+struct GreenThread {
+    MachineContext context;
+    GreenStack *stack;          /* NULL for terminal-allocated threads */
+    int error_flag;
+    void *shadow_stack_top;     /* unused in AOT (GC is no-op) */
+
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    int status;
+    int cancel_requested;
+    int consumed;
+    int64_t result;
+    int failed;
+
+    GreenThread **waiters;
+    size_t waiter_count;
+    size_t waiter_cap;
+};
+
+static int gt_is_terminal(int status) {
+    return status == GT_READY || status == GT_FAILED || status == GT_CANCELLED;
 }
 
-static void* aster_task_runner(void* raw_task) {
-    AsterTask* task = (AsterTask*)raw_task;
-    pthread_mutex_lock(&task->mu);
-    if (task->cancel_requested) {
-        task->state = ASTER_TASK_CANCELLED;
-        pthread_cond_broadcast(&task->cv);
-        pthread_mutex_unlock(&task->mu);
-        return 0;
+static GreenThread* gt_alloc(void) {
+    GreenThread *t = (GreenThread*)calloc(1, sizeof(GreenThread));
+    if (!t) { fprintf(stderr, "out of memory\n"); abort(); }
+    pthread_mutex_init(&t->mu, NULL);
+    pthread_cond_init(&t->cv, NULL);
+    return t;
+}
+
+static void gt_add_waiter(GreenThread *target, GreenThread *waiter) {
+    /* Must be called with target->mu held */
+    if (target->waiter_count >= target->waiter_cap) {
+        size_t new_cap = target->waiter_cap == 0 ? 4 : target->waiter_cap * 2;
+        target->waiters = (GreenThread**)realloc(
+            target->waiters, new_cap * sizeof(GreenThread*));
+        if (!target->waiters) { fprintf(stderr, "out of memory\n"); abort(); }
+        target->waiter_cap = new_cap;
     }
-    task->state = ASTER_TASK_RUNNING;
-    int64_t entry_ptr = task->entry_ptr;
-    int64_t args_ptr = task->args_ptr;
-    pthread_mutex_unlock(&task->mu);
+    target->waiters[target->waiter_count++] = waiter;
+}
 
-    int64_t (*entry)(const void*) = (int64_t (*)(const void*))entry_ptr;
-    aster_error_check();
-    int64_t value = entry((const void*)args_ptr);
-    int8_t failed = aster_error_check();
+/* --- Work queue (mutex-protected FIFO) --- */
 
-    pthread_mutex_lock(&task->mu);
-    if (task->cancel_requested) {
-        task->state = ASTER_TASK_CANCELLED;
+typedef struct {
+    GreenThread **items;
+    size_t head;
+    size_t tail;
+    size_t cap;
+    pthread_mutex_t mu;
+} WorkQueue;
+
+static void wq_init(WorkQueue *q, size_t cap) {
+    q->items = (GreenThread**)calloc(cap, sizeof(GreenThread*));
+    if (!q->items) { fprintf(stderr, "out of memory\n"); abort(); }
+    q->head = 0;
+    q->tail = 0;
+    q->cap = cap;
+    pthread_mutex_init(&q->mu, NULL);
+}
+
+static void wq_push(WorkQueue *q, GreenThread *t) {
+    pthread_mutex_lock(&q->mu);
+    size_t next_tail = (q->tail + 1) % q->cap;
+    if (next_tail == q->head) {
+        /* Grow */
+        size_t new_cap = q->cap * 2;
+        GreenThread **new_items = (GreenThread**)calloc(new_cap, sizeof(GreenThread*));
+        if (!new_items) { fprintf(stderr, "out of memory\n"); abort(); }
+        size_t count = 0;
+        size_t i = q->head;
+        while (i != q->tail) {
+            new_items[count++] = q->items[i];
+            i = (i + 1) % q->cap;
+        }
+        free(q->items);
+        q->items = new_items;
+        q->head = 0;
+        q->tail = count;
+        q->cap = new_cap;
+        next_tail = q->tail + 1;
+    }
+    q->items[q->tail] = t;
+    q->tail = (q->tail + 1) % q->cap;
+    pthread_mutex_unlock(&q->mu);
+}
+
+static GreenThread* wq_pop(WorkQueue *q) {
+    pthread_mutex_lock(&q->mu);
+    if (q->head == q->tail) {
+        pthread_mutex_unlock(&q->mu);
+        return NULL;
+    }
+    GreenThread *t = q->items[q->head];
+    q->head = (q->head + 1) % q->cap;
+    pthread_mutex_unlock(&q->mu);
+    return t;
+}
+
+/* --- I/O Poller (Phase 5) --- */
+
+#if defined(__APPLE__)
+#include <sys/event.h>
+
+static int poller_fd = -1;
+static pthread_mutex_t poller_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static void poller_init(void) {
+    poller_fd = kqueue();
+    if (poller_fd < 0) {
+        fprintf(stderr, "kqueue() failed\n");
+        abort();
+    }
+}
+
+static void poller_register_read(int fd, GreenThread *token) {
+    struct kevent ev;
+    EV_SET(&ev, fd, EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, token);
+    kevent(poller_fd, &ev, 1, NULL, 0, NULL);
+}
+
+static void poller_register_write(int fd, GreenThread *token) {
+    struct kevent ev;
+    EV_SET(&ev, fd, EVFILT_WRITE, EV_ADD | EV_ONESHOT, 0, 0, token);
+    kevent(poller_fd, &ev, 1, NULL, 0, NULL);
+}
+
+static void poller_deregister(int fd) {
+    struct kevent evs[2];
+    EV_SET(&evs[0], fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
+    EV_SET(&evs[1], fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
+    kevent(poller_fd, evs, 2, NULL, 0, NULL);
+}
+
+static size_t poller_poll(GreenThread **out, size_t max_events) {
+    struct kevent events[64];
+    if (max_events > 64) max_events = 64;
+    struct timespec ts = { 0, 0 }; /* non-blocking */
+    int n = kevent(poller_fd, NULL, 0, events, (int)max_events, &ts);
+    if (n < 0) return 0;
+    for (int i = 0; i < n; i++) {
+        out[i] = (GreenThread*)events[i].udata;
+    }
+    return (size_t)n;
+}
+
+#elif defined(__linux__)
+#include <sys/epoll.h>
+
+static int poller_fd = -1;
+static pthread_mutex_t poller_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static void poller_init(void) {
+    poller_fd = epoll_create1(EPOLL_CLOEXEC);
+    if (poller_fd < 0) {
+        fprintf(stderr, "epoll_create1() failed\n");
+        abort();
+    }
+}
+
+static void poller_register_read(int fd, GreenThread *token) {
+    struct epoll_event ev = { .events = EPOLLIN | EPOLLONESHOT, .data.ptr = token };
+    if (epoll_ctl(poller_fd, EPOLL_CTL_ADD, fd, &ev) < 0) {
+        epoll_ctl(poller_fd, EPOLL_CTL_MOD, fd, &ev);
+    }
+}
+
+static void poller_register_write(int fd, GreenThread *token) {
+    struct epoll_event ev = { .events = EPOLLOUT | EPOLLONESHOT, .data.ptr = token };
+    if (epoll_ctl(poller_fd, EPOLL_CTL_ADD, fd, &ev) < 0) {
+        epoll_ctl(poller_fd, EPOLL_CTL_MOD, fd, &ev);
+    }
+}
+
+static void poller_deregister(int fd) {
+    epoll_ctl(poller_fd, EPOLL_CTL_DEL, fd, NULL);
+}
+
+static size_t poller_poll(GreenThread **out, size_t max_events) {
+    struct epoll_event events[64];
+    if (max_events > 64) max_events = 64;
+    int n = epoll_wait(poller_fd, events, (int)max_events, 0);
+    if (n < 0) return 0;
+    for (int i = 0; i < n; i++) {
+        out[i] = (GreenThread*)events[i].data.ptr;
+    }
+    return (size_t)n;
+}
+
+#endif
+
+/* poll_io() and blocking pool are defined after global scheduler state below */
+
+/* --- Yield reasons --- */
+
+enum {
+    YIELD_NONE               = 0,
+    YIELD_PREEMPTED          = 1,
+    YIELD_COMPLETED          = 2,
+    YIELD_CANCELLED          = 3,
+    YIELD_WAITING_ON_TASK    = 4,
+    YIELD_WAITING_ON_IO      = 5,
+    YIELD_WAITING_ON_BLOCKING = 6,
+};
+
+/* --- Thread-local worker state --- */
+
+static _Thread_local MachineContext worker_scheduler_ctx;
+static _Thread_local GreenThread *worker_current_thread = NULL;
+static _Thread_local int worker_yield_reason = YIELD_NONE;
+static _Thread_local int64_t yield_result = 0;
+static _Thread_local int yield_failed_flag = 0;
+static _Thread_local GreenThread *yield_wait_target = NULL;
+static _Thread_local uint32_t preempt_ticks = 0;
+static _Thread_local int is_worker_thread = 0;
+static _Thread_local int yield_io_fd = -1;
+static _Thread_local int64_t (*yield_blocking_entry)(int64_t) = NULL;
+static _Thread_local int64_t yield_blocking_arg = 0;
+
+#define PREEMPT_THRESHOLD 1024
+
+/* --- Global scheduler state --- */
+
+#define MAX_WORKERS 32
+
+static WorkQueue global_injector;
+static WorkQueue worker_locals[MAX_WORKERS];
+static int worker_count = 0;
+static pthread_mutex_t park_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t park_cv = PTHREAD_COND_INITIALIZER;
+static int scheduler_initialized = 0;
+static _Thread_local int worker_id = -1;
+
+/* Forward declarations */
+static void wake_waiters(GreenThread **waiters, size_t count);
+static void recycle_stack(GreenThread *t);
+
+/* --- I/O poll (Phase 5) — uses global_injector and park_cv --- */
+
+static void poll_io(void) {
+    if (pthread_mutex_trylock(&poller_mu) != 0) return;
+    GreenThread *ready[64];
+    size_t n = poller_poll(ready, 64);
+    pthread_mutex_unlock(&poller_mu);
+    for (size_t i = 0; i < n; i++) {
+        if (ready[i]) {
+            wq_push(&global_injector, ready[i]);
+        }
+    }
+    if (n > 0) {
+        pthread_cond_broadcast(&park_cv);
+    }
+}
+
+/* --- Blocking thread pool (Phase 5) --- */
+
+typedef struct {
+    GreenThread *task;
+    int64_t (*entry)(int64_t);
+    int64_t arg;
+} BlockingJob;
+
+#define BLOCKING_POOL_MAX 64
+
+static BlockingJob blocking_jobs[BLOCKING_POOL_MAX];
+static size_t blocking_job_count = 0;
+static pthread_mutex_t blocking_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t blocking_cv = PTHREAD_COND_INITIALIZER;
+
+static void* blocking_worker(void *arg) {
+    (void)arg;
+    for (;;) {
+        BlockingJob job;
+        pthread_mutex_lock(&blocking_mu);
+        while (blocking_job_count == 0) {
+            pthread_cond_wait(&blocking_cv, &blocking_mu);
+        }
+        job = blocking_jobs[--blocking_job_count];
+        pthread_mutex_unlock(&blocking_mu);
+
+        int64_t result = job.entry(job.arg);
+
+        /* Wake the green thread with the result */
+        GreenThread *t = job.task;
+        pthread_mutex_lock(&t->mu);
+        t->result = result;
+        t->failed = 0;
+        t->status = GT_READY;
+        pthread_cond_broadcast(&t->cv);
+        GreenThread **waiters = t->waiters;
+        size_t wcount = t->waiter_count;
+        t->waiters = NULL;
+        t->waiter_count = 0;
+        t->waiter_cap = 0;
+        pthread_mutex_unlock(&t->mu);
+        wake_waiters(waiters, wcount);
+        free(waiters);
+    }
+    return NULL;
+}
+
+#define BLOCKING_THREAD_COUNT 4
+
+static int blocking_pool_initialized = 0;
+
+static void ensure_blocking_pool(void) {
+    if (blocking_pool_initialized) return;
+    blocking_pool_initialized = 1;
+    for (int i = 0; i < BLOCKING_THREAD_COUNT; i++) {
+        pthread_t tid;
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+        pthread_create(&tid, &attr, blocking_worker, NULL);
+        pthread_attr_destroy(&attr);
+    }
+}
+
+static void blocking_pool_submit(GreenThread *task, int64_t (*entry)(int64_t), int64_t arg) {
+    ensure_blocking_pool();
+    pthread_mutex_lock(&blocking_mu);
+    if (blocking_job_count >= BLOCKING_POOL_MAX) {
+        fprintf(stderr, "blocking pool full\n");
+        abort();
+    }
+    blocking_jobs[blocking_job_count++] = (BlockingJob){ .task = task, .entry = entry, .arg = arg };
+    pthread_cond_signal(&blocking_cv);
+    pthread_mutex_unlock(&blocking_mu);
+}
+
+/* --- Worker loop --- */
+
+static GreenThread* find_task(int my_id) {
+    /* 1. Local pop */
+    GreenThread *t = wq_pop(&worker_locals[my_id]);
+    if (t) return t;
+
+    /* 2. Global injector */
+    t = wq_pop(&global_injector);
+    if (t) return t;
+
+    /* 3. Steal from other workers */
+    for (int i = 0; i < worker_count; i++) {
+        if (i == my_id) continue;
+        t = wq_pop(&worker_locals[i]);
+        if (t) return t;
+    }
+
+    return NULL;
+}
+
+static void complete_thread(GreenThread *t, int64_t result, int failed) {
+    pthread_mutex_lock(&t->mu);
+    t->result = result;
+    t->failed = failed;
+    if (t->cancel_requested) {
+        t->status = GT_CANCELLED;
     } else if (failed) {
-        task->state = ASTER_TASK_FAILED;
-        task->payload = value;
+        t->status = GT_FAILED;
     } else {
-        task->state = ASTER_TASK_READY;
-        task->payload = value;
+        t->status = GT_READY;
     }
-    pthread_cond_broadcast(&task->cv);
-    pthread_mutex_unlock(&task->mu);
-    return 0;
+    pthread_cond_broadcast(&t->cv);
+    GreenThread **waiters = t->waiters;
+    size_t wcount = t->waiter_count;
+    t->waiters = NULL;
+    t->waiter_count = 0;
+    t->waiter_cap = 0;
+    pthread_mutex_unlock(&t->mu);
+    wake_waiters(waiters, wcount);
+    free(waiters);
 }
 
-static void aster_scope_register(AsterAsyncScope* scope, AsterTask* task) {
+static void* worker_main(void *arg) {
+    int my_id = (int)(intptr_t)arg;
+    is_worker_thread = 1;
+    worker_id = my_id;
+
+    struct timespec ts;
+
+    for (;;) {
+        GreenThread *t = find_task(my_id);
+
+        if (!t) {
+            poll_io();
+            t = find_task(my_id);
+        }
+
+        if (!t) {
+            pthread_mutex_lock(&park_mutex);
+            clock_gettime(CLOCK_REALTIME, &ts);
+            ts.tv_nsec += 1000000; /* 1ms */
+            if (ts.tv_nsec >= 1000000000) {
+                ts.tv_sec += 1;
+                ts.tv_nsec -= 1000000000;
+            }
+            pthread_cond_timedwait(&park_cv, &park_mutex, &ts);
+            pthread_mutex_unlock(&park_mutex);
+            continue;
+        }
+
+        /* Check cancel or already-terminal before running */
+        pthread_mutex_lock(&t->mu);
+        if (gt_is_terminal(t->status)) {
+            pthread_mutex_unlock(&t->mu);
+            continue;
+        }
+        if (t->cancel_requested) {
+            t->status = GT_CANCELLED;
+            pthread_cond_broadcast(&t->cv);
+            GreenThread **waiters = t->waiters;
+            size_t wcount = t->waiter_count;
+            t->waiters = NULL;
+            t->waiter_count = 0;
+            t->waiter_cap = 0;
+            pthread_mutex_unlock(&t->mu);
+            wake_waiters(waiters, wcount);
+            free(waiters);
+            recycle_stack(t);
+            continue;
+        }
+        t->status = GT_RUNNING;
+        pthread_mutex_unlock(&t->mu);
+
+        /* Set TLS for green thread */
+        worker_current_thread = t;
+        worker_yield_reason = YIELD_NONE;
+        preempt_ticks = 0;
+
+        /* Restore per-green-thread state */
+        aster_error_flag = t->error_flag;
+
+        /* Context switch to green thread */
+        aster_context_switch(&worker_scheduler_ctx, &t->context);
+
+        /* Green thread yielded back — save state */
+        t->error_flag = aster_error_flag;
+        worker_current_thread = NULL;
+
+        switch (worker_yield_reason) {
+        case YIELD_PREEMPTED:
+            pthread_mutex_lock(&t->mu);
+            t->status = GT_RUNNABLE;
+            pthread_mutex_unlock(&t->mu);
+            wq_push(&worker_locals[my_id], t);
+            break;
+
+        case YIELD_COMPLETED:
+            complete_thread(t, yield_result, yield_failed_flag);
+            recycle_stack(t);
+            break;
+
+        case YIELD_CANCELLED: {
+            pthread_mutex_lock(&t->mu);
+            t->status = GT_CANCELLED;
+            pthread_cond_broadcast(&t->cv);
+            GreenThread **waiters = t->waiters;
+            size_t wcount = t->waiter_count;
+            t->waiters = NULL;
+            t->waiter_count = 0;
+            t->waiter_cap = 0;
+            pthread_mutex_unlock(&t->mu);
+            wake_waiters(waiters, wcount);
+            free(waiters);
+            recycle_stack(t);
+            break;
+        }
+
+        case YIELD_WAITING_ON_TASK: {
+            GreenThread *target = yield_wait_target;
+            pthread_mutex_lock(&target->mu);
+            if (gt_is_terminal(target->status)) {
+                pthread_mutex_unlock(&target->mu);
+                pthread_mutex_lock(&t->mu);
+                t->status = GT_RUNNABLE;
+                pthread_mutex_unlock(&t->mu);
+                wq_push(&worker_locals[my_id], t);
+            } else {
+                gt_add_waiter(target, t);
+                pthread_mutex_unlock(&target->mu);
+                pthread_mutex_lock(&t->mu);
+                t->status = GT_SUSPENDED;
+                pthread_mutex_unlock(&t->mu);
+            }
+            break;
+        }
+
+        case YIELD_WAITING_ON_IO:
+            pthread_mutex_lock(&t->mu);
+            t->status = GT_SUSPENDED;
+            pthread_mutex_unlock(&t->mu);
+            /* Thread is registered with the poller; it will be re-enqueued when I/O is ready */
+            break;
+
+        case YIELD_WAITING_ON_BLOCKING:
+            pthread_mutex_lock(&t->mu);
+            t->status = GT_SUSPENDED;
+            pthread_mutex_unlock(&t->mu);
+            /* Submit to blocking pool */
+            blocking_pool_submit(t, yield_blocking_entry, yield_blocking_arg);
+            break;
+
+        default:
+            /* YIELD_NONE — treat as preempted */
+            pthread_mutex_lock(&t->mu);
+            t->status = GT_RUNNABLE;
+            pthread_mutex_unlock(&t->mu);
+            wq_push(&worker_locals[my_id], t);
+            break;
+        }
+    }
+
+    return NULL;
+}
+
+static void wake_waiters(GreenThread **waiters, size_t count) {
+    if (!waiters || count == 0) return;
+    for (size_t i = 0; i < count; i++) {
+        wq_push(&global_injector, waiters[i]);
+    }
+    pthread_cond_broadcast(&park_cv);
+}
+
+static void recycle_stack(GreenThread *t) {
+    if (t->stack) {
+        stack_pool_put(t->stack);
+        t->stack = NULL;
+    }
+}
+
+/* --- Scheduler init --- */
+
+static void ensure_scheduler(void) {
+    if (scheduler_initialized) return;
+    scheduler_initialized = 1;
+
+    long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+    worker_count = (int)(cpus > 2 ? cpus : 2);
+    if (worker_count > MAX_WORKERS) worker_count = MAX_WORKERS;
+
+    poller_init();
+    ensure_blocking_pool();
+
+    wq_init(&global_injector, 256);
+    for (int i = 0; i < worker_count; i++) {
+        wq_init(&worker_locals[i], 64);
+    }
+
+    for (int i = 0; i < worker_count; i++) {
+        pthread_t tid;
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+        if (pthread_create(&tid, &attr, worker_main, (void*)(intptr_t)i) != 0) {
+            fprintf(stderr, "failed to create worker thread\n");
+            abort();
+        }
+        pthread_attr_destroy(&attr);
+    }
+}
+
+/* --- Yield to scheduler --- */
+
+static void yield_to_scheduler(int reason) {
+    worker_yield_reason = reason;
+    GreenThread *current = worker_current_thread;
+    aster_context_switch(&current->context, &worker_scheduler_ctx);
+    /* Execution resumes here when scheduler switches back to us */
+}
+
+/* --- Green thread exit (called from assembly trampoline) --- */
+
+void aster_green_thread_exit(int64_t result) {
+    int failed = aster_error_flag;
+    aster_error_flag = 0;
+    yield_result = result;
+    yield_failed_flag = failed;
+    yield_to_scheduler(YIELD_COMPLETED);
+    /* unreachable */
+    abort();
+}
+
+/* --- Safepoint --- */
+
+void aster_safepoint(void) {
+    GreenThread *current = worker_current_thread;
+    if (!current) return;
+
+    /* Check cancellation */
+    pthread_mutex_lock(&current->mu);
+    int cancel = current->cancel_requested;
+    pthread_mutex_unlock(&current->mu);
+    if (cancel) {
+        yield_to_scheduler(YIELD_CANCELLED);
+        return;
+    }
+
+    /* Tick-based preemption */
+    preempt_ticks++;
+    if (preempt_ticks >= PREEMPT_THRESHOLD) {
+        preempt_ticks = 0;
+        yield_to_scheduler(YIELD_PREEMPTED);
+    }
+}
+
+/* ===================================================================
+ * I/O suspension + blocking submit hooks (Phase 5)
+ * =================================================================== */
+
+void aster_io_wait_read(int fd) {
+    GreenThread *current = worker_current_thread;
+    if (!current) return;
+    pthread_mutex_lock(&poller_mu);
+    poller_register_read(fd, current);
+    pthread_mutex_unlock(&poller_mu);
+    yield_to_scheduler(YIELD_WAITING_ON_IO);
+    /* Resumed when fd is readable */
+    pthread_mutex_lock(&poller_mu);
+    poller_deregister(fd);
+    pthread_mutex_unlock(&poller_mu);
+}
+
+void aster_io_wait_write(int fd) {
+    GreenThread *current = worker_current_thread;
+    if (!current) return;
+    pthread_mutex_lock(&poller_mu);
+    poller_register_write(fd, current);
+    pthread_mutex_unlock(&poller_mu);
+    yield_to_scheduler(YIELD_WAITING_ON_IO);
+    /* Resumed when fd is writable */
+    pthread_mutex_lock(&poller_mu);
+    poller_deregister(fd);
+    pthread_mutex_unlock(&poller_mu);
+}
+
+void aster_blocking_submit(int64_t (*entry)(int64_t), int64_t arg) {
+    GreenThread *current = worker_current_thread;
+    if (!current) return;
+    yield_blocking_entry = entry;
+    yield_blocking_arg = arg;
+    yield_to_scheduler(YIELD_WAITING_ON_BLOCKING);
+    /* Resumed when blocking work completes — result is in current->result */
+}
+
+/* ===================================================================
+ * Async scope
+ * =================================================================== */
+
+typedef struct {
+    pthread_mutex_t mu;
+    GreenThread **tasks;
+    int64_t len;
+    int64_t cap;
+} AsterAsyncScope;
+
+static void scope_register(AsterAsyncScope *scope, GreenThread *task) {
     if (!scope) return;
     pthread_mutex_lock(&scope->mu);
     if (scope->len >= scope->cap) {
-        int64_t next_cap = scope->cap == 0 ? 4 : scope->cap * 2;
-        AsterTask** next = (AsterTask**)realloc(scope->tasks, (size_t)(next_cap * (int64_t)sizeof(AsterTask*)));
-        if (!next) {
-            fprintf(stderr, "out of memory\n");
-            abort();
-        }
-        scope->tasks = next;
-        scope->cap = next_cap;
+        int64_t new_cap = scope->cap == 0 ? 4 : scope->cap * 2;
+        scope->tasks = (GreenThread**)realloc(
+            scope->tasks, (size_t)(new_cap * (int64_t)sizeof(GreenThread*)));
+        if (!scope->tasks) { fprintf(stderr, "out of memory\n"); abort(); }
+        scope->cap = new_cap;
     }
     scope->tasks[scope->len++] = task;
     pthread_mutex_unlock(&scope->mu);
 }
 
 void* aster_async_scope_enter(void) {
-    AsterAsyncScope* scope = (AsterAsyncScope*)aster_alloc((int64_t)sizeof(AsterAsyncScope));
-    pthread_mutex_init(&scope->mu, 0);
-    scope->len = 0;
-    scope->cap = 0;
-    scope->tasks = 0;
+    AsterAsyncScope *scope = (AsterAsyncScope*)calloc(1, sizeof(AsterAsyncScope));
+    if (!scope) { fprintf(stderr, "out of memory\n"); abort(); }
+    pthread_mutex_init(&scope->mu, NULL);
     return scope;
 }
 
-void aster_async_scope_exit(void* scope_ptr) {
+/* Forward declarations for cancel/wait */
+static void gt_cancel(GreenThread *t);
+static void gt_wait_terminal(GreenThread *t);
+
+void aster_async_scope_exit(void *scope_ptr) {
     if (!scope_ptr) return;
-    AsterAsyncScope* scope = (AsterAsyncScope*)scope_ptr;
+    AsterAsyncScope *scope = (AsterAsyncScope*)scope_ptr;
     pthread_mutex_lock(&scope->mu);
     int64_t len = scope->len;
-    AsterTask** tasks = scope->tasks;
+    GreenThread **tasks = scope->tasks;
+    scope->tasks = NULL;
     scope->len = 0;
     scope->cap = 0;
-    scope->tasks = 0;
     pthread_mutex_unlock(&scope->mu);
 
     for (int64_t i = 0; i < len; i++) {
-        AsterTask* task = tasks[i];
-        if (!task) continue;
-        pthread_mutex_lock(&task->mu);
-        task->cancel_requested = 1;
-        if (task->state == ASTER_TASK_QUEUED) {
-            task->state = ASTER_TASK_CANCELLED;
-            pthread_cond_broadcast(&task->cv);
-        }
-        pthread_mutex_unlock(&task->mu);
+        if (tasks[i]) gt_cancel(tasks[i]);
     }
     for (int64_t i = 0; i < len; i++) {
-        if (tasks[i]) aster_task_wait_terminal(tasks[i]);
+        if (tasks[i]) gt_wait_terminal(tasks[i]);
     }
     free(tasks);
+    free(scope);
 }
 
-static void* aster_task_new_raw(int64_t payload, int8_t failed) {
-    AsterTask* task = (AsterTask*)aster_alloc((int64_t)sizeof(AsterTask));
-    pthread_mutex_init(&task->mu, 0);
-    pthread_cond_init(&task->cv, 0);
-    task->state = failed ? ASTER_TASK_FAILED : ASTER_TASK_READY;
-    task->consumed = 0;
-    task->payload = payload;
-    task->cancel_requested = 0;
-    task->entry_ptr = 0;
-    task->args_ptr = 0;
-    return task;
-}
+/* ===================================================================
+ * Task API — spawn, resolve, cancel
+ * =================================================================== */
 
-int64_t aster_task_spawn(int64_t entry_ptr, int64_t args_ptr, int64_t scope_ptr) {
-    AsterTask* task = (AsterTask*)aster_alloc((int64_t)sizeof(AsterTask));
-    pthread_mutex_init(&task->mu, 0);
-    pthread_cond_init(&task->cv, 0);
-    task->state = ASTER_TASK_QUEUED;
-    task->consumed = 0;
-    task->payload = 0;
-    task->cancel_requested = 0;
-    task->entry_ptr = entry_ptr;
-    task->args_ptr = args_ptr;
-    aster_scope_register((AsterAsyncScope*)scope_ptr, task);
-
-    pthread_t thread;
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    if (pthread_create(&thread, &attr, aster_task_runner, task) != 0) {
-        pthread_attr_destroy(&attr);
-        fprintf(stderr, "failed to create task thread\n");
-        abort();
+static void gt_cancel(GreenThread *t) {
+    pthread_mutex_lock(&t->mu);
+    t->cancel_requested = 1;
+    switch (t->status) {
+    case GT_RUNNABLE:
+        t->status = GT_CANCELLED;
+        pthread_cond_broadcast(&t->cv);
+        {
+            GreenThread **waiters = t->waiters;
+            size_t wcount = t->waiter_count;
+            t->waiters = NULL;
+            t->waiter_count = 0;
+            t->waiter_cap = 0;
+            pthread_mutex_unlock(&t->mu);
+            wake_waiters(waiters, wcount);
+            free(waiters);
+        }
+        return;
+    case GT_RUNNING:
+        /* Flag set, safepoint will catch it */
+        pthread_mutex_unlock(&t->mu);
+        return;
+    case GT_SUSPENDED:
+        t->status = GT_CANCELLED;
+        pthread_cond_broadcast(&t->cv);
+        {
+            GreenThread **waiters = t->waiters;
+            size_t wcount = t->waiter_count;
+            t->waiters = NULL;
+            t->waiter_count = 0;
+            t->waiter_cap = 0;
+            pthread_mutex_unlock(&t->mu);
+            wake_waiters(waiters, wcount);
+            free(waiters);
+        }
+        recycle_stack(t);
+        return;
+    default:
+        /* Already terminal */
+        pthread_mutex_unlock(&t->mu);
+        return;
     }
-    pthread_attr_destroy(&attr);
-    return (int64_t)task;
 }
 
-int64_t aster_task_block_on(int64_t entry_ptr, int64_t args_ptr) {
-    AsterTask* task = (AsterTask*)aster_task_spawn(entry_ptr, args_ptr, 0);
-    int64_t state = aster_task_wait_terminal(task);
-    if (state == ASTER_TASK_READY) {
-        return task->payload;
+static void gt_wait_terminal(GreenThread *t) {
+    if (is_worker_thread) {
+        /* On a worker — yield as a green thread until target is terminal */
+        for (;;) {
+            pthread_mutex_lock(&t->mu);
+            if (gt_is_terminal(t->status)) {
+                pthread_mutex_unlock(&t->mu);
+                return;
+            }
+            pthread_mutex_unlock(&t->mu);
+            yield_wait_target = t;
+            yield_to_scheduler(YIELD_WAITING_ON_TASK);
+        }
+    } else {
+        /* On main or non-worker thread — block with condvar */
+        pthread_mutex_lock(&t->mu);
+        while (!gt_is_terminal(t->status)) {
+            pthread_cond_wait(&t->cv, &t->mu);
+        }
+        pthread_mutex_unlock(&t->mu);
     }
+}
+
+static int64_t gt_consume_result(GreenThread *t) {
+    gt_wait_terminal(t);
+
+    pthread_mutex_lock(&t->mu);
+    if (t->consumed) {
+        pthread_mutex_unlock(&t->mu);
+        aster_error_set();
+        return 0;
+    }
+    t->consumed = 1;
+    if (t->status == GT_READY) {
+        int64_t val = t->result;
+        pthread_mutex_unlock(&t->mu);
+        return val;
+    }
+    pthread_mutex_unlock(&t->mu);
     aster_error_set();
     return 0;
 }
 
+int64_t aster_task_spawn(int64_t entry_ptr, int64_t args_ptr, int64_t scope_ptr) {
+    ensure_scheduler();
+
+    GreenStack *stack = stack_pool_get();
+    GreenThread *t = gt_alloc();
+    t->stack = stack;
+    t->status = GT_RUNNABLE;
+
+    aster_context_init(&t->context, green_stack_top(stack),
+                       (uintptr_t)entry_ptr, (uintptr_t)args_ptr);
+
+    scope_register((AsterAsyncScope*)(intptr_t)scope_ptr, t);
+
+    wq_push(&global_injector, t);
+    pthread_cond_broadcast(&park_cv);
+
+    return (int64_t)(intptr_t)t;
+}
+
+int64_t aster_task_block_on(int64_t entry_ptr, int64_t args_ptr) {
+    int64_t task = aster_task_spawn(entry_ptr, args_ptr, 0);
+    return gt_consume_result((GreenThread*)(intptr_t)task);
+}
+
+static void* gt_new_terminal(int64_t payload, int8_t failed) {
+    GreenThread *t = gt_alloc();
+    t->status = failed ? GT_FAILED : GT_READY;
+    t->result = payload;
+    t->failed = failed;
+    return t;
+}
+
 void* aster_task_from_i64(int64_t value, int8_t failed) {
-    return aster_task_new_raw(value, failed);
+    return gt_new_terminal(value, failed);
 }
 
 void* aster_task_from_f64(double value, int8_t failed) {
     int64_t bits = 0;
     memcpy(&bits, &value, sizeof(bits));
-    return aster_task_new_raw(bits, failed);
+    return gt_new_terminal(bits, failed);
 }
 
 void* aster_task_from_i8(int8_t value, int8_t failed) {
-    return aster_task_new_raw((int64_t)value, failed);
+    return gt_new_terminal((int64_t)value, failed);
 }
 
 int8_t aster_task_is_ready(void* task_ptr) {
     if (!task_ptr) return 0;
-    AsterTask* task = (AsterTask*)task_ptr;
-    pthread_mutex_lock(&task->mu);
-    int8_t ready = task->state != ASTER_TASK_QUEUED && task->state != ASTER_TASK_RUNNING;
-    pthread_mutex_unlock(&task->mu);
+    GreenThread *t = (GreenThread*)task_ptr;
+    pthread_mutex_lock(&t->mu);
+    int8_t ready = gt_is_terminal(t->status) ? 1 : 0;
+    pthread_mutex_unlock(&t->mu);
     return ready;
 }
 
 int64_t aster_task_cancel(void* task_ptr) {
-    if (!task_ptr) return 0;
-    AsterTask* task = (AsterTask*)task_ptr;
-    pthread_mutex_lock(&task->mu);
-    task->cancel_requested = 1;
-    if (task->state == ASTER_TASK_QUEUED) {
-        task->state = ASTER_TASK_CANCELLED;
-        pthread_cond_broadcast(&task->cv);
-    }
-    pthread_mutex_unlock(&task->mu);
+    if (task_ptr) gt_cancel((GreenThread*)task_ptr);
     return 0;
 }
 
 int64_t aster_task_wait_cancel(void* task_ptr) {
-    aster_task_cancel(task_ptr);
-    if (task_ptr) aster_task_wait_terminal((AsterTask*)task_ptr);
-    return 0;
-}
-
-static int64_t aster_task_consume_payload(void* task_ptr) {
-    if (!task_ptr) {
-        aster_error_set();
-        return 0;
+    if (task_ptr) {
+        gt_cancel((GreenThread*)task_ptr);
+        gt_wait_terminal((GreenThread*)task_ptr);
     }
-    AsterTask* task = (AsterTask*)task_ptr;
-    int64_t state = aster_task_wait_terminal(task);
-    pthread_mutex_lock(&task->mu);
-    if (task->consumed) {
-        pthread_mutex_unlock(&task->mu);
-        aster_error_set();
-        return 0;
-    }
-    task->consumed = 1;
-    if (state == ASTER_TASK_READY) {
-        int64_t payload = task->payload;
-        pthread_mutex_unlock(&task->mu);
-        return payload;
-    }
-    pthread_mutex_unlock(&task->mu);
-    aster_error_set();
     return 0;
 }
 
 int64_t aster_task_resolve_i64(void* task_ptr) {
-    return aster_task_consume_payload(task_ptr);
+    if (!task_ptr) { aster_error_set(); return 0; }
+    return gt_consume_result((GreenThread*)task_ptr);
 }
 
 double aster_task_resolve_f64(void* task_ptr) {
-    int64_t bits = aster_task_consume_payload(task_ptr);
+    if (!task_ptr) { aster_error_set(); return 0.0; }
+    int64_t bits = gt_consume_result((GreenThread*)task_ptr);
     double value = 0.0;
     memcpy(&value, &bits, sizeof(value));
     return value;
 }
 
 int8_t aster_task_resolve_i8(void* task_ptr) {
-    return (int8_t)aster_task_consume_payload(task_ptr);
+    if (!task_ptr) { aster_error_set(); return 0; }
+    return (int8_t)gt_consume_result((GreenThread*)task_ptr);
 }
 
 void* aster_task_resolve_all_i64(void* tasks) {
-    if (!tasks) {
-        aster_error_set();
-        return 0;
-    }
+    if (!tasks) { aster_error_set(); return 0; }
     int64_t len = aster_list_len(tasks);
     void* out = aster_list_new(len);
     for (int64_t i = 0; i < len; i++) {
         int64_t task = aster_list_get(tasks, i);
-        int64_t value = aster_task_resolve_i64((void*)task);
+        int64_t value = aster_task_resolve_i64((void*)(intptr_t)task);
         if (aster_error_flag) return out;
         aster_list_push(out, value);
     }
@@ -498,47 +1259,43 @@ void* aster_task_resolve_all_i64(void* tasks) {
 }
 
 int64_t aster_task_resolve_first_i64(void* tasks) {
-    if (!tasks) {
-        aster_error_set();
-        return 0;
-    }
+    if (!tasks) { aster_error_set(); return 0; }
     int64_t len = aster_list_len(tasks);
-    if (len == 0) {
-        aster_error_set();
-        return 0;
-    }
-    AsterTask* winner = 0;
+    if (len == 0) { aster_error_set(); return 0; }
+
+    GreenThread *winner = NULL;
     int64_t winner_index = -1;
     for (;;) {
         for (int64_t i = 0; i < len; i++) {
-            AsterTask* task = (AsterTask*)aster_list_get(tasks, i);
-            pthread_mutex_lock(&task->mu);
-            int64_t state = task->state;
-            pthread_mutex_unlock(&task->mu);
-            if (state == ASTER_TASK_READY || state == ASTER_TASK_FAILED || state == ASTER_TASK_CANCELLED) {
-                winner = task;
+            GreenThread *t = (GreenThread*)(intptr_t)aster_list_get(tasks, i);
+            pthread_mutex_lock(&t->mu);
+            int done = gt_is_terminal(t->status);
+            pthread_mutex_unlock(&t->mu);
+            if (done) {
+                winner = t;
                 winner_index = i;
                 break;
             }
         }
         if (winner) break;
-        sched_yield();
+        /* Yield or OS yield */
+        if (is_worker_thread) {
+            aster_safepoint();
+        } else {
+            sched_yield();
+        }
     }
     for (int64_t i = 0; i < len; i++) {
         if (i != winner_index) {
-            aster_task_cancel((void*)aster_list_get(tasks, i));
+            aster_task_cancel((void*)(intptr_t)aster_list_get(tasks, i));
         }
     }
     return aster_task_resolve_i64((void*)winner);
 }
 
-// GC stubs, the JIT runtime has real GC; the C AOT runtime
-// uses a simple no-op strategy (OS reclaims on exit).
-void aster_gc_push_roots(int64_t frame_addr, int64_t count) {
-    (void)frame_addr; (void)count;
-}
-void aster_gc_pop_roots(void) {}
-void aster_gc_collect(void) {}
+/* ===================================================================
+ * Main entry point
+ * =================================================================== */
 
 int main(int argc, char** argv) {
     (void)argc; (void)argv;

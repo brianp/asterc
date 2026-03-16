@@ -18,14 +18,14 @@ serde_json = "1"
 
 [workspace]
 members = [
-    "ast",                # AST data structures + serialization
-    "lexer",             # tokenization
-    "parser",          # CST/AST builder
-    "typecheck",   # type inference/checking
-    "fir",             # Flat Intermediate Representation (AST → FIR lowering)
-    "codegen",         # FIR → machine code (Cranelift JIT + AOT)
-    "aster-fmt",       # source code formatter
-    # "vm",           # interpreter/bytecode runtime
+  "ast",       # AST data structures + serialization
+  "lexer",     # tokenization
+  "parser",    # CST/AST builder
+  "typecheck", # type inference/checking
+  "fir",       # Flat Intermediate Representation (AST → FIR lowering)
+  "codegen",   # FIR → machine code (Cranelift JIT + AOT)
+  "aster-fmt", # source code formatter
+  # "vm",      # interpreter/bytecode runtime
 ]
 resolver = "2"
 

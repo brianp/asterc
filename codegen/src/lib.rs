@@ -1,4 +1,5 @@
 pub mod aot;
+pub mod asm_source;
 pub mod async_runtime;
 pub mod config;
 pub(crate) mod green;
