@@ -598,8 +598,8 @@ unsafe fn gc_mark(payload: *const u8) {
                     if obj_mark(block_header) == 0 {
                         obj_set_mark(block_header, 1);
                     }
-                    // List block layout: [cap: i64][len: i64][elements: i64 * cap]
-                    let len = *((block as *const i64).add(1)) as usize;
+                    // List block layout: [len: i64][cap: i64][elements: i64 * cap]
+                    let len = *(block as *const i64) as usize;
                     let elements = (block as *const i64).add(2);
                     for i in 0..len {
                         let val = *elements.add(i);
@@ -617,8 +617,8 @@ unsafe fn gc_mark(payload: *const u8) {
                     if obj_mark(block_header) == 0 {
                         obj_set_mark(block_header, 1);
                     }
-                    // Map block layout: [cap: i64][len: i64][entries: (key: i64, val: i64) * cap]
-                    let len = *((block as *const i64).add(1)) as usize;
+                    // Map block layout: [len: i64][cap: i64][entries: (key: i64, val: i64) * cap]
+                    let len = *(block as *const i64) as usize;
                     let entries = (block as *const i64).add(2);
                     for i in 0..len {
                         let key = *entries.add(i * 2);
