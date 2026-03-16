@@ -589,7 +589,13 @@ pub(crate) fn wake_thread(thread_ptr: *mut GreenThread) {
         return;
     }
     let thread = unsafe { &*thread_ptr };
-    thread.state.lock().unwrap().status = ThreadStatus::Runnable;
+    {
+        let mut st = thread.state.lock().unwrap();
+        if is_terminal(st.status) {
+            return;
+        }
+        st.status = ThreadStatus::Runnable;
+    }
     let sc = sched();
     sc.injector.push(ThreadPtr(thread_ptr));
     sc.park_cv.notify_all();
@@ -603,6 +609,9 @@ pub(crate) fn wake_thread_with_value(thread_ptr: *mut GreenThread, value: i64) {
     let thread = unsafe { &*thread_ptr };
     {
         let mut st = thread.state.lock().unwrap();
+        if is_terminal(st.status) {
+            return;
+        }
         st.result = value;
         st.status = ThreadStatus::Runnable;
     }
@@ -616,14 +625,16 @@ pub(crate) fn wake_thread_with_error(thread_ptr: *mut GreenThread) {
     if thread_ptr.is_null() {
         return;
     }
-    let thread = unsafe { &*thread_ptr };
+    let thread = unsafe { &mut *thread_ptr };
     {
         let mut st = thread.state.lock().unwrap();
+        if is_terminal(st.status) {
+            return;
+        }
+        // Set error flag inside the lock, before making thread eligible for pickup
+        thread.error_flag = true;
         st.status = ThreadStatus::Runnable;
     }
-    // Set the error flag on the green thread so it sees the error after resume
-    let thread = unsafe { &mut *thread_ptr };
-    thread.error_flag = true;
     let sc = sched();
     sc.injector.push(ThreadPtr(thread_ptr));
     sc.park_cv.notify_all();
