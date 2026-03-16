@@ -182,7 +182,62 @@ def main() throws Error -> Int
     );
 }
 
-// 9.10 — Non-task let bindings are not affected
+// 9.10 — Task consumed inside if branch
+
+#[test]
+fn task_consumed_inside_if_branch() {
+    common::check_ok(
+        "\
+def work() -> Int
+  42
+
+def main(flag: Bool) throws Error -> Int
+  let t = async work()
+  if flag
+    let r = resolve t!
+    return r
+  resolve t!
+",
+    );
+}
+
+// 9.11 — Task created inside if branch is still tracked
+
+#[test]
+fn task_created_inside_if_branch_unconsumed() {
+    let diag = common::check_err_diagnostic(
+        "\
+def work() -> Int
+  42
+
+def main(flag: Bool) throws Error -> Int
+  if flag
+    let t = async work()
+  0
+",
+    );
+    assert_eq!(diag.code.as_deref(), Some("E027"));
+}
+
+// 9.12 — Task returned from inside if branch is consumed
+
+#[test]
+fn task_returned_from_if_branch() {
+    common::check_ok(
+        "\
+def work() -> Int
+  42
+
+def spawn_maybe(flag: Bool) -> Task[Int]
+  let t = async work()
+  if flag
+    return t
+  t
+",
+    );
+}
+
+// 9.13 — Non-task let bindings are not affected
 
 #[test]
 fn non_task_let_not_affected() {
