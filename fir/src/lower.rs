@@ -120,6 +120,10 @@ pub struct Lowerer {
     /// On scope exit, cleanup calls are emitted in reverse order.
     /// Each entry: (local_id, class_name, has_drop, has_close).
     cleanup_locals: Vec<(LocalId, String, bool, bool)>,
+    /// Stack of scope boundaries for cleanup tracking.
+    /// Each entry is the length of `cleanup_locals` when a loop scope was entered.
+    /// Used to determine which locals to clean up on break/continue.
+    cleanup_scope_stack: Vec<usize>,
 }
 
 impl Lowerer {
@@ -147,6 +151,7 @@ impl Lowerer {
             current_return_type: None,
             async_scope_stack: Vec::new(),
             cleanup_locals: Vec::new(),
+            cleanup_scope_stack: Vec::new(),
         }
     }
 
@@ -446,6 +451,7 @@ impl Lowerer {
         let saved_next_local = self.next_local;
         let saved_return_type = self.current_return_type.take();
         let saved_cleanup_locals = std::mem::take(&mut self.cleanup_locals);
+        let saved_cleanup_scope_stack = std::mem::take(&mut self.cleanup_scope_stack);
         self.next_local = 0;
         self.current_return_type = Some(ret_type.clone());
 
@@ -490,6 +496,7 @@ impl Lowerer {
 
         // Lower body, converting last expression to implicit return
         let mut fir_body = self.lower_body(body)?;
+        let mut emitted_cleanup = false;
         if let Some(last) = fir_body.last() {
             // If the last statement is an Expr (not Return), make it a Return
             if matches!(last, FirStmt::Expr(_))
@@ -501,7 +508,14 @@ impl Lowerer {
                 self.emit_cleanup_calls();
                 fir_body.append(&mut self.pending_stmts);
                 fir_body.push(FirStmt::Return(expr));
+                emitted_cleanup = true;
             }
+        }
+        // For void functions (or functions whose last stmt isn't an expr),
+        // emit cleanup at the end of the body
+        if !emitted_cleanup && !self.cleanup_locals.is_empty() {
+            self.emit_cleanup_calls();
+            fir_body.append(&mut self.pending_stmts);
         }
 
         // Prepend global value definitions if any
@@ -543,6 +557,7 @@ impl Lowerer {
         self.next_local = saved_next_local;
         self.current_return_type = saved_return_type;
         self.cleanup_locals = saved_cleanup_locals;
+        self.cleanup_scope_stack = saved_cleanup_scope_stack;
 
         Ok(id)
     }
@@ -697,11 +712,19 @@ impl Lowerer {
     /// in reverse declaration order. Close is called before Drop.
     /// Cleanup calls are pushed to `self.pending_stmts`.
     fn emit_cleanup_calls(&mut self) {
-        if self.cleanup_locals.is_empty() {
+        self.emit_cleanup_calls_since(0);
+    }
+
+    /// Emit cleanup calls for locals declared since `scope_start` index
+    /// in cleanup_locals. Emits in reverse declaration order.
+    fn emit_cleanup_calls_since(&mut self, scope_start: usize) {
+        if self.cleanup_locals.len() <= scope_start {
             return;
         }
         // Reverse declaration order: last declared = first cleaned
-        for &(local_id, ref class_name, has_drop, has_close) in self.cleanup_locals.iter().rev() {
+        for &(local_id, ref class_name, has_drop, has_close) in
+            self.cleanup_locals[scope_start..].iter().rev()
+        {
             // Close first (async cleanup), then Drop (sync cleanup)
             if has_close
                 && let Some(&func_id) = self.functions.get(&format!("{}.close", class_name))
@@ -824,7 +847,11 @@ impl Lowerer {
                 } else if let Expr::Call { func, .. } = value {
                     // Infer class type from constructor call: ClassName(...)
                     if let Expr::Ident(class_name, _) = func.as_ref()
-                        && self.classes.contains_key(class_name.as_str())
+                        && (self.classes.contains_key(class_name.as_str())
+                            || class_name == "Mutex"
+                            || class_name == "Channel"
+                            || class_name == "MultiSend"
+                            || class_name == "MultiReceive")
                     {
                         self.local_ast_types
                             .insert(name.clone(), Type::Custom(class_name.clone(), vec![]));
@@ -888,8 +915,17 @@ impl Lowerer {
             } => self.lower_if(cond, then_body, elif_branches, else_body),
             Stmt::While { cond, body, .. } => {
                 let fir_cond = self.lower_expr(cond)?;
+                // Push scope boundary for cleanup tracking
+                let scope_start = self.cleanup_locals.len();
+                self.cleanup_scope_stack.push(scope_start);
                 let mut fir_body = self.lower_body(body)?;
+                // Emit end-of-iteration cleanup for loop-body locals
+                self.emit_cleanup_calls_since(scope_start);
+                fir_body.append(&mut self.pending_stmts);
                 fir_body.push(FirStmt::Expr(FirExpr::Safepoint));
+                // Pop scope and remove loop-body locals from function-level cleanup
+                self.cleanup_scope_stack.pop();
+                self.cleanup_locals.truncate(scope_start);
                 Ok(FirStmt::While {
                     cond: fir_cond,
                     body: fir_body,
@@ -903,8 +939,20 @@ impl Lowerer {
                     value: fir_value,
                 })
             }
-            Stmt::Break(_) => Ok(FirStmt::Break),
-            Stmt::Continue(_) => Ok(FirStmt::Continue),
+            Stmt::Break(_) => {
+                // Emit cleanup for locals declared inside the loop body
+                if let Some(&scope_start) = self.cleanup_scope_stack.last() {
+                    self.emit_cleanup_calls_since(scope_start);
+                }
+                Ok(FirStmt::Break)
+            }
+            Stmt::Continue(_) => {
+                // Emit cleanup for locals declared inside the loop body
+                if let Some(&scope_start) = self.cleanup_scope_stack.last() {
+                    self.emit_cleanup_calls_since(scope_start);
+                }
+                Ok(FirStmt::Continue)
+            }
             Stmt::Expr(expr, _) => {
                 let fir_expr = self.lower_expr(expr)?;
                 Ok(FirStmt::Expr(fir_expr))
@@ -1136,7 +1184,7 @@ impl Lowerer {
                     }
 
                     // Channel(capacity?: x) → aster_channel_new(x)
-                    if name == "Channel" {
+                    if name == "Channel" || name == "MultiSend" || name == "MultiReceive" {
                         let cap_arg = args.iter().find(|(n, _)| n == "capacity").map(|(_, e)| e);
                         let fir_cap = if let Some(cap) = cap_arg {
                             self.lower_expr(cap)?
@@ -1391,6 +1439,11 @@ impl Lowerer {
             }
 
             Expr::BlockingCall { func, args, .. } => {
+                // Method calls (e.g. blocking m.lock(...)): dispatch to method lowering
+                if let Expr::Member { object, field, .. } = func.as_ref() {
+                    self.pending_stmts.push(FirStmt::Expr(FirExpr::Safepoint));
+                    return self.lower_method_call(object, field, args);
+                }
                 let args = self.lower_explicit_call_args(func, args)?;
                 let func_id = self.resolve_called_function_id(func)?;
                 let ret_ty = self.resolve_called_function_ret_type(func, func_id);
@@ -1450,19 +1503,26 @@ impl Lowerer {
                     value: fir_inner,
                 });
 
-                // if aster_error_check(): aster_panic()
+                // if aster_error_check(): cleanup then aster_panic()
                 let check = FirExpr::RuntimeCall {
                     name: "aster_error_check".to_string(),
                     args: vec![],
                     ret_ty: FirType::Bool,
                 };
+                // Build cleanup + panic as the error branch body.
+                // Save pending_stmts so cleanup emission doesn't steal earlier stmts.
+                let saved = std::mem::take(&mut self.pending_stmts);
+                self.emit_cleanup_calls();
+                let mut error_body = std::mem::take(&mut self.pending_stmts);
+                self.pending_stmts = saved;
+                error_body.push(FirStmt::Expr(FirExpr::RuntimeCall {
+                    name: "aster_panic".to_string(),
+                    args: vec![],
+                    ret_ty: FirType::Void,
+                }));
                 self.pending_stmts.push(FirStmt::If {
                     cond: check,
-                    then_body: vec![FirStmt::Expr(FirExpr::RuntimeCall {
-                        name: "aster_panic".to_string(),
-                        args: vec![],
-                        ret_ty: FirType::Void,
-                    })],
+                    then_body: error_body,
                     else_body: vec![],
                 });
 
@@ -1688,6 +1748,64 @@ impl Lowerer {
             }
         }
 
+        // File static methods → runtime calls
+        if let Expr::Ident(name, _) = object
+            && name == "File"
+        {
+            match method {
+                "read" => {
+                    let path = args
+                        .iter()
+                        .find(|(n, _)| n == "path")
+                        .or_else(|| args.first())
+                        .map(|(_, e)| e);
+                    let fir_path = if let Some(p) = path {
+                        self.lower_expr(p)?
+                    } else {
+                        FirExpr::IntLit(0)
+                    };
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_file_read".to_string(),
+                        args: vec![fir_path],
+                        ret_ty: FirType::Ptr,
+                    });
+                }
+                "write" | "append" => {
+                    let path = args
+                        .iter()
+                        .find(|(n, _)| n == "path")
+                        .or_else(|| args.first())
+                        .map(|(_, e)| e);
+                    let content = args
+                        .iter()
+                        .find(|(n, _)| n == "content")
+                        .or_else(|| args.get(1))
+                        .map(|(_, e)| e);
+                    let fir_path = if let Some(p) = path {
+                        self.lower_expr(p)?
+                    } else {
+                        FirExpr::IntLit(0)
+                    };
+                    let fir_content = if let Some(c) = content {
+                        self.lower_expr(c)?
+                    } else {
+                        FirExpr::IntLit(0)
+                    };
+                    let runtime_name = if method == "write" {
+                        "aster_file_write"
+                    } else {
+                        "aster_file_append"
+                    };
+                    return Ok(FirExpr::RuntimeCall {
+                        name: runtime_name.to_string(),
+                        args: vec![fir_path, fir_content],
+                        ret_ty: FirType::Void,
+                    });
+                }
+                _ => {}
+            }
+        }
+
         // Check for static method calls on class names: ClassName.method(args)
         // e.g. Celsius.from(value: x) — the method has a self param in FIR (all methods do),
         // so pass nil (0) as the self pointer since no receiver instance exists.
@@ -1776,12 +1894,71 @@ impl Lowerer {
                         ret_ty: FirType::Void,
                     });
                 }
+                "lock" => {
+                    // Scoped lock: m.lock(block: -> v : body)
+                    // Lowers to: let __mx = m; let v = acquire(__mx); body; unlock(__mx, v)
+                    let block_arg = args
+                        .iter()
+                        .find(|(n, _)| n == "block")
+                        .map(|(_, e)| e)
+                        .or_else(|| args.first().map(|(_, e)| e));
+                    if let Some(Expr::Lambda {
+                        params,
+                        body: lbody,
+                        ..
+                    }) = block_arg
+                    {
+                        // Store mutex ptr in a local for reuse in unlock
+                        let mx_id = self.alloc_local();
+                        self.local_types.insert(mx_id, FirType::Ptr);
+                        self.pending_stmts.push(FirStmt::Let {
+                            name: mx_id,
+                            ty: FirType::Ptr,
+                            value: fir_object,
+                        });
+
+                        // Acquire: let v = aster_mutex_lock(__mx)
+                        let param_name = params
+                            .first()
+                            .map(|(n, _)| n.clone())
+                            .unwrap_or_else(|| "__lock_val".into());
+                        let val_id = self.alloc_local();
+                        self.locals.insert(param_name, val_id);
+                        self.local_types.insert(val_id, FirType::I64);
+                        self.pending_stmts.push(FirStmt::Let {
+                            name: val_id,
+                            ty: FirType::I64,
+                            value: FirExpr::RuntimeCall {
+                                name: "aster_mutex_lock".to_string(),
+                                args: vec![FirExpr::LocalVar(mx_id, FirType::Ptr)],
+                                ret_ty: FirType::I64,
+                            },
+                        });
+
+                        // Inline the lambda body
+                        let body_result = self.lower_inline_body(lbody)?;
+                        self.pending_stmts.push(FirStmt::Expr(body_result));
+
+                        // Unlock: aster_mutex_unlock(__mx, v)
+                        // Use the original value — inline lambda can't reassign it
+                        return Ok(FirExpr::RuntimeCall {
+                            name: "aster_mutex_unlock".to_string(),
+                            args: vec![
+                                FirExpr::LocalVar(mx_id, FirType::Ptr),
+                                FirExpr::LocalVar(val_id, FirType::I64),
+                            ],
+                            ret_ty: FirType::Void,
+                        });
+                    }
+                    return Ok(FirExpr::IntLit(0));
+                }
                 _ => {}
             }
         }
 
-        // Channel[T] methods → runtime calls
-        if matches!(&object_ast_ty, Some(Type::Custom(name, _)) if name == "Channel") {
+        // Channel[T] / MultiSend[T] / MultiReceive[T] methods → runtime calls
+        if matches!(&object_ast_ty, Some(Type::Custom(name, _)) if name == "Channel" || name == "MultiSend" || name == "MultiReceive")
+        {
             let mut fir_value_arg = || -> Result<FirExpr, LowerError> {
                 let value_expr = args
                     .iter()
@@ -1843,6 +2020,10 @@ impl Lowerer {
                         args: vec![fir_object],
                         ret_ty: FirType::Void,
                     });
+                }
+                "clone_sender" | "clone_receiver" => {
+                    // Clone returns the same handle (refcount bump is a future enhancement)
+                    return Ok(fir_object);
                 }
                 _ => {}
             }
@@ -2225,10 +2406,24 @@ impl Lowerer {
             },
         });
 
+        // Push scope boundary for cleanup tracking in for-loop body
+        let scope_start = self.cleanup_locals.len();
+        self.cleanup_scope_stack.push(scope_start);
+
         // Lower the user's loop body
         for stmt in body {
-            while_body.push(self.lower_stmt_inner(stmt)?);
+            let fir_stmt = self.lower_stmt_inner(stmt)?;
+            while_body.append(&mut self.pending_stmts);
+            while_body.push(fir_stmt);
         }
+
+        // Emit end-of-iteration cleanup for loop-body locals
+        self.emit_cleanup_calls_since(scope_start);
+        while_body.append(&mut self.pending_stmts);
+
+        // Pop scope and remove loop-body locals from function-level cleanup
+        self.cleanup_scope_stack.pop();
+        self.cleanup_locals.truncate(scope_start);
 
         // __idx = __idx + 1
         while_body.push(FirStmt::Assign {
@@ -2389,10 +2584,25 @@ impl Lowerer {
             },
         });
 
+        // Push scope boundary for cleanup tracking in iterator for-loop
+        let scope_start = self.cleanup_locals.len();
+        self.cleanup_scope_stack.push(scope_start);
+
         // Lower user's loop body
         for stmt in body {
-            while_body.push(self.lower_stmt_inner(stmt)?);
+            let fir_stmt = self.lower_stmt_inner(stmt)?;
+            while_body.append(&mut self.pending_stmts);
+            while_body.push(fir_stmt);
         }
+
+        // Emit end-of-iteration cleanup for loop-body locals
+        self.emit_cleanup_calls_since(scope_start);
+        while_body.append(&mut self.pending_stmts);
+
+        // Pop scope and remove loop-body locals from function-level cleanup
+        self.cleanup_scope_stack.pop();
+        self.cleanup_locals.truncate(scope_start);
+
         while_body.push(FirStmt::Expr(FirExpr::Safepoint));
 
         // Setup: let __iter = iterable, then while(true) { ... }
@@ -3551,6 +3761,7 @@ impl Lowerer {
         let saved_next_local = self.next_local;
         let saved_return_type = self.current_return_type.take();
         let saved_cleanup_locals = std::mem::take(&mut self.cleanup_locals);
+        let saved_cleanup_scope_stack = std::mem::take(&mut self.cleanup_scope_stack);
         self.next_local = 0;
         self.current_return_type = Some(ret_type.clone());
 
@@ -3653,6 +3864,7 @@ impl Lowerer {
         self.next_local = saved_next_local;
         self.current_return_type = saved_return_type;
         self.cleanup_locals = saved_cleanup_locals;
+        self.cleanup_scope_stack = saved_cleanup_scope_stack;
 
         // Re-register the function name
         self.functions.insert(lambda_name, func_id);

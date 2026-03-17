@@ -322,6 +322,41 @@ impl TypeChecker {
                     };
                     return Ok(Type::Custom("Channel".into(), vec![elem_ty]));
                 }
+                "MultiSend" | "MultiReceive" => {
+                    if args.len() > 1 {
+                        return Err(Diagnostic::error(format!(
+                            "{}() takes 0-1 arguments (optional capacity), got {}",
+                            name,
+                            args.len()
+                        ))
+                        .with_code("E006")
+                        .with_label(func.span(), "expected 0-1 arguments"));
+                    }
+                    if args.len() == 1 {
+                        let cap_ty = self.check_expr(&args[0].1)?;
+                        if cap_ty != Type::Int && !cap_ty.is_error() {
+                            return Err(Diagnostic::error(format!(
+                                "{} capacity must be Int, got {:?}",
+                                name, cap_ty
+                            ))
+                            .with_code("E005")
+                            .with_label(args[0].1.span(), "expected Int"));
+                        }
+                    }
+                    let elem_ty = if let Some(Type::Custom(_, ref type_args)) = self.expected_type
+                        && !type_args.is_empty()
+                    {
+                        type_args[0].clone()
+                    } else {
+                        return Err(Diagnostic::error(format!(
+                            "cannot infer {} element type; add a type annotation",
+                            name
+                        ))
+                        .with_code("E005")
+                        .with_label(func.span(), "element type unknown"));
+                    };
+                    return Ok(Type::Custom(name.clone(), vec![elem_ty]));
+                }
                 _ => {}
             }
         }

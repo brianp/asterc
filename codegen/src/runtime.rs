@@ -1368,6 +1368,66 @@ pub extern "C" fn aster_channel_close(ch: *mut u8) {
     }
 }
 
+// --- File I/O ---
+
+/// Extract a Rust String from an Aster heap string pointer.
+/// Layout: [len: i64][data: u8...]
+unsafe fn aster_string_to_rust(ptr: *const u8) -> String {
+    if ptr.is_null() {
+        return String::new();
+    }
+    unsafe {
+        let len = *(ptr as *const i64);
+        if len <= 0 {
+            return String::new();
+        }
+        let data = ptr.add(8);
+        let bytes = std::slice::from_raw_parts(data, len as usize);
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+}
+
+/// Create a new Aster heap string from a Rust string.
+fn aster_string_new_from_rust(s: &str) -> *mut u8 {
+    aster_string_new(s.as_ptr(), s.len())
+}
+
+/// Read a file's contents as a string. Sets error flag on failure.
+pub extern "C" fn aster_file_read(path_ptr: *mut u8) -> *mut u8 {
+    let path = unsafe { aster_string_to_rust(path_ptr) };
+    match std::fs::read_to_string(&path) {
+        Ok(content) => aster_string_new_from_rust(&content),
+        Err(_) => {
+            aster_error_set();
+            aster_string_new_from_rust("")
+        }
+    }
+}
+
+/// Write content to a file (creates or truncates). Sets error flag on failure.
+pub extern "C" fn aster_file_write(path_ptr: *mut u8, content_ptr: *mut u8) {
+    let path = unsafe { aster_string_to_rust(path_ptr) };
+    let content = unsafe { aster_string_to_rust(content_ptr) };
+    if std::fs::write(&path, &content).is_err() {
+        aster_error_set();
+    }
+}
+
+/// Append content to a file (creates if missing). Sets error flag on failure.
+pub extern "C" fn aster_file_append(path_ptr: *mut u8, content_ptr: *mut u8) {
+    use std::io::Write;
+    let path = unsafe { aster_string_to_rust(path_ptr) };
+    let content = unsafe { aster_string_to_rust(content_ptr) };
+    let result = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| f.write_all(content.as_bytes()));
+    if result.is_err() {
+        aster_error_set();
+    }
+}
+
 pub fn runtime_builtin_symbols() -> Vec<(&'static str, *const u8)> {
     vec![
         ("aster_alloc", aster_alloc as *const u8),
@@ -1461,6 +1521,10 @@ pub fn runtime_builtin_symbols() -> Vec<(&'static str, *const u8)> {
             aster_channel_try_receive as *const u8,
         ),
         ("aster_channel_close", aster_channel_close as *const u8),
+        // File I/O
+        ("aster_file_read", aster_file_read as *const u8),
+        ("aster_file_write", aster_file_write as *const u8),
+        ("aster_file_append", aster_file_append as *const u8),
     ]
 }
 

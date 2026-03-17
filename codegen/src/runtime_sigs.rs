@@ -125,4 +125,8 @@ pub static RUNTIME_SIGS: &[RuntimeSig] = &[
     ),
     ("aster_channel_try_receive", &[types::I64], Some(types::I64)),
     ("aster_channel_close", &[types::I64], None),
+    // File I/O
+    ("aster_file_read", &[types::I64], Some(types::I64)),
+    ("aster_file_write", &[types::I64, types::I64], None),
+    ("aster_file_append", &[types::I64, types::I64], None),
 ];

@@ -156,12 +156,13 @@ impl TypeChecker {
             },
         );
 
-        // Built-in error types for Mutex and Channel
+        // Built-in error types for Mutex, Channel, and I/O
         for (name, parent) in [
             ("LockTimeoutError", "Error"),
             ("ChannelFullError", "Error"),
             ("ChannelEmptyError", "Error"),
             ("ChannelClosedError", "Error"),
+            ("IOError", "Error"),
         ] {
             env.set_class(
                 name.into(),
@@ -186,6 +187,11 @@ impl TypeChecker {
                     suspendable: false,
                 },
             );
+        }
+
+        // I/O namespaces — static methods only, no instances
+        for name in ["File", "TcpListener", "TcpStream"] {
+            env.set_var(name.into(), Type::Custom(name.into(), Vec::new()));
         }
 
         // Build protocol traits and supporting enums — stored in builtin maps.

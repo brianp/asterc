@@ -30,10 +30,22 @@ def main() -> Int
     );
 }
 
-// 7.2 — lock method not yet supported (needs escape analysis)
+// 7.2 — Scoped lock
 
 #[test]
-fn mutex_lock_method_not_supported() {
+fn mutex_lock_basic() {
+    common::check_ok(
+        "\
+def main() -> Int
+  let m = Mutex(value: 42)
+  blocking m.lock(block: -> v : print(value: v))
+  0
+",
+    );
+}
+
+#[test]
+fn mutex_lock_requires_block_arg() {
     let err = common::check_err(
         "\
 def main() -> Int
@@ -43,8 +55,52 @@ def main() -> Int
 ",
     );
     assert!(
-        err.contains("no method"),
-        "expected method error, got: {err}"
+        err.contains("1 argument") || err.contains("block"),
+        "expected argument error, got: {err}"
+    );
+}
+
+#[test]
+fn mutex_lock_block_param_type_matches_inner() {
+    // Lambda param should be typed as Int (Mutex[Int] → lock block gets Int)
+    common::check_ok(
+        "\
+def use_int(n: Int) -> Int
+  n
+
+def main() -> Int
+  let m = Mutex(value: 10)
+  blocking m.lock(block: -> v : use_int(n: v))
+  0
+",
+    );
+}
+
+// Escape analysis is enforced by the inline lambda being expression-only.
+// The lock block's lambda parameter cannot be assigned to outer scope
+// because inline lambdas (-> v : expr) can only contain expressions,
+// not assignment statements. This is a structural guarantee.
+
+#[test]
+fn mutex_lock_codegen() {
+    let dir = common::make_temp_dir("mutex-lock-codegen");
+    let src = dir.join("mutex_lock.aster");
+    std::fs::write(
+        &src,
+        "\
+def main() -> Int
+  let m = Mutex(value: 21)
+  blocking m.lock(block: -> v : print(value: v * 2))
+  0
+",
+    )
+    .unwrap();
+
+    let output = common::cli(&["run", &src.to_string_lossy()]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("42"),
+        "lock block should have printed 42, got: {stdout}"
     );
 }
 
