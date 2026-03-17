@@ -1584,6 +1584,59 @@ void aster_channel_close(void *ptr) {
 }
 
 /* ===================================================================
+ * File I/O
+ * =================================================================== */
+
+/* Helper: extract C string from Aster heap string [len:i64][data:u8...] */
+static char* aster_string_to_cstr(void *ptr) {
+    if (!ptr) return strdup("");
+    int64_t len = *(int64_t*)ptr;
+    if (len <= 0) return strdup("");
+    char *buf = (char*)malloc(len + 1);
+    if (!buf) { fprintf(stderr, "out of memory\n"); abort(); }
+    memcpy(buf, (char*)ptr + 8, len);
+    buf[len] = '\0';
+    return buf;
+}
+
+void* aster_file_read(void *path_ptr) {
+    char *path = aster_string_to_cstr(path_ptr);
+    FILE *f = fopen(path, "r");
+    if (!f) { free(path); aster_error_set(); return aster_string_new(NULL, 0); }
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    if (sz < 0) { fclose(f); free(path); aster_error_set(); return aster_string_new(NULL, 0); }
+    fseek(f, 0, SEEK_SET);
+    char *buf = (char*)malloc(sz);
+    if (!buf) { fclose(f); free(path); aster_error_set(); return aster_string_new(NULL, 0); }
+    size_t rd = fread(buf, 1, sz, f);
+    fclose(f); free(path);
+    void *result = aster_string_new((uint8_t*)buf, rd);
+    free(buf);
+    return result;
+}
+
+void aster_file_write(void *path_ptr, void *content_ptr) {
+    char *path = aster_string_to_cstr(path_ptr);
+    int64_t len = content_ptr ? *(int64_t*)content_ptr : 0;
+    if (len < 0) len = 0;
+    FILE *f = fopen(path, "w");
+    if (!f) { free(path); aster_error_set(); return; }
+    if (len > 0) fwrite((char*)content_ptr + 8, 1, len, f);
+    fclose(f); free(path);
+}
+
+void aster_file_append(void *path_ptr, void *content_ptr) {
+    char *path = aster_string_to_cstr(path_ptr);
+    int64_t len = content_ptr ? *(int64_t*)content_ptr : 0;
+    if (len < 0) len = 0;
+    FILE *f = fopen(path, "a");
+    if (!f) { free(path); aster_error_set(); return; }
+    if (len > 0) fwrite((char*)content_ptr + 8, 1, len, f);
+    fclose(f); free(path);
+}
+
+/* ===================================================================
  * Main entry point
  * =================================================================== */
 
