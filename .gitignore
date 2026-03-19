@@ -4,5 +4,6 @@
 /docs/.astro
 .DS_Store
 .idea/
+.aster/
 .claude/
 workingfiles/
