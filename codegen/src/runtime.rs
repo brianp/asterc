@@ -205,7 +205,7 @@ pub extern "C" fn aster_list_set(handle: *mut u8, index: i64, value: i64) {
 }
 
 /// Push an element to a list. Handle stays stable; data block may move.
-/// Returns the same handle for backward compatibility with codegen.
+/// Returns the same handle so callers don't need to track reallocation.
 pub extern "C" fn aster_list_push(handle: *mut u8, value: i64) -> *mut u8 {
     if handle.is_null() {
         eprintln!("aster_list_push: null list handle");

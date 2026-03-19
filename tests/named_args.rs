@@ -232,7 +232,7 @@ fn named_args_nullable_or_else() {
     common::check_ok(
         r#"
 let x: Int? = nil
-let y: Int = x.or_else(f: -> 0)
+let y: Int = x.or_else(f: 0)
 "#,
     );
 }

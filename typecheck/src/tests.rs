@@ -1267,7 +1267,7 @@ fn generic_lambda_typechecks_inline() {
 
 #[test]
 fn generic_lambda_typechecks_explicit() {
-    // Legacy style: explicit generic_params with TypeVar still works
+    // Explicit generic_params with TypeVar still works
     let mut tc = TypeChecker::new();
     let lambda = Expr::Lambda {
         params: vec![("x".into(), Type::TypeVar("T".into(), vec![]))],

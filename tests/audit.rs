@@ -469,7 +469,7 @@ let y: Int = x.or(default: 0)
 fn nullable_or_else_returns_inner_type() {
     common::check_ok(
         r#"let x: Int? = nil
-let y: Int = x.or_else(f: -> 0)
+let y: Int = x.or_else(f: 0)
 "#,
     );
 }
