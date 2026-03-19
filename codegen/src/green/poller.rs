@@ -214,8 +214,7 @@ mod epoll_impl {
             }
 
             let count = n as usize;
-            for i in 0..count {
-                let ep = &epevents[i];
+            for ep in epevents.iter().take(count) {
                 events.push(Event {
                     token: Token(ep.u64 as usize),
                     readable: (ep.events & libc::EPOLLIN as u32) != 0,
