@@ -20,7 +20,7 @@ pub struct TypeChecker {
     /// Accumulated diagnostics from error recovery.
     pub diagnostics: Vec<Diagnostic>,
     /// Optional module loader for resolving `use` imports.
-    /// When None, `use` statements are ignored (backward compatible).
+    /// When None, `use` statements are ignored (prelude mode).
     pub module_loader: Option<Rc<RefCell<ModuleLoader>>>,
     /// Built-in protocol traits (Eq, Ord, Printable, etc.) — source of truth for `use std`.
     /// In prelude mode (no loader), these are also copied to env.
@@ -1539,7 +1539,7 @@ impl TypeChecker {
 
         let loader_rc = match &self.module_loader {
             Some(loader) => Rc::clone(loader),
-            None => return Ok(Type::Void), // No loader — ignore use (backward compatible)
+            None => return Ok(Type::Void), // No loader — ignore use (prelude mode)
         };
 
         let exports = ModuleLoader::load_module(&loader_rc, path, *span)?;

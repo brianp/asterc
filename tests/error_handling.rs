@@ -447,7 +447,7 @@ let y: String = x.or(default: "default")
 fn nullable_or_else() {
     common::check_ok(
         r#"let x: String? = nil
-let y: String = x.or_else(f: -> "computed")
+let y: String = x.or_else(f: "computed")
 "#,
     );
 }

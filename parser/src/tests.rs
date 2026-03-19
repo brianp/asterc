@@ -634,10 +634,10 @@ fn parses_continue_stmt() {
     }
 }
 
-// ─── If/else backward compat ────────────────────────────────────────
+// ─── If/else ────────────────────────────────────────────────────────
 
 #[test]
-fn parses_if_else_still_works() {
+fn parses_if_else() {
     let m = parse_ok("if true\n  1\nelse\n  2\n");
     match &m.body[0] {
         Stmt::If {
@@ -653,7 +653,7 @@ fn parses_if_else_still_works() {
 }
 
 #[test]
-fn parses_if_no_else_still_works() {
+fn parses_if_no_else() {
     let m = parse_ok("if true\n  1\n");
     match &m.body[0] {
         Stmt::If {

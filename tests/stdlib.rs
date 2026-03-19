@@ -403,7 +403,7 @@ fn error_includes_printable_without_import() {
     );
 }
 
-// ─── Backward compatibility: no module loader = prelude ─────────────
+// ─── Prelude mode: no module loader ─────────────────────────────────
 
 #[test]
 fn prelude_mode_without_loader() {
