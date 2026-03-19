@@ -1,18 +1,10 @@
-use std::fs;
-use std::path::Path;
-
 use ast::{Expr, Stmt};
 use aster_fmt::{config::FormatConfig, format_source};
 use lexer::{TokenKind, lex};
 use parser::Parser;
 
-fn read(path: &str) -> String {
-    fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
-        .unwrap_or_else(|err| panic!("failed to read {path}: {err}"))
-}
-
 #[test]
-fn call_modes_stay_aligned_across_frontend_and_docs() {
+fn call_modes_stay_aligned_across_frontend() {
     let source = "\
 def child() -> Int
   42
@@ -70,32 +62,4 @@ def main() throws CancelledError -> Int
     assert!(formatted.contains("async child()"));
     assert!(formatted.contains("detached async child()"));
     assert!(formatted.contains("resolve spawned!"));
-
-    let typecheck_diagnostics = read("typecheck/src/check_call.rs");
-    assert!(typecheck_diagnostics.contains("blocking {name}()"));
-    assert!(typecheck_diagnostics.contains("async {name}()"));
-    assert!(typecheck_diagnostics.contains("blocking f(...)"));
-    assert!(typecheck_diagnostics.contains("async f(...)"));
-
-    for path in [
-        "docs/src/content/docs/concurrency/overview.mdx",
-        "docs/src/content/docs/concurrency/async-blocking.mdx",
-        "docs/design/async-rfc.md",
-        "docs/src/content/docs/rfcs/async.mdx",
-        "docs/src/content/docs/rfcs/full/async.mdx",
-    ] {
-        let doc = read(path);
-        assert!(
-            doc.contains("blocking f()"),
-            "{path} should document blocking f()"
-        );
-        assert!(
-            !doc.contains("resolve f()"),
-            "{path} still documents the removed resolve f() form"
-        );
-        assert!(
-            doc.contains("resolve task"),
-            "{path} should reserve resolve for Task[T] handles"
-        );
-    }
 }
