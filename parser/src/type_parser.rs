@@ -37,6 +37,28 @@ impl Parser {
             }
         };
 
+        // Catch lowercase built-in type names early with a clear error
+        let correct = match name.as_str() {
+            "int" => Some("Int"),
+            "float" => Some("Float"),
+            "bool" => Some("Bool"),
+            "string" => Some("String"),
+            "void" => Some("Void"),
+            "nil" => Some("Nil"),
+            "never" => Some("Never"),
+            "list" => Some("List"),
+            "map" => Some("Map"),
+            "task" => Some("Task"),
+            _ => None,
+        };
+        if let Some(correct) = correct {
+            return Err(
+                Diagnostic::error(format!("Unknown type '{}'. Did you mean '{}'?", name, correct))
+                    .with_code("P001")
+                    .with_label(self.span_from(self.pos - 1), format!("use '{}' instead", correct)),
+            );
+        }
+
         if name == "List" && self.at(&TokenKind::LBracket) {
             self.advance();
             let inner = self.parse_type()?;

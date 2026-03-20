@@ -355,6 +355,28 @@ fn never_type_recognized_by_from_ident() {
     assert_eq!(Type::from_ident("Never"), Type::Never);
 }
 
+// Lowercase built-in type names produce a clear error
+#[test]
+fn lowercase_builtin_type_rejected() {
+    for (wrong, right) in [
+        ("bool", "Bool"),
+        ("int", "Int"),
+        ("float", "Float"),
+        ("string", "String"),
+        ("void", "Void"),
+    ] {
+        let src = format!("def f() -> {}\n  1\n", wrong);
+        let err = common::check_parse_err(&src);
+        assert!(
+            err.contains(&format!("Did you mean '{}'?", right)),
+            "'{}' should suggest '{}', got: {}",
+            wrong,
+            right,
+            err
+        );
+    }
+}
+
 // L2: Unicode homoglyph identifiers should be rejected
 #[test]
 fn unicode_homoglyph_identifier_rejected() {
