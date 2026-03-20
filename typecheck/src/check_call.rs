@@ -203,6 +203,9 @@ impl TypeChecker {
                         }
                     }
                 }
+                "random" => {
+                    return self.check_random_call(func, args);
+                }
                 "resolve_all" => {
                     if args.len() != 1 {
                         return Err(Diagnostic::error(format!(
@@ -999,7 +1002,7 @@ impl TypeChecker {
                     // Builtins never throw. Return Void as a sentinel — callers only
                     // inspect the `throws` field of Type::Function, so non-Function
                     // types correctly signal "no throws".
-                    "len" | "to_string" | "log" | "say" => Ok(Type::Void),
+                    "len" | "to_string" | "log" | "say" | "random" => Ok(Type::Void),
                     "resolve_all" => Ok(Type::Function {
                         param_names: vec!["tasks".into()],
                         params: vec![Type::List(Box::new(Type::Task(Box::new(Type::Int))))],
@@ -1027,6 +1030,75 @@ impl TypeChecker {
             }
             Expr::Member { object, field, .. } => self.check_member(object, field),
             _ => self.check_expr(func),
+        }
+    }
+
+    fn check_random_call(
+        &mut self,
+        func: &Expr,
+        args: &[(String, Expr)],
+    ) -> Result<Type, Diagnostic> {
+        let target = self.expected_type.clone();
+        match target.as_ref() {
+            Some(Type::Int) => {
+                let max_arg = args.iter().find(|(n, _)| n == "max");
+                match max_arg {
+                    Some((_, expr)) => {
+                        let aty = self.check_expr(expr)?;
+                        if aty != Type::Int {
+                            return Err(Diagnostic::error(format!(
+                                "random() max argument must be Int, got {:?}",
+                                aty
+                            ))
+                            .with_code("E005")
+                            .with_label(expr.span(), "expected Int"));
+                        }
+                        Ok(Type::Int)
+                    }
+                    None => Err(
+                        Diagnostic::error("random() for Int requires a max: argument")
+                            .with_code("E006")
+                            .with_label(func.span(), "add max: argument"),
+                    ),
+                }
+            }
+            Some(Type::Float) => {
+                let max_arg = args.iter().find(|(n, _)| n == "max");
+                match max_arg {
+                    Some((_, expr)) => {
+                        let aty = self.check_expr(expr)?;
+                        if aty != Type::Float {
+                            return Err(Diagnostic::error(format!(
+                                "random() max argument must be Float, got {:?}",
+                                aty
+                            ))
+                            .with_code("E005")
+                            .with_label(expr.span(), "expected Float"));
+                        }
+                        Ok(Type::Float)
+                    }
+                    None => Err(
+                        Diagnostic::error("random() for Float requires a max: argument")
+                            .with_code("E006")
+                            .with_label(func.span(), "add max: argument"),
+                    ),
+                }
+            }
+            Some(Type::Bool) => {
+                if !args.is_empty() {
+                    return Err(
+                        Diagnostic::error("random() for Bool takes no arguments")
+                            .with_code("E006")
+                            .with_label(func.span(), "remove arguments"),
+                    );
+                }
+                Ok(Type::Bool)
+            }
+            _ => Err(Diagnostic::error(
+                "Cannot infer type for random(). Add a type annotation: `let n: Int = random(max: 100)`",
+            )
+            .with_code("E005")
+            .with_label(func.span(), "needs type context")),
         }
     }
 }

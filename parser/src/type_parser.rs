@@ -52,11 +52,15 @@ impl Parser {
             _ => None,
         };
         if let Some(correct) = correct {
-            return Err(
-                Diagnostic::error(format!("Unknown type '{}'. Did you mean '{}'?", name, correct))
-                    .with_code("P001")
-                    .with_label(self.span_from(self.pos - 1), format!("use '{}' instead", correct)),
-            );
+            return Err(Diagnostic::error(format!(
+                "Unknown type '{}'. Did you mean '{}'?",
+                name, correct
+            ))
+            .with_code("P001")
+            .with_label(
+                self.span_from(self.pos - 1),
+                format!("use '{}' instead", correct),
+            ));
         }
 
         if name == "List" && self.at(&TokenKind::LBracket) {

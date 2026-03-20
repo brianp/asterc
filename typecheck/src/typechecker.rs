@@ -80,9 +80,19 @@ impl TypeChecker {
                 suspendable: false,
             },
         );
-        // Note: `len` and `to_string` are handled as polymorphic builtins
-        // in check_call_inner rather than registered here, because their
-        // type signatures depend on the argument type.
+        // Note: `len`, `to_string`, and `random` are handled as polymorphic
+        // builtins in check_call_inner rather than registered here, because
+        // their type signatures depend on context.
+        env.set_var(
+            "random".into(),
+            Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(Type::Int),
+                throws: None,
+                suspendable: false,
+            },
+        );
 
         // Built-in error hierarchy: Exception (root) -> Error (app base)
         env.set_class(
@@ -193,6 +203,52 @@ impl TypeChecker {
         for name in ["File", "TcpListener", "TcpStream"] {
             env.set_var(name.into(), Type::Custom(name.into(), Vec::new()));
         }
+
+        // Range builtin class — includes Iterable, used by `..` and `..=` syntax
+        env.set_class(
+            "Range".into(),
+            ClassInfo {
+                ty: Type::Custom("Range".into(), Vec::new()),
+                fields: IndexMap::from([
+                    ("start".into(), Type::Int),
+                    ("end".into(), Type::Int),
+                    ("inclusive".into(), Type::Bool),
+                ]),
+                methods: HashMap::from([
+                    (
+                        "each".into(),
+                        Type::Function {
+                            param_names: vec!["f".into()],
+                            params: vec![Type::Function {
+                                param_names: vec!["_0".into()],
+                                params: vec![Type::Int],
+                                ret: Box::new(Type::Void),
+                                throws: None,
+                                suspendable: false,
+                            }],
+                            ret: Box::new(Type::Void),
+                            throws: None,
+                            suspendable: false,
+                        },
+                    ),
+                    (
+                        "random".into(),
+                        Type::Function {
+                            param_names: vec![],
+                            params: vec![],
+                            ret: Box::new(Type::Int),
+                            throws: None,
+                            suspendable: false,
+                        },
+                    ),
+                ]),
+                generic_params: None,
+                extends: None,
+                includes: vec!["Iterable".into()],
+                overloaded_methods: HashMap::new(),
+                parametric_includes: vec![("Iterable".to_string(), vec![Type::Int])],
+            },
+        );
 
         // Build protocol traits and supporting enums — stored in builtin maps.
         // In prelude mode (no loader), also installed in env.
@@ -397,6 +453,25 @@ impl TypeChecker {
             },
         );
 
+        builtin_traits.insert(
+            "Random".into(),
+            TraitInfo {
+                name: "Random".into(),
+                methods: HashMap::from([(
+                    "random".into(),
+                    Type::Function {
+                        param_names: vec![],
+                        params: vec![],
+                        ret: Box::new(Type::TypeVar("Self".into(), vec![])),
+                        throws: None,
+                        suspendable: false,
+                    },
+                )]),
+                required_methods: vec!["random".into()],
+                generic_params: None,
+            },
+        );
+
         // Prelude mode: install all protocol traits and enums in env
         for (name, info) in &builtin_traits {
             env.set_trait(name.clone(), info.clone());
@@ -439,6 +514,7 @@ impl TypeChecker {
             "Into",
             "Iterable",
             "Iterator",
+            "Random",
             // Drop and Close stay in prelude — they're fundamental lifecycle traits
         ] {
             tc.env.remove_trait(name);
@@ -762,6 +838,9 @@ impl TypeChecker {
                 self.expr_is_suspendable(key) || self.expr_is_suspendable(value)
             }),
             Expr::Lambda { body, .. } => self.body_is_suspendable(body),
+            Expr::Range { start, end, .. } => {
+                self.expr_is_suspendable(start) || self.expr_is_suspendable(end)
+            }
             Expr::Int(..)
             | Expr::Float(..)
             | Expr::Str(..)
@@ -1497,6 +1576,7 @@ impl TypeChecker {
             "fmt" => Some(self.builtin_exports_from(&["Printable"], &[])),
             "collections" => Some(self.builtin_exports_from(&["Iterable", "Iterator"], &[])),
             "convert" => Some(self.builtin_exports_from(&["From", "Into"], &[])),
+            "random" => Some(self.builtin_exports_from(&["Random"], &[])),
             _ => None,
         }
     }

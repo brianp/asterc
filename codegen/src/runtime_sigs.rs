@@ -129,4 +129,19 @@ pub static RUNTIME_SIGS: &[RuntimeSig] = &[
     ("aster_file_read", &[types::I64], Some(types::I64)),
     ("aster_file_write", &[types::I64, types::I64], None),
     ("aster_file_append", &[types::I64, types::I64], None),
+    // Range
+    (
+        "aster_range_new",
+        &[types::I64, types::I64, types::I8],
+        Some(types::I64),
+    ),
+    (
+        "aster_range_check",
+        &[types::I64, types::I64, types::I8],
+        Some(types::I8),
+    ),
+    // Random
+    ("aster_random_int", &[types::I64], Some(types::I64)),
+    ("aster_random_float", &[types::F64], Some(types::F64)),
+    ("aster_random_bool", &[], Some(types::I8)),
 ];

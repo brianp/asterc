@@ -1125,6 +1125,20 @@ pub fn format_expr(expr: &Expr, config: &FormatConfig) -> Doc {
                 ]))
             }
         }
+
+        Expr::Range {
+            start,
+            end,
+            inclusive,
+            ..
+        } => {
+            let op = if *inclusive { "..=" } else { ".." };
+            concat(vec![
+                format_expr(start, config),
+                text(op),
+                format_expr(end, config),
+            ])
+        }
     }
 }
 

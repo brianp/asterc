@@ -750,3 +750,48 @@ fn lexes_generic_class_tokens() {
     assert_eq!(ks[3], &TokenKind::Ident("T".into()));
     assert_eq!(ks[4], &TokenKind::RBracket);
 }
+
+#[test]
+fn lexes_dot_dot_exclusive() {
+    let toks = lex("1..10").expect("lex ok");
+    let ks = kinds(&toks);
+    assert_eq!(ks[0], &TokenKind::Int(1));
+    assert_eq!(ks[1], &TokenKind::DotDot);
+    assert_eq!(ks[2], &TokenKind::Int(10));
+}
+
+#[test]
+fn lexes_dot_dot_eq_inclusive() {
+    let toks = lex("1..=10").expect("lex ok");
+    let ks = kinds(&toks);
+    assert_eq!(ks[0], &TokenKind::Int(1));
+    assert_eq!(ks[1], &TokenKind::DotDotEq);
+    assert_eq!(ks[2], &TokenKind::Int(10));
+}
+
+#[test]
+fn lexes_dot_dot_with_idents() {
+    let toks = lex("a..b").expect("lex ok");
+    let ks = kinds(&toks);
+    assert_eq!(ks[0], &TokenKind::Ident("a".into()));
+    assert_eq!(ks[1], &TokenKind::DotDot);
+    assert_eq!(ks[2], &TokenKind::Ident("b".into()));
+}
+
+#[test]
+fn dot_still_works_after_range_tokens() {
+    let toks = lex("x.y").expect("lex ok");
+    let ks = kinds(&toks);
+    assert_eq!(ks[0], &TokenKind::Ident("x".into()));
+    assert_eq!(ks[1], &TokenKind::Dot);
+    assert_eq!(ks[2], &TokenKind::Ident("y".into()));
+}
+
+#[test]
+fn lexes_dot_dot_with_spaces() {
+    let toks = lex("1 .. 10").expect("lex ok");
+    let ks = kinds(&toks);
+    assert_eq!(ks[0], &TokenKind::Int(1));
+    assert_eq!(ks[1], &TokenKind::DotDot);
+    assert_eq!(ks[2], &TokenKind::Int(10));
+}

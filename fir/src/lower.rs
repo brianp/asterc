@@ -99,6 +99,8 @@ pub struct Lowerer {
     /// Top-level control flow statements (if, while, for, assignment)
     /// stored as AST and re-lowered inside each function's scope.
     top_level_stmts: Vec<Stmt>,
+    /// Top-level bare expressions (say, function calls) — only run in entry function.
+    top_level_exprs: Vec<Stmt>,
     /// Tracks which variables are top-level globals (accessible from any function).
     globals: HashMap<String, LocalId>,
     next_local: u32,
@@ -142,6 +144,7 @@ impl Lowerer {
             closure_info: HashMap::new(),
             top_level_lets: Vec::new(),
             top_level_stmts: Vec::new(),
+            top_level_exprs: Vec::new(),
             globals: HashMap::new(),
             next_local: 0,
             next_function: 0,
@@ -293,9 +296,88 @@ impl Lowerer {
             self.lower_top_level_stmt(stmt)?;
         }
 
-        // Top-level let values are inlined into each function via global_prelude
-        // in lower_function, so no __init thunk is needed.
+        // If there are top-level exprs or stmts but no user-defined main function,
+        // synthesize an entry function that runs globals + control flow + expressions.
+        if (!self.top_level_exprs.is_empty() || !self.top_level_stmts.is_empty())
+            && self.module.entry.is_none()
+        {
+            self.synthesize_entry_function()?;
+        }
 
+        Ok(())
+    }
+
+    /// Synthesize a `__top_main` entry function from accumulated top-level stmts.
+    /// Injects the global prelude + top-level control flow in a proper function scope.
+    fn synthesize_entry_function(&mut self) -> Result<(), LowerError> {
+        let saved_locals = std::mem::take(&mut self.locals);
+        let saved_local_types = std::mem::take(&mut self.local_types);
+        let saved_local_ast_types = std::mem::take(&mut self.local_ast_types);
+        let saved_closure_info = std::mem::take(&mut self.closure_info);
+        let saved_next_local = self.next_local;
+        let saved_return_type = self.current_return_type.take();
+        let saved_cleanup_locals = std::mem::take(&mut self.cleanup_locals);
+        let saved_cleanup_scope_stack = std::mem::take(&mut self.cleanup_scope_stack);
+        self.next_local = 0;
+        self.current_return_type = Some(Type::Void);
+
+        // Inject globals
+        let mut body: Vec<FirStmt> = Vec::new();
+        let top_level_snapshot: Vec<_> = self
+            .top_level_lets
+            .iter()
+            .map(|(n, t, v)| (n.clone(), t.clone(), v.clone()))
+            .collect();
+        for (tl_name, tl_ty, tl_value) in top_level_snapshot {
+            let local_id = self.alloc_local();
+            self.locals.insert(tl_name, local_id);
+            self.local_types.insert(local_id, tl_ty.clone());
+            body.push(FirStmt::Let {
+                name: local_id,
+                ty: tl_ty,
+                value: tl_value,
+            });
+        }
+
+        // Lower top-level control flow stmts (for, if, while, assignment)
+        let tl_stmts: Vec<_> = self.top_level_stmts.clone();
+        for tl_stmt in &tl_stmts {
+            let fir_stmt = self.lower_stmt_inner(tl_stmt)?;
+            body.append(&mut self.pending_stmts);
+            body.push(fir_stmt);
+        }
+
+        // Lower top-level bare expressions (say, etc.)
+        let tl_exprs: Vec<_> = self.top_level_exprs.clone();
+        for tl_expr in &tl_exprs {
+            let fir_stmt = self.lower_stmt_inner(tl_expr)?;
+            body.append(&mut self.pending_stmts);
+            body.push(fir_stmt);
+        }
+
+        let id = FunctionId(self.next_function);
+        self.next_function += 1;
+        let func = FirFunction {
+            id,
+            name: "__top_main".to_string(),
+            params: vec![],
+            ret_type: FirType::Void,
+            body,
+            is_entry: true,
+            suspendable: false,
+        };
+        self.module.add_function(func);
+        self.module.entry = Some(id);
+
+        // Restore
+        self.locals = saved_locals;
+        self.local_types = saved_local_types;
+        self.local_ast_types = saved_local_ast_types;
+        self.closure_info = saved_closure_info;
+        self.next_local = saved_next_local;
+        self.current_return_type = saved_return_type;
+        self.cleanup_locals = saved_cleanup_locals;
+        self.cleanup_scope_stack = saved_cleanup_scope_stack;
         Ok(())
     }
 
@@ -409,26 +491,11 @@ impl Lowerer {
                     .push((name.clone(), fir_type, fir_value));
                 Ok(())
             }
-            Stmt::Expr(expr, _) => {
-                // Top-level expression — wrap in a thunk
-                let fir_expr = self.lower_expr(expr)?;
-                let id = FunctionId(self.next_function);
-                self.next_function += 1;
-                let func = FirFunction {
-                    id,
-                    name: format!("__top_expr_{}", id.0),
-                    params: vec![],
-                    ret_type: FirType::Void,
-                    body: vec![FirStmt::Expr(fir_expr)],
-                    is_entry: false,
-                    suspendable: false,
-                };
-                self.module.add_function(func);
-                self.module.entry = Some(id);
+            Stmt::Expr(_, _) => {
+                self.top_level_exprs.push(stmt.clone());
                 Ok(())
             }
-            // Top-level control flow and assignment → store AST for injection into functions
-            Stmt::If { .. } | Stmt::While { .. } | Stmt::For { .. } | Stmt::Assignment { .. } => {
+            Stmt::For { .. } | Stmt::If { .. } | Stmt::While { .. } | Stmt::Assignment { .. } => {
                 self.top_level_stmts.push(stmt.clone());
                 Ok(())
             }
@@ -1166,6 +1233,47 @@ impl Lowerer {
                         return Ok(self.to_string_expr(arg, fir_arg));
                     }
 
+                    // random(max: n) → aster_random_int/float/bool
+                    if name == "random" {
+                        let ret_ty = self
+                            .type_table
+                            .get(&expr.span())
+                            .map(|ty| self.lower_type(ty))
+                            .unwrap_or(FirType::I64);
+                        let max_arg = args.iter().find(|(n, _)| n == "max");
+                        return match ret_ty {
+                            FirType::I64 => {
+                                let fir_max = if let Some((_, e)) = max_arg {
+                                    self.lower_expr(e)?
+                                } else {
+                                    FirExpr::IntLit(100)
+                                };
+                                Ok(FirExpr::RuntimeCall {
+                                    name: "aster_random_int".to_string(),
+                                    args: vec![fir_max],
+                                    ret_ty: FirType::I64,
+                                })
+                            }
+                            FirType::F64 => {
+                                let fir_max = if let Some((_, e)) = max_arg {
+                                    self.lower_expr(e)?
+                                } else {
+                                    FirExpr::FloatLit(1.0)
+                                };
+                                Ok(FirExpr::RuntimeCall {
+                                    name: "aster_random_float".to_string(),
+                                    args: vec![fir_max],
+                                    ret_ty: FirType::F64,
+                                })
+                            }
+                            _ => Ok(FirExpr::RuntimeCall {
+                                name: "aster_random_bool".to_string(),
+                                args: vec![],
+                                ret_ty: FirType::Bool,
+                            }),
+                        };
+                    }
+
                     // Mutex(value: x) → aster_mutex_new(x)
                     if name == "Mutex" {
                         let value_arg = args
@@ -1721,6 +1829,23 @@ impl Lowerer {
                 }
                 Ok(result)
             }
+
+            Expr::Range {
+                start,
+                end,
+                inclusive,
+                ..
+            } => {
+                let fir_start = self.lower_expr(start)?;
+                let fir_end = self.lower_expr(end)?;
+                let fir_inclusive = FirExpr::BoolLit(*inclusive);
+                // Pack range as a 3-field struct: [start: i64, end: i64, inclusive: bool]
+                Ok(FirExpr::RuntimeCall {
+                    name: "aster_range_new".to_string(),
+                    args: vec![fir_start, fir_end, fir_inclusive],
+                    ret_ty: FirType::Ptr,
+                })
+            }
         }
     }
 
@@ -2131,6 +2256,41 @@ impl Lowerer {
             return Ok(FirExpr::LocalVar(result_id, inner_ty));
         }
 
+        // Check for Range methods
+        if method == "random"
+            && let Ok(class_name) = self.resolve_class_name(object)
+            && class_name == "Range"
+        {
+            // range.random() → aster_random_int(end - start) + start
+            let start = FirExpr::FieldGet {
+                object: Box::new(fir_object.clone()),
+                offset: 0,
+                ty: FirType::I64,
+            };
+            let end = FirExpr::FieldGet {
+                object: Box::new(fir_object),
+                offset: 1,
+                ty: FirType::I64,
+            };
+            let range_size = FirExpr::BinaryOp {
+                left: Box::new(end),
+                op: BinOp::Sub,
+                right: Box::new(start.clone()),
+                result_ty: FirType::I64,
+            };
+            let random_offset = FirExpr::RuntimeCall {
+                name: "aster_random_int".to_string(),
+                args: vec![range_size],
+                ret_ty: FirType::I64,
+            };
+            return Ok(FirExpr::BinaryOp {
+                left: Box::new(random_offset),
+                op: BinOp::Add,
+                right: Box::new(start),
+                result_ty: FirType::I64,
+            });
+        }
+
         // Check for list built-in methods
         match method {
             "len" => {
@@ -2346,6 +2506,29 @@ impl Lowerer {
         iter: &Expr,
         body: &[Stmt],
     ) -> Result<FirStmt, LowerError> {
+        // Check if iterating over a Range expression
+        if let Expr::Range {
+            start,
+            end,
+            inclusive,
+            ..
+        } = iter
+        {
+            return self.lower_range_for_loop(var, start, end, *inclusive, body);
+        }
+
+        // Check if iterating over a builtin Range variable (not a user-defined Range class).
+        // Builtin Range has no user-defined methods — check that it's not an Iterator.
+        if let Some(Type::Custom(ref name, _)) = self.resolve_iter_type(iter)
+            && name == "Range"
+            && self
+                .type_env
+                .get_class(name)
+                .is_some_and(|ci| !ci.includes.contains(&"Iterator".to_string()))
+        {
+            return self.lower_range_var_for_loop(var, iter, body);
+        }
+
         // Check if iterating over an Iterator class
         if let Some(class_name) = self.resolve_iterator_class(iter) {
             return self.lower_iterator_for_loop(var, iter, body, &class_name);
@@ -2496,6 +2679,230 @@ impl Lowerer {
 
     /// Check if the iterable expression refers to a class that includes Iterator.
     /// Returns the class name if so.
+    fn resolve_iter_type(&self, iter: &Expr) -> Option<Type> {
+        if let Expr::Ident(name, _) = iter {
+            self.local_ast_types.get(name.as_str()).cloned()
+        } else {
+            self.type_table.get(&iter.span()).cloned()
+        }
+    }
+
+    /// Lower `for var in start..end` or `for var in start..=end` to a counting loop.
+    fn lower_range_for_loop(
+        &mut self,
+        var: &str,
+        start: &Expr,
+        end: &Expr,
+        inclusive: bool,
+        body: &[Stmt],
+    ) -> Result<FirStmt, LowerError> {
+        let fir_start = self.lower_expr(start)?;
+        let fir_end = self.lower_expr(end)?;
+        let uid = self.next_local;
+
+        // let __end = <end>
+        let end_id = self.alloc_local();
+        self.locals.insert(format!("__range_end_{}", uid), end_id);
+        self.local_types.insert(end_id, FirType::I64);
+
+        // let var = <start>
+        let var_id = self.alloc_local();
+        self.locals.insert(var.to_string(), var_id);
+        self.local_types.insert(var_id, FirType::I64);
+
+        // Build the while loop body
+        let mut while_body = Vec::new();
+
+        let scope_start = self.cleanup_locals.len();
+        self.cleanup_scope_stack.push(scope_start);
+
+        for stmt in body {
+            let fir_stmt = self.lower_stmt_inner(stmt)?;
+            while_body.append(&mut self.pending_stmts);
+            while_body.push(fir_stmt);
+        }
+
+        self.emit_cleanup_calls_since(scope_start);
+        while_body.append(&mut self.pending_stmts);
+        self.cleanup_scope_stack.pop();
+        self.cleanup_locals.truncate(scope_start);
+
+        // var = var + 1
+        while_body.push(FirStmt::Assign {
+            target: FirPlace::Local(var_id),
+            value: FirExpr::BinaryOp {
+                left: Box::new(FirExpr::LocalVar(var_id, FirType::I64)),
+                op: BinOp::Add,
+                right: Box::new(FirExpr::IntLit(1)),
+                result_ty: FirType::I64,
+            },
+        });
+        while_body.push(FirStmt::Expr(FirExpr::Safepoint));
+
+        // Condition: var < end (exclusive) or var <= end (inclusive)
+        let cmp_op = if inclusive { BinOp::Lte } else { BinOp::Lt };
+        let cond = FirExpr::BinaryOp {
+            left: Box::new(FirExpr::LocalVar(var_id, FirType::I64)),
+            op: cmp_op,
+            right: Box::new(FirExpr::LocalVar(end_id, FirType::I64)),
+            result_ty: FirType::Bool,
+        };
+
+        let setup_and_loop = vec![
+            FirStmt::Let {
+                name: end_id,
+                ty: FirType::I64,
+                value: fir_end,
+            },
+            FirStmt::Let {
+                name: var_id,
+                ty: FirType::I64,
+                value: fir_start,
+            },
+            FirStmt::While {
+                cond,
+                body: while_body,
+            },
+        ];
+
+        Ok(FirStmt::If {
+            cond: FirExpr::BoolLit(true),
+            then_body: setup_and_loop,
+            else_body: vec![],
+        })
+    }
+
+    /// Lower `for var in range_var` where range_var is a Range variable.
+    /// Extracts start/end/inclusive from the runtime range struct.
+    fn lower_range_var_for_loop(
+        &mut self,
+        var: &str,
+        iter: &Expr,
+        body: &[Stmt],
+    ) -> Result<FirStmt, LowerError> {
+        let fir_range = self.lower_expr(iter)?;
+        let uid = self.next_local;
+
+        // let __range = <iter>
+        let range_id = self.alloc_local();
+        self.locals.insert(format!("__range_ptr_{}", uid), range_id);
+        self.local_types.insert(range_id, FirType::Ptr);
+
+        // Extract start, end, inclusive from range struct fields
+        let start_expr = FirExpr::FieldGet {
+            object: Box::new(FirExpr::LocalVar(range_id, FirType::Ptr)),
+            offset: 0,
+            ty: FirType::I64,
+        };
+        let end_expr = FirExpr::FieldGet {
+            object: Box::new(FirExpr::LocalVar(range_id, FirType::Ptr)),
+            offset: 1,
+            ty: FirType::I64,
+        };
+        let inclusive_expr = FirExpr::FieldGet {
+            object: Box::new(FirExpr::LocalVar(range_id, FirType::Ptr)),
+            offset: 2,
+            ty: FirType::Bool,
+        };
+
+        let start_id = self.alloc_local();
+        self.locals
+            .insert(format!("__range_start_{}", uid), start_id);
+        self.local_types.insert(start_id, FirType::I64);
+
+        let end_id = self.alloc_local();
+        self.locals.insert(format!("__range_end_{}", uid), end_id);
+        self.local_types.insert(end_id, FirType::I64);
+
+        let incl_id = self.alloc_local();
+        self.locals.insert(format!("__range_incl_{}", uid), incl_id);
+        self.local_types.insert(incl_id, FirType::Bool);
+
+        let var_id = self.alloc_local();
+        self.locals.insert(var.to_string(), var_id);
+        self.local_types.insert(var_id, FirType::I64);
+
+        // Build while loop body
+        let mut while_body = Vec::new();
+
+        let scope_start = self.cleanup_locals.len();
+        self.cleanup_scope_stack.push(scope_start);
+
+        for stmt in body {
+            let fir_stmt = self.lower_stmt_inner(stmt)?;
+            while_body.append(&mut self.pending_stmts);
+            while_body.push(fir_stmt);
+        }
+
+        self.emit_cleanup_calls_since(scope_start);
+        while_body.append(&mut self.pending_stmts);
+        self.cleanup_scope_stack.pop();
+        self.cleanup_locals.truncate(scope_start);
+
+        // var = var + 1
+        while_body.push(FirStmt::Assign {
+            target: FirPlace::Local(var_id),
+            value: FirExpr::BinaryOp {
+                left: Box::new(FirExpr::LocalVar(var_id, FirType::I64)),
+                op: BinOp::Add,
+                right: Box::new(FirExpr::IntLit(1)),
+                result_ty: FirType::I64,
+            },
+        });
+        while_body.push(FirStmt::Expr(FirExpr::Safepoint));
+
+        // Condition: if inclusive -> var <= end, else var < end
+        // Use: (inclusive AND var <= end) OR (NOT inclusive AND var < end)
+        // Simpler: use a runtime call that checks both
+        let cond = FirExpr::RuntimeCall {
+            name: "aster_range_check".to_string(),
+            args: vec![
+                FirExpr::LocalVar(var_id, FirType::I64),
+                FirExpr::LocalVar(end_id, FirType::I64),
+                FirExpr::LocalVar(incl_id, FirType::Bool),
+            ],
+            ret_ty: FirType::Bool,
+        };
+
+        let setup_and_loop = vec![
+            FirStmt::Let {
+                name: range_id,
+                ty: FirType::Ptr,
+                value: fir_range,
+            },
+            FirStmt::Let {
+                name: start_id,
+                ty: FirType::I64,
+                value: start_expr,
+            },
+            FirStmt::Let {
+                name: end_id,
+                ty: FirType::I64,
+                value: end_expr,
+            },
+            FirStmt::Let {
+                name: incl_id,
+                ty: FirType::Bool,
+                value: inclusive_expr,
+            },
+            FirStmt::Let {
+                name: var_id,
+                ty: FirType::I64,
+                value: FirExpr::LocalVar(start_id, FirType::I64),
+            },
+            FirStmt::While {
+                cond,
+                body: while_body,
+            },
+        ];
+
+        Ok(FirStmt::If {
+            cond: FirExpr::BoolLit(true),
+            then_body: setup_and_loop,
+            else_body: vec![],
+        })
+    }
+
     fn resolve_iterator_class(&self, iter: &Expr) -> Option<String> {
         if let Expr::Ident(name, _) = iter
             && let Some(Type::Custom(class_name, _)) = self.local_ast_types.get(name.as_str())

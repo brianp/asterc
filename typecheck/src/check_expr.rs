@@ -55,7 +55,13 @@ impl TypeChecker {
                 type_constraints,
                 defaults,
             ),
-            Expr::Call { func, args, .. } => self.check_call(func, args),
+            Expr::Call {
+                func, args, span, ..
+            } => {
+                let ty = self.check_call(func, args)?;
+                self.type_table.insert(*span, ty.clone());
+                Ok(ty)
+            }
             Expr::BinaryOp {
                 left, op, right, ..
             } => self.check_binary(left, op, right),
@@ -132,7 +138,38 @@ impl TypeChecker {
                 }
                 Ok(Type::Map(Box::new(key_ty), Box::new(val_ty)))
             }
+
+            Expr::Range {
+                start, end, span, ..
+            } => self.check_range(start, end, *span),
         }
+    }
+
+    fn check_range(
+        &mut self,
+        start: &Expr,
+        end: &Expr,
+        span: ast::Span,
+    ) -> Result<Type, Diagnostic> {
+        let start_ty = self.check_expr(start)?;
+        let end_ty = self.check_expr(end)?;
+        if start_ty != Type::Int {
+            return Err(
+                Diagnostic::error(format!("Range start must be Int, got {:?}", start_ty))
+                    .with_code("E003")
+                    .with_label(start.span(), "expected Int"),
+            );
+        }
+        if end_ty != Type::Int {
+            return Err(
+                Diagnostic::error(format!("Range end must be Int, got {:?}", end_ty))
+                    .with_code("E003")
+                    .with_label(end.span(), "expected Int"),
+            );
+        }
+        self.type_table
+            .insert(span, Type::Custom("Range".into(), vec![]));
+        Ok(Type::Custom("Range".into(), vec![]))
     }
 
     /// Check a lambda expression with an optional expected function type for inference.

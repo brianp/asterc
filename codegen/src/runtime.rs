@@ -1428,6 +1428,82 @@ pub extern "C" fn aster_file_append(path_ptr: *mut u8, content_ptr: *mut u8) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Range
+// ---------------------------------------------------------------------------
+
+/// Create a Range struct: [start: i64, end: i64, inclusive: i8]
+pub extern "C" fn aster_range_new(start: i64, end: i64, inclusive: i8) -> *mut u8 {
+    let ptr = aster_class_alloc(24); // 8 + 8 + 8 (padded)
+    unsafe {
+        *(ptr as *mut i64) = start;
+        *((ptr as *mut i64).add(1)) = end;
+        *((ptr as *mut i64).add(2)) = inclusive as i64;
+    }
+    ptr
+}
+
+/// Check if a loop variable is still within range bounds.
+pub extern "C" fn aster_range_check(val: i64, end: i64, inclusive: i8) -> i8 {
+    if inclusive != 0 {
+        (val <= end) as i8
+    } else {
+        (val < end) as i8
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Random
+// ---------------------------------------------------------------------------
+
+/// Random integer in [0, max).
+pub extern "C" fn aster_random_int(max: i64) -> i64 {
+    if max <= 0 {
+        return 0;
+    }
+    // Use getrandom for OS entropy
+    let mut buf = [0u8; 8];
+    getrandom::getrandom(&mut buf).unwrap_or_else(|_| {
+        // Fallback: use system time as seed
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        buf = (t as u64).to_le_bytes();
+    });
+    let val = u64::from_le_bytes(buf);
+    (val % max as u64) as i64
+}
+
+/// Random float in [0.0, max).
+pub extern "C" fn aster_random_float(max: f64) -> f64 {
+    let mut buf = [0u8; 8];
+    getrandom::getrandom(&mut buf).unwrap_or_else(|_| {
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        buf = (t as u64).to_le_bytes();
+    });
+    let val = u64::from_le_bytes(buf);
+    // Convert to [0.0, 1.0) then scale
+    let unit = (val >> 11) as f64 / (1u64 << 53) as f64;
+    unit * max
+}
+
+/// Random boolean.
+pub extern "C" fn aster_random_bool() -> i8 {
+    let mut buf = [0u8; 1];
+    getrandom::getrandom(&mut buf).unwrap_or_else(|_| {
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        buf = [(t & 1) as u8];
+    });
+    (buf[0] & 1) as i8
+}
+
 pub fn runtime_builtin_symbols() -> Vec<(&'static str, *const u8)> {
     vec![
         ("aster_alloc", aster_alloc as *const u8),
@@ -1525,6 +1601,13 @@ pub fn runtime_builtin_symbols() -> Vec<(&'static str, *const u8)> {
         ("aster_file_read", aster_file_read as *const u8),
         ("aster_file_write", aster_file_write as *const u8),
         ("aster_file_append", aster_file_append as *const u8),
+        // Range
+        ("aster_range_new", aster_range_new as *const u8),
+        ("aster_range_check", aster_range_check as *const u8),
+        // Random
+        ("aster_random_int", aster_random_int as *const u8),
+        ("aster_random_float", aster_random_float as *const u8),
+        ("aster_random_bool", aster_random_bool as *const u8),
     ]
 }
 

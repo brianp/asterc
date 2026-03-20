@@ -47,6 +47,8 @@ pub enum TokenKind {
     Colon,
     Arrow,
     Dot,
+    DotDot,
+    DotDotEq,
     Equals,
     Plus,
     Minus,

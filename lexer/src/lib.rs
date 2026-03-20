@@ -782,7 +782,33 @@ pub fn lex(input: &str) -> Result<Vec<Token>, Diagnostic> {
                 }
                 ',' => push!(Comma),
                 ':' => push!(Colon),
-                '.' => push!(Dot),
+                '.' => {
+                    if chars.peek() == Some(&'.') {
+                        chars.next();
+                        col += 1;
+                        if chars.peek() == Some(&'=') {
+                            chars.next();
+                            col += 1;
+                            tokens.push(Token {
+                                kind: DotDotEq,
+                                line: line_no,
+                                col,
+                                start: tok_start,
+                                end: tok_start + 3,
+                            });
+                        } else {
+                            tokens.push(Token {
+                                kind: DotDot,
+                                line: line_no,
+                                col,
+                                start: tok_start,
+                                end: tok_start + 2,
+                            });
+                        }
+                    } else {
+                        push!(Dot);
+                    }
+                }
                 '[' => {
                     bracket_depth += 1;
                     push!(LBracket);

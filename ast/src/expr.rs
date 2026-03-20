@@ -245,6 +245,12 @@ pub enum Expr {
         entries: Vec<(Expr, Expr)>,
         span: Span,
     },
+    Range {
+        start: Box<Expr>,
+        end: Box<Expr>,
+        inclusive: bool,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -282,6 +288,7 @@ impl Expr {
             Expr::AsyncScope { span, .. } => *span,
             Expr::StringInterpolation { span, .. } => *span,
             Expr::Map { span, .. } => *span,
+            Expr::Range { span, .. } => *span,
         }
     }
 }

@@ -95,7 +95,30 @@ impl Parser {
         while self.at(&TokenKind::Newline) {
             self.advance();
         }
-        let result = self.parse_or();
+        let start = self.start_span();
+        let left = self.parse_or()?;
+        // Check for range operators `..` and `..=` (lowest precedence)
+        let result = if self.at(&TokenKind::DotDot) {
+            self.advance();
+            let right = self.parse_or()?;
+            Ok(Expr::Range {
+                start: Box::new(left),
+                end: Box::new(right),
+                inclusive: false,
+                span: self.span_from(start),
+            })
+        } else if self.at(&TokenKind::DotDotEq) {
+            self.advance();
+            let right = self.parse_or()?;
+            Ok(Expr::Range {
+                start: Box::new(left),
+                end: Box::new(right),
+                inclusive: true,
+                span: self.span_from(start),
+            })
+        } else {
+            Ok(left)
+        };
         self.depth -= 1;
         result
     }

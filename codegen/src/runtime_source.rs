@@ -1637,6 +1637,82 @@ void aster_file_append(void *path_ptr, void *content_ptr) {
 }
 
 /* ===================================================================
+ * Range
+ * =================================================================== */
+
+void* aster_range_new(int64_t start, int64_t end, int8_t inclusive) {
+    void* p = aster_class_alloc(24);
+    ((int64_t*)p)[0] = start;
+    ((int64_t*)p)[1] = end;
+    ((int64_t*)p)[2] = (int64_t)inclusive;
+    return p;
+}
+
+int8_t aster_range_check(int64_t val, int64_t end, int8_t inclusive) {
+    return inclusive ? (val <= end) : (val < end);
+}
+
+/* ===================================================================
+ * Random
+ * =================================================================== */
+
+#ifdef __APPLE__
+#include <stdlib.h>
+#else
+#include <fcntl.h>
+#endif
+
+int64_t aster_random_int(int64_t max) {
+    if (max <= 0) return 0;
+#ifdef __APPLE__
+    return (int64_t)arc4random_uniform((uint32_t)max);
+#else
+    uint64_t val;
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd >= 0) {
+        read(fd, &val, sizeof(val));
+        close(fd);
+    } else {
+        val = (uint64_t)clock();
+    }
+    return (int64_t)(val % (uint64_t)max);
+#endif
+}
+
+double aster_random_float(double max) {
+    uint64_t val;
+#ifdef __APPLE__
+    arc4random_buf(&val, sizeof(val));
+#else
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd >= 0) {
+        read(fd, &val, sizeof(val));
+        close(fd);
+    } else {
+        val = (uint64_t)clock();
+    }
+#endif
+    double unit = (double)(val >> 11) / (double)(1ULL << 53);
+    return unit * max;
+}
+
+int8_t aster_random_bool(void) {
+    uint8_t val;
+#ifdef __APPLE__
+    arc4random_buf(&val, 1);
+#else
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd >= 0) {
+        read(fd, &val, 1);
+        close(fd);
+    } else {
+        val = (uint8_t)clock();
+    }
+#endif
+    return val & 1;
+}
+
+/* ===================================================================
  * Main entry point
  * =================================================================== */
 
