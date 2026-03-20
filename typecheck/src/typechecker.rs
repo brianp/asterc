@@ -58,7 +58,7 @@ impl Default for TypeChecker {
 impl TypeChecker {
     pub fn new() -> Self {
         let mut env = TypeEnv::new();
-        // Register log/print so they appear in scope for diagnostics (e.g. typo suggestions).
+        // Register log/say so they appear in scope for diagnostics (e.g. typo suggestions).
         // Actual type checking is handled as polymorphic builtins in check_call_inner.
         env.set_var(
             "log".into(),
@@ -71,7 +71,7 @@ impl TypeChecker {
             },
         );
         env.set_var(
-            "print".into(),
+            "say".into(),
             Type::Function {
                 param_names: vec!["message".into()],
                 params: vec![Type::String],

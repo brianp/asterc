@@ -909,16 +909,16 @@ fn translate_runtime_call(
     args: &[FirExpr],
 ) -> Value {
     match name {
-        "log" | "print" => {
+        "log" | "say" => {
             if let Some(first_arg) = args.first() {
                 let val = translate_expr(builder, state, first_arg);
-                let print_fn = match infer_operand_type(state, first_arg) {
-                    FirType::I64 => "aster_print_int",
-                    FirType::F64 => "aster_print_float",
-                    FirType::Bool => "aster_print_bool",
-                    _ => "aster_print_str",
+                let say_fn = match infer_operand_type(state, first_arg) {
+                    FirType::I64 => "aster_say_int",
+                    FirType::F64 => "aster_say_float",
+                    FirType::Bool => "aster_say_bool",
+                    _ => "aster_say_str",
                 };
-                if let Some(&func_ref) = state.runtime_refs.get(print_fn) {
+                if let Some(&func_ref) = state.runtime_refs.get(say_fn) {
                     builder.ins().call(func_ref, &[val]);
                 }
             }

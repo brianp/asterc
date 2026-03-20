@@ -986,10 +986,10 @@ fn builtin_log_accepts_string() {
 }
 
 #[test]
-fn builtin_print_accepts_string() {
+fn builtin_say_accepts_string() {
     let mut tc = TypeChecker::new();
     let call = Expr::Call {
-        func: Box::new(Expr::Ident("print".into(), s())),
+        func: Box::new(Expr::Ident("say".into(), s())),
         args: vec![("message".into(), Expr::Str("hello".into(), s()))],
         span: s(),
     };

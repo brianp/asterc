@@ -175,7 +175,7 @@ impl TypeChecker {
                         }
                     }
                 }
-                "log" | "print" => {
+                "log" | "say" => {
                     if args.len() != 1 {
                         return Err(Diagnostic::error(format!(
                             "{}() takes 1 argument, got {}",
@@ -999,7 +999,7 @@ impl TypeChecker {
                     // Builtins never throw. Return Void as a sentinel — callers only
                     // inspect the `throws` field of Type::Function, so non-Function
                     // types correctly signal "no throws".
-                    "len" | "to_string" | "log" | "print" => Ok(Type::Void),
+                    "len" | "to_string" | "log" | "say" => Ok(Type::Void),
                     "resolve_all" => Ok(Type::Function {
                         param_names: vec!["tasks".into()],
                         params: vec![Type::List(Box::new(Type::Task(Box::new(Type::Int))))],

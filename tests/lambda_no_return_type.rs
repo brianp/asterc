@@ -68,7 +68,7 @@ fn def_without_return_type_void() {
     check_ok(
         "\
 def log(msg: String)
-  print(value: msg)
+  say(message: msg)
 ",
     );
 }

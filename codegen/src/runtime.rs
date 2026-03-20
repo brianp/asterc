@@ -35,9 +35,9 @@ pub extern "C" fn aster_alloc(size: usize) -> *mut u8 {
     ptr
 }
 
-/// Print a string (ptr to heap string object).
+/// Say a string (ptr to heap string object).
 /// String layout: [len: i64][data: u8...]
-pub extern "C" fn aster_print_str(ptr: *const u8) {
+pub extern "C" fn aster_say_str(ptr: *const u8) {
     if ptr.is_null() {
         println!("nil");
         return;
@@ -58,18 +58,18 @@ pub extern "C" fn aster_print_str(ptr: *const u8) {
     }
 }
 
-/// Print an integer.
-pub extern "C" fn aster_print_int(val: i64) {
+/// Say an integer.
+pub extern "C" fn aster_say_int(val: i64) {
     println!("{}", val);
 }
 
-/// Print a float.
-pub extern "C" fn aster_print_float(val: f64) {
+/// Say a float.
+pub extern "C" fn aster_say_float(val: f64) {
     println!("{}", val);
 }
 
-/// Print a bool.
-pub extern "C" fn aster_print_bool(val: i8) {
+/// Say a bool.
+pub extern "C" fn aster_say_bool(val: i8) {
     println!("{}", if val != 0 { "true" } else { "false" });
 }
 
@@ -1431,10 +1431,10 @@ pub extern "C" fn aster_file_append(path_ptr: *mut u8, content_ptr: *mut u8) {
 pub fn runtime_builtin_symbols() -> Vec<(&'static str, *const u8)> {
     vec![
         ("aster_alloc", aster_alloc as *const u8),
-        ("aster_print_str", aster_print_str as *const u8),
-        ("aster_print_int", aster_print_int as *const u8),
-        ("aster_print_float", aster_print_float as *const u8),
-        ("aster_print_bool", aster_print_bool as *const u8),
+        ("aster_say_str", aster_say_str as *const u8),
+        ("aster_say_int", aster_say_int as *const u8),
+        ("aster_say_float", aster_say_float as *const u8),
+        ("aster_say_bool", aster_say_bool as *const u8),
         ("aster_string_new", aster_string_new as *const u8),
         ("aster_string_concat", aster_string_concat as *const u8),
         ("aster_string_len", aster_string_len as *const u8),

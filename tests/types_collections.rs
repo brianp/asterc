@@ -101,8 +101,8 @@ fn pub_let() {
 }
 
 #[test]
-fn builtin_print() {
-    common::check_ok("print(message: \"hello\")");
+fn builtin_say() {
+    common::check_ok("say(message: \"hello\")");
 }
 
 #[test]

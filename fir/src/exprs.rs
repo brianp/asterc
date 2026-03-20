@@ -118,7 +118,7 @@ pub enum FirExpr {
         value: Box<FirExpr>,
         tag: u8,
     },
-    /// Runtime function (print, alloc, string ops, etc.).
+    /// Runtime function (say, alloc, string ops, etc.).
     RuntimeCall {
         name: String,
         args: Vec<FirExpr>,

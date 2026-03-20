@@ -12,7 +12,7 @@ class Resource includes Drop
   value: Int
 
   def drop()
-    print(value: value)
+    say(message: value)
 ",
     );
 }
@@ -25,7 +25,7 @@ class Handle includes Close
   value: Int
 
   def close() throws Error
-    print(value: value)
+    say(message: value)
 ",
     );
 }
@@ -38,10 +38,10 @@ class Connection includes Drop, Close
   fd: Int
 
   def drop()
-    print(value: fd)
+    say(message: fd)
 
   def close() throws Error
-    print(value: fd)
+    say(message: fd)
 ",
     );
 }
@@ -89,7 +89,7 @@ class Resource includes Drop
   value: Int
 
   def drop()
-    print(value: 99)
+    say(message: 99)
 
 def main() -> Int
   let r = Resource(value: 42)
@@ -117,7 +117,7 @@ class Resource includes Drop
   value: Int
 
   def drop()
-    print(value: value)
+    say(message: value)
 
 def main() -> Int
   let a = Resource(value: 1)
@@ -147,7 +147,7 @@ class Resource includes Drop
   value: Int
 
   def drop()
-    print(value: value)
+    say(message: value)
 
 def work() -> Int
   let r = Resource(value: 77)
@@ -180,7 +180,7 @@ class Resource includes Drop
   value: Int
 
   def drop()
-    print(value: value)
+    say(message: value)
 
 def main() -> Int
   while true
@@ -210,7 +210,7 @@ class Resource includes Drop
   value: Int
 
   def drop()
-    print(value: value)
+    say(message: value)
 
 def main() -> Int
   let count = 0
@@ -243,7 +243,7 @@ class Resource includes Drop
   value: Int
 
   def drop()
-    print(value: value)
+    say(message: value)
 
 def work()
   let r = Resource(value: 33)
@@ -274,7 +274,7 @@ class Resource includes Drop
   value: Int
 
   def drop()
-    print(value: value)
+    say(message: value)
 
 def main() -> Int
   let outer = Resource(value: 1)

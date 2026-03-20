@@ -27,7 +27,7 @@ void* aster_class_alloc(int64_t size) { return aster_alloc(size); }
  * Printing
  * =================================================================== */
 
-void aster_print_str(void* ptr) {
+void aster_say_str(void* ptr) {
     if (!ptr) { printf("nil\n"); return; }
     int64_t len = *(int64_t*)ptr;
     if (len < 0) { printf("<invalid string>\n"); return; }
@@ -35,9 +35,9 @@ void aster_print_str(void* ptr) {
     printf("%.*s\n", (int)len, data);
 }
 
-void aster_print_int(int64_t val) { printf("%lld\n", (long long)val); }
-void aster_print_float(double val) { printf("%g\n", val); }
-void aster_print_bool(int8_t val) { printf("%s\n", val ? "true" : "false"); }
+void aster_say_int(int64_t val) { printf("%lld\n", (long long)val); }
+void aster_say_float(double val) { printf("%g\n", val); }
+void aster_say_bool(int8_t val) { printf("%s\n", val ? "true" : "false"); }
 
 /* ===================================================================
  * String operations

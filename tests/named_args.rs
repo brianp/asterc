@@ -73,7 +73,7 @@ log(message: "hello")
 fn named_args_builtin_print() {
     common::check_ok(
         r#"
-print(message: "hello")
+say(message: "hello")
 "#,
     );
 }

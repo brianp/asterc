@@ -1306,7 +1306,7 @@ impl Lowerer {
                             ret_ty,
                         })
                     } else {
-                        // Could be a runtime call (print, etc.)
+                        // Could be a runtime call (say, etc.)
                         let fir_args: Result<Vec<_>, _> =
                             args.iter().map(|(_, arg)| self.lower_expr(arg)).collect();
                         Ok(FirExpr::RuntimeCall {

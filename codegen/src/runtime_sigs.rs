@@ -9,10 +9,10 @@ pub type RuntimeSig = (&'static str, &'static [Type], Option<Type>);
 /// All runtime functions that must be declared in both JIT and AOT modules.
 pub static RUNTIME_SIGS: &[RuntimeSig] = &[
     ("aster_alloc", &[types::I64], Some(types::I64)),
-    ("aster_print_str", &[types::I64], None),
-    ("aster_print_int", &[types::I64], None),
-    ("aster_print_float", &[types::F64], None),
-    ("aster_print_bool", &[types::I8], None),
+    ("aster_say_str", &[types::I64], None),
+    ("aster_say_int", &[types::I64], None),
+    ("aster_say_float", &[types::F64], None),
+    ("aster_say_bool", &[types::I8], None),
     (
         "aster_string_new",
         &[types::I64, types::I64],

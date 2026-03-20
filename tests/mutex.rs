@@ -38,7 +38,7 @@ fn mutex_lock_basic() {
         "\
 def main() -> Int
   let m = Mutex(value: 42)
-  blocking m.lock(block: -> v : print(value: v))
+  blocking m.lock(block: -> v : say(message: v))
   0
 ",
     );
@@ -90,7 +90,7 @@ fn mutex_lock_codegen() {
         "\
 def main() -> Int
   let m = Mutex(value: 21)
-  blocking m.lock(block: -> v : print(value: v * 2))
+  blocking m.lock(block: -> v : say(message: v * 2))
   0
 ",
     )

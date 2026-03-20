@@ -78,7 +78,7 @@ fn file_write_read_round_trip() {
 def main() throws IOError -> Int
   File.write(path: \"{}\", content: \"hello world\")!
   let content = File.read(path: \"{}\")!
-  print(value: content)
+  say(message: content)
   0
 ",
             test_file.to_string_lossy().replace('\\', "\\\\"),
@@ -109,7 +109,7 @@ def main() throws IOError -> Int
   File.write(path: \"{}\", content: \"hello\")!
   File.append(path: \"{}\", content: \" world\")!
   let content = File.read(path: \"{}\")!
-  print(value: content)
+  say(message: content)
   0
 ",
             test_file.to_string_lossy().replace('\\', "\\\\"),
