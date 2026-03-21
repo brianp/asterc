@@ -12,7 +12,7 @@ def child() -> Int
 def parent() -> Int
   blocking child()
 
-def main() throws CancelledError -> Int
+def main() -> Int
   let spawned = async child()
   detached async child()
   let joined = resolve spawned!

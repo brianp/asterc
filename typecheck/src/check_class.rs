@@ -397,7 +397,7 @@ impl TypeChecker {
                             .is_err()
                             {
                                 return Err(Diagnostic::error(format!(
-                                    "Method '{}' in class '{}' has signature {:?}, but trait '{}' requires {:?}",
+                                    "Method '{}' in class '{}' has signature {}, but trait '{}' requires {}",
                                     method_name, name, class_method_ty, trait_name, resolved_trait_ty
                                 ))
                                 .with_code("E014"));
@@ -690,7 +690,7 @@ impl TypeChecker {
         for (fname, fty) in fields {
             if !checker(self, fty) {
                 return Err(Diagnostic::error(format!(
-                    "Cannot derive {} for '{}': field '{}' of type {:?} does not include {}",
+                    "Cannot derive {} for '{}': field '{}' of type {} does not include {}",
                     trait_name, class_name, fname, fty, trait_name
                 ))
                 .with_code(error_code));

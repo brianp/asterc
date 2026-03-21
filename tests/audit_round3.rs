@@ -207,7 +207,7 @@ add_animal(animals: dogs)
 "#,
     );
     assert!(
-        err.contains("mismatch"),
+        err.contains("mismatch") || err.contains("expects"),
         "List[Dog] should not match List[Animal], got: {}",
         err
     );

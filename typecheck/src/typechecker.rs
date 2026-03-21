@@ -546,6 +546,20 @@ impl TypeChecker {
         }
     }
 
+    /// Emit a W003 warning if `name` already exists in a parent scope.
+    pub(crate) fn warn_if_shadowed(&mut self, name: &str, span: Span) {
+        if self.env.parent_has_var(name) {
+            self.diagnostics.push(
+                Diagnostic::warning(format!(
+                    "variable '{}' shadows a previous binding",
+                    name
+                ))
+                .with_code("W003")
+                .with_label(span, "shadows earlier binding"),
+            );
+        }
+    }
+
     /// Execute `f` in a child scope. The env is scoped via enter/exit (zero-copy),
     /// and TypeChecker state (loop_depth, throws, etc.) is saved and restored.
     pub(crate) fn with_child_scope<F, R>(&mut self, f: F) -> R
@@ -799,7 +813,7 @@ impl TypeChecker {
             Expr::Call { func, args, .. } => {
                 self.expr_refers_to_suspendable_function(func)
                     || self.expr_is_suspendable(func)
-                    || args.iter().any(|(_, arg)| self.expr_is_suspendable(arg))
+                    || args.iter().any(|(_, _, arg)| self.expr_is_suspendable(arg))
             }
             Expr::Member { object, .. } => self.expr_is_suspendable(object),
             Expr::BinaryOp { left, right, .. } => {
@@ -942,28 +956,28 @@ impl TypeChecker {
                             return Ok(ann.clone());
                         }
                         return Err(Diagnostic::error(format!(
-                            "Type annotation mismatch for '{}': declared {:?}, got {:?}",
+                            "Type annotation mismatch for '{}': declared {}, got {}",
                             name, ann, ty
                         ))
                         .with_code("E001")
-                        .with_label(stmt_span, format!("expected {:?}", ann)));
+                        .with_label(stmt_span, format!("expected {}", ann)));
                     }
                     // Nil cannot be assigned to non-nullable types
                     if ty == Type::Nil && !matches!(ann, Type::Nil) {
                         return Err(Diagnostic::error(format!(
-                            "Cannot assign nil to non-nullable type {:?}",
+                            "Cannot assign nil to non-nullable type {}",
                             ann
                         ))
                         .with_code("E001")
-                        .with_label(stmt_span, format!("expected {:?}", ann)));
+                        .with_label(stmt_span, format!("expected {}", ann)));
                     }
                     if !Self::types_compatible_with_env(ann, &ty, &self.env) {
                         return Err(Diagnostic::error(format!(
-                            "Type annotation mismatch for '{}': declared {:?}, got {:?}",
+                            "Type annotation mismatch for '{}': declared {}, got {}",
                             name, ann, ty
                         ))
                         .with_code("E001")
-                        .with_label(stmt_span, format!("expected {:?}", ann)));
+                        .with_label(stmt_span, format!("expected {}", ann)));
                     }
                     // W001: warn when a type annotation is redundant (matches inferred type)
                     if Self::is_obviously_typed(value, &self.env) && *ann == ty {
@@ -993,6 +1007,7 @@ impl TypeChecker {
                         self.default_params.insert(name.clone(), default_set);
                     }
                 }
+                self.warn_if_shadowed(name, stmt_span);
                 self.env.set_var(name.clone(), ty.clone());
                 // Track Task[T] bindings for must-consume enforcement
                 if matches!(ty, Type::Task(_)) {
@@ -1078,11 +1093,11 @@ impl TypeChecker {
                 {
                     let ctx = self.current_function.as_deref().unwrap_or("<anonymous>");
                     return Err(Diagnostic::error(format!(
-                        "Return type mismatch in '{}': expected {:?}, got {:?}",
+                        "Return type mismatch in '{}': expected {}, got {}",
                         ctx, expected, ty
                     ))
                     .with_code("E004")
-                    .with_label(*span, format!("expected {:?}", expected)));
+                    .with_label(*span, format!("expected {}", expected)));
                 }
                 Ok(ty)
             }
@@ -1097,7 +1112,7 @@ impl TypeChecker {
                 let cond_ty = self.check_expr(cond)?;
                 if cond_ty != Type::Bool && !cond_ty.is_error() {
                     return Err(Diagnostic::error(format!(
-                        "If condition must be Bool, got {:?}",
+                        "If condition must be Bool, got {}",
                         cond_ty
                     ))
                     .with_code("E015")
@@ -1109,7 +1124,7 @@ impl TypeChecker {
                     let elif_cond_ty = self.check_expr(elif_cond)?;
                     if elif_cond_ty != Type::Bool && !elif_cond_ty.is_error() {
                         return Err(Diagnostic::error(format!(
-                            "Elif condition must be Bool, got {:?}",
+                            "Elif condition must be Bool, got {}",
                             elif_cond_ty
                         ))
                         .with_code("E015")
@@ -1123,7 +1138,7 @@ impl TypeChecker {
                 let cond_ty = self.check_expr(cond)?;
                 if cond_ty != Type::Bool && !cond_ty.is_error() {
                     return Err(Diagnostic::error(format!(
-                        "While condition must be Bool, got {:?}",
+                        "While condition must be Bool, got {}",
                         cond_ty
                     ))
                     .with_code("E015")
@@ -1180,7 +1195,7 @@ impl TypeChecker {
                             }
                         } else {
                             return Err(Diagnostic::error(format!(
-                                "Cannot iterate over {:?}, expected List, Iterable, or Iterator class",
+                                "Cannot iterate over {}, expected List, Iterable, or Iterator class",
                                 iter_ty
                             ))
                             .with_code("E007")
@@ -1189,7 +1204,7 @@ impl TypeChecker {
                     }
                     _ => {
                         return Err(Diagnostic::error(format!(
-                            "Cannot iterate over {:?}, expected List, Iterable, or Iterator class",
+                            "Cannot iterate over {}, expected List, Iterable, or Iterator class",
                             iter_ty
                         ))
                         .with_code("E007")
@@ -1198,6 +1213,7 @@ impl TypeChecker {
                 };
                 self.with_child_scope(|tc| {
                     tc.loop_depth += 1;
+                    tc.warn_if_shadowed(var, stmt_span);
                     tc.env.set_var(var.clone(), elem_ty);
                     tc.check_body(body)
                 })
@@ -1245,11 +1261,11 @@ impl TypeChecker {
                                 return Ok(target_ty);
                             }
                             return Err(Diagnostic::error(format!(
-                                "Assignment type mismatch: variable '{}' is {:?}, got {:?}",
+                                "Assignment type mismatch: variable '{}' is {}, got {}",
                                 name, target_ty, val_ty
                             ))
                             .with_code("E001")
-                            .with_label(stmt_span, format!("expected {:?}", target_ty)));
+                            .with_label(stmt_span, format!("expected {}", target_ty)));
                         }
                         // Reassignment clears boundary-crossed status (new value)
                         self.boundary_crossed.remove(name);
@@ -1271,13 +1287,13 @@ impl TypeChecker {
                                             return Ok(field_ty.clone());
                                         }
                                         return Err(Diagnostic::error(format!(
-                                            "Cannot assign {:?} to field '{}' of type {:?}",
+                                            "Cannot assign {} to field '{}' of type {}",
                                             val_ty, field, field_ty
                                         ))
                                         .with_code("E001")
                                         .with_label(
                                             stmt_span,
-                                            format!("expected {:?}", field_ty),
+                                            format!("expected {}", field_ty),
                                         ));
                                     }
                                 } else {
@@ -1298,7 +1314,7 @@ impl TypeChecker {
                             }
                         } else {
                             return Err(Diagnostic::error(format!(
-                                "Cannot assign to member on non-class type {:?}",
+                                "Cannot assign to member on non-class type {}",
                                 obj_ty
                             ))
                             .with_code("E010")
@@ -1316,7 +1332,7 @@ impl TypeChecker {
                             Type::List(inner) => {
                                 if idx_ty != Type::Int {
                                     return Err(Diagnostic::error(format!(
-                                        "List index must be Int, got {:?}",
+                                        "List index must be Int, got {}",
                                         idx_ty
                                     ))
                                     .with_code("E016")
@@ -1324,35 +1340,35 @@ impl TypeChecker {
                                 }
                                 if **inner != val_ty {
                                     return Err(Diagnostic::error(format!(
-                                        "Cannot assign {:?} to List[{:?}] element",
+                                        "Cannot assign {} to List[{}] element",
                                         val_ty, inner
                                     ))
                                     .with_code("E001")
-                                    .with_label(stmt_span, format!("expected {:?}", inner)));
+                                    .with_label(stmt_span, format!("expected {}", inner)));
                                 }
                                 Ok(val_ty)
                             }
                             Type::Map(key_ty, map_val_ty) => {
                                 if idx_ty != **key_ty {
                                     return Err(Diagnostic::error(format!(
-                                        "Map key must be {:?}, got {:?}",
+                                        "Map key must be {}, got {}",
                                         key_ty, idx_ty
                                     ))
                                     .with_code("E016")
-                                    .with_label(index.span(), format!("expected {:?}", key_ty)));
+                                    .with_label(index.span(), format!("expected {}", key_ty)));
                                 }
                                 if **map_val_ty != val_ty {
                                     return Err(Diagnostic::error(format!(
-                                        "Cannot assign {:?} to Map value type {:?}",
+                                        "Cannot assign {} to Map value type {}",
                                         val_ty, map_val_ty
                                     ))
                                     .with_code("E001")
-                                    .with_label(stmt_span, format!("expected {:?}", map_val_ty)));
+                                    .with_label(stmt_span, format!("expected {}", map_val_ty)));
                                 }
                                 Ok(val_ty)
                             }
                             _ => Err(Diagnostic::error(format!(
-                                "Cannot index-assign into {:?}",
+                                "Cannot index-assign into {}",
                                 obj_ty
                             ))
                             .with_code("E016")
@@ -1451,11 +1467,11 @@ impl TypeChecker {
                 if let Some(ann) = type_ann {
                     if !Self::types_compatible_with_env(ann, &val_ty, &self.env) {
                         return Err(Diagnostic::error(format!(
-                            "Type annotation mismatch for const '{}': declared {:?}, got {:?}",
+                            "Type annotation mismatch for const '{}': declared {}, got {}",
                             name, ann, val_ty
                         ))
                         .with_code("E001")
-                        .with_label(stmt_span, format!("expected {:?}", ann)));
+                        .with_label(stmt_span, format!("expected {}", ann)));
                     }
                     self.env.set_var(name.clone(), ann.clone());
                 } else {
@@ -1742,7 +1758,7 @@ impl TypeChecker {
                         return Err(Diagnostic::error(
                             "Invalid literal in match pattern".to_string(),
                         )
-                        .with_code("E001")
+                        .with_code("E005")
                         .with_label(*span, "invalid pattern"));
                     }
                 };
@@ -1758,11 +1774,11 @@ impl TypeChecker {
                 }
                 if pat_ty != *scrutinee_ty {
                     return Err(Diagnostic::error(format!(
-                        "Pattern type {:?} does not match scrutinee type {:?}",
+                        "Pattern type {} does not match scrutinee type {}",
                         pat_ty, scrutinee_ty
                     ))
                     .with_code("E001")
-                    .with_label(*span, format!("expected {:?}", scrutinee_ty)));
+                    .with_label(*span, format!("expected {}", scrutinee_ty)));
                 }
                 Ok(())
             }
@@ -1774,7 +1790,7 @@ impl TypeChecker {
                 // Check the enum exists
                 let enum_info = self.env.get_enum(enum_name).ok_or_else(|| {
                     Diagnostic::error(format!("Unknown enum '{}'", enum_name))
-                        .with_code("E001")
+                        .with_code("E002")
                         .with_label(*span, "unknown enum")
                 })?;
                 // Check the variant exists
@@ -1783,7 +1799,7 @@ impl TypeChecker {
                         "Unknown variant '{}' on enum '{}'",
                         variant, enum_name
                     ))
-                    .with_code("E001")
+                    .with_code("E002")
                     .with_label(*span, format!("unknown variant on {}", enum_name)));
                 }
                 // Check enum type matches scrutinee type (unwrap Nullable if present)
@@ -1794,11 +1810,11 @@ impl TypeChecker {
                 };
                 if *scrutinee_unwrapped != expected_enum_ty {
                     return Err(Diagnostic::error(format!(
-                        "Pattern type mismatch: expected {:?}, got {}",
+                        "Pattern type mismatch: expected {}, got {}",
                         scrutinee_ty, enum_name
                     ))
                     .with_code("E001")
-                    .with_label(*span, format!("expected {:?}", scrutinee_ty)));
+                    .with_label(*span, format!("expected {}", scrutinee_ty)));
                 }
                 Ok(())
             }

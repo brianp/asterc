@@ -1297,20 +1297,20 @@ fn format_lambda(
 
 fn format_call(
     func: &Expr,
-    args: &[(String, Expr)],
+    args: &[(String, ast::Span, Expr)],
     span: ast::Span,
     config: &FormatConfig,
 ) -> Doc {
     format_call_inner_with_span(func, args, Some(span), config)
 }
 
-fn format_call_inner(func: &Expr, args: &[(String, Expr)], config: &FormatConfig) -> Doc {
+fn format_call_inner(func: &Expr, args: &[(String, ast::Span, Expr)], config: &FormatConfig) -> Doc {
     format_call_inner_with_span(func, args, None, config)
 }
 
 fn format_call_inner_with_span(
     func: &Expr,
-    args: &[(String, Expr)],
+    args: &[(String, ast::Span, Expr)],
     span: Option<ast::Span>,
     config: &FormatConfig,
 ) -> Doc {
@@ -1325,7 +1325,7 @@ fn format_call_inner_with_span(
     {
         let arg_docs: Vec<Doc> = args
             .iter()
-            .map(|(name, expr)| {
+            .map(|(name, _, expr)| {
                 concat(vec![
                     text(name.as_str()),
                     text(": "),
@@ -1351,7 +1351,7 @@ fn format_call_inner_with_span(
 
     let arg_strs: Vec<String> = args
         .iter()
-        .map(|(name, expr)| {
+        .map(|(name, _, expr)| {
             let val = render_doc(&format_expr(expr, config), config);
             format!("{}: {}", name, val)
         })

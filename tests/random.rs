@@ -36,15 +36,11 @@ fn random_bool_with_type_annotation() {
 // ─── Error cases ────────────────────────────────────────────────────
 
 #[test]
-fn random_without_type_context_errors() {
-    let err = common::check_err(
+fn random_without_type_context_infers_from_args() {
+    // random(max: 100) should infer Int from the Int argument
+    common::check_ok(
         r#"let x = random(max: 100)
 "#,
-    );
-    assert!(
-        err.contains("type") || err.contains("infer") || err.contains("annotation"),
-        "Expected type inference error, got: {}",
-        err
     );
 }
 

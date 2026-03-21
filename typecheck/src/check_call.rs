@@ -1,8 +1,44 @@
 use std::collections::HashMap;
 
-use ast::{Diagnostic, Expr, Type, TypeEnv};
+use ast::{Diagnostic, Expr, Span, Type, TypeEnv};
 
 use crate::typechecker::TypeChecker;
+
+/// Compute Levenshtein edit distance between two strings.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let m = a.len();
+    let n = b.len();
+    let mut dp = vec![vec![0usize; n + 1]; m + 1];
+    for i in 0..=m {
+        dp[i][0] = i;
+    }
+    for j in 0..=n {
+        dp[0][j] = j;
+    }
+    for (i, ca) in a.chars().enumerate() {
+        for (j, cb) in b.chars().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            dp[i + 1][j + 1] = (dp[i][j + 1] + 1)
+                .min(dp[i + 1][j] + 1)
+                .min(dp[i][j] + cost);
+        }
+    }
+    dp[m][n]
+}
+
+/// Find the closest parameter name to a given argument name (edit distance <= 2).
+fn closest_param_name<'a>(arg_name: &str, param_names: &'a [String]) -> Option<&'a str> {
+    let mut best: Option<(&str, usize)> = None;
+    for pn in param_names {
+        let dist = edit_distance(arg_name, pn);
+        if dist <= 2 && dist > 0 {
+            if best.is_none() || dist < best.unwrap().1 {
+                best = Some((pn.as_str(), dist));
+            }
+        }
+    }
+    best.map(|(name, _)| name)
+}
 
 impl TypeChecker {
     fn suspendable_call_fix(func: &Expr) -> String {
@@ -35,7 +71,7 @@ impl TypeChecker {
     pub(crate) fn check_call(
         &mut self,
         func: &Expr,
-        args: &[(String, Expr)],
+        args: &[(String, Span, Expr)],
     ) -> Result<Type, Diagnostic> {
         // Check for nullable method calls: x.or(), x.or_else(), x.or_throw()
         // Skip this interception for namespace member access (ns.func())
@@ -59,17 +95,17 @@ impl TypeChecker {
                             .with_code("E006")
                             .with_label(func.span(), "expected 1 argument"));
                         }
-                        let arg_ty = self.check_expr(&args[0].1)?;
+                        let arg_ty = self.check_expr(&args[0].2)?;
                         if arg_ty.is_error() {
                             return Ok(Type::Error);
                         }
                         if arg_ty != **inner {
                             return Err(Diagnostic::error(format!(
-                                ".{}() type mismatch: expected {:?}, got {:?}",
+                                ".{}() type mismatch: expected {}, got {}",
                                 field, inner, arg_ty
                             ))
                             .with_code("E018")
-                            .with_label(args[0].1.span(), format!("expected {:?}", inner)));
+                            .with_label(args[0].2.span(), format!("expected {}", inner)));
                         }
                         return Ok(*inner.clone());
                     }
@@ -81,7 +117,7 @@ impl TypeChecker {
                             .with_code("E006")
                             .with_label(func.span(), "expected 1 argument"));
                         }
-                        let arg_ty = self.check_expr(&args[0].1)?;
+                        let arg_ty = self.check_expr(&args[0].2)?;
                         let throws_ty = self.throws_type.as_ref().ok_or_else(|| {
                             Diagnostic::error(
                                 ".or_throw() can only be used in a function that declares 'throws'"
@@ -92,21 +128,47 @@ impl TypeChecker {
                         })?;
                         if !self.is_error_subtype(&arg_ty, throws_ty) {
                             return Err(Diagnostic::error(format!(
-                                ".or_throw() error type {:?} not compatible with throws {:?}",
+                                ".or_throw() error type {} not compatible with throws {}",
                                 arg_ty, throws_ty
                             ))
                             .with_code("E013")
-                            .with_label(args[0].1.span(), "incompatible error type"));
+                            .with_label(args[0].2.span(), "incompatible error type"));
                         }
                         return Ok(*inner.clone());
                     }
                     _ => {
                         return Err(Diagnostic::error(format!(
-                            "Cannot access '{}' on nullable type {:?}. Resolve with .or(), .or_else(), .or_throw(), or match first",
+                            "Cannot access '{}' on nullable type {}. Resolve with .or(), .or_else(), .or_throw(), or match first",
                             field, obj_ty
                         ))
                         .with_code("E018")
                         .with_label(object.span(), "nullable type"));
+                    }
+                }
+            }
+
+            // List[Nil] promotion: pushing into an empty list infers the element type
+            if field == "push" {
+                if let Type::List(inner) = &obj_ty {
+                    if **inner == Type::Nil {
+                        if args.len() != 1 {
+                            return Err(Diagnostic::error(format!(
+                                "push() takes 1 argument, got {}",
+                                args.len()
+                            ))
+                            .with_code("E006")
+                            .with_label(func.span(), "expected 1 argument"));
+                        }
+                        let arg_ty = self.check_expr(&args[0].2)?;
+                        if arg_ty.is_error() {
+                            return Ok(Type::Void);
+                        }
+                        // Promote the variable from List[Nil] to List[T]
+                        if let Expr::Ident(var_name, _) = object.as_ref() {
+                            let promoted = Type::List(Box::new(arg_ty));
+                            self.env.set_var(var_name.clone(), promoted);
+                        }
+                        return Ok(Type::Void);
                     }
                 }
             }
@@ -117,7 +179,7 @@ impl TypeChecker {
     pub(crate) fn check_call_inner(
         &mut self,
         func: &Expr,
-        args: &[(String, Expr)],
+        args: &[(String, Span, Expr)],
         bypass_throws_check: bool,
     ) -> Result<Type, Diagnostic> {
         // Handle polymorphic builtins that can't be expressed in the type system yet
@@ -132,7 +194,7 @@ impl TypeChecker {
                         .with_code("E006")
                         .with_label(func.span(), "expected 1 argument"));
                     }
-                    let aty = self.check_expr(&args[0].1)?;
+                    let aty = self.check_expr(&args[0].2)?;
                     if aty.is_error() {
                         return Ok(Type::Error);
                     }
@@ -140,11 +202,11 @@ impl TypeChecker {
                         Type::String | Type::List(_) => return Ok(Type::Int),
                         _ => {
                             return Err(Diagnostic::error(format!(
-                                "len() expects String or List, got {:?}",
+                                "len() expects String or List, got {}",
                                 aty
                             ))
                             .with_code("E005")
-                            .with_label(args[0].1.span(), "expected String or List"));
+                            .with_label(args[0].2.span(), "expected String or List"));
                         }
                     }
                 }
@@ -157,7 +219,7 @@ impl TypeChecker {
                         .with_code("E006")
                         .with_label(func.span(), "expected 1 argument"));
                     }
-                    let aty = self.check_expr(&args[0].1)?;
+                    let aty = self.check_expr(&args[0].2)?;
                     if aty.is_error() {
                         return Ok(Type::Error);
                     }
@@ -167,11 +229,11 @@ impl TypeChecker {
                         }
                         _ => {
                             return Err(Diagnostic::error(format!(
-                                "to_string() expects Int, Float, Bool, or String, got {:?}",
+                                "to_string() expects Int, Float, Bool, or String, got {}",
                                 aty
                             ))
                             .with_code("E005")
-                            .with_label(args[0].1.span(), "unsupported type"));
+                            .with_label(args[0].2.span(), "unsupported type"));
                         }
                     }
                 }
@@ -185,7 +247,7 @@ impl TypeChecker {
                         .with_code("E006")
                         .with_label(func.span(), "expected 1 argument"));
                     }
-                    let aty = self.check_expr(&args[0].1)?;
+                    let aty = self.check_expr(&args[0].2)?;
                     if aty.is_error() {
                         return Ok(Type::Void);
                     }
@@ -195,11 +257,11 @@ impl TypeChecker {
                         }
                         _ => {
                             return Err(Diagnostic::error(format!(
-                                "{}() expects Int, Float, Bool, or String, got {:?}",
+                                "{}() expects Int, Float, Bool, or String, got {}",
                                 name, aty
                             ))
                             .with_code("E005")
-                            .with_label(args[0].1.span(), "unsupported type"));
+                            .with_label(args[0].2.span(), "unsupported type"));
                         }
                     }
                 }
@@ -215,7 +277,7 @@ impl TypeChecker {
                         .with_code("E006")
                         .with_label(func.span(), "expected 1 argument"));
                     }
-                    let aty = self.check_expr(&args[0].1)?;
+                    let aty = self.check_expr(&args[0].2)?;
                     if aty.is_error() {
                         return Ok(Type::Error);
                     }
@@ -229,7 +291,7 @@ impl TypeChecker {
                                     "resolve_all() expects List[Task[T]], got List[{other:?}]"
                                 ))
                                 .with_code("E005")
-                                .with_label(args[0].1.span(), "expected List[Task[T]]"));
+                                .with_label(args[0].2.span(), "expected List[Task[T]]"));
                             }
                         },
                         other => {
@@ -237,7 +299,7 @@ impl TypeChecker {
                                 "resolve_all() expects List[Task[T]], got {other:?}"
                             ))
                             .with_code("E005")
-                            .with_label(args[0].1.span(), "expected List[Task[T]]"));
+                            .with_label(args[0].2.span(), "expected List[Task[T]]"));
                         }
                     }
                 }
@@ -250,7 +312,7 @@ impl TypeChecker {
                         .with_code("E006")
                         .with_label(func.span(), "expected 1 argument"));
                     }
-                    let aty = self.check_expr(&args[0].1)?;
+                    let aty = self.check_expr(&args[0].2)?;
                     if aty.is_error() {
                         return Ok(Type::Error);
                     }
@@ -262,7 +324,7 @@ impl TypeChecker {
                                     "resolve_first() expects List[Task[T]], got List[{other:?}]"
                                 ))
                                 .with_code("E005")
-                                .with_label(args[0].1.span(), "expected List[Task[T]]"));
+                                .with_label(args[0].2.span(), "expected List[Task[T]]"));
                             }
                         },
                         other => {
@@ -270,7 +332,7 @@ impl TypeChecker {
                                 "resolve_first() expects List[Task[T]], got {other:?}"
                             ))
                             .with_code("E005")
-                            .with_label(args[0].1.span(), "expected List[Task[T]]"));
+                            .with_label(args[0].2.span(), "expected List[Task[T]]"));
                         }
                     }
                 }
@@ -284,7 +346,7 @@ impl TypeChecker {
                         .with_code("E006")
                         .with_label(func.span(), "expected 1 argument"));
                     }
-                    let val_ty = self.check_expr(&args[0].1)?;
+                    let val_ty = self.check_expr(&args[0].2)?;
                     if val_ty.is_error() {
                         return Ok(Type::Error);
                     }
@@ -301,14 +363,14 @@ impl TypeChecker {
                         .with_label(func.span(), "expected 0-1 arguments"));
                     }
                     if args.len() == 1 {
-                        let cap_ty = self.check_expr(&args[0].1)?;
+                        let cap_ty = self.check_expr(&args[0].2)?;
                         if cap_ty != Type::Int && !cap_ty.is_error() {
                             return Err(Diagnostic::error(format!(
-                                "Channel capacity must be Int, got {:?}",
+                                "Channel capacity must be Int, got {}",
                                 cap_ty
                             ))
                             .with_code("E005")
-                            .with_label(args[0].1.span(), "expected Int"));
+                            .with_label(args[0].2.span(), "expected Int"));
                         }
                     }
                     // Type parameter inferred from expected type
@@ -336,14 +398,14 @@ impl TypeChecker {
                         .with_label(func.span(), "expected 0-1 arguments"));
                     }
                     if args.len() == 1 {
-                        let cap_ty = self.check_expr(&args[0].1)?;
+                        let cap_ty = self.check_expr(&args[0].2)?;
                         if cap_ty != Type::Int && !cap_ty.is_error() {
                             return Err(Diagnostic::error(format!(
-                                "{} capacity must be Int, got {:?}",
+                                "{} capacity must be Int, got {}",
                                 name, cap_ty
                             ))
                             .with_code("E005")
-                            .with_label(args[0].1.span(), "expected Int"));
+                            .with_label(args[0].2.span(), "expected Int"));
                         }
                     }
                     let elem_ty = if let Some(Type::Custom(_, ref type_args)) = self.expected_type
@@ -392,7 +454,7 @@ impl TypeChecker {
 
             // Check arg types first to determine which overload matches
             let mut arg_types = Vec::new();
-            for (_, arg_expr) in args {
+            for (_, _, arg_expr) in args {
                 let aty = self.check_expr(arg_expr)?;
                 if aty.is_error() {
                     return Ok(Type::Error);
@@ -413,14 +475,14 @@ impl TypeChecker {
                         if params.len() != args.len() {
                             return false;
                         }
-                        for (arg_name, _) in args {
+                        for (arg_name, _, _) in args {
                             if let Some(idx) = pn.iter().position(|n| n == arg_name) {
                                 let mut bindings = HashMap::new();
                                 if Self::unify_type(
                                     &params[idx],
                                     &arg_types[args
                                         .iter()
-                                        .position(|(n, _)| n == arg_name)
+                                        .position(|(n, _, _)| n == arg_name)
                                         .expect("invariant: arg_name comes from this args list")],
                                     &mut bindings,
                                 )
@@ -476,7 +538,7 @@ impl TypeChecker {
                     .with_code("E006")
                     .with_label(func.span(), "wrong number of arguments"));
                 }
-                for (arg_name, arg_expr) in args {
+                for (arg_name, arg_name_span, arg_expr) in args {
                     let param_idx = param_names.iter().position(|n| n == arg_name);
                     if let Some(idx) = param_idx {
                         let pty = &params[idx];
@@ -485,14 +547,31 @@ impl TypeChecker {
                             return Ok(Type::Error);
                         }
                         let mut bindings = HashMap::new();
-                        Self::unify_type_with_env(pty, &aty, &mut bindings, Some(&self.env))?;
+                        Self::unify_type_with_env(pty, &aty, &mut bindings, Some(&self.env))
+                            .map_err(|_| {
+                                Diagnostic::error(format!(
+                                    "Argument '{arg_name}' expects {pty}, got {aty}",
+                                ))
+                                .with_code("E001")
+                                .with_label(
+                                    arg_expr.span(),
+                                    format!("expected {pty}, got {aty}"),
+                                )
+                            })?;
                     } else {
-                        return Err(Diagnostic::error(format!(
+                        let suggestion = closest_param_name(arg_name, &param_names);
+                        let label_msg = if let Some(s) = suggestion {
+                            format!("did you mean '{s}'?")
+                        } else {
+                            "unknown argument name".to_string()
+                        };
+                        let diag = Diagnostic::error(format!(
                             "Unknown argument '{}' in {}.from()",
                             arg_name, type_name
                         ))
                         .with_code("E006")
-                        .with_label(arg_expr.span(), "unknown argument name"));
+                        .with_label(*arg_name_span, label_msg);
+                        return Err(diag);
                     }
                 }
             }
@@ -529,6 +608,40 @@ impl TypeChecker {
                 .with_code("E013")
                 .with_label(func.span(), "throwing function requires error handling"));
             }
+            // Detect whether this is a constructor-style call (uppercase first letter)
+            let is_constructor = matches!(
+                func,
+                Expr::Ident(name, _) if name.starts_with(|c: char| c.is_uppercase())
+            );
+
+            // If any positional args on a non-constructor call, reject early with hint
+            if !is_constructor {
+                for (arg_name, _, arg_expr) in args {
+                    if arg_name.starts_with('_')
+                        && !param_names.contains(arg_name)
+                    {
+                        if let Ok(pos) = arg_name[1..].parse::<usize>() {
+                            let hint = if pos < param_names.len() {
+                                format!(
+                                    "All arguments must be named (e.g. `{}: value`)",
+                                    param_names[pos]
+                                )
+                            } else {
+                                "All arguments must be named (e.g. `name: value`)".to_string()
+                            };
+                            let label = if pos < param_names.len() {
+                                format!("add `{}: ` before this", param_names[pos])
+                            } else {
+                                "expected argument name".to_string()
+                            };
+                            return Err(Diagnostic::error(hint)
+                                .with_code("P001")
+                                .with_label(arg_expr.span(), label));
+                        }
+                    }
+                }
+            }
+
             if params.len() != args.len() {
                 // Check if the difference can be explained by default params
                 let func_name: Option<String> = match func {
@@ -549,7 +662,7 @@ impl TypeChecker {
                     .and_then(|n| self.default_params.get(n));
 
                 let provided: std::collections::HashSet<&str> =
-                    args.iter().map(|(n, _)| n.as_str()).collect();
+                    args.iter().map(|(n, _, _)| n.as_str()).collect();
                 let expected: std::collections::HashSet<&str> =
                     param_names.iter().map(|n| n.as_str()).collect();
                 let missing: Vec<&&str> = expected.difference(&provided).collect();
@@ -609,7 +722,7 @@ impl TypeChecker {
             // Match args by name, order-independent.
             // Positional args (synthesized names like `_0`, `_1`) map to params by index.
             let mut bindings: HashMap<String, Type> = HashMap::new();
-            for (arg_name, arg_expr) in args {
+            for (arg_name, arg_name_span, arg_expr) in args {
                 let param_idx = if arg_name.starts_with('_') && !param_names.contains(arg_name) {
                     if let Ok(pos) = arg_name[1..].parse::<usize>() {
                         if pos < param_names.len() {
@@ -624,17 +737,32 @@ impl TypeChecker {
                     param_names.iter().position(|n| n == arg_name)
                 };
                 let Some(idx) = param_idx else {
-                    return Err(Diagnostic::error(format!(
+                    // Pick a suggestion: edit-distance match first, then single-param fallback
+                    let suggestion = closest_param_name(arg_name, &param_names)
+                        .or_else(|| {
+                            if param_names.len() == 1 {
+                                Some(param_names[0].as_str())
+                            } else {
+                                None
+                            }
+                        });
+                    let label_msg = if let Some(s) = suggestion {
+                        format!("did you mean '{s}'?")
+                    } else {
+                        "unknown argument name".to_string()
+                    };
+                    let expected_list = param_names
+                        .iter()
+                        .map(|n| format!("'{}'", n))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let diag = Diagnostic::error(format!(
                         "Unknown argument '{}'. Expected one of: {}",
-                        arg_name,
-                        param_names
-                            .iter()
-                            .map(|n| format!("'{}'", n))
-                            .collect::<Vec<_>>()
-                            .join(", ")
+                        arg_name, expected_list
                     ))
                     .with_code("E006")
-                    .with_label(arg_expr.span(), "unknown argument name"));
+                    .with_label(*arg_name_span, label_msg);
+                    return Err(diag);
                 };
                 let pty = &params[idx];
                 // Substitute already-known bindings so lambda inference sees concrete types
@@ -652,7 +780,17 @@ impl TypeChecker {
                 if aty.is_error() {
                     return Ok(Type::Error);
                 }
-                Self::unify_type_with_env(pty, &aty, &mut bindings, Some(&self.env))?;
+                Self::unify_type_with_env(pty, &aty, &mut bindings, Some(&self.env))
+                    .map_err(|_| {
+                        Diagnostic::error(format!(
+                            "Argument '{arg_name}' expects {pty}, got {aty}",
+                        ))
+                        .with_code("E001")
+                        .with_label(
+                            arg_expr.span(),
+                            format!("expected {pty}, got {aty}"),
+                        )
+                    })?;
                 // Mark task idents as consumed when passed as arguments
                 self.mark_task_ident_consumed(arg_expr);
             }
@@ -662,7 +800,7 @@ impl TypeChecker {
             Ok(resolved_ret)
         } else {
             Err(
-                Diagnostic::error(format!("Tried to call non-function type: {:?}", fty))
+                Diagnostic::error(format!("Tried to call non-function type: {}", fty))
                     .with_code("E005")
                     .with_label(func.span(), "not a function"),
             )
@@ -700,7 +838,7 @@ impl TypeChecker {
                 if let Some(bound) = bindings.get(tv) {
                     if *bound != *actual {
                         return Err(Diagnostic::error(format!(
-                            "Type parameter '{}' bound to {:?} but got {:?}",
+                            "Type parameter '{}' bound to {} but got {}",
                             tv, bound, actual
                         ))
                         .with_code("E001"));
@@ -709,7 +847,7 @@ impl TypeChecker {
                     // Occurs check: prevent infinite types like T = List[T]
                     if Self::type_contains_var(actual, tv) {
                         return Err(Diagnostic::error(format!(
-                            "Type parameter '{}' occurs in {:?}, creating an infinite type",
+                            "Type parameter '{}' occurs in {}, creating an infinite type",
                             tv, actual
                         ))
                         .with_code("E001"));
@@ -723,7 +861,7 @@ impl TypeChecker {
                 if let Some(bound) = bindings.get(tv) {
                     if *bound != *expected {
                         return Err(Diagnostic::error(format!(
-                            "Type parameter '{}' bound to {:?} but got {:?}",
+                            "Type parameter '{}' bound to {} but got {}",
                             tv, bound, expected
                         ))
                         .with_code("E001"));
@@ -732,7 +870,7 @@ impl TypeChecker {
                     // Occurs check: prevent infinite types
                     if Self::type_contains_var(expected, tv) {
                         return Err(Diagnostic::error(format!(
-                            "Type parameter '{}' occurs in {:?}, creating an infinite type",
+                            "Type parameter '{}' occurs in {}, creating an infinite type",
                             tv, expected
                         ))
                         .with_code("E001"));
@@ -772,14 +910,14 @@ impl TypeChecker {
                         return Ok(());
                     }
                     return Err(Diagnostic::error(format!(
-                        "Argument type mismatch: expected {:?}, got {:?}",
+                        "Argument type mismatch: expected {}, got {}",
                         expected, actual
                     ))
                     .with_code("E001"));
                 }
                 if eargs.len() != aargs.len() {
                     return Err(Diagnostic::error(format!(
-                        "Argument type mismatch: expected {:?}, got {:?}",
+                        "Argument type mismatch: expected {}, got {}",
                         expected, actual
                     ))
                     .with_code("E001"));
@@ -817,7 +955,7 @@ impl TypeChecker {
             _ => {
                 if expected != actual {
                     Err(Diagnostic::error(format!(
-                        "Argument type mismatch: expected {:?}, got {:?}",
+                        "Argument type mismatch: expected {}, got {}",
                         expected, actual
                     ))
                     .with_code("E001"))
@@ -928,8 +1066,8 @@ impl TypeChecker {
                 };
                 if !is_same && !self.is_error_subtype(actual, &expected_ty) {
                     return Err(Diagnostic::error(format!(
-                        "Type {:?} does not satisfy constraint '{} extends {}': \
-                         {:?} is not a subclass of {}",
+                        "Type {} does not satisfy constraint '{} extends {}': \
+                         {} is not a subclass of {}",
                         actual, type_param, class_name, actual, class_name
                     ))
                     .with_code("E024"));
@@ -938,8 +1076,8 @@ impl TypeChecker {
             ast::TypeConstraint::Includes(trait_name, trait_args) => {
                 if !self.type_includes_trait(actual, trait_name) {
                     return Err(Diagnostic::error(format!(
-                        "Type {:?} does not satisfy constraint '{} includes {}': \
-                         {:?} does not include {}",
+                        "Type {} does not satisfy constraint '{} includes {}': \
+                         {} does not include {}",
                         actual, type_param, trait_name, actual, trait_name
                     ))
                     .with_code("E024"));
@@ -949,10 +1087,10 @@ impl TypeChecker {
                     && !self.type_includes_parametric_trait(actual, trait_name, trait_args)
                 {
                     let args_str: Vec<String> =
-                        trait_args.iter().map(|t| format!("{:?}", t)).collect();
+                        trait_args.iter().map(|t| format!("{}", t)).collect();
                     return Err(Diagnostic::error(format!(
-                        "Type {:?} does not satisfy constraint '{} includes {}[{}]': \
-                         {:?} does not include {}[{}]",
+                        "Type {} does not satisfy constraint '{} includes {}[{}]': \
+                         {} does not include {}[{}]",
                         actual,
                         type_param,
                         trait_name,
@@ -1036,69 +1174,115 @@ impl TypeChecker {
     fn check_random_call(
         &mut self,
         func: &Expr,
-        args: &[(String, Expr)],
+        args: &[(String, Span, Expr)],
     ) -> Result<Type, Diagnostic> {
         let target = self.expected_type.clone();
-        match target.as_ref() {
-            Some(Type::Int) => {
-                let max_arg = args.iter().find(|(n, _)| n == "max");
-                match max_arg {
-                    Some((_, expr)) => {
-                        let aty = self.check_expr(expr)?;
-                        if aty != Type::Int {
-                            return Err(Diagnostic::error(format!(
-                                "random() max argument must be Int, got {:?}",
-                                aty
-                            ))
-                            .with_code("E005")
-                            .with_label(expr.span(), "expected Int"));
-                        }
-                        Ok(Type::Int)
+
+        // If we have an explicit type context, use it
+        if let Some(ref ty) = target {
+            match ty {
+                Type::Int => {
+                    return self.check_random_int(func, args);
+                }
+                Type::Float => {
+                    return self.check_random_float(func, args);
+                }
+                Type::Bool => {
+                    if !args.is_empty() {
+                        return Err(
+                            Diagnostic::error("random() for Bool takes no arguments")
+                                .with_code("E006")
+                                .with_label(func.span(), "remove arguments"),
+                        );
                     }
-                    None => Err(
-                        Diagnostic::error("random() for Int requires a max: argument")
-                            .with_code("E006")
-                            .with_label(func.span(), "add max: argument"),
-                    ),
+                    return Ok(Type::Bool);
                 }
+                _ => {}
             }
-            Some(Type::Float) => {
-                let max_arg = args.iter().find(|(n, _)| n == "max");
-                match max_arg {
-                    Some((_, expr)) => {
-                        let aty = self.check_expr(expr)?;
-                        if aty != Type::Float {
-                            return Err(Diagnostic::error(format!(
-                                "random() max argument must be Float, got {:?}",
-                                aty
-                            ))
-                            .with_code("E005")
-                            .with_label(expr.span(), "expected Float"));
-                        }
-                        Ok(Type::Float)
-                    }
-                    None => Err(
-                        Diagnostic::error("random() for Float requires a max: argument")
-                            .with_code("E006")
-                            .with_label(func.span(), "add max: argument"),
-                    ),
-                }
-            }
-            Some(Type::Bool) => {
-                if !args.is_empty() {
-                    return Err(
-                        Diagnostic::error("random() for Bool takes no arguments")
-                            .with_code("E006")
-                            .with_label(func.span(), "remove arguments"),
-                    );
-                }
-                Ok(Type::Bool)
-            }
-            _ => Err(Diagnostic::error(
-                "Cannot infer type for random(). Add a type annotation: `let n: Int = random(max: 100)`",
-            )
-            .with_code("E005")
-            .with_label(func.span(), "needs type context")),
         }
+
+        // No type context — infer from arguments
+        if args.is_empty() {
+            // No args, no context → Bool (the only zero-arg form)
+            return Ok(Type::Bool);
+        }
+
+        // Check argument types to infer the return type
+        let sample_arg = args.iter().find(|(n, _, _)| n == "max" || n == "min");
+        if let Some((_, _, expr)) = sample_arg {
+            let aty = self.check_expr(expr)?;
+            match aty {
+                Type::Int => return self.check_random_int(func, args),
+                Type::Float => return self.check_random_float(func, args),
+                _ => {
+                    return Err(Diagnostic::error(format!(
+                        "random() argument must be Int or Float, got {aty:?}"
+                    ))
+                    .with_code("E005")
+                    .with_label(expr.span(), "expected Int or Float"));
+                }
+            }
+        }
+
+        Err(Diagnostic::error(
+            "Cannot infer type for random(). Use Int or Float arguments, \
+             or add a type annotation, e.g. `let n: Int = random(max: 100)`",
+        )
+        .with_code("E005")
+        .with_label(func.span(), "needs type context"))
+    }
+
+    fn check_random_int(
+        &mut self,
+        func: &Expr,
+        args: &[(String, Span, Expr)],
+    ) -> Result<Type, Diagnostic> {
+        for (name, _, expr) in args {
+            if name == "max" || name == "min" {
+                let aty = self.check_expr(expr)?;
+                if aty != Type::Int {
+                    return Err(Diagnostic::error(format!(
+                        "random() {name}: argument must be Int, got {aty:?}"
+                    ))
+                    .with_code("E005")
+                    .with_label(expr.span(), "expected Int"));
+                }
+            }
+        }
+        if !args.iter().any(|(n, _, _)| n == "max") {
+            return Err(
+                Diagnostic::error("random() for Int requires a max: argument")
+                    .with_code("E006")
+                    .with_label(func.span(), "add max: argument"),
+            );
+        }
+        Ok(Type::Int)
+    }
+
+    fn check_random_float(
+        &mut self,
+        func: &Expr,
+        args: &[(String, Span, Expr)],
+    ) -> Result<Type, Diagnostic> {
+        for (name, _, expr) in args {
+            if name == "max" || name == "min" {
+                let aty = self.check_expr(expr)?;
+                if aty != Type::Float {
+                    return Err(Diagnostic::error(format!(
+                        "random() {name}: argument must be Float, got {aty:?}"
+                    ))
+                    .with_code("E005")
+                    .with_label(expr.span(), "expected Float"));
+                }
+            }
+        }
+        if !args.iter().any(|(n, _, _)| n == "max") {
+            return Err(
+                Diagnostic::error("random() for Float requires a max: argument")
+                    .with_code("E006")
+                    .with_label(func.span(), "add max: argument"),
+            );
+        }
+        Ok(Type::Float)
     }
 }

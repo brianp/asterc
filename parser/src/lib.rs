@@ -72,7 +72,7 @@ impl Parser {
             Ok(())
         } else {
             Err(
-                Diagnostic::error(format!("Expected {:?}, found {:?}", kind, token.kind))
+                Diagnostic::error(format!("Expected `{}`, found `{}`", kind, token.kind))
                     .with_code("P001")
                     .with_label(Span::new(token.start, token.end), "unexpected token"),
             )
@@ -219,14 +219,17 @@ impl Parser {
         let mut path = Vec::new();
 
         // First segment
-        let name = match &self.advance().kind {
+        let name_tok = self.advance();
+        let name = match &name_tok.kind {
             TokenKind::Ident(n) => n.clone(),
             t => {
+                let span = Span { start: name_tok.start, end: name_tok.end };
                 return Err(Diagnostic::error(format!(
-                    "Expected module name after 'use', got {:?}",
+                    "Expected module name after 'use', got `{}`",
                     t
                 ))
-                .with_code("P001"));
+                .with_code("P001")
+                .with_label(span, "expected module name"));
             }
         };
         path.push(name);
@@ -234,14 +237,17 @@ impl Parser {
         // Additional path segments: use std/http/thing
         while self.at(&TokenKind::Slash) {
             self.advance();
-            let seg = match &self.advance().kind {
+            let seg_tok = self.advance();
+            let seg = match &seg_tok.kind {
                 TokenKind::Ident(n) => n.clone(),
                 t => {
+                    let span = Span { start: seg_tok.start, end: seg_tok.end };
                     return Err(Diagnostic::error(format!(
-                        "Expected module name after '/', got {:?}",
+                        "Expected module name after '/', got `{}`",
                         t
                     ))
-                    .with_code("P001"));
+                    .with_code("P001")
+                    .with_label(span, "expected module name"));
                 }
             };
             path.push(seg);
@@ -253,14 +259,17 @@ impl Parser {
             let mut names = Vec::new();
             if !self.at(&TokenKind::RBrace) {
                 loop {
-                    let n = match &self.advance().kind {
+                    let n_tok = self.advance();
+                    let n = match &n_tok.kind {
                         TokenKind::Ident(n) => n.clone(),
                         t => {
+                            let span = Span { start: n_tok.start, end: n_tok.end };
                             return Err(Diagnostic::error(format!(
-                                "Expected identifier in use list, got {:?}",
+                                "Expected identifier in use list, got `{}`",
                                 t
                             ))
-                            .with_code("P001"));
+                            .with_code("P001")
+                            .with_label(span, "expected identifier"));
                         }
                     };
                     names.push(n);
@@ -280,14 +289,17 @@ impl Parser {
         // Optional alias: as hs
         let alias = if self.at(&TokenKind::As) {
             self.advance();
-            let a = match &self.advance().kind {
+            let a_tok = self.advance();
+            let a = match &a_tok.kind {
                 TokenKind::Ident(n) => n.clone(),
                 t => {
+                    let span = Span { start: a_tok.start, end: a_tok.end };
                     return Err(Diagnostic::error(format!(
-                        "Expected alias name after 'as', got {:?}",
+                        "Expected alias name after 'as', got `{}`",
                         t
                     ))
-                    .with_code("P001"));
+                    .with_code("P001")
+                    .with_label(span, "expected identifier"));
                 }
             };
             Some(a)
@@ -314,11 +326,16 @@ impl Parser {
             TokenKind::Const => self.parse_const(true),
             TokenKind::Let => self.parse_let(true),
             TokenKind::Use => self.parse_use(true),
-            t => Err(Diagnostic::error(format!(
-                "Expected def, class, trait, enum, let, or use after 'pub', got {:?}",
-                t
-            ))
-            .with_code("P001")),
+            t => {
+                let tok = self.peek();
+                let span = Span { start: tok.start, end: tok.end };
+                Err(Diagnostic::error(format!(
+                    "Expected def, class, trait, enum, let, or use after 'pub', got `{}`",
+                    t
+                ))
+                .with_code("P001")
+                .with_label(span, "unexpected token after 'pub'"))
+            }
         }
     }
 
@@ -368,14 +385,17 @@ impl Parser {
         use TokenKind::*;
         let start = self.start_span();
         self.expect(For)?;
-        let var = match &self.advance().kind {
+        let var_tok = self.advance();
+        let var = match &var_tok.kind {
             Ident(n) => n.clone(),
             t => {
+                let span = Span { start: var_tok.start, end: var_tok.end };
                 return Err(Diagnostic::error(format!(
-                    "Expected variable name after 'for', got {:?}",
+                    "Expected variable name after 'for', got `{}`",
                     t
                 ))
-                .with_code("P001"));
+                .with_code("P001")
+                .with_label(span, "expected loop variable name"));
             }
         };
         self.expect(In)?;
@@ -397,11 +417,13 @@ impl Parser {
         let name = if let TokenKind::Ident(s) = name_tok.kind {
             s
         } else {
+            let span = Span { start: name_tok.start, end: name_tok.end };
             return Err(Diagnostic::error(format!(
                 "Expected identifier after const at line {}",
                 name_tok.line
             ))
-            .with_code("P001"));
+            .with_code("P001")
+            .with_label(span, "expected constant name"));
         };
 
         let type_ann = if self.at(&TokenKind::Colon) {
@@ -431,11 +453,13 @@ impl Parser {
         let name = if let TokenKind::Ident(s) = name_tok.kind {
             s
         } else {
+            let span = Span { start: name_tok.start, end: name_tok.end };
             return Err(Diagnostic::error(format!(
                 "Expected identifier after let at line {}",
                 name_tok.line
             ))
-            .with_code("P001"));
+            .with_code("P001")
+            .with_label(span, "expected variable name"));
         };
 
         let type_ann = if self.at(&TokenKind::Colon) {

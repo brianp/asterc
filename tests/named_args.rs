@@ -98,13 +98,18 @@ let s: String = to_string(value: 42)
 
 #[test]
 fn named_args_missing_name_error() {
-    // Positional args should no longer parse
-    common::check_parse_err(
+    // Positional args give a typecheck error hinting at the correct param name
+    let err = common::check_err(
         r#"
 def greet(name: String) -> String
     name
 let x = greet("Alice")
 "#,
+    );
+    assert!(
+        err.contains("name: value"),
+        "expected hint about 'name' param, got: {}",
+        err
     );
 }
 
@@ -177,7 +182,7 @@ let x = greet(name: 42)
 "#,
     );
     assert!(
-        err.contains("mismatch") || err.contains("expected"),
+        err.contains("mismatch") || err.contains("expected") || err.contains("expects"),
         "should report type mismatch: {}",
         err
     );

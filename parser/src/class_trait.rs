@@ -1,4 +1,4 @@
-use ast::{Diagnostic, EnumVariant, Expr, Stmt, Type, TypeConstraint};
+use ast::{Diagnostic, EnumVariant, Expr, Span, Stmt, Type, TypeConstraint};
 use lexer::TokenKind;
 
 use crate::Parser;
@@ -12,14 +12,17 @@ impl Parser {
     ) -> Result<Vec<String>, Diagnostic> {
         let mut names = Vec::new();
         loop {
-            let name = match &self.advance().kind {
+            let tok = self.advance();
+            let name = match &tok.kind {
                 TokenKind::Ident(n) => n.clone(),
                 t => {
+                    let span = Span { start: tok.start, end: tok.end };
                     return Err(Diagnostic::error(format!(
-                        "Expected {} name, got {:?}",
+                        "Expected {} name, got `{}`",
                         context, t
                     ))
-                    .with_code("P001"));
+                    .with_code("P001")
+                    .with_label(span, "expected identifier"));
                 }
             };
             names.push(name);
@@ -40,12 +43,15 @@ impl Parser {
     ) -> Result<Vec<(String, Vec<ast::Type>)>, Diagnostic> {
         let mut refs = Vec::new();
         loop {
-            let name = match &self.advance().kind {
+            let tok = self.advance();
+            let name = match &tok.kind {
                 TokenKind::Ident(n) => n.clone(),
                 t => {
+                    let span = Span { start: tok.start, end: tok.end };
                     return Err(
-                        Diagnostic::error(format!("Expected trait name, got {:?}", t))
-                            .with_code("P001"),
+                        Diagnostic::error(format!("Expected trait name, got `{}`", t))
+                            .with_code("P001")
+                            .with_label(span, "expected trait name"),
                     );
                 }
             };
@@ -98,11 +104,15 @@ impl Parser {
         use TokenKind::*;
         let start = self.start_span();
         self.expect(Enum)?;
-        let name = match &self.advance().kind {
+        let name_tok = self.advance();
+        let name = match &name_tok.kind {
             Ident(n) => n.clone(),
             t => {
+                let span = Span { start: name_tok.start, end: name_tok.end };
                 return Err(
-                    Diagnostic::error(format!("Expected enum name, got {:?}", t)).with_code("P001"),
+                    Diagnostic::error(format!("Expected enum name, got `{}`", t))
+                        .with_code("P001")
+                        .with_label(span, "expected enum name"),
                 );
             }
         };
@@ -125,11 +135,14 @@ impl Parser {
                 Def => methods.push(self.parse_def_as_let(Some(name.clone()), false)?),
                 Pub => {
                     self.advance();
-                    match &self.peek().kind {
+                    let pub_next = self.peek();
+                    match &pub_next.kind {
                         Def => methods.push(self.parse_def_as_let(Some(name.clone()), true)?),
                         _ => {
+                            let span = Span { start: pub_next.start, end: pub_next.end };
                             return Err(Diagnostic::error("Expected def after 'pub' in enum")
-                                .with_code("P001"));
+                                .with_code("P001")
+                                .with_label(span, "expected 'def'"));
                         }
                     }
                 }
@@ -145,14 +158,17 @@ impl Parser {
                         let mut fs = Vec::new();
                         if !self.at(&RParen) {
                             loop {
-                                let fname = match &self.advance().kind {
+                                let fname_tok = self.advance();
+                                let fname = match &fname_tok.kind {
                                     Ident(n) => n.clone(),
                                     t => {
+                                        let span = Span { start: fname_tok.start, end: fname_tok.end };
                                         return Err(Diagnostic::error(format!(
-                                            "Expected field name in enum variant, got {:?}",
+                                            "Expected field name in enum variant, got `{}`",
                                             t
                                         ))
-                                        .with_code("P001"));
+                                        .with_code("P001")
+                                        .with_label(span, "expected field name"));
                                     }
                                 };
                                 self.expect(Colon)?;
@@ -177,11 +193,14 @@ impl Parser {
                     });
                 }
                 _ => {
+                    let tok = self.peek();
+                    let span = Span { start: tok.start, end: tok.end };
                     return Err(Diagnostic::error(format!(
-                        "Expected variant name or method in enum, got {:?}",
-                        self.peek().kind
+                        "Expected variant name or method in enum, got `{}`",
+                        tok.kind
                     ))
-                    .with_code("P001"));
+                    .with_code("P001")
+                    .with_label(span, "unexpected token in enum body"));
                 }
             }
             self.consume_newlines();
@@ -203,10 +222,14 @@ impl Parser {
         use TokenKind::*;
         let start = self.start_span();
         self.expect(Class)?;
-        let name = match &self.advance().kind {
+        let name_tok = self.advance();
+        let name = match &name_tok.kind {
             Ident(n) => n.clone(),
             t => {
-                return Err(Diagnostic::error(format!("class name, got {:?}", t)).with_code("P001"));
+                let span = Span { start: name_tok.start, end: name_tok.end };
+                return Err(Diagnostic::error(format!("Expected class name, got `{}`", t))
+                    .with_code("P001")
+                    .with_label(span, "expected class name"));
             }
         };
 
@@ -221,14 +244,17 @@ impl Parser {
         // Optional extends: class NetworkError extends Error
         let extends = if self.at(&TokenKind::Extends) {
             self.advance();
-            let parent = match &self.advance().kind {
+            let parent_tok = self.advance();
+            let parent = match &parent_tok.kind {
                 Ident(n) => n.clone(),
                 t => {
+                    let span = Span { start: parent_tok.start, end: parent_tok.end };
                     return Err(Diagnostic::error(format!(
-                        "Expected class name after 'extends', got {:?}",
+                        "Expected class name after 'extends', got `{}`",
                         t
                     ))
-                    .with_code("P001"));
+                    .with_code("P001")
+                    .with_label(span, "expected class name"));
                 }
             };
             Some(parent)
@@ -259,11 +285,14 @@ impl Parser {
                 Def => methods.push(self.parse_def_as_let(Some(name.clone()), false)?),
                 Pub => {
                     self.advance();
-                    match &self.peek().kind {
+                    let pub_next = self.peek();
+                    match &pub_next.kind {
                         Def => methods.push(self.parse_def_as_let(Some(name.clone()), true)?),
                         _ => {
+                            let span = Span { start: pub_next.start, end: pub_next.end };
                             return Err(Diagnostic::error("Expected def after 'pub' in class")
-                                .with_code("P001"));
+                                .with_code("P001")
+                                .with_label(span, "expected 'def'"));
                         }
                     }
                 }
@@ -271,11 +300,14 @@ impl Parser {
                     methods.push(self.parse_class(false)?);
                 }
                 _ => {
-                    let fname = match &self.advance().kind {
+                    let fname_tok = self.advance();
+                    let fname = match &fname_tok.kind {
                         Ident(n) => n.clone(),
                         t => {
-                            return Err(Diagnostic::error(format!("field name, got {:?}", t))
-                                .with_code("P001"));
+                            let span = Span { start: fname_tok.start, end: fname_tok.end };
+                            return Err(Diagnostic::error(format!("Expected field name, got `{}`", t))
+                                .with_code("P001")
+                                .with_label(span, "expected field name"));
                         }
                     };
                     self.expect(Colon)?;
@@ -309,12 +341,15 @@ impl Parser {
         use TokenKind::*;
         let start = self.start_span();
         self.expect(Trait)?;
-        let name = match &self.advance().kind {
+        let name_tok = self.advance();
+        let name = match &name_tok.kind {
             Ident(n) => n.clone(),
             t => {
+                let span = Span { start: name_tok.start, end: name_tok.end };
                 return Err(
-                    Diagnostic::error(format!("Expected trait name, got {:?}", t))
-                        .with_code("P001"),
+                    Diagnostic::error(format!("Expected trait name, got `{}`", t))
+                        .with_code("P001")
+                        .with_label(span, "expected trait name"),
                 );
             }
         };
@@ -343,20 +378,26 @@ impl Parser {
                 }
                 Pub => {
                     self.advance();
-                    match &self.peek().kind {
+                    let pub_next = self.peek();
+                    match &pub_next.kind {
                         Def => methods.push(self.parse_def_as_let(Some(name.clone()), true)?),
                         _ => {
+                            let span = Span { start: pub_next.start, end: pub_next.end };
                             return Err(Diagnostic::error("Expected def after 'pub' in trait")
-                                .with_code("P001"));
+                                .with_code("P001")
+                                .with_label(span, "expected 'def'"));
                         }
                     }
                 }
                 _ => {
+                    let tok = self.peek();
+                    let span = Span { start: tok.start, end: tok.end };
                     return Err(Diagnostic::error(format!(
-                        "Expected method definition in trait, got {:?}",
-                        self.peek().kind
+                        "Expected method definition in trait, got `{}`",
+                        tok.kind
                     ))
-                    .with_code("P001"));
+                    .with_code("P001")
+                    .with_label(span, "unexpected token in trait body"));
                 }
             }
             self.consume_newlines();
@@ -393,9 +434,15 @@ impl Parser {
         }
 
         self.expect(Def)?;
-        let name = match &self.advance().kind {
+        let name_tok = self.advance();
+        let name = match &name_tok.kind {
             Ident(n) => n.clone(),
-            t => return Err(Diagnostic::error(format!("fn name, got {:?}", t)).with_code("P001")),
+            t => {
+                let span = Span { start: name_tok.start, end: name_tok.end };
+                return Err(Diagnostic::error(format!("Expected function name, got `{}`", t))
+                    .with_code("P001")
+                    .with_label(span, "expected function name"));
+            }
         };
 
         // Generic type parameters are inferred inline from param types (BC-5).
@@ -415,11 +462,14 @@ impl Parser {
             self.advance();
             if !self.at(&RParen) {
                 loop {
-                    let pname = match &self.advance().kind {
+                    let pname_tok = self.advance();
+                    let pname = match &pname_tok.kind {
                         Ident(n) => n.clone(),
                         t => {
-                            return Err(Diagnostic::error(format!("param name, got {:?}", t))
-                                .with_code("P001"));
+                            let span = Span { start: pname_tok.start, end: pname_tok.end };
+                            return Err(Diagnostic::error(format!("Expected parameter name, got `{}`", t))
+                                .with_code("P001")
+                                .with_label(span, "expected parameter name"));
                         }
                     };
                     self.expect(Colon)?;
@@ -429,28 +479,34 @@ impl Parser {
                     let mut constraints = Vec::new();
                     if self.at(&Extends) {
                         self.advance();
-                        let class_name = match &self.advance().kind {
+                        let class_tok = self.advance();
+                        let class_name = match &class_tok.kind {
                             Ident(n) => n.clone(),
                             t => {
+                                let span = Span { start: class_tok.start, end: class_tok.end };
                                 return Err(Diagnostic::error(format!(
-                                    "Expected class name after 'extends', got {:?}",
+                                    "Expected class name after 'extends', got `{}`",
                                     t
                                 ))
-                                .with_code("P001"));
+                                .with_code("P001")
+                                .with_label(span, "expected class name"));
                             }
                         };
                         constraints.push(TypeConstraint::Extends(class_name));
                     }
                     if self.at(&Includes) {
                         self.advance();
-                        let trait_name = match &self.advance().kind {
+                        let trait_tok = self.advance();
+                        let trait_name = match &trait_tok.kind {
                             Ident(n) => n.clone(),
                             t => {
+                                let span = Span { start: trait_tok.start, end: trait_tok.end };
                                 return Err(Diagnostic::error(format!(
-                                    "Expected trait name after 'includes', got {:?}",
+                                    "Expected trait name after 'includes', got `{}`",
                                     t
                                 ))
-                                .with_code("P001"));
+                                .with_code("P001")
+                                .with_label(span, "expected trait name"));
                             }
                         };
                         // Optional type args: includes From[Float]

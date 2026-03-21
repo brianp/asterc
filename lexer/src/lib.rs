@@ -826,6 +826,7 @@ pub fn lex(input: &str) -> Result<Vec<Token>, Diagnostic> {
                 }
                 '+' => push!(Plus),
                 '/' => push!(Slash),
+                '#' => break, // trailing comment — skip rest of line
                 '%' => push!(Percent),
                 '?' => push!(Question),
 
@@ -953,9 +954,8 @@ pub fn lex(input: &str) -> Result<Vec<Token>, Diagnostic> {
 /// Extract comments from source code with their line numbers and byte offsets.
 ///
 /// Returns `(line_number_1based, byte_offset, comment_text_including_hash)` for
-/// each comment found. Comments are full-line only (`# ...`) since Aster doesn't
-/// support trailing comments after code on the same line (the main lexer rejects
-/// `#` as an unexpected character).
+/// each comment found. Supports both full-line comments (`# ...`) and trailing
+/// comments (`code  # ...`).
 ///
 /// This is the formatter's primary interface for comment preservation. It runs
 /// in O(n) over the source, independent of the compiler's `lex()` pipeline.
@@ -968,11 +968,46 @@ pub fn extract_comments(input: &str) -> Vec<(usize, usize, String)> {
         let ls = line_starts[line_idx];
         let trimmed = raw.trim();
         if trimmed.starts_with('#') {
+            // Full-line comment
             let indent: String = raw.chars().take_while(|c| *c == ' ').collect();
             let comment_text = format!("{}{}", indent, trimmed);
             comments.push((line_no, ls, comment_text));
+        } else if let Some(hash_pos) = find_comment_start(raw) {
+            // Trailing comment — extract from '#' onward
+            let comment_text = raw[hash_pos..].trim_end().to_string();
+            comments.push((line_no, ls + hash_pos, comment_text));
         }
     }
 
     comments
+}
+
+/// Find the byte position of a trailing `#` comment in a line, skipping `#`
+/// inside string literals.
+fn find_comment_start(line: &str) -> Option<usize> {
+    let mut in_string = false;
+    let mut escape = false;
+    for (i, ch) in line.char_indices() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if ch == '\\' && in_string {
+            escape = true;
+            continue;
+        }
+        if ch == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if ch == '#' && !in_string {
+            // Only count as trailing if there's code before it
+            let before = line[..i].trim();
+            if !before.is_empty() {
+                return Some(i);
+            }
+            return None; // full-line comment, handled elsewhere
+        }
+    }
+    None
 }

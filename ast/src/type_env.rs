@@ -117,6 +117,13 @@ impl TypeEnv {
             .or_else(|| self.parent.as_ref().and_then(|p| p.get_var(name)))
     }
 
+    /// Check if `name` exists in any parent scope (not the current one).
+    pub fn parent_has_var(&self, name: &str) -> bool {
+        self.parent
+            .as_ref()
+            .is_some_and(|p| p.get_var(name).is_some())
+    }
+
     pub fn set_var(&mut self, name: String, ty: Type) {
         Rc::make_mut(&mut self.variables).insert(name, ty);
     }

@@ -14,7 +14,7 @@ class User
 def save_user(user: User) -> Int
   42
 
-def main() throws Error -> Int
+def main() -> Int
   let user = User(name: \"Alice\")
   let t = async save_user(user: user)
   user.name
@@ -37,7 +37,7 @@ class User
 def save_user(user: User) -> Int
   42
 
-def main() throws Error -> Int
+def main() -> Int
   let user = User(name: \"Alice\")
   let t = async save_user(user: user)
   user.name
@@ -64,7 +64,7 @@ class User
 def save_user(user: User) -> Int
   42
 
-def main() throws Error -> Int
+def main() -> Int
   let user = User(name: \"Alice\")
   let t = async save_user(user: user)
   let r = resolve t!
@@ -91,7 +91,7 @@ fn no_warn_after_reassignment() {
 def save(x: Int) -> Int
   x
 
-def main() throws Error -> Int
+def main() -> Int
   let x = 42
   let t = async save(x: x)
   x = 99
@@ -119,7 +119,7 @@ fn warn_multiple_boundaries() {
 def work(x: Int) -> Int
   x
 
-def main() throws Error -> Int
+def main() -> Int
   let x = 42
   let t1 = async work(x: x)
   let t2 = async work(x: x)
@@ -149,7 +149,7 @@ fn warn_primitive_use_after_async() {
 def double(n: Int) -> Int
   n * 2
 
-def main() throws Error -> Int
+def main() -> Int
   let n = 21
   let t = async double(n: n)
   n + 1

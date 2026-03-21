@@ -105,18 +105,18 @@ fn call_type_check_and_mismatch() {
 
     let call = Expr::Call {
         func: Box::new(Expr::Ident("f".into(), s())),
-        args: vec![("x".into(), Expr::Int(42, s()))],
+        args: vec![("x".into(), s(), Expr::Int(42, s()))],
         span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::Int);
 
     let bad_call = Expr::Call {
         func: Box::new(Expr::Ident("f".into(), s())),
-        args: vec![("x".into(), Expr::Str("oops".into(), s()))],
+        args: vec![("x".into(), s(), Expr::Str("oops".into(), s()))],
         span: s(),
     };
     let err = err_msg(tc.check_expr(&bad_call));
-    assert!(err.contains("Argument type mismatch"));
+    assert!(err.contains("expects Int, got String"), "got: {}", err);
 }
 
 #[test]
@@ -279,7 +279,23 @@ fn task_resolve_rejects_detectable_double_consumption() {
 def fetch() -> Int
   42
 
-def main() throws CancelledError -> Int
+def main() -> Int
+  let t: Task[Int] = async fetch()
+  let first = resolve t!
+  let second = resolve t!
+  second
+";
+    let err = module_err(src);
+    assert!(err.contains("Task 't' is already consumed"));
+}
+
+#[test]
+fn task_resolve_twice_marks_binding_consumed() {
+    let src = "\
+def fetch() -> Int
+  42
+
+def main() -> Int
   let t: Task[Int] = async fetch()
   let first = resolve t!
   let second = resolve t!
@@ -313,7 +329,7 @@ fn resolve_all_returns_list_of_task_results() {
 def fetch() -> Int
   42
 
-def main() throws CancelledError -> List[Int]
+def main() -> List[Int]
   let tasks: List[Task[Int]] = [async fetch()]
   resolve_all(tasks: tasks)!
 ";
@@ -328,7 +344,7 @@ fn resolve_first_returns_task_result_type() {
 def fetch() -> Int
   42
 
-def main() throws CancelledError -> Int
+def main() -> Int
   let tasks: List[Task[Int]] = [async fetch()]
   resolve_first(tasks: tasks)!
 ";
@@ -340,7 +356,7 @@ def main() throws CancelledError -> Int
 #[test]
 fn resolve_all_rejects_non_task_lists() {
     let src = "\
-def main() throws CancelledError -> List[Int]
+def main() -> List[Int]
   let values: List[Int] = [1, 2]
   resolve_all(tasks: values)!
 ";
@@ -352,7 +368,7 @@ def main() throws CancelledError -> List[Int]
 #[test]
 fn resolve_first_rejects_non_task_lists() {
     let src = "\
-def main() throws CancelledError -> Int
+def main() -> Int
   let values: List[Int] = [1, 2]
   resolve_first(tasks: values)!
 ";
@@ -962,7 +978,7 @@ fn builtin_log_accepts_string() {
     let mut tc = TypeChecker::new();
     let call = Expr::Call {
         func: Box::new(Expr::Ident("log".into(), s())),
-        args: vec![("message".into(), Expr::Str("hello".into(), s()))],
+        args: vec![("message".into(), s(), Expr::Str("hello".into(), s()))],
         span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::Void);
@@ -973,7 +989,7 @@ fn builtin_say_accepts_string() {
     let mut tc = TypeChecker::new();
     let call = Expr::Call {
         func: Box::new(Expr::Ident("say".into(), s())),
-        args: vec![("message".into(), Expr::Str("hello".into(), s()))],
+        args: vec![("message".into(), s(), Expr::Str("hello".into(), s()))],
         span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::Void);
@@ -985,7 +1001,7 @@ fn builtin_len_list_returns_int() {
     tc.env.set_var("xs".into(), Type::List(Box::new(Type::Int)));
     let call = Expr::Call {
         func: Box::new(Expr::Ident("len".into(), s())),
-        args: vec![("value".into(), Expr::Ident("xs".into(), s()))],
+        args: vec![("value".into(), s(), Expr::Ident("xs".into(), s()))],
         span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::Int);
@@ -996,7 +1012,7 @@ fn builtin_len_string_returns_int() {
     let mut tc = TypeChecker::new();
     let call = Expr::Call {
         func: Box::new(Expr::Ident("len".into(), s())),
-        args: vec![("value".into(), Expr::Str("hello".into(), s()))],
+        args: vec![("value".into(), s(), Expr::Str("hello".into(), s()))],
         span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::Int);
@@ -1007,7 +1023,7 @@ fn builtin_to_string_int_returns_string() {
     let mut tc = TypeChecker::new();
     let call = Expr::Call {
         func: Box::new(Expr::Ident("to_string".into(), s())),
-        args: vec![("value".into(), Expr::Int(42, s()))],
+        args: vec![("value".into(), s(), Expr::Int(42, s()))],
         span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::String);
@@ -1018,7 +1034,7 @@ fn builtin_to_string_float_returns_string() {
     let mut tc = TypeChecker::new();
     let call = Expr::Call {
         func: Box::new(Expr::Ident("to_string".into(), s())),
-        args: vec![("value".into(), Expr::Float(3.125, s()))],
+        args: vec![("value".into(), s(), Expr::Float(3.125, s()))],
         span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::String);
@@ -1029,7 +1045,7 @@ fn builtin_to_string_bool_returns_string() {
     let mut tc = TypeChecker::new();
     let call = Expr::Call {
         func: Box::new(Expr::Ident("to_string".into(), s())),
-        args: vec![("value".into(), Expr::Bool(true, s()))],
+        args: vec![("value".into(), s(), Expr::Bool(true, s()))],
         span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::String);
@@ -1300,7 +1316,7 @@ fn generic_call_unifies_typevar_to_int() {
     // identity(x: 42) should return Int
     let call = Expr::Call {
         func: Box::new(Expr::Ident("identity".into(), s())),
-        args: vec![("x".into(), Expr::Int(42, s()))],
+        args: vec![("x".into(), s(), Expr::Int(42, s()))],
         span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::Int);
@@ -1331,7 +1347,7 @@ fn generic_call_unifies_typevar_to_string() {
     // identity(x: "hello") should return String
     let call = Expr::Call {
         func: Box::new(Expr::Ident("identity".into(), s())),
-        args: vec![("x".into(), Expr::Str("hello".into(), s()))],
+        args: vec![("x".into(), s(), Expr::Str("hello".into(), s()))],
         span: s(),
     };
     assert_eq!(tc.check_expr(&call).unwrap(), Type::String);
@@ -1367,8 +1383,8 @@ fn generic_call_multi_params_unifies() {
     let call = Expr::Call {
         func: Box::new(Expr::Ident("first".into(), s())),
         args: vec![
-            ("a".into(), Expr::Int(42, s())),
-            ("b".into(), Expr::Str("hello".into(), s())),
+            ("a".into(), s(), Expr::Int(42, s())),
+            ("b".into(), s(), Expr::Str("hello".into(), s())),
         ],
         span: s(),
     };

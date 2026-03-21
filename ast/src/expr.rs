@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 use crate::span::Span;
@@ -142,6 +144,38 @@ pub enum UnaryOp {
     Not,
 }
 
+impl fmt::Display for BinOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            BinOp::Add => "Add",
+            BinOp::Sub => "Sub",
+            BinOp::Mul => "Mul",
+            BinOp::Div => "Div",
+            BinOp::Mod => "Mod",
+            BinOp::Pow => "Pow",
+            BinOp::Eq => "Eq",
+            BinOp::Neq => "Neq",
+            BinOp::Lt => "Lt",
+            BinOp::Gt => "Gt",
+            BinOp::Lte => "Lte",
+            BinOp::Gte => "Gte",
+            BinOp::And => "And",
+            BinOp::Or => "Or",
+        };
+        write!(f, "{}", name)
+    }
+}
+
+impl fmt::Display for UnaryOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            UnaryOp::Neg => "Neg",
+            UnaryOp::Not => "Not",
+        };
+        write!(f, "{}", name)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Expr {
     Int(i64, Span),
@@ -169,7 +203,7 @@ pub enum Expr {
     },
     Call {
         func: Box<Expr>,
-        args: Vec<(String, Expr)>,
+        args: Vec<(String, Span, Expr)>,
         span: Span,
     },
     BinaryOp {
@@ -196,12 +230,12 @@ pub enum Expr {
     },
     AsyncCall {
         func: Box<Expr>,
-        args: Vec<(String, Expr)>,
+        args: Vec<(String, Span, Expr)>,
         span: Span,
     },
     BlockingCall {
         func: Box<Expr>,
-        args: Vec<(String, Expr)>,
+        args: Vec<(String, Span, Expr)>,
         span: Span,
     },
     Resolve {
@@ -210,7 +244,7 @@ pub enum Expr {
     },
     DetachedCall {
         func: Box<Expr>,
-        args: Vec<(String, Expr)>,
+        args: Vec<(String, Span, Expr)>,
         span: Span,
     },
     Propagate(Box<Expr>, Span),

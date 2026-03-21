@@ -1,4 +1,4 @@
-use ast::{Diagnostic, Type};
+use ast::{Diagnostic, Span, Type};
 use lexer::TokenKind;
 
 use crate::Parser;
@@ -28,11 +28,15 @@ impl Parser {
             });
         }
 
-        let name = match &self.advance().kind {
+        let name_tok = self.advance();
+        let name = match &name_tok.kind {
             TokenKind::Ident(n) => n.clone(),
             t => {
+                let span = Span { start: name_tok.start, end: name_tok.end };
                 return Err(
-                    Diagnostic::error(format!("Expected type name, got {:?}", t)).with_code("P001"),
+                    Diagnostic::error(format!("Expected type name, got `{}`", t))
+                        .with_code("P001")
+                        .with_label(span, "not a valid type name"),
                 );
             }
         };
@@ -114,15 +118,22 @@ impl Parser {
             self.advance();
             // No nested nullability: T?? is a compile error
             if self.at(&TokenKind::Question) {
+                let tok = self.peek();
+                let span = Span { start: tok.start, end: tok.end };
                 return Err(
                     Diagnostic::error("Nested nullable types (T??) are not allowed")
-                        .with_code("P001"),
+                        .with_code("P001")
+                        .with_label(span, "remove this second '?'"),
                 );
             }
             // Don't allow Nullable(Nullable(...))
             if matches!(&base, Type::Nullable(_)) {
+                let tok = self.peek();
+                let span = Span { start: tok.start, end: tok.end };
                 return Err(
-                    Diagnostic::error("Nested nullable types are not allowed").with_code("P001")
+                    Diagnostic::error("Nested nullable types are not allowed")
+                        .with_code("P001")
+                        .with_label(span, "type is already nullable"),
                 );
             }
             Ok(Type::Nullable(Box::new(base)))

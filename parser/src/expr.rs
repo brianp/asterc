@@ -1,18 +1,14 @@
 use std::collections::HashSet;
 
-use ast::{BinOp, Diagnostic, Expr, MatchPattern, UnaryOp};
+use ast::{BinOp, Diagnostic, Expr, MatchPattern, Span, UnaryOp};
 use lexer::TokenKind;
 
 use crate::{MAX_COLLECTION_SIZE, MAX_NESTING_DEPTH, Parser};
 
 impl Parser {
-    /// Parse argument list with optional positional arg support.
-    /// When `allow_positional` is true, non-named arguments get synthesized names `_0`, `_1`, etc.
+    /// Parse argument list. Non-named arguments get synthesized names `_0`, `_1`, etc.
     /// The opening `(` must already be consumed. Does NOT consume the closing `)`.
-    fn parse_args_inner(
-        &mut self,
-        allow_positional: bool,
-    ) -> Result<Vec<(String, Expr)>, Diagnostic> {
+    fn parse_args_inner(&mut self) -> Result<Vec<(String, Span, Expr)>, Diagnostic> {
         let mut args = Vec::new();
         let mut seen_names = HashSet::new();
         let mut positional_index = 0usize;
@@ -29,6 +25,7 @@ impl Parser {
                     && self.peek_second_kind() == Some(&TokenKind::Colon);
                 if is_named {
                     let name_tok = self.advance();
+                    let name_span = Span::new(name_tok.start, name_tok.end);
                     let name = match name_tok.kind {
                         TokenKind::Ident(n) => n,
                         _ => unreachable!(),
@@ -43,32 +40,23 @@ impl Parser {
                     }
                     self.expect(TokenKind::Colon)?;
                     let value = self.parse_expr()?;
-                    args.push((name, value));
-                } else if allow_positional {
-                    // Positional argument (constructor-style calls)
+                    args.push((name, name_span, value));
+                } else {
+                    // Positional argument — synthesize name like `_0`, `_1`.
+                    // For constructors this is valid; for regular calls the
+                    // typechecker will reject it with a hint about the real param name.
                     let value = self.parse_expr()?;
                     let name = format!("_{}", positional_index);
                     positional_index += 1;
-                    args.push((name, value));
-                } else {
-                    // Strict named args — produce original error
-                    let name_tok = self.advance();
-                    return Err(Diagnostic::error(format!(
-                        "Expected argument name, got {:?}. All arguments must be named (e.g. `name: value`)",
-                        name_tok.kind
-                    ))
-                    .with_code("P001")
-                    .with_label(
-                        ast::Span::new(name_tok.start, name_tok.end),
-                        "expected argument name",
-                    ));
+                    args.push((name, value.span(), value));
                 }
                 if args.len() > MAX_COLLECTION_SIZE {
                     return Err(Diagnostic::error(format!(
                         "Function call exceeds maximum of {} arguments",
                         MAX_COLLECTION_SIZE
                     ))
-                    .with_code("P001"));
+                    .with_code("P001")
+                    .with_label(self.span_from(arg_start), "too many arguments"));
                 }
                 self.consume_newlines();
                 if self.at(&TokenKind::Comma) {
@@ -247,12 +235,7 @@ impl Parser {
         loop {
             if self.at(&TokenKind::LParen) {
                 self.advance();
-                // Allow positional args for constructor-like calls (uppercase identifier)
-                let allow_positional = matches!(
-                    &expr,
-                    Expr::Ident(name, _) if name.starts_with(|c: char| c.is_uppercase())
-                );
-                let args = self.parse_args_inner(allow_positional)?;
+                let args = self.parse_args_inner()?;
                 self.expect(TokenKind::RParen)?;
                 expr = Expr::Call {
                     func: Box::new(expr),
@@ -314,16 +297,19 @@ impl Parser {
             } else if self.at(&TokenKind::Dot) {
                 self.advance();
                 // Accept identifiers and keyword tokens that can be method names
-                let field = match &self.advance().kind {
+                let next = self.advance();
+                let field = match &next.kind {
                     TokenKind::Ident(n) => n.clone(),
                     TokenKind::Or => "or".to_string(),
                     TokenKind::Catch => "catch".to_string(),
                     t => {
+                        let span = Span { start: next.start, end: next.end };
                         return Err(Diagnostic::error(format!(
-                            "Expected field name after '.', got {:?}",
+                            "Expected field name after '.', got `{}`",
                             t
                         ))
-                        .with_code("P001"));
+                        .with_code("P001")
+                        .with_label(span, "unexpected token"));
                     }
                 };
                 expr = Expr::Member {
@@ -358,14 +344,17 @@ impl Parser {
                 Ident(type_name) => {
                     let tname = type_name.clone();
                     self.advance();
-                    let var = match &self.advance().kind {
+                    let var_tok = self.advance();
+                    let var = match &var_tok.kind {
                         Ident(v) => v.clone(),
                         t => {
+                            let span = Span { start: var_tok.start, end: var_tok.end };
                             return Err(Diagnostic::error(format!(
-                                "Expected variable name after error type '{}', got {:?}",
+                                "Expected variable name after error type '{}', got `{}`",
                                 tname, t
                             ))
-                            .with_code("P001"));
+                            .with_code("P001")
+                            .with_label(span, "expected variable name"));
                         }
                     };
                     ErrorCatchPattern::Typed {
@@ -375,11 +364,12 @@ impl Parser {
                     }
                 }
                 t => {
-                    return Err(Diagnostic::error(format!(
-                        "Expected error type or '_' in catch arm, got {:?}",
-                        t
-                    ))
-                    .with_code("P001"));
+                    let tok = self.peek();
+                    let span = Span { start: tok.start, end: tok.end };
+                    let msg = format!("Expected error type or '_' in catch arm, got `{}`", t);
+                    return Err(Diagnostic::error(msg)
+                        .with_code("P001")
+                        .with_label(span, "unexpected token"));
                 }
             };
             self.expect(Arrow)?;
@@ -418,11 +408,16 @@ impl Parser {
                             span,
                         ))
                     }
-                    t => Err(Diagnostic::error(format!(
-                        "Expected number after '-' in match pattern, got {:?}",
-                        t
-                    ))
-                    .with_code("P001")),
+                    t => {
+                        let tok = self.peek();
+                        let span = Span { start: tok.start, end: tok.end };
+                        Err(Diagnostic::error(format!(
+                            "Expected number after '-' in match pattern, got `{}`",
+                            t
+                        ))
+                        .with_code("P001")
+                        .with_label(span, "expected numeric literal"))
+                    }
                 }
             }
             Int(v) => {
@@ -483,10 +478,13 @@ impl Parser {
                             span,
                         });
                     } else {
+                        let tok = self.peek();
+                        let span = Span { start: tok.start, end: tok.end };
                         return Err(Diagnostic::error(
                             "Expected variant name after '.' in enum pattern".to_string(),
                         )
-                        .with_code("P001"));
+                        .with_code("P001")
+                        .with_label(span, "expected variant name"));
                     }
                 }
                 let span = self.span_from(start);
@@ -496,9 +494,13 @@ impl Parser {
                     Ok(MatchPattern::Ident(name, span))
                 }
             }
-            t => Err(
-                Diagnostic::error(format!("Expected match pattern, got {:?}", t)).with_code("P001"),
-            ),
+            t => {
+                let tok = self.peek();
+                let span = Span { start: tok.start, end: tok.end };
+                Err(Diagnostic::error(format!("Expected match pattern, got `{}`", t))
+                    .with_code("P001")
+                    .with_label(span, "not a valid pattern"))
+            }
         }
     }
 
@@ -664,10 +666,9 @@ impl Parser {
                         args,
                         span: self.span_from(start),
                     }),
-                    _ => {
-                        Err(Diagnostic::error("Expected function call after 'async'")
-                            .with_code("P001"))
-                    }
+                    _ => Err(Diagnostic::error("Expected function call after 'async'")
+                        .with_code("P001")
+                        .with_label(self.span_from(start), "expected a call expression")),
                 }
             }
             Blocking => {
@@ -680,14 +681,19 @@ impl Parser {
                         span: self.span_from(start),
                     }),
                     _ => Err(Diagnostic::error("Expected function call after 'blocking'")
-                        .with_code("P001")),
+                        .with_code("P001")
+                        .with_label(self.span_from(start), "expected a call expression")),
                 }
             }
             Detached => {
                 self.advance();
                 if !self.at(&Async) {
+                    let tok = self.peek();
+                    let span = Span { start: tok.start, end: tok.end };
                     return Err(
-                        Diagnostic::error("Expected 'async' after 'detached'").with_code("P001")
+                        Diagnostic::error("Expected 'async' after 'detached'")
+                            .with_code("P001")
+                            .with_label(span, "expected 'async' here"),
                     );
                 }
                 self.advance();
@@ -700,7 +706,8 @@ impl Parser {
                     }),
                     _ => Err(
                         Diagnostic::error("Expected function call after 'detached async'")
-                            .with_code("P001"),
+                            .with_code("P001")
+                            .with_label(self.span_from(start), "expected a call expression"),
                     ),
                 }
             }
@@ -709,10 +716,15 @@ impl Parser {
                 let expr = self.parse_expr()?;
                 Ok(Expr::Throw(Box::new(expr), self.span_from(start)))
             }
-            t => Err(
-                Diagnostic::error(format!("unexpected token in expression: {:?}", t))
-                    .with_code("P001"),
-            ),
+            t => {
+                let tok = self.peek();
+                let span = Span::new(tok.start, tok.end);
+                Err(
+                    Diagnostic::error(format!("unexpected token in expression: `{}`", t))
+                        .with_code("P001")
+                        .with_label(span, "not expected here"),
+                )
+            }
         }
     }
 
@@ -755,11 +767,14 @@ impl Parser {
                     break;
                 }
                 t => {
+                    let tok = self.peek();
+                    let span = Span { start: tok.start, end: tok.end };
                     return Err(Diagnostic::error(format!(
-                        "Expected string continuation or end, got {:?}",
+                        "Expected string continuation or end, got `{}`",
                         t
                     ))
-                    .with_code("P001"));
+                    .with_code("P001")
+                    .with_label(span, "unexpected token in string interpolation"));
                 }
             }
         }
@@ -799,12 +814,15 @@ impl Parser {
         // Parse parameter names
         let mut params = Vec::new();
         loop {
-            let pname = match &self.advance().kind {
+            let ptok = self.advance();
+            let pname = match &ptok.kind {
                 Ident(n) => n.clone(),
                 t => {
+                    let span = Span { start: ptok.start, end: ptok.end };
                     return Err(
-                        Diagnostic::error(format!("Expected parameter name, got {:?}", t))
-                            .with_code("P001"),
+                        Diagnostic::error(format!("Expected parameter name, got `{}`", t))
+                            .with_code("P001")
+                            .with_label(span, "expected identifier"),
                     );
                 }
             };

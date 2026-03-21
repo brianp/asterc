@@ -95,7 +95,7 @@ fn task_consumed_in_function_body() {
 def work() -> Int
   42
 
-def main() -> Int
+def main() throws Error -> Int
   let t = async work()
   resolve t!
 ",

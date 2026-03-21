@@ -282,7 +282,7 @@ fn lambda_assigned_to_typed_let() {
         "\
 def main() -> Int
   let f: (Int) -> Int = -> x: x + 1
-  f(_0: 5)
+  f(x: 5)
 ",
     );
 }

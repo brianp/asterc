@@ -1,4 +1,4 @@
-use ast::{BinOp, Diagnostic, Expr, MatchPattern, Type, UnaryOp};
+use ast::{BinOp, Diagnostic, Expr, MatchPattern, Span, Type, UnaryOp};
 
 use crate::typechecker::TypeChecker;
 
@@ -94,7 +94,7 @@ impl TypeChecker {
                                     && !class_info.includes.contains(&"Printable".to_string())
                                 {
                                     return Err(Diagnostic::error(format!(
-                                        "Type {:?} in string interpolation must include Printable",
+                                        "Type {} in string interpolation must include Printable",
                                         ty
                                     ))
                                     .with_code("E023")
@@ -120,7 +120,7 @@ impl TypeChecker {
                     let vt = self.check_expr(v)?;
                     if kt != key_ty {
                         return Err(Diagnostic::error(format!(
-                            "Map key type mismatch: expected {:?}, got {:?}",
+                            "Map key type mismatch: expected {}, got {}",
                             key_ty, kt
                         ))
                         .with_code("E003")
@@ -128,7 +128,7 @@ impl TypeChecker {
                     }
                     if vt != val_ty {
                         return Err(Diagnostic::error(format!(
-                            "Map value type mismatch: expected {:?}, got {:?}",
+                            "Map value type mismatch: expected {}, got {}",
                             val_ty, vt
                         ))
                         .with_code("E003")
@@ -154,14 +154,14 @@ impl TypeChecker {
         let end_ty = self.check_expr(end)?;
         if start_ty != Type::Int {
             return Err(
-                Diagnostic::error(format!("Range start must be Int, got {:?}", start_ty))
+                Diagnostic::error(format!("Range start must be Int, got {}", start_ty))
                     .with_code("E003")
                     .with_label(start.span(), "expected Int"),
             );
         }
         if end_ty != Type::Int {
             return Err(
-                Diagnostic::error(format!("Range end must be Int, got {:?}", end_ty))
+                Diagnostic::error(format!("Range end must be Int, got {}", end_ty))
                     .with_code("E003")
                     .with_label(end.span(), "expected Int"),
             );
@@ -261,7 +261,7 @@ impl TypeChecker {
                         "Cannot infer lambda parameter types without a function type context. Add type annotations or pass to a function with known parameter types"
                             .to_string(),
                     )
-                    .with_code("E001")
+                    .with_code("E005")
                     .with_label(expr.span(), "cannot infer types"));
                 }
             }
@@ -301,11 +301,11 @@ impl TypeChecker {
                     && default_ty != *ptype
                 {
                     return Err(Diagnostic::error(format!(
-                        "Default value for parameter '{}' has type {:?}, expected {:?}",
+                        "Default value for parameter '{}' has type {}, expected {}",
                         pname, default_ty, ptype
                     ))
                     .with_code("E001")
-                    .with_label(default_expr.span(), format!("expected {:?}", ptype)));
+                    .with_label(default_expr.span(), format!("expected {}", ptype)));
                 }
             }
         }
@@ -357,7 +357,7 @@ impl TypeChecker {
                     "Cannot infer type for parameter '{}'. Add type annotations or pass to a function with known parameter types",
                     n
                 ))
-                .with_code("E001"));
+                .with_code("E005"));
             }
         }
 
@@ -423,6 +423,7 @@ impl TypeChecker {
 
         let mut param_types = Vec::new();
         for (n, t) in params {
+            sub.warn_if_shadowed(n, Span::dummy());
             sub.env.set_var(n.clone(), t.clone());
             param_types.push(t.clone());
         }
@@ -443,11 +444,11 @@ impl TypeChecker {
                     && !Self::is_subtype_compatible(&ret_val_ty, ret_type, &sub.env)
                 {
                     return Err(Diagnostic::error(format!(
-                        "Return type mismatch: expected {:?}, got {:?}",
+                        "Return type mismatch: expected {}, got {}",
                         ret_type, ret_val_ty
                     ))
                     .with_code("E004")
-                    .with_label(expr.span(), format!("expected {:?}", ret_type)));
+                    .with_label(expr.span(), format!("expected {}", ret_type)));
                 }
                 // Mark returned task idents as consumed (caller takes responsibility)
                 sub.mark_task_ident_consumed(expr);
@@ -473,14 +474,14 @@ impl TypeChecker {
             if let Type::Nullable(inner) = ret_type {
                 if last != **inner && last != Type::Nil {
                     return Err(Diagnostic::error(format!(
-                        "Lambda return type mismatch: expected {:?}, got {:?}",
+                        "Lambda return type mismatch: expected {}, got {}",
                         ret_type, last
                     ))
                     .with_code("E004"));
                 }
             } else {
                 return Err(Diagnostic::error(format!(
-                    "Lambda return type mismatch: expected {:?}, got {:?}",
+                    "Lambda return type mismatch: expected {}, got {}",
                     ret_type, last
                 ))
                 .with_code("E004"));
@@ -500,7 +501,7 @@ impl TypeChecker {
                 if !sub.consumed_tasks.contains(name) {
                     sub.diagnostics.push(
                         Diagnostic::error(format!(
-                            "Task '{}' is never consumed — resolve it, return it, or wrap in `async scope`",
+                            "Task '{}' is never consumed — resolve it, return it, or use `detached async` for fire-and-forget",
                             name
                         ))
                         .with_code("E027")
@@ -604,17 +605,17 @@ impl TypeChecker {
                     (Type::Float, Type::Float) => Ok(Type::Float),
                     (Type::Int, Type::Float) | (Type::Float, Type::Int) => Ok(Type::Float),
                     _ => Err(Diagnostic::error(format!(
-                        "Cannot apply {:?} to {:?} and {:?}",
+                        "Cannot apply {} to {} and {}",
                         op, lt, rt
                     ))
-                    .with_code("E001")
+                    .with_code("E005")
                     .with_label(left.span().merge(right.span()), "type mismatch")),
                 }
             }
             BinOp::Eq | BinOp::Neq => {
                 if matches!(&lt, Type::Function { .. }) || matches!(&rt, Type::Function { .. }) {
                     return Err(Diagnostic::error(format!(
-                        "Cannot compare function types with {:?}",
+                        "Cannot compare function types with {}",
                         op
                     ))
                     .with_code("E019")
@@ -637,7 +638,7 @@ impl TypeChecker {
                 match (&lt, &rt) {
                     (Type::Int, Type::Float) | (Type::Float, Type::Int) => Ok(Type::Bool),
                     _ => Err(Diagnostic::error(format!(
-                        "Cannot compare {:?} and {:?} with {:?}",
+                        "Cannot compare {} and {} with {}",
                         lt, rt, op
                     ))
                     .with_code("E019")
@@ -663,7 +664,7 @@ impl TypeChecker {
                     }
                 }
                 _ => Err(Diagnostic::error(format!(
-                    "Cannot order {:?} and {:?} with {:?}",
+                    "Cannot order {} and {} with {}",
                     lt, rt, op
                 ))
                 .with_code("E019")
@@ -674,7 +675,7 @@ impl TypeChecker {
                     Ok(Type::Bool)
                 } else {
                     Err(Diagnostic::error(format!(
-                        "Logical {:?} requires Bool operands, got {:?} and {:?}",
+                        "Logical {} requires Bool operands, got {} and {}",
                         op, lt, rt
                     ))
                     .with_code("E020")
@@ -693,16 +694,23 @@ impl TypeChecker {
             UnaryOp::Neg => match t {
                 Type::Int => Ok(Type::Int),
                 Type::Float => Ok(Type::Float),
-                _ => Err(Diagnostic::error(format!("Cannot negate {:?}", t))
-                    .with_code("E001")
+                _ => Err(Diagnostic::error(format!("Cannot negate {}", t))
+                    .with_code("E005")
                     .with_label(operand.span(), "expected numeric type")),
             },
             UnaryOp::Not => {
                 if t == Type::Bool {
                     Ok(Type::Bool)
+                } else if let Type::Nullable(_) = &t {
+                    Err(Diagnostic::error(format!(
+                        "Cannot apply 'not' to {}. Handle the nullable first with .or(), .or_else(), or .or_throw()",
+                        t
+                    ))
+                    .with_code("E018")
+                    .with_label(operand.span(), format!("this is {}, not Bool", t)))
                 } else {
-                    Err(Diagnostic::error(format!("Cannot apply 'not' to {:?}", t))
-                        .with_code("E001")
+                    Err(Diagnostic::error(format!("Cannot apply 'not' to {}", t))
+                        .with_code("E005")
                         .with_label(operand.span(), "expected Bool"))
                 }
             }
@@ -724,11 +732,11 @@ impl TypeChecker {
             }
             if ty != first_ty {
                 return Err(Diagnostic::error(format!(
-                    "List element {} has type {:?}, expected {:?} (all elements must have consistent type)",
+                    "List element {} has type {}, expected {} (all elements must have consistent type)",
                     i, ty, first_ty
                 ))
                 .with_code("E017")
-                .with_label(elem.span(), format!("expected {:?}", first_ty)));
+                .with_label(elem.span(), format!("expected {}", first_ty)));
             }
         }
         Ok(Type::List(Box::new(first_ty)))
@@ -744,18 +752,18 @@ impl TypeChecker {
             Type::Map(key_ty, val_ty) => {
                 if idx_ty != **key_ty {
                     return Err(Diagnostic::error(format!(
-                        "Map key must be {:?}, got {:?}",
+                        "Map key must be {}, got {}",
                         key_ty, idx_ty
                     ))
                     .with_code("E016")
-                    .with_label(index.span(), format!("expected {:?}", key_ty)));
+                    .with_label(index.span(), format!("expected {}", key_ty)));
                 }
                 Ok(*val_ty.clone())
             }
             Type::List(inner) => {
                 if idx_ty != Type::Int {
                     return Err(Diagnostic::error(format!(
-                        "List index must be Int, got {:?}",
+                        "List index must be Int, got {}",
                         idx_ty
                     ))
                     .with_code("E016")
@@ -764,7 +772,7 @@ impl TypeChecker {
                 Ok(*inner.clone())
             }
             _ => Err(Diagnostic::error(format!(
-                "Cannot index into {:?}, expected List or Map",
+                "Cannot index into {}, expected List or Map",
                 obj_ty
             ))
             .with_code("E016")
@@ -912,7 +920,7 @@ impl TypeChecker {
                 return Ok(Type::Void);
             }
             return Err(Diagnostic::error(format!(
-                "Cannot access '{}' on nullable type {:?}. Resolve with .or(), .or_else(), .or_throw(), or match first",
+                "Cannot access '{}' on nullable type {}. Resolve with .or(), .or_else(), .or_throw(), or match first",
                 field, obj_ty
             ))
             .with_code("E018")
@@ -1227,7 +1235,7 @@ impl TypeChecker {
                             && !self.type_includes_ord(&elem_ty)
                         {
                             return Err(Diagnostic::error(format!(
-                                        "Cannot call '{}()' on '{}': element type {:?} does not include Ord. \
+                                        "Cannot call '{}()' on '{}': element type {} does not include Ord. \
                                          Add 'includes Ord' to the element type to enable {}",
                                         field, class_name, elem_ty, field
                                     ))
@@ -1274,7 +1282,7 @@ impl TypeChecker {
             .with_label(object.span(), format!("no member '{}' on this type", field)))
         } else {
             Err(
-                Diagnostic::error(format!("Cannot access member '{}' on {:?}", field, obj_ty))
+                Diagnostic::error(format!("Cannot access member '{}' on {}", field, obj_ty))
                     .with_code("E010")
                     .with_label(object.span(), "not a class type"),
             )
@@ -1317,7 +1325,7 @@ impl TypeChecker {
             .iter()
             .filter_map(|oty| {
                 if let Type::Function { ret, .. } = oty {
-                    Some(format!("{:?}", ret))
+                    Some(format!("{}", ret))
                 } else {
                     None
                 }
@@ -1398,13 +1406,22 @@ impl TypeChecker {
                     suspendable: false,
                 });
             }
+            "random" => {
+                return Ok(Type::Function {
+                    param_names: vec![],
+                    params: vec![],
+                    ret: Box::new(inner.clone()),
+                    throws: None,
+                    suspendable: false,
+                });
+            }
             _ => {}
         }
 
         // Ord-gated methods: check constraint before returning type
         if matches!(field, "min" | "max" | "sort") && !self.type_includes_ord(inner) {
             return Err(Diagnostic::error(format!(
-                "Cannot call '{}()': element type {:?} does not include Ord. \
+                "Cannot call '{}()': element type {} does not include Ord. \
                  Add 'includes Ord' to the element type to enable {}",
                 field, inner, field
             ))
@@ -1451,7 +1468,7 @@ impl TypeChecker {
             {
                 has_nil_arm = true;
             }
-            let arm_ty = if let MatchPattern::Ident(name, _) = pattern {
+            let arm_ty = if let MatchPattern::Ident(name, pat_span) = pattern {
                 let mut sub = self.child_checker();
                 // Only unwrap T? to T if a nil arm exists (meaning this arm only matches non-nil).
                 // Without a nil arm, the catch-all also matches nil, so bind as T? to prevent unsoundness.
@@ -1464,8 +1481,11 @@ impl TypeChecker {
                 } else {
                     scrutinee_ty.clone()
                 };
+                sub.warn_if_shadowed(name, *pat_span);
                 sub.env.set_var(name.clone(), bind_ty);
-                sub.check_expr(value)?
+                let result = sub.check_expr(value)?;
+                self.diagnostics.extend(sub.diagnostics);
+                result
             } else {
                 self.check_expr(value)?
             };
@@ -1480,11 +1500,11 @@ impl TypeChecker {
                     && !Self::is_subtype_compatible(expected, &arm_ty, &self.env)
                 {
                     return Err(Diagnostic::error(format!(
-                        "Match arm type mismatch: expected {:?}, got {:?}",
+                        "Match arm type mismatch: expected {}, got {}",
                         expected, arm_ty
                     ))
                     .with_code("E001")
-                    .with_label(value.span(), format!("expected {:?}", expected)));
+                    .with_label(value.span(), format!("expected {}", expected)));
                 }
             } else {
                 result_ty = Some(arm_ty);
@@ -1580,12 +1600,12 @@ impl TypeChecker {
     fn check_async_call(
         &mut self,
         func: &Expr,
-        args: &[(String, Expr)],
+        args: &[(String, Span, Expr)],
     ) -> Result<Type, Diagnostic> {
         // Bypass throws check: error handling moves to `resolve task!`
         let ret_ty = self.check_call_inner(func, args, true)?;
         // Mark arguments as boundary-crossed for data sharing warnings
-        for (_, arg_expr) in args {
+        for (_, _, arg_expr) in args {
             if let Expr::Ident(name, span) = arg_expr {
                 self.boundary_crossed.insert(name.clone(), *span);
             }
@@ -1596,7 +1616,7 @@ impl TypeChecker {
     fn check_blocking_call(
         &mut self,
         func: &Expr,
-        args: &[(String, Expr)],
+        args: &[(String, Span, Expr)],
     ) -> Result<Type, Diagnostic> {
         let ret_ty = self.check_call_inner(func, args, true)?;
         let callee_ty = self.check_expr(func)?;
@@ -1629,7 +1649,7 @@ impl TypeChecker {
                 .with_label(expr.span(), "add ! to propagate CancelledError"))
             }
             _ => Err(Diagnostic::error(format!(
-                "resolve expects a Task[T] expression, got {:?}",
+                "resolve expects a Task[T] expression, got {}",
                 ty
             ))
             .with_code("E012")
@@ -1640,11 +1660,10 @@ impl TypeChecker {
     fn check_detached_call(
         &mut self,
         func: &Expr,
-        args: &[(String, Expr)],
+        args: &[(String, Span, Expr)],
     ) -> Result<Type, Diagnostic> {
         // Bypass throws check: detached tasks log errors at runtime
         self.check_call_inner(func, args, true)?;
         Ok(Type::Void)
     }
-
 }

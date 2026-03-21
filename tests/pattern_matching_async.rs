@@ -350,7 +350,7 @@ fn resolve_member_access() {
 def fetch() -> Int
   42
 
-def main() throws Error -> Void
+def main() -> Void
   let holder = TaskHolder(task: async fetch())
   let v = resolve holder.task!
 "#,
@@ -364,7 +364,7 @@ fn resolve_index_access() {
         r#"def fetch() -> Int
   42
 
-def main() throws Error -> Void
+def main() -> Void
   let tasks: List[Task[Int]] = [async fetch()]
   let v = resolve tasks[0]!
 "#,
@@ -441,6 +441,67 @@ def main() -> Void
   detached async risky()
 "#,
     );
+}
+
+// -- CancelledError is implicit in task resolution --
+
+#[test]
+fn resolve_task_without_throws_cancelled_error() {
+    // resolve task! should work without declaring throws CancelledError
+    // CancelledError is a language-level concern, not a user concern
+    common::check_ok(
+        r#"def compute() -> Int
+  42
+
+def main() -> Int
+  let t = async compute()
+  resolve t!
+"#,
+    );
+}
+
+#[test]
+fn resolve_task_without_any_throws_declaration() {
+    // Function that only resolves tasks needs no throws at all
+    common::check_ok(
+        r#"def work_a() -> Int
+  10
+
+def work_b() -> Int
+  20
+
+def main() -> Int
+  let a = async work_a()
+  let b = async work_b()
+  resolve a! + resolve b!
+"#,
+    );
+}
+
+#[test]
+fn resolve_without_bang_still_errors() {
+    // resolve without ! is still an error — ! is the propagation operator
+    let err = common::check_err(
+        r#"def compute() -> Int
+  42
+
+def main() -> Int
+  let t = async compute()
+  resolve t
+"#,
+    );
+    assert!(err.contains("resolve") || err.contains("!"));
+}
+
+#[test]
+fn explicit_throw_cancelled_error_requires_throws() {
+    // If the user explicitly throws CancelledError, they must declare it
+    let err = common::check_err(
+        r#"def main() -> Void
+  throw CancelledError(message: "abort")
+"#,
+    );
+    assert!(err.contains("throws") || err.contains("E013"));
 }
 
 // ─── Soundness: S1 — Nullable match catch-all must not silently unwrap ───

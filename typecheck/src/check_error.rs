@@ -4,7 +4,7 @@ use crate::typechecker::TypeChecker;
 
 impl TypeChecker {
     /// Mark a task ident as consumed for must-consume tracking (non-failable).
-    /// Used for returns, argument passing, and async scope cleanup.
+    /// Used for returns, argument passing, and task consumption tracking.
     pub(crate) fn mark_task_ident_consumed(&mut self, expr: &Expr) {
         if let Expr::Ident(name, _) = expr
             && self.task_bindings.contains_key(name)
@@ -31,35 +31,20 @@ impl TypeChecker {
     }
 
     pub(crate) fn check_propagate(&mut self, inner: &Expr) -> Result<Type, Diagnostic> {
-        // Handle resolve expr! — resolve on Task[T] propagates CancelledError
+        // Handle resolve expr! — CancelledError is implicit in task resolution.
+        // Tasks are inherently cancellable; the user doesn't need to declare
+        // `throws CancelledError` on their function just for resolving tasks.
         if let Expr::Resolve { expr, .. } = inner {
             let ty = self.check_expr(expr)?;
             if ty.is_error() {
                 return Ok(Type::Error);
             }
             if let Type::Task(inner_ty) = ty {
-                // CancelledError is always possible when resolving a task
-                let cancelled_ty = Type::Custom("CancelledError".into(), Vec::new());
-                let caller_throws = self.throws_type.as_ref().ok_or_else(|| {
-                    Diagnostic::error(
-                        "Cannot use '!' to propagate CancelledError outside of a function that declares 'throws'".to_string()
-                    )
-                    .with_code("E013")
-                    .with_label(inner.span(), "propagation requires 'throws' declaration")
-                })?;
-                if !self.is_error_subtype(&cancelled_ty, caller_throws) {
-                    return Err(Diagnostic::error(format!(
-                        "Cannot propagate CancelledError — caller declares 'throws {:?}'",
-                        caller_throws
-                    ))
-                    .with_code("E013")
-                    .with_label(inner.span(), "incompatible error type"));
-                }
                 self.mark_task_consumed(expr)?;
                 return Ok(*inner_ty);
             } else {
                 return Err(Diagnostic::error(format!(
-                    "resolve expects a Task[T] expression, got {:?}",
+                    "resolve expects a Task[T] expression, got {}",
                     ty
                 ))
                 .with_code("E012")
@@ -74,20 +59,26 @@ impl TypeChecker {
                 ..
             } = fn_ty
             {
-                let caller_throws = self.throws_type.as_ref().ok_or_else(|| {
-                    Diagnostic::error(
-                        "Cannot use '!' to propagate errors outside of a function that declares 'throws'".to_string()
-                    )
-                    .with_code("E013")
-                    .with_label(inner.span(), "propagation requires 'throws' declaration")
-                })?;
-                if !self.is_error_subtype(err_ty, caller_throws) {
-                    return Err(Diagnostic::error(format!(
-                        "Cannot propagate {:?} — caller declares 'throws {:?}'",
-                        err_ty, caller_throws
-                    ))
-                    .with_code("E013")
-                    .with_label(inner.span(), "incompatible error type"));
+                // CancelledError is implicit — it propagates without the caller
+                // needing to declare `throws`. Only user-defined errors require it.
+                let is_cancelled =
+                    matches!(err_ty.as_ref(), Type::Custom(n, _) if n == "CancelledError");
+                if !is_cancelled {
+                    let caller_throws = self.throws_type.as_ref().ok_or_else(|| {
+                        Diagnostic::error(
+                            "Cannot use '!' to propagate errors outside of a function that declares 'throws'".to_string()
+                        )
+                        .with_code("E013")
+                        .with_label(inner.span(), "propagation requires 'throws' declaration")
+                    })?;
+                    if !self.is_error_subtype(err_ty, caller_throws) {
+                        return Err(Diagnostic::error(format!(
+                            "Cannot propagate {} — caller declares 'throws {}'",
+                            err_ty, caller_throws
+                        ))
+                        .with_code("E013")
+                        .with_label(inner.span(), "incompatible error type"));
+                    }
                 }
                 return self.check_call_inner(func, args, true);
             }
@@ -128,11 +119,11 @@ impl TypeChecker {
         }
         if ret_ty != fallback_ty {
             return Err(Diagnostic::error(format!(
-                "{} type mismatch: expected {:?}, got {:?}",
+                "{} type mismatch: expected {}, got {}",
                 label, ret_ty, fallback_ty
             ))
             .with_code("E013")
-            .with_label(fallback.span(), format!("expected {:?}", ret_ty)));
+            .with_label(fallback.span(), format!("expected {}", ret_ty)));
         }
         Ok(ret_ty)
     }
@@ -188,7 +179,7 @@ impl TypeChecker {
                         let caught = Type::Custom(error_type.clone(), Vec::new());
                         if !self.is_error_subtype(&caught, thrown) {
                             return Err(Diagnostic::error(format!(
-                                "Catch arm type '{}' is not a subtype of thrown type {:?}",
+                                "Catch arm type '{}' is not a subtype of thrown type {}",
                                 error_type, thrown
                             ))
                             .with_code("E013")
@@ -196,9 +187,12 @@ impl TypeChecker {
                         }
                     }
                     let mut sub = self.child_checker();
+                    sub.warn_if_shadowed(var, *span);
                     sub.env
                         .set_var(var.clone(), Type::Custom(error_type.clone(), Vec::new()));
-                    sub.check_expr(value)?
+                    let result = sub.check_expr(value)?;
+                    self.diagnostics.extend(sub.diagnostics);
+                    result
                 }
                 ast::ErrorCatchPattern::Wildcard(_) => self.check_expr(value)?,
             };
@@ -208,11 +202,11 @@ impl TypeChecker {
             if let Some(ref expected) = result_ty {
                 if arm_ty != *expected && !expected.is_error() {
                     return Err(Diagnostic::error(format!(
-                        "!.catch arm type mismatch: expected {:?}, got {:?}",
+                        "!.catch arm type mismatch: expected {}, got {}",
                         expected, arm_ty
                     ))
                     .with_code("E013")
-                    .with_label(value.span(), format!("expected {:?}", expected)));
+                    .with_label(value.span(), format!("expected {}", expected)));
                 }
             } else {
                 result_ty = Some(arm_ty);
@@ -226,11 +220,11 @@ impl TypeChecker {
             && *catch_ty != Type::Never
         {
             return Err(Diagnostic::error(format!(
-                "!.catch arm type {:?} does not match success type {:?}",
+                "!.catch arm type {} does not match success type {}",
                 catch_ty, ret_ty
             ))
             .with_code("E013")
-            .with_label(expr.span(), format!("success path returns {:?}", ret_ty)));
+            .with_label(expr.span(), format!("success path returns {}", ret_ty)));
         }
         Ok(result_ty.unwrap_or(ret_ty))
     }
@@ -247,7 +241,7 @@ impl TypeChecker {
                 return Ok(*inner_ty);
             } else {
                 return Err(Diagnostic::error(format!(
-                    "resolve expects a Task[T] expression, got {:?}",
+                    "resolve expects a Task[T] expression, got {}",
                     ty
                 ))
                 .with_code("E012")
@@ -283,7 +277,7 @@ impl TypeChecker {
         })?;
         if !self.is_error_subtype(&val_ty, throws_ty) {
             return Err(Diagnostic::error(format!(
-                "Cannot throw {:?} — function declares 'throws {:?}'",
+                "Cannot throw {} — function declares 'throws {}'",
                 val_ty, throws_ty
             ))
             .with_code("E013")
