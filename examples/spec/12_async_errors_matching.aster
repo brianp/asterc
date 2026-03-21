@@ -41,8 +41,7 @@ def parallel_work() -> Task[String]
 def background() -> Void
   detached async fetch_data()
 
-# Async scope for structured concurrency
+# Concurrent fire-and-forget tasks
 def orchestrate() -> Void
-  async scope
-    let a = async fetch_data()
-    let b = async fetch_data()
+  detached async fetch_data()
+  detached async fetch_data()

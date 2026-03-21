@@ -168,45 +168,6 @@ fn build_executes_hello_example() {
 }
 
 #[test]
-fn build_async_scope_exit_cancels_unresolved_tasks() {
-    let dir = common::make_temp_dir("async-scope-build");
-    let src = dir.join("scope_cancel.aster");
-    std::fs::write(
-        &src,
-        "\
-def fast() -> Int
-  0
-
-def slow() -> Int
-  let i: Int = 0
-  let total: Int = 0
-  while i < 20000000
-    total = total + i
-    i = i + 1
-  42
-
-def main() throws CancelledError -> Int
-  let t: Task[Int] = async fast()
-  async scope
-    t = async slow()
-  let blocker: Task[Int] = async slow()
-  let waited = resolve blocker!
-  resolve t!.catch
-    _ -> 99
-",
-    )
-    .unwrap();
-
-    let output = common::build_and_run(&src);
-    assert_eq!(
-        output.status.code(),
-        Some(99),
-        "{}",
-        common::output_text(&output)
-    );
-}
-
-#[test]
 fn build_blocking_call_on_suspendable_callee_returns_plain_value() {
     let dir = common::make_temp_dir("blocking-build");
     let src = dir.join("blocking_value.aster");

@@ -7,7 +7,7 @@ mod tests;
 
 use std::collections::HashMap;
 
-use ast::{Diagnostic, Expr, Span, Stmt};
+use ast::{Diagnostic, Span, Stmt};
 use lexer::{Token, TokenKind};
 
 pub struct Parser {
@@ -164,28 +164,18 @@ impl Parser {
                     ).with_code("P001")
                     .with_label(self.span_from(start), "remove 'async' keyword"));
                 }
-                // Could be `async scope` or `async expr()` at statement level
-                if self.tokens.get(self.pos + 1).map(|t| &t.kind) == Some(&TokenKind::Scope) {
-                    // async scope block
-                    self.advance(); // consume async
-                    self.advance(); // consume scope
-                    let body = self.parse_block()?;
-                    let span = self.span_from(start);
-                    Ok(Stmt::Expr(Expr::AsyncScope { body, span }, span))
-                } else {
-                    // async as call-site modifier -- parse as expression
-                    let e = self.parse_expr()?;
-                    if self.at(&TokenKind::Equals) {
-                        self.advance();
-                        let value = self.parse_expr()?;
-                        return Ok(Stmt::Assignment {
-                            target: e,
-                            value,
-                            span: self.span_from(start),
-                        });
-                    }
-                    Ok(Stmt::Expr(e, self.span_from(start)))
+                // async as call-site modifier -- parse as expression
+                let e = self.parse_expr()?;
+                if self.at(&TokenKind::Equals) {
+                    self.advance();
+                    let value = self.parse_expr()?;
+                    return Ok(Stmt::Assignment {
+                        target: e,
+                        value,
+                        span: self.span_from(start),
+                    });
                 }
+                Ok(Stmt::Expr(e, self.span_from(start)))
             }
             TokenKind::If => self.parse_if(),
             TokenKind::While => self.parse_while(),

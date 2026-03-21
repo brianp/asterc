@@ -142,9 +142,6 @@ pub fn assign_body_gc_root_slots(
             FirStmt::While { body, .. } => {
                 assign_body_gc_root_slots(body, state, next_root_idx);
             }
-            FirStmt::AsyncScope { body, .. } => {
-                assign_body_gc_root_slots(body, state, next_root_idx);
-            }
             _ => {}
         }
     }
@@ -321,25 +318,6 @@ fn translate_stmt(builder: &mut FunctionBuilder, state: &mut TranslationState, s
             state.loop_exit = saved_exit;
             state.loop_header = saved_header;
             state.terminated = false; // while exit is always reachable
-        }
-
-        FirStmt::AsyncScope { scope, body } => {
-            let scope_var = builder.declare_var(types::I64);
-            let scope_value =
-                if let Some(&enter_ref) = state.runtime_refs.get("aster_async_scope_enter") {
-                    let call = builder.ins().call(enter_ref, &[]);
-                    builder.inst_results(call)[0]
-                } else {
-                    builder.ins().iconst(types::I64, 0)
-                };
-            builder.def_var(scope_var, scope_value);
-            state.locals.insert(*scope, scope_var);
-            state.local_types.insert(*scope, FirType::Ptr);
-            translate_body(builder, state, body);
-            if let Some(&exit_ref) = state.runtime_refs.get("aster_async_scope_exit") {
-                let scope_handle = builder.use_var(scope_var);
-                builder.ins().call(exit_ref, &[scope_handle]);
-            }
         }
 
         FirStmt::Break => {

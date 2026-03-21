@@ -265,25 +265,6 @@ def main() -> Void
     );
 }
 
-// -- async scope for structured concurrency --
-
-#[test]
-fn async_scope() {
-    common::check_ok(
-        r#"def task_a() -> Int
-  1
-
-def task_b() -> Int
-  2
-
-def main() -> Void
-  async scope
-    let a = async task_a()
-    let b = async task_b()
-"#,
-    );
-}
-
 // -- async call works anywhere (no context restriction) --
 
 #[test]

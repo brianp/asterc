@@ -81,7 +81,6 @@ impl TypeChecker {
             Expr::ErrorOr { expr, default, .. } => self.check_error_or(expr, default),
             Expr::ErrorOrElse { expr, handler, .. } => self.check_error_or_else(expr, handler),
             Expr::ErrorCatch { expr, arms, .. } => self.check_error_catch(expr, arms),
-            Expr::AsyncScope { body, .. } => self.check_async_scope(body),
             Expr::StringInterpolation { parts, span } => {
                 for part in parts {
                     if let ast::StringPart::Expr(e) = part {
@@ -1648,15 +1647,4 @@ impl TypeChecker {
         Ok(Type::Void)
     }
 
-    fn check_async_scope(&mut self, body: &[ast::Stmt]) -> Result<Type, Diagnostic> {
-        let mut sub = self.child_checker();
-        sub.loop_depth = 0; // async scope cannot break/continue outer loops
-        let result = sub.check_body(body);
-        self.consumed_tasks.extend(sub.consumed_tasks);
-        // Tasks created inside async scope are consumed by the scope's cleanup
-        for name in sub.task_bindings.keys() {
-            self.consumed_tasks.insert(name.clone());
-        }
-        result
-    }
 }

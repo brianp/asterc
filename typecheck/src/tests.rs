@@ -290,23 +290,6 @@ def main() throws CancelledError -> Int
 }
 
 #[test]
-fn task_resolve_inside_async_scope_marks_binding_consumed() {
-    let src = "\
-def fetch() -> Int
-  42
-
-def main() throws CancelledError -> Int
-  let t: Task[Int] = async fetch()
-  async scope
-    let first = resolve t!
-  let second = resolve t!
-  second
-";
-    let err = module_err(src);
-    assert!(err.contains("Task 't' is already consumed"));
-}
-
-#[test]
 fn plain_call_rejects_suspendability_inferred_from_nested_branch() {
     let src = "\
 def fetch() -> Int

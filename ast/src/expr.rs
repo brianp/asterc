@@ -233,10 +233,6 @@ pub enum Expr {
         arms: Vec<(ErrorCatchPattern, Expr)>,
         span: Span,
     },
-    AsyncScope {
-        body: Vec<Stmt>,
-        span: Span,
-    },
     StringInterpolation {
         parts: Vec<StringPart>,
         span: Span,
@@ -285,7 +281,6 @@ impl Expr {
             Expr::ErrorOr { span, .. } => *span,
             Expr::ErrorOrElse { span, .. } => *span,
             Expr::ErrorCatch { span, .. } => *span,
-            Expr::AsyncScope { span, .. } => *span,
             Expr::StringInterpolation { span, .. } => *span,
             Expr::Map { span, .. } => *span,
             Expr::Range { span, .. } => *span,

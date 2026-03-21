@@ -493,9 +493,6 @@ pub(crate) fn count_body_gc_roots(stmts: &[fir::stmts::FirStmt]) -> usize {
             FirStmt::While { body, .. } => {
                 count += count_body_gc_roots(body);
             }
-            FirStmt::AsyncScope { body, .. } => {
-                count += count_body_gc_roots(body);
-            }
             _ => {}
         }
     }
@@ -525,9 +522,6 @@ pub(crate) fn collect_string_lits_stmts(
             }
             FirStmt::While { cond, body } => {
                 collect_string_lits_expr(cond, strings);
-                collect_string_lits_stmts(body, strings);
-            }
-            FirStmt::AsyncScope { body, .. } => {
                 collect_string_lits_stmts(body, strings);
             }
             FirStmt::Assign { target, value } => {

@@ -33,7 +33,6 @@ pub enum TokenKind {
     Catch,
     Resolve,
     Detached,
-    Scope,
     Const,
     // structure
     Indent,

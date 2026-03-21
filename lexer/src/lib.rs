@@ -595,7 +595,6 @@ fn lex_ident_or_keyword(
         "catch" => Catch,
         "resolve" => Resolve,
         "detached" => Detached,
-        "scope" => Scope,
         "const" => Const,
         _ => Ident(word),
     };

@@ -1575,19 +1575,6 @@ impl Lowerer {
                 })
             }
 
-            Expr::AsyncScope { body, .. } => {
-                let scope_id = self.alloc_local();
-                self.local_types.insert(scope_id, FirType::Ptr);
-                self.async_scope_stack.push(scope_id);
-                let fir_body = self.lower_body(body)?;
-                self.async_scope_stack.pop();
-                self.pending_stmts.push(FirStmt::AsyncScope {
-                    scope: scope_id,
-                    body: fir_body,
-                });
-                Ok(FirExpr::IntLit(0))
-            }
-
             Expr::Resolve { expr: inner, .. } => {
                 let task = self.lower_expr(inner)?;
                 let ret_ty = self.resolve_task_result_type(inner, &task);

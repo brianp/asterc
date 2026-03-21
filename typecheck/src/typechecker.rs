@@ -829,7 +829,6 @@ impl TypeChecker {
                 self.expr_is_suspendable(expr)
                     || arms.iter().any(|(_, arm)| self.expr_is_suspendable(arm))
             }
-            Expr::AsyncScope { body, .. } => self.body_is_suspendable(body),
             Expr::StringInterpolation { parts, .. } => parts.iter().any(|part| match part {
                 ast::StringPart::Literal(_) => false,
                 ast::StringPart::Expr(expr) => self.expr_is_suspendable(expr),

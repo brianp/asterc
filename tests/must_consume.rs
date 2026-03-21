@@ -86,20 +86,18 @@ def main() -> Int
     );
 }
 
-// 9.5 — Consumed in async scope — no error
+// 9.5 — Task consumed via resolve in function body — no error
 
 #[test]
-fn task_consumed_in_async_scope() {
+fn task_consumed_in_function_body() {
     common::check_ok(
         "\
 def work() -> Int
   42
 
-def main() throws Error -> Int
-  async scope
-    let t = async work()
-    resolve t!
-  0
+def main() -> Int
+  let t = async work()
+  resolve t!
 ",
     );
 }

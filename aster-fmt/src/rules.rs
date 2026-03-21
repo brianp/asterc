@@ -1050,11 +1050,6 @@ pub fn format_expr(expr: &Expr, config: &FormatConfig) -> Doc {
             expr: inner, arms, ..
         } => format_error_catch(inner, arms, config),
 
-        Expr::AsyncScope { body, .. } => {
-            let header = text("async scope");
-            format_block(&header, body, config)
-        }
-
         Expr::StringInterpolation { parts, .. } => {
             // Always use double quotes — the Aster lexer only supports double-quoted strings.
             let q = '"';

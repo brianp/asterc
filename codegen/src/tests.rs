@@ -1881,35 +1881,6 @@ def main() throws CancelledError -> Int
     assert_eq!(result, 99);
 }
 
-#[test]
-fn async_scope_exit_cancels_unresolved_tasks() {
-    let src = "\
-def fast() -> Int
-  0
-
-def slow() -> Int
-  let i: Int = 0
-  let total: Int = 0
-  while i < 20000000
-    total = total + i
-    i = i + 1
-  42
-
-def main() throws CancelledError -> Int
-  let t: Task[Int] = async fast()
-  async scope
-    t = async slow()
-  let blocker: Task[Int] = async slow()
-  let waited = resolve blocker!
-  resolve t!.catch
-    _ -> 99
-";
-    let fir = compile_and_run(src);
-    let jit = jit_compile(&fir);
-    let result = jit.call_i64(fir.entry.unwrap());
-    assert_eq!(result, 99);
-}
-
 // ===========================================================================
 // Classes (continued)
 // ===========================================================================
@@ -3562,14 +3533,13 @@ fn coverage_all_expr_variants() {
         ("ErrorOrElse", "e2e_error_or_else_fallback"),
         ("ErrorCatch", "e2e_error_catch_fallback"),
         ("DetachedCall", "e2e_detached_async_executes"),
-        ("AsyncScope", "e2e_async_scope_resolves_tasks"),
     ];
 
     // Verify the count matches the actual Expr enum variant count.
-    // Expr has 25 variants (count from ast/src/expr.rs).
+    // Expr has 24 variants (count from ast/src/expr.rs).
     assert_eq!(
         covered_variants.len(),
-        25,
+        24,
         "coverage_all_expr_variants is out of sync with the Expr enum — update this list"
     );
 }
@@ -4112,25 +4082,3 @@ def main() -> Int
     assert_eq!(result, 1);
 }
 
-#[test]
-fn e2e_async_scope_resolves_tasks() {
-    // async scope keeps spawned tasks explicit and resolve consumes the handles
-    let src = "\
-def fetch_a() -> Int
-  20
-
-def fetch_b() -> Int
-  22
-
-def main() throws CancelledError -> Int
-  let ta = async fetch_a()
-  let tb = async fetch_b()
-  let a = resolve ta!
-  let b = resolve tb!
-  a + b
-";
-    let fir = compile_and_run(src);
-    let jit = jit_compile(&fir);
-    let result = jit.call_i64(fir.entry.unwrap());
-    assert_eq!(result, 42);
-}
