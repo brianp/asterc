@@ -11,7 +11,7 @@ use ariadne::{Color, Label, Report, ReportKind, Source};
 
 use ast::{Diagnostic, Severity};
 use codegen::config::{BuildConfig, OptLevel, Profile};
-use fir::lower::{LowerError, UnsupportedFeatureKind};
+use fir::lower::LowerError;
 use lexer::lex;
 use parser::Parser;
 use typecheck::module_loader::{FsResolver, ModuleLoader};
@@ -414,23 +414,26 @@ fn cmd_clean(all: bool) {
 }
 
 fn render_execution_error(source: &str, filename: &str, err: &LowerError) {
-    if let LowerError::UnsupportedFeature(kind) = err {
-        let detail = kind.detail();
-        let diag = Diagnostic::error(format!(
-            "execution support for {detail} is not executable yet"
-        ))
-        .with_code("E028")
-        .with_note(format!("execution support is missing for {detail}"))
-        .with_note("this file can still pass `asterc check` while `run` and `build` reject it")
-        .with_note(match kind {
-            UnsupportedFeatureKind::Other(feature) => format!("lowering detail: {feature}"),
-            _ => format!("lowering detail: {}", err),
-        });
-        render_diagnostic(source, filename, &diag);
-        return;
+    let span = err.span();
+    match err {
+        LowerError::UnsupportedFeature(kind, _) => {
+            let detail = kind.detail();
+            let diag = Diagnostic::error(format!(
+                "execution support for {detail} is not executable yet"
+            ))
+            .with_code("E028")
+            .with_label(span, format!("{detail} cannot be compiled yet"))
+            .with_note("this file can still pass `asterc check` while `run` and `build` reject it");
+            render_diagnostic(source, filename, &diag);
+        }
+        LowerError::UnboundVariable(name, _) => {
+            let diag = Diagnostic::error(format!("unbound variable '{name}' during lowering"))
+                .with_code("E028")
+                .with_label(span, "not found in lowered scope")
+                .with_note("this file can still pass `asterc check` while `run` and `build` reject it");
+            render_diagnostic(source, filename, &diag);
+        }
     }
-
-    eprintln!("Lowering error: {}", err);
 }
 
 fn cmd_fmt(args: &[String]) {

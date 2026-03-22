@@ -23,6 +23,9 @@ pub enum FirStmt {
     While {
         cond: FirExpr,
         body: Vec<FirStmt>,
+        /// Statements to run after the body (and on `continue`) before re-checking
+        /// the condition.  Used by for-loop lowering to hold the loop variable increment.
+        increment: Vec<FirStmt>,
     },
     Break,
     Continue,

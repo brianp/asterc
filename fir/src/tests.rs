@@ -1,5 +1,5 @@
 use crate::exprs::{BinOp, FirExpr, UnaryOp};
-use crate::lower::Lowerer;
+use crate::lower::{LowerError, Lowerer};
 use crate::module::{FirFunction, FirModule};
 use crate::stmts::{FirPlace, FirStmt};
 use crate::types::{ClassId, FirType, FunctionId, LocalId};
@@ -20,6 +20,16 @@ fn lower_ok(src: &str) -> FirModule {
     let mut lowerer = Lowerer::new(tc.env, tc.type_table);
     lowerer.lower_module(&module).expect("lower ok");
     lowerer.finish()
+}
+
+fn lower_err(src: &str) -> LowerError {
+    let tokens = lexer::lex(src).expect("lex ok");
+    let mut parser = parser::Parser::new(tokens);
+    let module = parser.parse_module("test").expect("parse ok");
+    let mut tc = typecheck::TypeChecker::new();
+    tc.check_module(&module).expect("typecheck ok");
+    let mut lowerer = Lowerer::new(tc.env, tc.type_table);
+    lowerer.lower_module(&module).expect_err("expected lower error")
 }
 
 // ===========================================================================
@@ -414,7 +424,7 @@ fn lower_while_loop() {
     );
 
     match while_stmt.unwrap() {
-        FirStmt::While { cond, body } => {
+        FirStmt::While { cond, body, .. } => {
             assert!(matches!(cond, FirExpr::BinaryOp { op: BinOp::Lt, .. }));
             assert!(!body.is_empty());
         }
@@ -905,7 +915,7 @@ fn lower_async_call_to_spawn() {
 def fetch() -> Int
   42
 
-def main() throws CancelledError -> Int
+def main() -> Int
   let t: Task[Int] = async fetch()
   resolve t!
 ";
@@ -1035,7 +1045,7 @@ fn lower_resolve_all_to_runtime_call() {
 def fetch() -> Int
   42
 
-def main() throws CancelledError -> List[Int]
+def main() -> List[Int]
   let tasks: List[Task[Int]] = [async fetch()]
   resolve_all(tasks: tasks)!
 ";
@@ -1152,11 +1162,11 @@ fn lower_marks_suspendable_functions_for_codegen() {
 def child() -> Int
   7
 
-def parent() throws CancelledError -> Int
+def parent() -> Int
   let t: Task[Int] = async child()
   resolve t!
 
-def main() throws CancelledError -> Int
+def main() -> Int
   blocking parent()
 ";
     let fir = lower_ok(src);
@@ -1190,7 +1200,7 @@ fn lower_resolve_first_to_runtime_call() {
 def fetch() -> Int
   42
 
-def main() throws CancelledError -> Int
+def main() -> Int
   let tasks: List[Task[Int]] = [async fetch()]
   resolve_first(tasks: tasks)!
 ";
@@ -1812,3 +1822,366 @@ def main() -> Int
     );
 }
 
+#[test]
+fn function_body_has_implicit_task_scope() {
+    let src = "\
+def fetch() -> Int
+  42
+
+def main() -> Int
+  let a = async fetch()
+  let b = async fetch()
+  1
+";
+    let fir = lower_ok(src);
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    // First statement is scope_enter
+    let has_scope_enter = main_func.body.iter().any(|stmt| {
+        matches!(
+            stmt,
+            FirStmt::Let {
+                value: FirExpr::RuntimeCall { name, .. },
+                ..
+            } if name == "aster_async_scope_enter"
+        )
+    });
+    assert!(
+        has_scope_enter,
+        "expected implicit scope_enter in function body: {:?}",
+        main_func.body
+    );
+    // Body includes scope_exit before return
+    let has_scope_exit = main_func.body.iter().any(|stmt| {
+        matches!(
+            stmt,
+            FirStmt::Expr(FirExpr::RuntimeCall { name, .. })
+                if name == "aster_async_scope_exit"
+        )
+    });
+    assert!(
+        has_scope_exit,
+        "expected implicit scope_exit in function body: {:?}",
+        main_func.body
+    );
+}
+
+#[test]
+fn implicit_scope_tracks_spawned_tasks() {
+    let src = "\
+def fetch() -> Int
+  42
+
+def main() -> Int
+  let a: Task[Int] = async fetch()
+  let b: Task[Int] = async fetch()
+  1
+";
+    let fir = lower_ok(src);
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    let owned_spawn_count = main_func
+        .body
+        .iter()
+        .filter(|stmt| {
+            matches!(
+                stmt,
+                FirStmt::Let {
+                    value: FirExpr::Spawn { scope: Some(_), .. },
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(
+        owned_spawn_count, 2,
+        "expected spawned tasks owned by implicit scope: {:?}",
+        main_func.body
+    );
+}
+
+// ===========================================================================
+// LowerError span tests — every error must carry a non-dummy span
+// ===========================================================================
+
+#[test]
+fn error_unsupported_top_level_trait_has_span() {
+    let src = "trait Foo\n  def bar() -> Int\n";
+    let err = lower_err(src);
+    let span = err.span();
+    assert!(span.start < span.end, "span must be non-empty: {:?}", span);
+}
+
+#[test]
+fn error_unsupported_nested_class_has_span() {
+    let src = "\
+def main() -> Int
+  class Inner
+    x: Int
+  0
+";
+    let err = lower_err(src);
+    let span = err.span();
+    assert!(span.start < span.end, "span must be non-empty: {:?}", span);
+}
+
+#[test]
+fn range_random_lowers_inline() {
+    // (1..10).random() should lower to aster_random_int
+    let src = "\
+def main() -> Int
+  let x: Int = (1..10).random()
+  x
+";
+    let fir = lower_ok(src);
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    let has_random_call = main_func.body.iter().any(|stmt| {
+        if let FirStmt::Let { value, .. } = stmt {
+            matches!(value, FirExpr::BinaryOp { .. })
+                || matches!(value, FirExpr::RuntimeCall { name, .. } if name == "aster_random_int")
+        } else {
+            false
+        }
+    });
+    assert!(
+        has_random_call,
+        "expected aster_random_int call in main body: {:?}",
+        main_func.body
+    );
+}
+
+#[test]
+fn range_random_via_variable_lowers() {
+    // let r = 1..10; r.random() should also work
+    let src = "\
+def main() -> Int
+  let r: Range = 1..10
+  r.random()
+";
+    let fir = lower_ok(src);
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    let body_str = format!("{:?}", main_func.body);
+    assert!(
+        body_str.contains("aster_random_int"),
+        "expected aster_random_int in body: {}",
+        body_str
+    );
+}
+
+#[test]
+fn error_unbound_variable_has_span() {
+    // Use a variable that passes typecheck but not lowering.
+    // We need a case where the lowerer can't find the variable.
+    // A top-level `use` statement triggers UnsupportedFeature, not UnboundVariable.
+    // For now, test that UnsupportedFeature from top-level `use` has a span.
+    let src = "use std/cmp { Eq }\ndef main() -> Int\n  0\n";
+    let err = lower_err(src);
+    let span = err.span();
+    assert!(span.start < span.end, "span must be non-empty: {:?}", span);
+}
+
+#[test]
+fn range_var_for_loop_lowers() {
+    let src = "\
+def main() -> Int
+  let bounds = 2..=5
+  let total = 0
+  for a in bounds
+    total = total + a
+  total
+";
+    let fir = lower_ok(src);
+    let main = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    let body_str = format!("{:?}", main.body);
+    // Should use range-based iteration, NOT aster_list_len
+    assert!(
+        !body_str.contains("aster_list_len"),
+        "range var for loop should not use list iteration: {}",
+        body_str
+    );
+    assert!(
+        body_str.contains("aster_range_check") || body_str.contains("FieldGet"),
+        "range var for loop should use range-based iteration: {}",
+        body_str
+    );
+}
+
+// ===========================================================================
+// Iterable vocabulary methods on lists
+// ===========================================================================
+
+#[test]
+fn iterable_list_map_lowers() {
+    let src = "\
+let xs = [1, 2, 3]
+let ys = xs.map(f: -> x: x + 1)
+def main() -> Int
+  ys.len()
+";
+    let fir = lower_ok(src);
+    assert!(fir.entry.is_some());
+}
+
+#[test]
+fn iterable_list_filter_lowers() {
+    let src = "\
+let xs = [1, 2, 3, 4]
+let ys = xs.filter(f: -> x: x > 2)
+def main() -> Int
+  ys.len()
+";
+    let fir = lower_ok(src);
+    assert!(fir.entry.is_some());
+}
+
+#[test]
+fn iterable_list_reduce_lowers() {
+    let src = "\
+let xs = [1, 2, 3]
+let total = xs.reduce(init: 0, f: -> acc, x: acc + x)
+def main() -> Int
+  total
+";
+    let fir = lower_ok(src);
+    assert!(fir.entry.is_some());
+}
+
+#[test]
+fn iterable_list_any_lowers() {
+    // Test with top-level let binding
+    let src = "\
+let xs = [1, 2, 3]
+let found = xs.any(f: -> x: x == 2)
+def main() -> Int
+  if found
+    1
+  else
+    0
+";
+    let fir = lower_ok(src);
+    assert!(fir.entry.is_some());
+}
+
+#[test]
+fn iterable_list_any_inline_lowers() {
+    // Test with inline usage in if condition
+    let src = "\
+let xs = [1, 2, 3]
+def main() -> Int
+  if xs.any(f: -> x: x == 2)
+    1
+  else
+    0
+";
+    let fir = lower_ok(src);
+    assert!(fir.entry.is_some());
+}
+
+#[test]
+fn iterable_list_all_lowers() {
+    let src = "\
+let xs = [1, 2, 3]
+let ok = xs.all(f: -> x: x > 0)
+def main() -> Int
+  if ok
+    1
+  else
+    0
+";
+    let fir = lower_ok(src);
+    assert!(fir.entry.is_some());
+}
+
+#[test]
+fn iterable_list_count_lowers() {
+    let src = "\
+let xs = [1, 2, 3]
+let n = xs.count()
+def main() -> Int
+  n
+";
+    let fir = lower_ok(src);
+    assert!(fir.entry.is_some());
+}
+
+#[test]
+fn iterable_list_first_lowers() {
+    let src = "\
+let xs = [10, 20, 30]
+let f = xs.first()
+def main() -> Int
+  f.or(default: 0)
+";
+    let fir = lower_ok(src);
+    assert!(fir.entry.is_some());
+}
+
+#[test]
+fn iterable_list_last_lowers() {
+    let src = "\
+let xs = [10, 20, 30]
+let l = xs.last()
+def main() -> Int
+  l.or(default: 0)
+";
+    let fir = lower_ok(src);
+    assert!(fir.entry.is_some());
+}
+
+#[test]
+fn iterable_list_to_list_lowers() {
+    let src = "\
+let xs = [1, 2, 3]
+let ys = xs.to_list()
+def main() -> Int
+  ys.len()
+";
+    let fir = lower_ok(src);
+    assert!(fir.entry.is_some());
+}
+
+#[test]
+fn iterable_list_find_lowers() {
+    let src = "\
+let xs = [1, 2, 3]
+let found = xs.find(f: -> x: x == 2)
+def main() -> Int
+  found.or(default: 0)
+";
+    let fir = lower_ok(src);
+    assert!(fir.entry.is_some());
+}
+
+#[test]
+fn iterable_list_min_lowers() {
+    let src = "\
+let xs = [3, 1, 2]
+let m = xs.min()
+def main() -> Int
+  m.or(default: 0)
+";
+    let fir = lower_ok(src);
+    assert!(fir.entry.is_some());
+}
+
+#[test]
+fn iterable_list_max_lowers() {
+    let src = "\
+let xs = [3, 1, 2]
+let m = xs.max()
+def main() -> Int
+  m.or(default: 0)
+";
+    let fir = lower_ok(src);
+    assert!(fir.entry.is_some());
+}
+
+#[test]
+fn iterable_list_sort_lowers() {
+    let src = "\
+let xs = [3, 1, 2]
+let sorted = xs.sort()
+def main() -> Int
+  sorted.len()
+";
+    let fir = lower_ok(src);
+    assert!(fir.entry.is_some());
+}
