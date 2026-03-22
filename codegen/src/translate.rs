@@ -25,6 +25,9 @@ pub struct TranslationState {
     pub string_data: HashMap<String, (ir::GlobalValue, usize)>,
     pub loop_exit: Option<ir::Block>,
     pub loop_header: Option<ir::Block>,
+    /// Target for `continue` — points to latch block (increment) in for-loops,
+    /// or header block in plain while loops.
+    pub loop_continue: Option<ir::Block>,
     /// True if the current block has been terminated (return/break/continue/jump).
     pub terminated: bool,
     /// FuncRef for aster_gc_pop_roots — emitted before every return.
@@ -54,6 +57,7 @@ impl TranslationState {
             string_data,
             loop_exit: None,
             loop_header: None,
+            loop_continue: None,
             terminated: false,
             gc_pop_ref: None,
             gc_root_slots: HashMap::new(),
@@ -139,8 +143,11 @@ pub fn assign_body_gc_root_slots(
                 assign_body_gc_root_slots(then_body, state, next_root_idx);
                 assign_body_gc_root_slots(else_body, state, next_root_idx);
             }
-            FirStmt::While { body, .. } => {
+            FirStmt::While {
+                body, increment, ..
+            } => {
                 assign_body_gc_root_slots(body, state, next_root_idx);
+                assign_body_gc_root_slots(increment, state, next_root_idx);
             }
             _ => {}
         }
@@ -286,13 +293,27 @@ fn translate_stmt(builder: &mut FunctionBuilder, state: &mut TranslationState, s
             state.terminated = then_terminated && else_terminated;
         }
 
-        FirStmt::While { cond, body } => {
+        FirStmt::While {
+            cond,
+            body,
+            increment,
+        } => {
             let header_block = builder.create_block();
             let body_block = builder.create_block();
             let exit_block = builder.create_block();
 
             let saved_exit = state.loop_exit.replace(exit_block);
             let saved_header = state.loop_header.replace(header_block);
+
+            // If there's an increment (for-loops), create a latch block so that
+            // `continue` runs the increment before jumping back to the header.
+            let latch_block = if !increment.is_empty() {
+                Some(builder.create_block())
+            } else {
+                None
+            };
+            let continue_target = latch_block.unwrap_or(header_block);
+            let saved_continue = state.loop_continue.replace(continue_target);
 
             builder.ins().jump(header_block, &[]);
 
@@ -308,7 +329,18 @@ fn translate_stmt(builder: &mut FunctionBuilder, state: &mut TranslationState, s
             state.terminated = false;
             translate_body(builder, state, body);
             if !state.terminated {
-                builder.ins().jump(header_block, &[]);
+                builder.ins().jump(continue_target, &[]);
+            }
+
+            // Emit the latch block (increment) if present
+            if let Some(latch) = latch_block {
+                builder.switch_to_block(latch);
+                builder.seal_block(latch);
+                state.terminated = false;
+                translate_body(builder, state, &increment);
+                if !state.terminated {
+                    builder.ins().jump(header_block, &[]);
+                }
             }
 
             builder.seal_block(header_block);
@@ -317,7 +349,8 @@ fn translate_stmt(builder: &mut FunctionBuilder, state: &mut TranslationState, s
 
             state.loop_exit = saved_exit;
             state.loop_header = saved_header;
-            state.terminated = false; // while exit is always reachable
+            state.loop_continue = saved_continue;
+            state.terminated = false;
         }
 
         FirStmt::Break => {
@@ -328,8 +361,8 @@ fn translate_stmt(builder: &mut FunctionBuilder, state: &mut TranslationState, s
         }
 
         FirStmt::Continue => {
-            if let Some(header) = state.loop_header {
-                builder.ins().jump(header, &[]);
+            if let Some(target) = state.loop_continue {
+                builder.ins().jump(target, &[]);
                 state.terminated = true;
             }
         }
@@ -535,11 +568,17 @@ fn translate_expr(
             }
         }
 
-        FirExpr::ListNew { elements, .. } => {
+        FirExpr::ListNew { elements, elem_ty } => {
             if let Some(&new_ref) = state.runtime_refs.get("aster_list_new") {
                 let cap = elements.len().max(4) as i64;
                 let cap_val = builder.ins().iconst(types::I64, cap);
-                let call = builder.ins().call(new_ref, &[cap_val]);
+                let ptr_elems = if matches!(elem_ty, FirType::Ptr | FirType::Struct(_)) {
+                    1i64
+                } else {
+                    0i64
+                };
+                let ptr_elems_val = builder.ins().iconst(types::I64, ptr_elems);
+                let call = builder.ins().call(new_ref, &[cap_val, ptr_elems_val]);
                 let list_ptr = builder.inst_results(call)[0];
                 if let Some(&push_ref) = state.runtime_refs.get("aster_list_push") {
                     let mut current_ptr = list_ptr;

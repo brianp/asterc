@@ -147,7 +147,9 @@ unsafe fn list_block(handle: *const u8) -> *mut u8 {
 }
 
 /// Allocate a new list. Returns a handle (pointer-to-pointer).
-pub extern "C" fn aster_list_new(cap: i64) -> *mut u8 {
+/// `ptr_elems`: 0 = value-type elements (Int/Float/Bool — GC won't scan them),
+///              1 = pointer-type elements (String/Class — GC will trace them).
+pub extern "C" fn aster_list_new(cap: i64, ptr_elems: i64) -> *mut u8 {
     let cap = cap.max(4) as usize;
     let alloc_size = match cap.checked_mul(8).and_then(|n| n.checked_add(16)) {
         Some(n) => n,
@@ -161,7 +163,12 @@ pub extern "C" fn aster_list_new(cap: i64) -> *mut u8 {
         *(block as *mut i64) = 0; // len = 0
         *((block as *mut i64).add(1)) = cap as i64; // cap
     }
-    let handle = gc_alloc_inner(8, OBJ_LIST_HANDLE);
+    let obj_ty = if ptr_elems != 0 {
+        OBJ_LIST_HANDLE
+    } else {
+        OBJ_LIST_HANDLE_NOPTR
+    };
+    let handle = gc_alloc_inner(8, obj_ty);
     unsafe {
         *(handle as *mut *mut u8) = block;
     }
@@ -183,6 +190,25 @@ pub extern "C" fn aster_list_get(handle: *const u8, index: i64) -> i64 {
         }
         let data = (block as *const i64).add(2);
         *data.add(index as usize)
+    }
+}
+
+/// Pick a random element from a list.
+pub extern "C" fn aster_list_random(handle: *const u8) -> i64 {
+    if handle.is_null() {
+        eprintln!("aster_list_random: null list handle");
+        std::process::abort();
+    }
+    unsafe {
+        let block = list_block(handle);
+        let len = *(block as *const i64);
+        if len <= 0 {
+            eprintln!("aster_list_random: empty list");
+            std::process::abort();
+        }
+        let idx = aster_random_int(len);
+        let data = (block as *const i64).add(2);
+        *data.add(idx as usize)
     }
 }
 
@@ -287,6 +313,30 @@ pub extern "C" fn aster_float_to_string(val: f64) -> *mut u8 {
 pub extern "C" fn aster_bool_to_string(val: i8) -> *mut u8 {
     let s = if val != 0 { "true" } else { "false" };
     aster_string_new(s.as_ptr(), s.len())
+}
+
+/// Convert a List[Int] to a heap string like "[1, 2, 3]".
+/// Handle layout: [block_ptr] -> block: [len: i64][cap: i64][elems: i64...]
+pub extern "C" fn aster_list_to_string(handle: *const u8) -> *mut u8 {
+    if handle.is_null() {
+        let s = "[]";
+        return aster_string_new(s.as_ptr(), s.len());
+    }
+    unsafe {
+        let block = list_block(handle);
+        let len = *(block as *const i64);
+        let data = (block as *const i64).add(2);
+        let mut result = String::with_capacity((len as usize) * 4 + 2);
+        result.push('[');
+        for i in 0..len as usize {
+            if i > 0 {
+                result.push_str(", ");
+            }
+            result.push_str(&(*data.add(i)).to_string());
+        }
+        result.push(']');
+        aster_string_new(result.as_ptr(), result.len())
+    }
 }
 
 /// Allocate a class instance. Size is in bytes.
@@ -446,6 +496,7 @@ const OBJ_CLASS: u8 = 3; // all fields are i64 slots (may be ptrs)
 const OBJ_CLOSURE: u8 = 4; // [func_ptr, env_ptr] — env_ptr is traceable
 const OBJ_DATA_BLOCK: u8 = 5; // raw data block owned by a handle (not independently traced)
 const OBJ_TASK: u8 = 6; // [state, consumed, payload] — payload may be a GC pointer
+const OBJ_LIST_HANDLE_NOPTR: u8 = 7; // handle → data block with value-type elements (no GC trace)
 
 /// Magic bytes in header slots [2..3] to identify valid GC objects.
 const GC_MAGIC: [u8; 2] = [0xA5, 0x7E];
@@ -465,6 +516,10 @@ thread_local! {
     static SHADOW_STACK: Cell<*mut u8> = const { Cell::new(std::ptr::null_mut()) };
     /// Guard against reentrant collection.
     static GC_COLLECTING: Cell<bool> = const { Cell::new(false) };
+    /// Lowest GC heap payload address ever returned.
+    static GC_HEAP_LO: Cell<usize> = const { Cell::new(usize::MAX) };
+    /// Highest GC heap payload address ever returned (exclusive: addr + size).
+    static GC_HEAP_HI: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Read the mark byte from an object header.
@@ -524,7 +579,20 @@ fn payload_header(payload: *const u8) -> *mut u8 {
 /// tracing of untyped slots (list elements, class fields).
 #[inline]
 unsafe fn is_gc_payload(val: i64) -> bool {
-    if val == 0 {
+    // Reject zero, negative values, and misaligned values.
+    if val <= 0 || val as u64 % 8 != 0 {
+        return false;
+    }
+    let addr = val as usize;
+    // Only consider values that fall within the known GC heap address range.
+    // This prevents reading from arbitrary addresses (e.g. small integers that
+    // happen to be aligned) which would cause segfaults.
+    let in_range = GC_HEAP_LO.with(|lo| {
+        GC_HEAP_HI.with(|hi| {
+            addr >= lo.get() && addr < hi.get()
+        })
+    });
+    if !in_range {
         return false;
     }
     let payload = val as *const u8;
@@ -542,8 +610,6 @@ fn gc_alloc_inner(payload_size: usize, obj_ty: u8) -> *mut u8 {
         GC_NEXT_THRESHOLD.with(|thresh| {
             if total >= thresh.get() {
                 gc_collect_inner();
-                // Double the threshold
-                thresh.set(thresh.get() * 2);
                 b.set(0);
             }
         });
@@ -570,7 +636,23 @@ fn gc_alloc_inner(payload_size: usize, obj_ty: u8) -> *mut u8 {
         head.set(ptr);
     });
 
-    obj_payload(ptr)
+    let payload = obj_payload(ptr);
+
+    // Track heap address range for conservative pointer validation
+    let addr = payload as usize;
+    GC_HEAP_LO.with(|lo| {
+        if addr < lo.get() {
+            lo.set(addr);
+        }
+    });
+    GC_HEAP_HI.with(|hi| {
+        let end = addr + payload_size;
+        if end > hi.get() {
+            hi.set(end);
+        }
+    });
+
+    payload
 }
 
 /// Mark a single object (by payload pointer) and recursively trace children.
@@ -606,6 +688,17 @@ unsafe fn gc_mark(payload: *const u8) {
                         if is_gc_payload(val) {
                             gc_mark(val as *const u8);
                         }
+                    }
+                }
+            }
+            OBJ_LIST_HANDLE_NOPTR => {
+                // Handle points to a data block with value-type elements (Int, Float, Bool).
+                // Mark the block but do NOT scan elements — they cannot be GC pointers.
+                let block = *(payload as *const *const u8);
+                if !block.is_null() {
+                    let block_header = payload_header(block);
+                    if obj_mark(block_header) == 0 {
+                        obj_set_mark(block_header, 1);
                     }
                 }
             }
@@ -699,6 +792,7 @@ fn gc_collect_inner() {
     });
 
     // Sweep phase: free unmarked objects, reset marks on survivors
+    let mut survived_bytes: usize = 0;
     HEAP_HEAD.with(|head| {
         let mut prev: *mut u8 = std::ptr::null_mut();
         let mut current = head.get();
@@ -706,9 +800,9 @@ fn gc_collect_inner() {
         while !current.is_null() {
             unsafe {
                 let next = obj_next(current);
+                let total = HEADER_SIZE + obj_size(current) as usize;
                 if obj_mark(current) == 0 {
                     // Unmarked — free it
-                    let total = HEADER_SIZE + obj_size(current) as usize;
                     if !prev.is_null() {
                         obj_set_next(prev, next);
                     } else {
@@ -718,11 +812,17 @@ fn gc_collect_inner() {
                 } else {
                     // Marked — reset mark for next cycle
                     obj_set_mark(current, 0);
+                    survived_bytes += total;
                     prev = current;
                 }
                 current = next;
             }
         }
+    });
+
+    // Set next threshold proportional to live set (2x survived, minimum GC_THRESHOLD)
+    GC_NEXT_THRESHOLD.with(|thresh| {
+        thresh.set((survived_bytes * 2).max(GC_THRESHOLD));
     });
 
     GC_COLLECTING.with(|g| g.set(false));
@@ -964,7 +1064,7 @@ pub extern "C" fn aster_task_resolve_all_i64(tasks: *mut u8) -> *mut u8 {
         return std::ptr::null_mut();
     }
     let len = aster_list_len(tasks);
-    let out = aster_list_new(len);
+    let out = aster_list_new(len, 0);
     for index in 0..len {
         let task = aster_list_get(tasks, index) as *mut u8;
         let value = aster_task_resolve_i64(task);
@@ -1516,6 +1616,7 @@ pub fn runtime_builtin_symbols() -> Vec<(&'static str, *const u8)> {
         ("aster_string_len", aster_string_len as *const u8),
         ("aster_list_new", aster_list_new as *const u8),
         ("aster_list_get", aster_list_get as *const u8),
+        ("aster_list_random", aster_list_random as *const u8),
         ("aster_list_set", aster_list_set as *const u8),
         ("aster_list_push", aster_list_push as *const u8),
         ("aster_list_len", aster_list_len as *const u8),
@@ -1524,6 +1625,10 @@ pub fn runtime_builtin_symbols() -> Vec<(&'static str, *const u8)> {
         ("aster_int_to_string", aster_int_to_string as *const u8),
         ("aster_float_to_string", aster_float_to_string as *const u8),
         ("aster_bool_to_string", aster_bool_to_string as *const u8),
+        (
+            "aster_list_to_string",
+            aster_list_to_string as *const u8,
+        ),
         ("aster_map_new", aster_map_new as *const u8),
         ("aster_map_set", aster_map_set as *const u8),
         ("aster_map_get", aster_map_get as *const u8),

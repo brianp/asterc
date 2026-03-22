@@ -490,8 +490,11 @@ pub(crate) fn count_body_gc_roots(stmts: &[fir::stmts::FirStmt]) -> usize {
                 count += count_body_gc_roots(then_body);
                 count += count_body_gc_roots(else_body);
             }
-            FirStmt::While { body, .. } => {
+            FirStmt::While {
+                body, increment, ..
+            } => {
                 count += count_body_gc_roots(body);
+                count += count_body_gc_roots(increment);
             }
             _ => {}
         }
@@ -520,9 +523,14 @@ pub(crate) fn collect_string_lits_stmts(
                 collect_string_lits_stmts(then_body, strings);
                 collect_string_lits_stmts(else_body, strings);
             }
-            FirStmt::While { cond, body } => {
+            FirStmt::While {
+                cond,
+                body,
+                increment,
+            } => {
                 collect_string_lits_expr(cond, strings);
                 collect_string_lits_stmts(body, strings);
+                collect_string_lits_stmts(increment, strings);
             }
             FirStmt::Assign { target, value } => {
                 collect_string_lits_expr(value, strings);

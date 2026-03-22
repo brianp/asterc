@@ -662,7 +662,7 @@ fn bool_returning_function_works_in_if_condition() {
 def ready() -> Bool
   true
 
-def main() throws CancelledError -> Int
+def main() -> Int
   if ready()
     return 1
   else
@@ -847,7 +847,7 @@ fn float_multiply() {
 fn float_comparison() {
     // 3.14 > 2.71 should return true (1)
     let src = "\
-def main() throws CancelledError -> Int
+def main() -> Int
   if 3.14 > 2.71
     return 1
   else
@@ -1062,7 +1062,7 @@ fn call_another_function() {
 def double(x: Int) -> Int
   x * 2
 
-def main() throws CancelledError -> Int
+def main() -> Int
   double(x: 21)
 ";
     let fir = compile_and_run(src);
@@ -1500,6 +1500,197 @@ def main() -> Int
     assert_eq!(result, 6); // 1 + 2 + 3
 }
 
+#[test]
+fn for_loop_list_with_continue() {
+    let src = "\
+def main() -> Int
+  let xs: List[Int] = [1, 2, 3, 4, 5]
+  let total: Int = 0
+  for x in xs
+    if x == 3
+      continue
+    total = total + x
+  return total
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 12); // 1 + 2 + 4 + 5
+}
+
+#[test]
+fn for_loop_range_with_continue() {
+    let src = "\
+def main() -> Int
+  let total = 0
+  for i in 1..10
+    if i == 3
+      continue
+    if i == 7
+      continue
+    total = total + i
+  total
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 35); // 1+2+4+5+6+8+9
+}
+
+#[test]
+fn for_loop_range_inclusive_with_continue() {
+    let src = "\
+def main() -> Int
+  let total = 0
+  for i in 1..=5
+    if i == 2
+      continue
+    total = total + i
+  total
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 13); // 1+3+4+5
+}
+
+#[test]
+fn for_loop_continue_skips_all_but_last() {
+    // continue on every iteration except the last — verifies the loop still terminates
+    let src = "\
+def main() -> Int
+  let total = 0
+  for i in 0..5
+    if i < 4
+      continue
+    total = total + i
+  total
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 4);
+}
+
+#[test]
+fn for_loop_nested_continue() {
+    // continue in nested for loops — each loop advances independently
+    let src = "\
+def main() -> Int
+  let total = 0
+  for i in 0..3
+    for j in 0..3
+      if j == 1
+        continue
+      total = total + 1
+  total
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 6); // 3 outer * 2 inner (j=0, j=2)
+}
+
+#[test]
+fn while_loop_continue_still_works() {
+    // plain while-loop continue (no increment) is unaffected by the fix
+    let src = "\
+def main() -> Int
+  let total = 0
+  let i = 0
+  while i < 10
+    i = i + 1
+    if i == 5
+      continue
+    total = total + i
+  total
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 50); // 1+2+3+4+6+7+8+9+10
+}
+
+// ===========================================================================
+// Range.random() and Range variable for-loops
+// ===========================================================================
+
+#[test]
+fn range_random_returns_value_in_bounds() {
+    // (10..20).random() must return a value in [10, 20)
+    let src = "\
+def main() -> Int
+  let r: Int = (10..20).random()
+  if r >= 10
+    if r < 20
+      return 1
+  return 0
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 1);
+}
+
+#[test]
+fn range_random_many_calls_all_in_bounds() {
+    // Call .random() 1000 times, accumulate out-of-bounds count
+    let src = "\
+def main() -> Int
+  let bad = 0
+  for i in 0..1000
+    let r: Int = (5..15).random()
+    if r < 5
+      bad = bad + 1
+    if r >= 15
+      bad = bad + 1
+  bad
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 0);
+}
+
+#[test]
+fn for_loop_over_range_variable() {
+    // Store a range in a variable, iterate over it
+    let src = "\
+def make_range() -> Range
+  1..=5
+
+def main() -> Int
+  let rng: Range = make_range()
+  let total = 0
+  for i in rng
+    total = total + i
+  total
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 15); // 1+2+3+4+5
+}
+
+#[test]
+fn gc_survives_range_allocation_pressure() {
+    // Many Range.random() calls trigger GC while Range fields contain small
+    // integers that must not be dereferenced as pointers during mark phase.
+    let src = "\
+def main() -> Int
+  let count = 0
+  for i in 2..5000
+    let r: Int = (2..(i + 10)).random()
+    if r >= 2
+      count = count + 1
+  count
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert!(result > 0, "expected positive count, got {}", result);
+}
+
 // ===========================================================================
 // Nullable operations
 // ===========================================================================
@@ -1691,7 +1882,7 @@ fn async_call_and_resolve() {
 def compute() -> Int
   42
 
-def main() throws CancelledError -> Int
+def main() -> Int
   let t: Task[Int] = async compute()
   resolve t!
 ";
@@ -1707,7 +1898,7 @@ fn async_with_args() {
 def add(a: Int, b: Int) -> Int
   a + b
 
-def main() throws CancelledError -> Int
+def main() -> Int
   let t: Task[Int] = async add(a: 20, b: 22)
   resolve t!
 ";
@@ -1723,7 +1914,7 @@ fn async_task_is_ready_after_resolve() {
 def compute() -> Int
   42
 
-def main() throws CancelledError -> Int
+def main() -> Int
   let t: Task[Int] = async compute()
   let val = resolve t!
   if t.is_ready()
@@ -1806,7 +1997,7 @@ fn async_resolve_all_returns_list_values() {
 def fetch(value: Int) -> Int
   value
 
-def main() throws CancelledError -> Int
+def main() -> Int
   let tasks: List[Task[Int]] = [async fetch(value: 20), async fetch(value: 22)]
   let values: List[Int] = resolve_all(tasks: tasks)!
   values[0] + values[1]
@@ -1823,7 +2014,7 @@ fn async_resolve_preserves_gc_managed_list_result() {
 def make_numbers() -> List[Int]
   [10, 20, 12]
 
-def main() throws CancelledError -> Int
+def main() -> Int
   let t: Task[List[Int]] = async make_numbers()
   let values: List[Int] = resolve t!
   values.len() + values[1]
@@ -1848,7 +2039,7 @@ def slow() -> Int
 def fast() -> Int
   42
 
-def main() throws CancelledError -> Int
+def main() -> Int
   let tasks: List[Task[Int]] = [async slow(), async fast()]
   resolve_first(tasks: tasks)!
 ";
@@ -1869,7 +2060,7 @@ def slow() -> Int
     i = i + 1
   42
 
-def main() throws CancelledError -> Int
+def main() -> Int
   let t: Task[Int] = async slow()
   t.wait_cancel()
   resolve t!.catch
@@ -4082,3 +4273,25 @@ def main() -> Int
     assert_eq!(result, 1);
 }
 
+#[test]
+fn e2e_async_spawn_and_resolve_tasks() {
+    // spawned tasks are resolved within the implicit function scope
+    let src = "\
+def fetch_a() -> Int
+  20
+
+def fetch_b() -> Int
+  22
+
+def main() -> Int
+  let ta = async fetch_a()
+  let tb = async fetch_b()
+  let a = resolve ta!
+  let b = resolve tb!
+  a + b
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}

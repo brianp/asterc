@@ -12,7 +12,7 @@ fn build_green_spawn_and_resolve() {
 def work(n: Int) -> Int
   n * 2
 
-def main() throws CancelledError -> Int
+def main() -> Int
   let t: Task[Int] = async work(n: 21)
   resolve t!
 ",
@@ -38,7 +38,7 @@ fn build_green_many_tasks() {
 def double(n: Int) -> Int
   n * 2
 
-def main() throws CancelledError -> Int
+def main() -> Int
   let a: Task[Int] = async double(n: 1)
   let b: Task[Int] = async double(n: 2)
   let c: Task[Int] = async double(n: 3)
@@ -76,7 +76,7 @@ def busy() -> Int
     i = i + 1
   i
 
-def main() throws CancelledError -> Int
+def main() -> Int
   let t: Task[Int] = async busy()
   t.wait_cancel()
   resolve t!.catch
@@ -104,7 +104,7 @@ fn build_green_resolve_all() {
 def double(n: Int) -> Int
   n * 2
 
-def main() throws CancelledError -> Int
+def main() -> Int
   let tasks: List[Task[Int]] = [async double(n: 10), async double(n: 11), async double(n: 12)]
   let results = resolve_all(tasks: tasks)!
   results[0] + results[1] + results[2]
@@ -131,7 +131,7 @@ fn build_jit_and_aot_produce_same_output() {
 def work(n: Int) -> Int
   n * n + 1
 
-def main() throws CancelledError -> Int
+def main() -> Int
   let a: Task[Int] = async work(n: 5)
   let b: Task[Int] = async work(n: 3)
   let ra = resolve a!
@@ -177,11 +177,11 @@ fn build_blocking_call_on_suspendable_callee_returns_plain_value() {
 def child() -> Int
   41
 
-def parent() throws CancelledError -> Int
+def parent() -> Int
   let t: Task[Int] = async child()
   resolve t! + 1
 
-def main() throws CancelledError -> Int
+def main() -> Int
   blocking parent()
 ",
     )
@@ -211,7 +211,7 @@ def slow() -> Int
     i = i + 1
   42
 
-def main() throws CancelledError -> Int
+def main() -> Int
   let t: Task[Int] = async slow()
   t.wait_cancel()
   resolve t!.catch
@@ -247,7 +247,7 @@ def slow() -> Int
 def fast() -> Int
   42
 
-def main() throws CancelledError -> Int
+def main() -> Int
   let tasks: List[Task[Int]] = [async slow(), async fast()]
   resolve_first(tasks: tasks)!
 ",

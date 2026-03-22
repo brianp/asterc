@@ -98,11 +98,33 @@ void* aster_bool_to_string(int8_t val) {
     return aster_string_new((void*)s, val ? 4 : 5);
 }
 
+void* aster_list_to_string(void* handle) {
+    if (!handle) return aster_string_new("[]", 2);
+    void* block = *(void**)handle;
+    int64_t len = *(int64_t*)block;
+    int64_t* data = (int64_t*)block + 2;
+    /* estimate: "[" + up to 20 digits per elem + ", " separators + "]" */
+    int64_t buf_cap = 2 + len * 22;
+    char* buf = (char*)malloc((size_t)buf_cap);
+    if (!buf) { fprintf(stderr, "out of memory\n"); abort(); }
+    int pos = 0;
+    buf[pos++] = '[';
+    for (int64_t i = 0; i < len; i++) {
+        if (i > 0) { buf[pos++] = ','; buf[pos++] = ' '; }
+        pos += snprintf(buf + pos, (size_t)(buf_cap - pos), "%lld", (long long)data[i]);
+    }
+    buf[pos++] = ']';
+    void* result = aster_string_new(buf, (int64_t)pos);
+    free(buf);
+    return result;
+}
+
 /* ===================================================================
  * List operations (handle-based indirection)
  * =================================================================== */
 
-void* aster_list_new(int64_t cap) {
+void* aster_list_new(int64_t cap, int64_t ptr_elems) {
+    (void)ptr_elems; /* AOT runtime has no GC, flag unused */
     if (cap < 4) cap = 4;
     void* block = aster_alloc(16 + cap * 8);
     *(int64_t*)block = 0;
@@ -111,6 +133,8 @@ void* aster_list_new(int64_t cap) {
     *(void**)handle = block;
     return handle;
 }
+
+int64_t aster_random_int(int64_t max); /* forward decl for aster_list_random */
 
 int64_t aster_list_get(void* handle, int64_t index) {
     if (!handle) { fprintf(stderr, "aster_list_get: null list\n"); abort(); }
@@ -122,6 +146,15 @@ int64_t aster_list_get(void* handle, int64_t index) {
         abort();
     }
     return *((int64_t*)block + 2 + index);
+}
+
+int64_t aster_list_random(void* handle) {
+    if (!handle) { fprintf(stderr, "aster_list_random: null list\n"); abort(); }
+    void* block = *(void**)handle;
+    int64_t len = *(int64_t*)block;
+    if (len <= 0) { fprintf(stderr, "aster_list_random: empty list\n"); abort(); }
+    int64_t idx = aster_random_int(len);
+    return *((int64_t*)block + 2 + idx);
 }
 
 void aster_list_set(void* handle, int64_t index, int64_t value) {
@@ -1260,7 +1293,7 @@ int8_t aster_task_resolve_i8(void* task_ptr) {
 void* aster_task_resolve_all_i64(void* tasks) {
     if (!tasks) { aster_error_set(); return 0; }
     int64_t len = aster_list_len(tasks);
-    void* out = aster_list_new(len);
+    void* out = aster_list_new(len, 0);
     for (int64_t i = 0; i < len; i++) {
         int64_t task = aster_list_get(tasks, i);
         int64_t value = aster_task_resolve_i64((void*)(intptr_t)task);
