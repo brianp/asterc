@@ -149,6 +149,9 @@ pub fn assign_body_gc_root_slots(
                 assign_body_gc_root_slots(body, state, next_root_idx);
                 assign_body_gc_root_slots(increment, state, next_root_idx);
             }
+            FirStmt::Block(stmts) => {
+                assign_body_gc_root_slots(stmts, state, next_root_idx);
+            }
             _ => {}
         }
     }
@@ -369,6 +372,10 @@ fn translate_stmt(builder: &mut FunctionBuilder, state: &mut TranslationState, s
 
         FirStmt::Expr(expr) => {
             translate_expr(builder, state, expr);
+        }
+
+        FirStmt::Block(stmts) => {
+            translate_body(builder, state, stmts);
         }
     }
 }

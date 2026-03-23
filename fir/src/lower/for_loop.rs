@@ -155,12 +155,7 @@ impl Lowerer {
             },
         ];
 
-        // Wrap in If(true, setup_and_loop, []) to return a single statement
-        Ok(FirStmt::If {
-            cond: FirExpr::BoolLit(true),
-            then_body: setup_and_loop,
-            else_body: vec![],
-        })
+        Ok(FirStmt::Block(setup_and_loop))
     }
 
     /// Check if lowering a value expression would produce pending stmts
@@ -246,15 +241,9 @@ impl Lowerer {
             },
         ];
 
-        Ok(FirStmt::If {
-            cond: FirExpr::BoolLit(true),
-            then_body: setup_and_loop,
-            else_body: vec![],
-        })
+        Ok(FirStmt::Block(setup_and_loop))
     }
 
-    /// Lower `for var in range_var` where range_var is a Range variable.
-    /// Extracts start/end/inclusive from the runtime range struct.
     /// Lower `for var in range_var` where range_var is a Range variable.
     /// Extracts start/end/inclusive from the runtime range struct.
     pub(crate) fn lower_range_var_for_loop(
@@ -383,11 +372,7 @@ impl Lowerer {
             },
         ];
 
-        Ok(FirStmt::If {
-            cond: FirExpr::BoolLit(true),
-            then_body: setup_and_loop,
-            else_body: vec![],
-        })
+        Ok(FirStmt::Block(setup_and_loop))
     }
 
     pub(crate) fn resolve_iterator_class(&self, iter: &Expr) -> Option<String> {
@@ -524,10 +509,6 @@ impl Lowerer {
             },
         ];
 
-        Ok(FirStmt::If {
-            cond: FirExpr::BoolLit(true),
-            then_body: setup_and_loop,
-            else_body: vec![],
-        })
+        Ok(FirStmt::Block(setup_and_loop))
     }
 }

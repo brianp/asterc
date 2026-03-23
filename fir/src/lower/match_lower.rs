@@ -111,12 +111,7 @@ impl Lowerer {
                     target: FirPlace::Local(result_id),
                     value: fir_body,
                 });
-                // Wrap in if(true) to keep the single-stmt return contract
-                Ok(FirStmt::If {
-                    cond: FirExpr::BoolLit(true),
-                    then_body,
-                    else_body: vec![],
-                })
+                Ok(FirStmt::Block(then_body))
             }
             MatchPattern::Literal(lit_expr, _) => {
                 let fir_lit = self.lower_expr(lit_expr)?;

@@ -30,6 +30,7 @@ pub enum FirStmt {
     Break,
     Continue,
     Expr(FirExpr),
+    Block(Vec<FirStmt>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

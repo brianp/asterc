@@ -808,18 +808,14 @@ def sum_list(xs: List[Int]) -> Int
 ";
     let fir = lower_ok(src);
     let func = &fir.functions[0];
-    // For loop is lowered to If(true, [setup..., While { ... }], [])
+    // For loop is lowered to Block([setup..., While { ... }])
     let has_for_desugared = func.body.iter().any(|s| match s {
-        FirStmt::If {
-            cond: FirExpr::BoolLit(true),
-            then_body,
-            ..
-        } => then_body.iter().any(|s| matches!(s, FirStmt::While { .. })),
+        FirStmt::Block(stmts) => stmts.iter().any(|s| matches!(s, FirStmt::While { .. })),
         _ => false,
     });
     assert!(
         has_for_desugared,
-        "for loop should desugar to If(true, [setup, While]): {:?}",
+        "for loop should desugar to Block([setup, While]): {:?}",
         func.body
     );
 }
@@ -1999,14 +1995,14 @@ def main() -> Int
 ";
     let fir = lower_ok(src);
     let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
-    // For loops lower to If(true, [setup..., While { ... }]), so check for If
+    // For loops lower to Block([setup..., While { ... }])
     let has_for = main_func
         .body
         .iter()
-        .any(|s| matches!(s, FirStmt::If { .. }));
+        .any(|s| matches!(s, FirStmt::Block(_)));
     assert!(
         has_for,
-        "expected If (from for loop) injected into main body: {:?}",
+        "expected Block (from for loop) injected into main body: {:?}",
         main_func.body
     );
 }

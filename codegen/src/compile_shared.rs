@@ -374,6 +374,9 @@ pub(crate) fn count_body_gc_roots(stmts: &[fir::stmts::FirStmt]) -> usize {
                 count += count_body_gc_roots(body);
                 count += count_body_gc_roots(increment);
             }
+            FirStmt::Block(stmts) => {
+                count += count_body_gc_roots(stmts);
+            }
             _ => {}
         }
     }
@@ -424,6 +427,9 @@ pub(crate) fn collect_string_lits_stmts(
                     }
                     fir::stmts::FirPlace::Local(_) => {}
                 }
+            }
+            FirStmt::Block(stmts) => {
+                collect_string_lits_stmts(stmts, strings);
             }
             FirStmt::Break | FirStmt::Continue => {}
         }
