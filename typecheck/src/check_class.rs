@@ -439,16 +439,12 @@ impl TypeChecker {
             method_map.insert("debug".into(), debug_ty);
         }
 
-        let info = ClassInfo {
-            ty: class_type,
-            fields: field_map,
-            methods: method_map,
-            generic_params: generic_params.clone(),
-            extends: extends.clone(),
-            includes: includes_list,
-            overloaded_methods,
-            parametric_includes,
-        };
+        let mut info = ClassInfo::new(class_type, field_map, method_map);
+        info.generic_params = generic_params.clone();
+        info.extends = extends.clone();
+        info.includes = includes_list;
+        info.overloaded_methods = overloaded_methods;
+        info.parametric_includes = parametric_includes;
         self.env.set_class(name.to_string(), info);
 
         // Validate extends
