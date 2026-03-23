@@ -57,23 +57,19 @@ fn blocking_worker(pool: Arc<BlockingPool>) {
         // Execute the blocking work
         let result = (job.work)();
 
-        // Wake the green thread with the result
+        // Resume the green thread with the result.
+        // The thread yielded via blocking_submit and expects to continue
+        // execution after the yield point. Setting Runnable (not Ready)
+        // and pushing to the injector matches wake_thread_with_value semantics.
         let thread = unsafe { &*job.task_ptr };
-        let mut st = thread.state.lock().unwrap();
-        st.result = result;
-        st.failed = false;
-        st.status = super::thread::ThreadStatus::Ready;
-        thread.cv.notify_all();
-        let waiters = std::mem::take(&mut st.green_waiters);
-        drop(st);
-
-        // Re-enqueue waiters
-        if !waiters.is_empty() {
-            let sc = super::scheduler::sched();
-            for waiter in waiters {
-                sc.injector.push(super::thread::ThreadPtr(waiter));
-            }
-            sc.park_cv.notify_all();
+        {
+            let mut st = thread.state.lock().unwrap();
+            st.result = result;
+            st.failed = false;
+            st.status = super::thread::ThreadStatus::Runnable;
         }
+        let sc = super::scheduler::sched();
+        sc.injector.push(super::thread::ThreadPtr(job.task_ptr));
+        sc.park_cv.notify_all();
     }
 }

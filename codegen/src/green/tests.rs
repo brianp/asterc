@@ -395,6 +395,26 @@ fn blocking_pool_submit() {
 }
 
 #[test]
+fn blocking_pool_thread_resumes_after_submit() {
+    // Verify the green thread resumes execution after blocking_submit returns.
+    // The thread does work AFTER the blocking call — if it never resumes,
+    // the post-blocking work won't happen and the result will be wrong.
+    extern "C" fn resume_entry(arg: *mut u8) -> i64 {
+        let val = arg as i64;
+        // Do some work, then block, then do more work after resuming
+        let before = val * 2;
+        scheduler::blocking_submit(Box::new(move || val * 10));
+        // This code runs AFTER the blocking pool completes and the
+        // scheduler resumes us. If we never resume, this return never fires.
+        before + 1 // 7*2 + 1 = 15
+    }
+
+    let thread = scheduler::spawn_green_thread(resume_entry as *const () as usize, 7);
+    let result = scheduler::consume_thread_result(thread);
+    assert_eq!(result, 15);
+}
+
+#[test]
 fn mixed_io_and_cpu_bound_threads() {
     // Mix I/O-waiting and CPU-bound green threads, verify all complete
     let mut fds = [0i32; 2];
