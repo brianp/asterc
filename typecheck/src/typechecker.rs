@@ -104,36 +104,18 @@ impl TypeChecker {
         // Actual type checking is handled as polymorphic builtins in check_call_inner.
         env.set_var(
             "log".into(),
-            Type::Function {
-                param_names: vec!["message".into()],
-                params: vec![Type::String],
-                ret: Box::new(Type::Void),
-                throws: None,
-                suspendable: false,
-            },
+            Type::func(vec!["message".into()], vec![Type::String], Type::Void),
         );
         env.set_var(
             "say".into(),
-            Type::Function {
-                param_names: vec!["message".into()],
-                params: vec![Type::String],
-                ret: Box::new(Type::Void),
-                throws: None,
-                suspendable: false,
-            },
+            Type::func(vec!["message".into()], vec![Type::String], Type::Void),
         );
         // Note: `len`, `to_string`, and `random` are handled as polymorphic
         // builtins in check_call_inner rather than registered here, because
         // their type signatures depend on context.
         env.set_var(
             "random".into(),
-            Type::Function {
-                param_names: vec![],
-                params: vec![],
-                ret: Box::new(Type::Int),
-                throws: None,
-                suspendable: false,
-            },
+            Type::func(vec![], vec![], Type::Int),
         );
 
         // Built-in error hierarchy: Exception (root) -> Error (app base)
@@ -147,13 +129,11 @@ impl TypeChecker {
         );
         env.set_var(
             "Exception".into(),
-            Type::Function {
-                param_names: vec!["message".into()],
-                params: vec![Type::String],
-                ret: Box::new(Type::Custom("Exception".into(), Vec::new())),
-                throws: None,
-                suspendable: false,
-            },
+            Type::func(
+                vec!["message".into()],
+                vec![Type::String],
+                Type::Custom("Exception".into(), Vec::new()),
+            ),
         );
         env.set_class("Error".into(), {
             let mut info = ClassInfo::new(
@@ -166,13 +146,11 @@ impl TypeChecker {
         });
         env.set_var(
             "Error".into(),
-            Type::Function {
-                param_names: vec!["message".into()], // inherited message field
-                params: vec![Type::String],
-                ret: Box::new(Type::Custom("Error".into(), Vec::new())),
-                throws: None,
-                suspendable: false,
-            },
+            Type::func(
+                vec!["message".into()], // inherited message field
+                vec![Type::String],
+                Type::Custom("Error".into(), Vec::new()),
+            ),
         );
         // Built-in CancelledError for async task cancellation
         env.set_class("CancelledError".into(), {
@@ -186,13 +164,11 @@ impl TypeChecker {
         });
         env.set_var(
             "CancelledError".into(),
-            Type::Function {
-                param_names: vec!["message".into()],
-                params: vec![Type::String],
-                ret: Box::new(Type::Custom("CancelledError".into(), Vec::new())),
-                throws: None,
-                suspendable: false,
-            },
+            Type::func(
+                vec!["message".into()],
+                vec![Type::String],
+                Type::Custom("CancelledError".into(), Vec::new()),
+            ),
         );
 
         // Built-in error types for Mutex, Channel, and I/O
@@ -214,13 +190,11 @@ impl TypeChecker {
             });
             env.set_var(
                 name.into(),
-                Type::Function {
-                    param_names: vec!["message".into()],
-                    params: vec![Type::String],
-                    ret: Box::new(Type::Custom(name.into(), Vec::new())),
-                    throws: None,
-                    suspendable: false,
-                },
+                Type::func(
+                    vec!["message".into()],
+                    vec![Type::String],
+                    Type::Custom(name.into(), Vec::new()),
+                ),
             );
         }
 
@@ -241,29 +215,19 @@ impl TypeChecker {
                 HashMap::from([
                     (
                         "each".into(),
-                        Type::Function {
-                            param_names: vec!["f".into()],
-                            params: vec![Type::Function {
-                                param_names: vec!["_0".into()],
-                                params: vec![Type::Int],
-                                ret: Box::new(Type::Void),
-                                throws: None,
-                                suspendable: false,
-                            }],
-                            ret: Box::new(Type::Void),
-                            throws: None,
-                            suspendable: false,
-                        },
+                        Type::func(
+                            vec!["f".into()],
+                            vec![Type::func(
+                                vec!["_0".into()],
+                                vec![Type::Int],
+                                Type::Void,
+                            )],
+                            Type::Void,
+                        ),
                     ),
                     (
                         "random".into(),
-                        Type::Function {
-                            param_names: vec![],
-                            params: vec![],
-                            ret: Box::new(Type::Int),
-                            throws: None,
-                            suspendable: false,
-                        },
+                        Type::func(vec![], vec![], Type::Int),
                     ),
                 ]),
             );
@@ -292,13 +256,11 @@ impl TypeChecker {
                 name: "Eq".into(),
                 methods: HashMap::from([(
                     "eq".into(),
-                    Type::Function {
-                        param_names: vec!["other".into()],
-                        params: vec![Type::Custom("Self".into(), Vec::new())],
-                        ret: Box::new(Type::Bool),
-                        throws: None,
-                        suspendable: false,
-                    },
+                    Type::func(
+                        vec!["other".into()],
+                        vec![Type::Custom("Self".into(), Vec::new())],
+                        Type::Bool,
+                    ),
                 )]),
                 required_methods: vec!["eq".into()],
                 generic_params: None,
@@ -311,13 +273,11 @@ impl TypeChecker {
                 name: "Ord".into(),
                 methods: HashMap::from([(
                     "cmp".into(),
-                    Type::Function {
-                        param_names: vec!["other".into()],
-                        params: vec![Type::Custom("Self".into(), Vec::new())],
-                        ret: Box::new(Type::Custom("Ordering".into(), Vec::new())),
-                        throws: None,
-                        suspendable: false,
-                    },
+                    Type::func(
+                        vec!["other".into()],
+                        vec![Type::Custom("Self".into(), Vec::new())],
+                        Type::Custom("Ordering".into(), Vec::new()),
+                    ),
                 )]),
                 required_methods: vec!["cmp".into()],
                 generic_params: None,
@@ -331,23 +291,11 @@ impl TypeChecker {
                 methods: HashMap::from([
                     (
                         "to_string".into(),
-                        Type::Function {
-                            param_names: vec![],
-                            params: vec![],
-                            ret: Box::new(Type::String),
-                            throws: None,
-                            suspendable: false,
-                        },
+                        Type::func(vec![], vec![], Type::String),
                     ),
                     (
                         "debug".into(),
-                        Type::Function {
-                            param_names: vec![],
-                            params: vec![],
-                            ret: Box::new(Type::String),
-                            throws: None,
-                            suspendable: false,
-                        },
+                        Type::func(vec![], vec![], Type::String),
                     ),
                 ]),
                 required_methods: vec!["to_string".into()],
@@ -361,13 +309,11 @@ impl TypeChecker {
                 name: "From".into(),
                 methods: HashMap::from([(
                     "from".into(),
-                    Type::Function {
-                        param_names: vec!["value".into()],
-                        params: vec![Type::TypeVar("T".into(), vec![])],
-                        ret: Box::new(Type::Custom("Self".into(), Vec::new())),
-                        throws: None,
-                        suspendable: false,
-                    },
+                    Type::func(
+                        vec!["value".into()],
+                        vec![Type::TypeVar("T".into(), vec![])],
+                        Type::Custom("Self".into(), Vec::new()),
+                    ),
                 )]),
                 required_methods: vec!["from".into()],
                 generic_params: Some(vec!["T".into()]),
@@ -380,13 +326,7 @@ impl TypeChecker {
                 name: "Into".into(),
                 methods: HashMap::from([(
                     "into".into(),
-                    Type::Function {
-                        param_names: vec![],
-                        params: vec![],
-                        ret: Box::new(Type::TypeVar("T".into(), vec![])),
-                        throws: None,
-                        suspendable: false,
-                    },
+                    Type::func(vec![], vec![], Type::TypeVar("T".into(), vec![])),
                 )]),
                 required_methods: vec!["into".into()],
                 generic_params: Some(vec!["T".into()]),
@@ -399,13 +339,11 @@ impl TypeChecker {
                 name: "Iterator".into(),
                 methods: HashMap::from([(
                     "next".into(),
-                    Type::Function {
-                        param_names: vec![],
-                        params: vec![],
-                        ret: Box::new(Type::Nullable(Box::new(Type::TypeVar("T".into(), vec![])))),
-                        throws: None,
-                        suspendable: false,
-                    },
+                    Type::func(
+                        vec![],
+                        vec![],
+                        Type::Nullable(Box::new(Type::TypeVar("T".into(), vec![]))),
+                    ),
                 )]),
                 required_methods: vec!["next".into()],
                 generic_params: Some(vec!["T".into()]),
@@ -418,13 +356,7 @@ impl TypeChecker {
                 name: "Drop".into(),
                 methods: HashMap::from([(
                     "drop".into(),
-                    Type::Function {
-                        param_names: vec![],
-                        params: vec![],
-                        ret: Box::new(Type::Void),
-                        throws: None,
-                        suspendable: false,
-                    },
+                    Type::func(vec![], vec![], Type::Void),
                 )]),
                 required_methods: vec!["drop".into()],
                 generic_params: None,
@@ -456,19 +388,15 @@ impl TypeChecker {
                 name: "Iterable".into(),
                 methods: HashMap::from([(
                     "each".into(),
-                    Type::Function {
-                        param_names: vec!["f".into()],
-                        params: vec![Type::Function {
-                            param_names: vec!["_0".into()],
-                            params: vec![Type::TypeVar("T".into(), vec![])],
-                            ret: Box::new(Type::Void),
-                            throws: None,
-                            suspendable: false,
-                        }],
-                        ret: Box::new(Type::Void),
-                        throws: None,
-                        suspendable: false,
-                    },
+                    Type::func(
+                        vec!["f".into()],
+                        vec![Type::func(
+                            vec!["_0".into()],
+                            vec![Type::TypeVar("T".into(), vec![])],
+                            Type::Void,
+                        )],
+                        Type::Void,
+                    ),
                 )]),
                 required_methods: vec!["each".into()],
                 generic_params: Some(vec!["T".into()]),
@@ -481,13 +409,7 @@ impl TypeChecker {
                 name: "Random".into(),
                 methods: HashMap::from([(
                     "random".into(),
-                    Type::Function {
-                        param_names: vec![],
-                        params: vec![],
-                        ret: Box::new(Type::TypeVar("Self".into(), vec![])),
-                        throws: None,
-                        suspendable: false,
-                    },
+                    Type::func(vec![], vec![], Type::TypeVar("Self".into(), vec![])),
                 )]),
                 required_methods: vec!["random".into()],
                 generic_params: None,

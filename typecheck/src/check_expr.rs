@@ -1038,13 +1038,7 @@ impl TypeChecker {
         for (trait_name, trait_args) in &target_info.parametric_includes {
             if trait_name == "From" && trait_args.len() == 1 && &trait_args[0] == source_type {
                 // Target includes From[SourceType] — synthesize into() -> TargetType
-                return Some(Type::Function {
-                    param_names: vec![],
-                    params: vec![],
-                    ret: Box::new(expected.clone()),
-                    throws: None,
-                    suspendable: false,
-                });
+                return Some(Type::func(vec![], vec![], expected.clone()));
             }
         }
         None
@@ -1113,20 +1107,8 @@ impl TypeChecker {
 
     fn check_task_member(field: &str, inner: &Type, object: &Expr) -> Result<Type, Diagnostic> {
         match field {
-            "is_ready" => Ok(Type::Function {
-                param_names: vec![],
-                params: vec![],
-                ret: Box::new(Type::Bool),
-                throws: None,
-                suspendable: false,
-            }),
-            "cancel" | "wait_cancel" => Ok(Type::Function {
-                param_names: vec![],
-                params: vec![],
-                ret: Box::new(Type::Void),
-                throws: None,
-                suspendable: false,
-            }),
+            "is_ready" => Ok(Type::func(vec![], vec![], Type::Bool)),
+            "cancel" | "wait_cancel" => Ok(Type::func(vec![], vec![], Type::Void)),
             _ => Err(
                 Diagnostic::error(format!("Task[{}] has no method '{}'", inner, field))
                     .with_code("E010")
@@ -1144,22 +1126,18 @@ impl TypeChecker {
                 throws: None,
                 suspendable: true,
             }),
-            "release" => Ok(Type::Function {
-                param_names: vec!["value".into()],
-                params: vec![inner.clone()],
-                ret: Box::new(Type::Void),
-                throws: None,
-                suspendable: false,
-            }),
+            "release" => Ok(Type::func(
+                vec!["value".into()],
+                vec![inner.clone()],
+                Type::Void,
+            )),
             "lock" => Ok(Type::Function {
                 param_names: vec!["block".into()],
-                params: vec![Type::Function {
-                    param_names: vec!["_0".into()],
-                    params: vec![inner.clone()],
-                    ret: Box::new(Type::Void),
-                    throws: None,
-                    suspendable: false,
-                }],
+                params: vec![Type::func(
+                    vec!["_0".into()],
+                    vec![inner.clone()],
+                    Type::Void,
+                )],
                 ret: Box::new(Type::Void),
                 throws: None,
                 suspendable: true,
@@ -1174,13 +1152,11 @@ impl TypeChecker {
 
     fn check_channel_member(field: &str, inner: &Type, object: &Expr) -> Result<Type, Diagnostic> {
         match field {
-            "send" => Ok(Type::Function {
-                param_names: vec!["value".into()],
-                params: vec![inner.clone()],
-                ret: Box::new(Type::Void),
-                throws: None,
-                suspendable: false,
-            }),
+            "send" => Ok(Type::func(
+                vec!["value".into()],
+                vec![inner.clone()],
+                Type::Void,
+            )),
             "wait_send" => Ok(Type::Function {
                 param_names: vec!["value".into()],
                 params: vec![inner.clone()],
@@ -1198,13 +1174,11 @@ impl TypeChecker {
                 ))),
                 suspendable: false,
             }),
-            "receive" => Ok(Type::Function {
-                param_names: vec![],
-                params: vec![],
-                ret: Box::new(Type::Nullable(Box::new(inner.clone()))),
-                throws: None,
-                suspendable: false,
-            }),
+            "receive" => Ok(Type::func(
+                vec![],
+                vec![],
+                Type::Nullable(Box::new(inner.clone())),
+            )),
             "wait_receive" => Ok(Type::Function {
                 param_names: vec![],
                 params: vec![],
@@ -1222,13 +1196,7 @@ impl TypeChecker {
                 ))),
                 suspendable: false,
             }),
-            "close" => Ok(Type::Function {
-                param_names: vec![],
-                params: vec![],
-                ret: Box::new(Type::Void),
-                throws: None,
-                suspendable: false,
-            }),
+            "close" => Ok(Type::func(vec![], vec![], Type::Void)),
             _ => Err(
                 Diagnostic::error(format!("Channel[{}] has no method '{}'", inner, field))
                     .with_code("E010")
@@ -1264,13 +1232,11 @@ impl TypeChecker {
                     suspendable,
                 })
             }
-            "receive" if !is_send => Ok(Type::Function {
-                param_names: vec![],
-                params: vec![],
-                ret: Box::new(Type::Nullable(Box::new(inner.clone()))),
-                throws: None,
-                suspendable: false,
-            }),
+            "receive" if !is_send => Ok(Type::func(
+                vec![],
+                vec![],
+                Type::Nullable(Box::new(inner.clone())),
+            )),
             "wait_receive" if !is_send => Ok(Type::Function {
                 param_names: vec![],
                 params: vec![],
@@ -1288,27 +1254,17 @@ impl TypeChecker {
                 ))),
                 suspendable: false,
             }),
-            "close" => Ok(Type::Function {
-                param_names: vec![],
-                params: vec![],
-                ret: Box::new(Type::Void),
-                throws: None,
-                suspendable: false,
-            }),
-            "clone_sender" if is_send => Ok(Type::Function {
-                param_names: vec![],
-                params: vec![],
-                ret: Box::new(Type::Custom(name.to_string(), type_args.to_vec())),
-                throws: None,
-                suspendable: false,
-            }),
-            "clone_receiver" if !is_send => Ok(Type::Function {
-                param_names: vec![],
-                params: vec![],
-                ret: Box::new(Type::Custom(name.to_string(), type_args.to_vec())),
-                throws: None,
-                suspendable: false,
-            }),
+            "close" => Ok(Type::func(vec![], vec![], Type::Void)),
+            "clone_sender" if is_send => Ok(Type::func(
+                vec![],
+                vec![],
+                Type::Custom(name.to_string(), type_args.to_vec()),
+            )),
+            "clone_receiver" if !is_send => Ok(Type::func(
+                vec![],
+                vec![],
+                Type::Custom(name.to_string(), type_args.to_vec()),
+            )),
             _ => Err(
                 Diagnostic::error(format!("{}[{}] has no method '{}'", name, inner, field))
                     .with_code("E010")
@@ -1326,13 +1282,7 @@ impl TypeChecker {
                 throws: Some(Box::new(Type::Custom("IOError".into(), Vec::new()))),
                 suspendable: true,
             }),
-            "close" => Ok(Type::Function {
-                param_names: vec![],
-                params: vec![],
-                ret: Box::new(Type::Void),
-                throws: None,
-                suspendable: false,
-            }),
+            "close" => Ok(Type::func(vec![], vec![], Type::Void)),
             _ => Err(
                 Diagnostic::error(format!("TcpListener has no method '{}'", field))
                     .with_code("E010")
@@ -1360,13 +1310,7 @@ impl TypeChecker {
                 throws: Some(Box::new(Type::Custom("IOError".into(), Vec::new()))),
                 suspendable: true,
             }),
-            "close" => Ok(Type::Function {
-                param_names: vec![],
-                params: vec![],
-                ret: Box::new(Type::Void),
-                throws: None,
-                suspendable: false,
-            }),
+            "close" => Ok(Type::func(vec![], vec![], Type::Void)),
             _ => Err(
                 Diagnostic::error(format!("TcpStream has no method '{}'", field))
                     .with_code("E010")
@@ -1384,46 +1328,28 @@ impl TypeChecker {
         // List-specific methods (not part of Iterable vocabulary)
         match field {
             "len" => {
-                return Ok(Type::Function {
-                    param_names: vec![],
-                    params: vec![],
-                    ret: Box::new(Type::Int),
-                    throws: None,
-                    suspendable: false,
-                });
+                return Ok(Type::func(vec![], vec![], Type::Int));
             }
             "each" => {
-                return Ok(Type::Function {
-                    param_names: vec!["f".into()],
-                    params: vec![Type::Function {
-                        param_names: vec!["_0".into()],
-                        params: vec![inner.clone()],
-                        ret: Box::new(Type::Void),
-                        throws: None,
-                        suspendable: false,
-                    }],
-                    ret: Box::new(Type::Void),
-                    throws: None,
-                    suspendable: false,
-                });
+                return Ok(Type::func(
+                    vec!["f".into()],
+                    vec![Type::func(
+                        vec!["_0".into()],
+                        vec![inner.clone()],
+                        Type::Void,
+                    )],
+                    Type::Void,
+                ));
             }
             "push" => {
-                return Ok(Type::Function {
-                    param_names: vec!["item".into()],
-                    params: vec![inner.clone()],
-                    ret: Box::new(Type::Void),
-                    throws: None,
-                    suspendable: false,
-                });
+                return Ok(Type::func(
+                    vec!["item".into()],
+                    vec![inner.clone()],
+                    Type::Void,
+                ));
             }
             "random" => {
-                return Ok(Type::Function {
-                    param_names: vec![],
-                    params: vec![],
-                    ret: Box::new(inner.clone()),
-                    throws: None,
-                    suspendable: false,
-                });
+                return Ok(Type::func(vec![], vec![], inner.clone()));
             }
             _ => {}
         }

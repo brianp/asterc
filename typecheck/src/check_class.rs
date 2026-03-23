@@ -324,13 +324,11 @@ impl TypeChecker {
                                     ..
                                 } = oty
                                 {
-                                    Type::Function {
-                                        param_names: param_names.clone(),
-                                        params: params.clone(),
-                                        ret: ret.clone(),
-                                        throws: None,
-                                        suspendable: false,
-                                    }
+                                    Type::func(
+                                        param_names.clone(),
+                                        params.clone(),
+                                        *ret.clone(),
+                                    )
                                 } else {
                                     oty.clone()
                                 };
@@ -376,13 +374,11 @@ impl TypeChecker {
                                     params,
                                     ret,
                                     ..
-                                } => Type::Function {
-                                    param_names: param_names.clone(),
-                                    params: params.clone(),
-                                    ret: ret.clone(),
-                                    throws: None,
-                                    suspendable: false,
-                                },
+                                } => Type::func(
+                                    param_names.clone(),
+                                    params.clone(),
+                                    *ret.clone(),
+                                ),
                                 other => other.clone(),
                             };
                             let mut bindings2 = HashMap::new();
@@ -429,14 +425,7 @@ impl TypeChecker {
 
         // Printable: auto-add debug() defaulting to to_string() signature if not defined
         if includes_list.contains(&"Printable".to_string()) && !method_map.contains_key("debug") {
-            let debug_ty = Type::Function {
-                param_names: vec![],
-                params: vec![],
-                ret: Box::new(Type::String),
-                throws: None,
-                suspendable: false,
-            };
-            method_map.insert("debug".into(), debug_ty);
+            method_map.insert("debug".into(), Type::func(vec![], vec![], Type::String));
         }
 
         let mut info = ClassInfo::new(class_type, field_map, method_map);
@@ -503,13 +492,11 @@ impl TypeChecker {
         all_field_types.extend(fields.iter().map(|(_, t)| t.clone()));
         self.env.set_var(
             name.to_string(),
-            Type::Function {
-                param_names: all_field_names,
-                params: all_field_types,
-                ret: Box::new(Type::Custom(name.to_string(), generic_type_args)),
-                throws: None,
-                suspendable: false,
-            },
+            Type::func(
+                all_field_names,
+                all_field_types,
+                Type::Custom(name.to_string(), generic_type_args),
+            ),
         );
     }
 

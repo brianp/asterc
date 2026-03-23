@@ -41,6 +41,20 @@ pub enum Type {
 }
 
 impl Type {
+    pub fn func(
+        param_names: Vec<std::string::String>,
+        params: Vec<Type>,
+        ret: Type,
+    ) -> Self {
+        Type::Function {
+            param_names,
+            params,
+            ret: Box::new(ret),
+            throws: None,
+            suspendable: false,
+        }
+    }
+
     pub fn from_ident(name: &str) -> Self {
         match name {
             "Int" => Type::Int,
