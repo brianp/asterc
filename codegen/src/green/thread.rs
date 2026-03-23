@@ -1,3 +1,4 @@
+use std::sync::atomic::AtomicBool;
 use std::sync::{Condvar, Mutex};
 
 use super::context::MachineContext;
@@ -36,6 +37,8 @@ pub(crate) struct GreenThread {
     pub(crate) shadow_stack_top: *mut u8,
     pub(crate) state: Mutex<TaskState>,
     pub(crate) cv: Condvar,
+    /// Debug-mode guard: detects if two workers try to run the same thread.
+    pub(crate) running_on_worker: AtomicBool,
 }
 
 unsafe impl Send for GreenThread {}

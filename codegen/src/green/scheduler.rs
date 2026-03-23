@@ -135,6 +135,11 @@ fn worker_loop(_id: usize, local: Worker<ThreadPtr>) {
             st.status = ThreadStatus::Running;
         }
 
+        debug_assert!(
+            !thread.running_on_worker.swap(true, std::sync::atomic::Ordering::Relaxed),
+            "double-scheduling detected: green thread is already running on another worker"
+        );
+
         // Set TLS for the green thread
         WORKER_CURRENT_THREAD.set(thread_ptr);
         WORKER_YIELD_REASON.set(YieldReason::None);
@@ -150,6 +155,7 @@ fn worker_loop(_id: usize, local: Worker<ThreadPtr>) {
         }
 
         // Green thread yielded back — save per-green-thread TLS state
+        thread.running_on_worker.store(false, std::sync::atomic::Ordering::Relaxed);
         thread.error_flag = crate::runtime::error_flag_get();
         thread.shadow_stack_top = crate::runtime::shadow_stack_get();
         WORKER_CURRENT_THREAD.set(std::ptr::null_mut());
@@ -316,6 +322,7 @@ pub(crate) fn spawn_green_thread(entry: usize, args: usize) -> *mut GreenThread 
             green_waiters: Vec::new(),
         }),
         cv: std::sync::Condvar::new(),
+        running_on_worker: std::sync::atomic::AtomicBool::new(false),
     }));
 
     unsafe {
@@ -349,6 +356,7 @@ pub(crate) fn allocate_terminal_thread(result: i64, failed: bool) -> *mut GreenT
             green_waiters: Vec::new(),
         }),
         cv: Condvar::new(),
+        running_on_worker: std::sync::atomic::AtomicBool::new(false),
     }))
 }
 
