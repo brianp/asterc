@@ -943,7 +943,10 @@ fn translate_binop(
         }
         BinOp::Eq if is_f => builder.ins().fcmp(FloatCC::Equal, lhs, rhs),
         BinOp::Eq if is_p => {
-            let eq_ref = state.runtime_refs.get("aster_string_eq").unwrap();
+            let eq_ref = state
+                .runtime_refs
+                .get("aster_string_eq")
+                .expect("aster_string_eq not registered");
             let call = builder.ins().call(*eq_ref, &[lhs, rhs]);
             let result = builder.inst_results(call)[0];
             let zero = builder.ins().iconst(types::I8, 0);
@@ -952,7 +955,10 @@ fn translate_binop(
         BinOp::Eq => builder.ins().icmp(IntCC::Equal, lhs, rhs),
         BinOp::Neq if is_f => builder.ins().fcmp(FloatCC::NotEqual, lhs, rhs),
         BinOp::Neq if is_p => {
-            let eq_ref = state.runtime_refs.get("aster_string_eq").unwrap();
+            let eq_ref = state
+                .runtime_refs
+                .get("aster_string_eq")
+                .expect("aster_string_eq not registered");
             let call = builder.ins().call(*eq_ref, &[lhs, rhs]);
             let result = builder.inst_results(call)[0];
             let zero = builder.ins().iconst(types::I8, 0);
@@ -992,7 +998,10 @@ fn translate_string_cmp(
     rhs: Value,
     cc: IntCC,
 ) -> Value {
-    let cmp_ref = state.runtime_refs.get("aster_string_compare").unwrap();
+    let cmp_ref = state
+        .runtime_refs
+        .get("aster_string_compare")
+        .expect("aster_string_compare not registered");
     let call = builder.ins().call(*cmp_ref, &[lhs, rhs]);
     let result = builder.inst_results(call)[0];
     let zero = builder.ins().iconst(types::I64, 0);
