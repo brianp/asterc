@@ -127,16 +127,11 @@ impl TypeChecker {
         // Built-in error hierarchy: Exception (root) -> Error (app base)
         env.set_class(
             "Exception".into(),
-            ClassInfo {
-                ty: Type::Custom("Exception".into(), Vec::new()),
-                fields: IndexMap::from([("message".into(), Type::String)]),
-                methods: HashMap::new(),
-                generic_params: None,
-                extends: None,
-                includes: Vec::new(),
-                overloaded_methods: HashMap::new(),
-                parametric_includes: Vec::new(),
-            },
+            ClassInfo::new(
+                Type::Custom("Exception".into(), Vec::new()),
+                IndexMap::from([("message".into(), Type::String)]),
+                HashMap::new(),
+            ),
         );
         env.set_var(
             "Exception".into(),
@@ -148,19 +143,15 @@ impl TypeChecker {
                 suspendable: false,
             },
         );
-        env.set_class(
-            "Error".into(),
-            ClassInfo {
-                ty: Type::Custom("Error".into(), Vec::new()),
-                fields: IndexMap::new(), // inherits message from Exception
-                methods: HashMap::new(),
-                generic_params: None,
-                extends: Some("Exception".into()),
-                includes: Vec::new(),
-                overloaded_methods: HashMap::new(),
-                parametric_includes: Vec::new(),
-            },
-        );
+        env.set_class("Error".into(), {
+            let mut info = ClassInfo::new(
+                Type::Custom("Error".into(), Vec::new()),
+                IndexMap::new(),
+                HashMap::new(),
+            );
+            info.extends = Some("Exception".into());
+            info
+        });
         env.set_var(
             "Error".into(),
             Type::Function {
@@ -172,19 +163,15 @@ impl TypeChecker {
             },
         );
         // Built-in CancelledError for async task cancellation
-        env.set_class(
-            "CancelledError".into(),
-            ClassInfo {
-                ty: Type::Custom("CancelledError".into(), Vec::new()),
-                fields: IndexMap::new(),
-                methods: HashMap::new(),
-                generic_params: None,
-                extends: Some("Error".into()),
-                includes: Vec::new(),
-                overloaded_methods: HashMap::new(),
-                parametric_includes: Vec::new(),
-            },
-        );
+        env.set_class("CancelledError".into(), {
+            let mut info = ClassInfo::new(
+                Type::Custom("CancelledError".into(), Vec::new()),
+                IndexMap::new(),
+                HashMap::new(),
+            );
+            info.extends = Some("Error".into());
+            info
+        });
         env.set_var(
             "CancelledError".into(),
             Type::Function {
@@ -204,19 +191,15 @@ impl TypeChecker {
             ("ChannelClosedError", "Error"),
             ("IOError", "Error"),
         ] {
-            env.set_class(
-                name.into(),
-                ClassInfo {
-                    ty: Type::Custom(name.into(), Vec::new()),
-                    fields: IndexMap::new(),
-                    methods: HashMap::new(),
-                    generic_params: None,
-                    extends: Some(parent.into()),
-                    includes: Vec::new(),
-                    overloaded_methods: HashMap::new(),
-                    parametric_includes: Vec::new(),
-                },
-            );
+            env.set_class(name.into(), {
+                let mut info = ClassInfo::new(
+                    Type::Custom(name.into(), Vec::new()),
+                    IndexMap::new(),
+                    HashMap::new(),
+                );
+                info.extends = Some(parent.into());
+                info
+            });
             env.set_var(
                 name.into(),
                 Type::Function {
@@ -235,16 +218,15 @@ impl TypeChecker {
         }
 
         // Range builtin class — includes Iterable, used by `..` and `..=` syntax
-        env.set_class(
-            "Range".into(),
-            ClassInfo {
-                ty: Type::Custom("Range".into(), Vec::new()),
-                fields: IndexMap::from([
+        env.set_class("Range".into(), {
+            let mut info = ClassInfo::new(
+                Type::Custom("Range".into(), Vec::new()),
+                IndexMap::from([
                     ("start".into(), Type::Int),
                     ("end".into(), Type::Int),
                     ("inclusive".into(), Type::Bool),
                 ]),
-                methods: HashMap::from([
+                HashMap::from([
                     (
                         "each".into(),
                         Type::Function {
@@ -272,13 +254,11 @@ impl TypeChecker {
                         },
                     ),
                 ]),
-                generic_params: None,
-                extends: None,
-                includes: vec!["Iterable".into()],
-                overloaded_methods: HashMap::new(),
-                parametric_includes: vec![("Iterable".to_string(), vec![Type::Int])],
-            },
-        );
+            );
+            info.includes = vec!["Iterable".into()];
+            info.parametric_includes = vec![("Iterable".to_string(), vec![Type::Int])];
+            info
+        });
 
         // Build protocol traits and supporting enums — stored in builtin maps.
         // In prelude mode (no loader), also installed in env.

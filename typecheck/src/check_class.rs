@@ -16,19 +16,16 @@ impl TypeChecker {
     ) -> Result<Type, Diagnostic> {
         // Pre-register the class so that method type checking recognizes
         // the class name as a known type (needed for inline generic inference).
-        self.env.set_class(
-            name.to_string(),
-            ClassInfo {
-                ty: Type::Custom(name.to_string(), Vec::new()),
-                fields: IndexMap::new(),
-                methods: HashMap::new(),
-                generic_params: generic_params.clone(),
-                extends: extends.clone(),
-                includes: Vec::new(),
-                overloaded_methods: HashMap::new(),
-                parametric_includes: Vec::new(),
-            },
-        );
+        self.env.set_class(name.to_string(), {
+            let mut info = ClassInfo::new(
+                Type::Custom(name.to_string(), Vec::new()),
+                IndexMap::new(),
+                HashMap::new(),
+            );
+            info.generic_params = generic_params.clone();
+            info.extends = extends.clone();
+            info
+        });
 
         let mut field_map = IndexMap::new();
         for (fname, fty) in fields {

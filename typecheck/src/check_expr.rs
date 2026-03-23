@@ -406,19 +406,16 @@ impl TypeChecker {
             if includes.contains(&"Ord".to_string()) && !includes.contains(&"Eq".to_string()) {
                 includes.push("Eq".to_string());
             }
-            sub.env.set_class(
-                type_param_name.clone(),
-                ast::ClassInfo {
-                    ty: Type::Custom(type_param_name.clone(), vec![]),
-                    fields: indexmap::IndexMap::new(),
+            sub.env.set_class(type_param_name.clone(), {
+                let mut info = ast::ClassInfo::new(
+                    Type::Custom(type_param_name.clone(), vec![]),
+                    indexmap::IndexMap::new(),
                     methods,
-                    generic_params: None,
-                    extends,
-                    includes,
-                    overloaded_methods: std::collections::HashMap::new(),
-                    parametric_includes: Vec::new(),
-                },
-            );
+                );
+                info.extends = extends;
+                info.includes = includes;
+                info
+            });
         }
 
         let mut param_types = Vec::new();

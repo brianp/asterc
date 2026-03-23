@@ -21,6 +21,21 @@ pub struct ClassInfo {
     pub parametric_includes: Vec<(String, Vec<Type>)>,
 }
 
+impl ClassInfo {
+    pub fn new(ty: Type, fields: IndexMap<String, Type>, methods: HashMap<String, Type>) -> Self {
+        Self {
+            ty,
+            fields,
+            methods,
+            generic_params: None,
+            extends: None,
+            includes: Vec::new(),
+            overloaded_methods: HashMap::new(),
+            parametric_includes: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TraitInfo {
     pub name: String,
@@ -195,16 +210,11 @@ mod tests {
     use crate::types::Type;
 
     fn dummy_class(name: &str) -> ClassInfo {
-        ClassInfo {
-            ty: Type::Custom(name.to_string(), Vec::new()),
-            fields: IndexMap::new(),
-            methods: HashMap::new(),
-            generic_params: None,
-            extends: None,
-            includes: Vec::new(),
-            overloaded_methods: HashMap::new(),
-            parametric_includes: Vec::new(),
-        }
+        ClassInfo::new(
+            Type::Custom(name.to_string(), Vec::new()),
+            IndexMap::new(),
+            HashMap::new(),
+        )
     }
 
     #[test]
@@ -275,16 +285,11 @@ mod tests {
         fields.insert("x".into(), Type::Int);
         let mut methods = HashMap::new();
         methods.insert("m".into(), Type::Void);
-        let info = ClassInfo {
-            ty: Type::Custom("Point".into(), Vec::new()),
-            fields: fields.clone(),
-            methods: methods.clone(),
-            generic_params: None,
-            extends: None,
-            includes: Vec::new(),
-            overloaded_methods: HashMap::new(),
-            parametric_includes: Vec::new(),
-        };
+        let info = ClassInfo::new(
+            Type::Custom("Point".into(), Vec::new()),
+            fields.clone(),
+            methods.clone(),
+        );
         let mut env = TypeEnv::new();
         env.set_class("Point".into(), info.clone());
         let got = env.get_class("Point").unwrap();
