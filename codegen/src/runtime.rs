@@ -1248,8 +1248,9 @@ pub extern "C" fn aster_mutex_lock(mutex: *mut u8) -> i64 {
         state.owner = scheduler::current_thread_id();
         return state.value;
     }
-    // Fallback for non-green-thread context: spin
+    // Fallback for non-green-thread context: spin with timeout
     drop(state);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         std::thread::yield_now();
         let mut state = m.inner.lock().unwrap();
@@ -1257,6 +1258,11 @@ pub extern "C" fn aster_mutex_lock(mutex: *mut u8) -> i64 {
             state.locked = true;
             state.owner = scheduler::current_thread_id();
             return state.value;
+        }
+        drop(state);
+        if std::time::Instant::now() >= deadline {
+            aster_error_set();
+            return 0;
         }
     }
 }
@@ -1385,8 +1391,9 @@ pub extern "C" fn aster_channel_wait_send(ch: *mut u8, value: i64) {
         drop(state);
         scheduler::suspend_for_channel_send();
     } else {
-        // Fallback for non-green-thread context: spin until space
+        // Fallback for non-green-thread context: spin with timeout
         drop(state);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         loop {
             std::thread::yield_now();
             let mut state = c.inner.lock().unwrap();
@@ -1394,6 +1401,11 @@ pub extern "C" fn aster_channel_wait_send(ch: *mut u8, value: i64) {
                 if !state.closed {
                     state.buffer.push_back(value);
                 }
+                break;
+            }
+            drop(state);
+            if std::time::Instant::now() >= deadline {
+                aster_error_set();
                 break;
             }
         }
@@ -1474,8 +1486,9 @@ pub extern "C" fn aster_channel_wait_receive(ch: *mut u8) -> i64 {
         drop(state);
         return scheduler::suspend_for_channel_receive();
     }
-    // Fallback: spin
+    // Fallback: spin with timeout
     drop(state);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         std::thread::yield_now();
         let mut state = c.inner.lock().unwrap();
@@ -1483,6 +1496,11 @@ pub extern "C" fn aster_channel_wait_receive(ch: *mut u8) -> i64 {
             return value;
         }
         if state.closed {
+            aster_error_set();
+            return 0;
+        }
+        drop(state);
+        if std::time::Instant::now() >= deadline {
             aster_error_set();
             return 0;
         }
