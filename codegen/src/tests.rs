@@ -4397,3 +4397,45 @@ def main() -> Int
     let result = jit.call_i64(fir.entry.unwrap());
     assert_eq!(result, 42);
 }
+
+// ===========================================================================
+// Generic type erasure — Float/Bool through TypeVar params (H1 audit fix)
+// ===========================================================================
+
+#[test]
+fn generic_identity_float() {
+    // Float through a generic identity function should preserve its value.
+    let src = "\
+def identity(x: T) -> T
+  return x
+
+def main() -> Float
+  identity(x: 3.14)
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.get_function_ptr(fir.entry.unwrap()).unwrap();
+    let f: fn() -> f64 = unsafe { std::mem::transmute(ptr) };
+    let result = f();
+    assert!(
+        (result - 3.14).abs() < 1e-10,
+        "expected 3.14, got {}",
+        result
+    );
+}
+
+#[test]
+fn generic_identity_bool() {
+    // Bool through a generic identity function should preserve its value.
+    let src = "\
+def identity(x: T) -> T
+  return x
+
+def main() -> Bool
+  identity(x: true)
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 1);
+}

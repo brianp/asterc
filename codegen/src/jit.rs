@@ -629,7 +629,7 @@ pub(crate) fn collect_string_lits_expr(
         FirExpr::TagCheck { value, .. } => {
             collect_string_lits_expr(value, strings);
         }
-        FirExpr::IntToFloat(inner) => {
+        FirExpr::IntToFloat(inner) | FirExpr::Bitcast { value: inner, .. } => {
             collect_string_lits_expr(inner, strings);
         }
         FirExpr::IntLit(_)

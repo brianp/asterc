@@ -756,6 +756,25 @@ fn translate_expr(
             let val = translate_expr(builder, state, inner);
             builder.ins().fcvt_from_sint(types::F64, val)
         }
+
+        FirExpr::Bitcast { value, to } => {
+            let val = translate_expr(builder, state, value);
+            let target = fir_type_to_clif(to);
+            let source = builder.func.dfg.value_type(val);
+            if source == target {
+                val
+            } else if source == types::F64 && target == types::I64 {
+                builder.ins().bitcast(types::I64, ir::MemFlags::new(), val)
+            } else if source == types::I64 && target == types::F64 {
+                builder.ins().bitcast(types::F64, ir::MemFlags::new(), val)
+            } else if source == types::I8 && target == types::I64 {
+                builder.ins().uextend(types::I64, val)
+            } else if source == types::I64 && target == types::I8 {
+                builder.ins().ireduce(types::I8, val)
+            } else {
+                val
+            }
+        }
     }
 }
 
@@ -1060,6 +1079,7 @@ fn infer_operand_type(_state: &TranslationState, expr: &FirExpr) -> FirType {
         FirExpr::TagUnwrap { ty, .. } => ty.clone(),
         FirExpr::TagCheck { .. } => FirType::Bool,
         FirExpr::IntToFloat(_) => FirType::F64,
+        FirExpr::Bitcast { to, .. } => to.clone(),
     }
 }
 

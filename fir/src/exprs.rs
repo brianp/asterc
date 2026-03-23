@@ -147,4 +147,10 @@ pub enum FirExpr {
     GlobalFunc(FunctionId),
     /// Convert an integer to a float (i64 → f64).
     IntToFloat(Box<FirExpr>),
+    /// Reinterpret bits between types of the same width (e.g. F64 ↔ I64 for
+    /// generic type erasure). Does NOT convert values — preserves bit pattern.
+    Bitcast {
+        value: Box<FirExpr>,
+        to: FirType,
+    },
 }

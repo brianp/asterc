@@ -1531,11 +1531,29 @@ impl Lowerer {
                     } else if let Some(&func_id) = self.functions.get(name.as_str()) {
                         let fir_args = self.lower_call_args_with_defaults(name, args)?;
                         let ret_ty = self.resolve_function_ret_type(name);
-                        Ok(FirExpr::Call {
+                        // Generic type erasure: if params are TypeVar, the FIR
+                        // signature uses I64. Bitcast Float/Bool args to I64 so
+                        // Cranelift types match, and bitcast the result back.
+                        let (fir_args, cast_ret) = self.apply_generic_erasure_casts(
+                            name,
+                            fir_args,
+                            ret_ty.clone(),
+                            &expr.span(),
+                        );
+                        let needs_ret_cast = cast_ret != ret_ty;
+                        let call = FirExpr::Call {
                             func: func_id,
                             args: fir_args,
                             ret_ty,
-                        })
+                        };
+                        if needs_ret_cast {
+                            Ok(FirExpr::Bitcast {
+                                value: Box::new(call),
+                                to: cast_ret,
+                            })
+                        } else {
+                            Ok(call)
+                        }
                     } else if self.locals.contains_key(name.as_str()) {
                         // Local variable with function type — closure call (dynamic dispatch)
                         let closure_var = self.lower_expr(func)?;
@@ -4363,6 +4381,7 @@ impl Lowerer {
             FirExpr::EnvLoad { ty, .. } => ty.clone(),
             FirExpr::GlobalFunc(_) => FirType::Ptr,
             FirExpr::IntToFloat(_) => FirType::F64,
+            FirExpr::Bitcast { to, .. } => to.clone(),
         }
     }
 
@@ -4428,6 +4447,80 @@ impl Lowerer {
         } else {
             FirType::Void
         }
+    }
+
+    /// For calls to generic functions, wrap arguments and return values in
+    /// bitcasts so that Float/Bool values pass through the I64-erased params
+    /// with correct Cranelift types. Returns (possibly-wrapped args, possibly-wrapped ret_ty).
+    fn apply_generic_erasure_casts(
+        &self,
+        func_name: &str,
+        mut fir_args: Vec<FirExpr>,
+        ret_ty: FirType,
+        call_span: &Span,
+    ) -> (Vec<FirExpr>, FirType) {
+        let func_ty = self.type_env.get_var(func_name);
+        let (param_types, ret_ast) = match &func_ty {
+            Some(Type::Function { params, ret, .. }) => (params.clone(), ret.as_ref().clone()),
+            _ => return (fir_args, ret_ty),
+        };
+
+        // Build a mini substitution map: TypeVar name → concrete FirType,
+        // inferred from argument types at this call site.
+        let mut typevar_map: HashMap<String, FirType> = HashMap::new();
+        for (i, param_ty) in param_types.iter().enumerate() {
+            if let Type::TypeVar(tv_name, _) = param_ty
+                && i < fir_args.len()
+            {
+                let arg_ty = self.infer_fir_type(&fir_args[i]);
+                if arg_ty != FirType::I64 {
+                    typevar_map.insert(tv_name.clone(), arg_ty);
+                }
+            }
+        }
+
+        if typevar_map.is_empty() {
+            return (fir_args, ret_ty);
+        }
+
+        // Wrap args whose declared type is TypeVar and whose concrete type
+        // is F64 or Bool — bitcast to I64 to match the erased signature.
+        for (i, param_ty) in param_types.iter().enumerate() {
+            if let Type::TypeVar(tv_name, _) = param_ty
+                && let Some(concrete) = typevar_map.get(tv_name)
+                && i < fir_args.len()
+                && (*concrete == FirType::F64 || *concrete == FirType::Bool)
+            {
+                let arg = std::mem::replace(&mut fir_args[i], FirExpr::IntLit(0));
+                fir_args[i] = FirExpr::Bitcast {
+                    value: Box::new(arg),
+                    to: FirType::I64,
+                };
+            }
+        }
+
+        // Resolve return type: if it references a TypeVar we've resolved,
+        // the call returns I64 but the caller needs the concrete type.
+        let mut cast_ret = ret_ty.clone();
+        if let Type::TypeVar(tv_name, _) = &ret_ast
+            && let Some(concrete) = typevar_map.get(tv_name)
+            && (*concrete == FirType::F64 || *concrete == FirType::Bool)
+        {
+            cast_ret = concrete.clone();
+        }
+        // Fall back to type_table if available
+        if cast_ret == ret_ty
+            && let Some(resolved) = self.type_table.get(call_span)
+        {
+            let resolved_fir = self.lower_type(resolved);
+            if resolved_fir != ret_ty
+                && (resolved_fir == FirType::F64 || resolved_fir == FirType::Bool)
+            {
+                cast_ret = resolved_fir;
+            }
+        }
+
+        (fir_args, cast_ret)
     }
 
     fn lower_explicit_call_args(
