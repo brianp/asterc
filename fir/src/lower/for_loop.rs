@@ -21,11 +21,11 @@ impl Lowerer {
         // Check if iterating over a builtin Range variable (not a user-defined Range class).
         // Builtin Range has no user-defined methods — check that it's not an Iterator.
         if let Some(Type::Custom(ref name, _)) = self.resolve_iter_type(iter)
-            && name == "Range"
+            && name == builtin_class::RANGE
             && self
                 .type_env
                 .get_class(name)
-                .is_some_and(|ci| !ci.includes.contains(&"Iterator".to_string()))
+                .is_some_and(|ci| !ci.includes.contains(&builtin_class::ITERATOR.to_string()))
         {
             return self.lower_range_var_for_loop(var, iter, body);
         }
@@ -379,7 +379,9 @@ impl Lowerer {
         if let Expr::Ident(name, _) = iter
             && let Some(Type::Custom(class_name, _)) = self.local_ast_types.get(name.as_str())
             && let Some(class_info) = self.type_env.get_class(class_name)
-            && class_info.includes.contains(&"Iterator".to_string())
+            && class_info
+                .includes
+                .contains(&builtin_class::ITERATOR.to_string())
         {
             return Some(class_name.clone());
         }

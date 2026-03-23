@@ -31,10 +31,10 @@ impl Lowerer {
 
         // File static methods → runtime calls
         if let Expr::Ident(name, _) = object
-            && name == "File"
+            && name == builtin_class::FILE
         {
             match method {
-                "read" => {
+                builtin_method::READ => {
                     let path = args
                         .iter()
                         .find(|(n, _, _)| n == "path")
@@ -51,7 +51,7 @@ impl Lowerer {
                         ret_ty: FirType::Ptr,
                     });
                 }
-                "write" | "append" => {
+                builtin_method::WRITE | builtin_method::APPEND => {
                     let path = args
                         .iter()
                         .find(|(n, _, _)| n == "path")
@@ -72,7 +72,7 @@ impl Lowerer {
                     } else {
                         FirExpr::IntLit(0)
                     };
-                    let runtime_name = if method == "write" {
+                    let runtime_name = if method == builtin_method::WRITE {
                         "aster_file_write"
                     } else {
                         "aster_file_append"
@@ -120,9 +120,9 @@ impl Lowerer {
 
         if matches!(object_ast_ty, Some(Type::Task(_)))
             && let Some((runtime_name, ret_ty)) = match method {
-                "is_ready" => Some(("aster_task_is_ready", FirType::Bool)),
-                "cancel" => None,
-                "wait_cancel" => None,
+                builtin_method::IS_READY => Some(("aster_task_is_ready", FirType::Bool)),
+                builtin_method::CANCEL => None,
+                builtin_method::WAIT_CANCEL => None,
                 _ => None,
             }
         {
@@ -134,12 +134,12 @@ impl Lowerer {
         }
         if matches!(object_ast_ty, Some(Type::Task(_))) {
             match method {
-                "cancel" => {
+                builtin_method::CANCEL => {
                     return Ok(FirExpr::CancelTask {
                         task: Box::new(fir_object),
                     });
                 }
-                "wait_cancel" => {
+                builtin_method::WAIT_CANCEL => {
                     return Ok(FirExpr::WaitCancel {
                         task: Box::new(fir_object),
                     });
@@ -149,16 +149,16 @@ impl Lowerer {
         }
 
         // Mutex[T] methods → runtime calls
-        if matches!(&object_ast_ty, Some(Type::Custom(name, _)) if name == "Mutex") {
+        if matches!(&object_ast_ty, Some(Type::Custom(name, _)) if name == builtin_class::MUTEX) {
             match method {
-                "acquire" => {
+                builtin_method::ACQUIRE => {
                     return Ok(FirExpr::RuntimeCall {
                         name: "aster_mutex_lock".to_string(),
                         args: vec![fir_object],
                         ret_ty: FirType::I64,
                     });
                 }
-                "release" => {
+                builtin_method::RELEASE => {
                     let value_arg = args
                         .iter()
                         .find(|(n, _, _)| n == "value")
@@ -175,7 +175,7 @@ impl Lowerer {
                         ret_ty: FirType::Void,
                     });
                 }
-                "lock" => {
+                builtin_method::LOCK => {
                     // Scoped lock: m.lock(block: -> v : body)
                     // Lowers to: let __mx = m; let v = acquire(__mx); body; unlock(__mx, v)
                     let block_arg = args
@@ -238,7 +238,7 @@ impl Lowerer {
         }
 
         // Channel[T] / MultiSend[T] / MultiReceive[T] methods → runtime calls
-        if matches!(&object_ast_ty, Some(Type::Custom(name, _)) if name == "Channel" || name == "MultiSend" || name == "MultiReceive")
+        if matches!(&object_ast_ty, Some(Type::Custom(name, _)) if name == builtin_class::CHANNEL || name == builtin_class::MULTI_SEND || name == builtin_class::MULTI_RECEIVE)
         {
             let mut fir_value_arg = || -> Result<FirExpr, LowerError> {
                 let value_expr = args
@@ -253,56 +253,56 @@ impl Lowerer {
                 }
             };
             match method {
-                "send" => {
+                builtin_method::SEND => {
                     return Ok(FirExpr::RuntimeCall {
                         name: "aster_channel_send".to_string(),
                         args: vec![fir_object, fir_value_arg()?],
                         ret_ty: FirType::Void,
                     });
                 }
-                "wait_send" => {
+                builtin_method::WAIT_SEND => {
                     return Ok(FirExpr::RuntimeCall {
                         name: "aster_channel_wait_send".to_string(),
                         args: vec![fir_object, fir_value_arg()?],
                         ret_ty: FirType::Void,
                     });
                 }
-                "try_send" => {
+                builtin_method::TRY_SEND => {
                     return Ok(FirExpr::RuntimeCall {
                         name: "aster_channel_try_send".to_string(),
                         args: vec![fir_object, fir_value_arg()?],
                         ret_ty: FirType::Void,
                     });
                 }
-                "receive" => {
+                builtin_method::RECEIVE => {
                     return Ok(FirExpr::RuntimeCall {
                         name: "aster_channel_receive".to_string(),
                         args: vec![fir_object],
                         ret_ty: FirType::I64,
                     });
                 }
-                "wait_receive" => {
+                builtin_method::WAIT_RECEIVE => {
                     return Ok(FirExpr::RuntimeCall {
                         name: "aster_channel_wait_receive".to_string(),
                         args: vec![fir_object],
                         ret_ty: FirType::I64,
                     });
                 }
-                "try_receive" => {
+                builtin_method::TRY_RECEIVE => {
                     return Ok(FirExpr::RuntimeCall {
                         name: "aster_channel_try_receive".to_string(),
                         args: vec![fir_object],
                         ret_ty: FirType::I64,
                     });
                 }
-                "close" => {
+                builtin_method::CLOSE => {
                     return Ok(FirExpr::RuntimeCall {
                         name: "aster_channel_close".to_string(),
                         args: vec![fir_object],
                         ret_ty: FirType::Void,
                     });
                 }
-                "clone_sender" | "clone_receiver" => {
+                builtin_method::CLONE_SENDER | builtin_method::CLONE_RECEIVER => {
                     // Clone returns the same handle (refcount bump is a future enhancement)
                     return Ok(fir_object);
                 }
@@ -310,7 +310,7 @@ impl Lowerer {
             }
         }
 
-        if method == "or_throw" {
+        if method == builtin_method::OR_THROW {
             let inner_ty = match &fir_object_ty {
                 FirType::TaggedUnion { variants, .. } if !variants.is_empty() => {
                     variants[0].clone()
@@ -367,7 +367,7 @@ impl Lowerer {
 
         // Nullable `.or(default: value)` — returns the inner value or the default if nil.
         // TaggedUnion tag 0 = Some(value), tag 1 = nil.
-        if method == "or"
+        if method == builtin_method::OR
             && let FirType::TaggedUnion { ref variants, .. } = fir_object_ty
             && !variants.is_empty()
         {
@@ -414,7 +414,7 @@ impl Lowerer {
         }
 
         // Check for Range methods
-        if method == "random" && self.is_range_expr(object) {
+        if method == builtin_method::RANDOM && self.is_range_expr(object) {
             // range.random() → aster_random_int(end - start) + start
             // Range layout: [start: i64 @ 0][end: i64 @ 8][inclusive: i64 @ 16]
             let start = FirExpr::FieldGet {
@@ -448,14 +448,14 @@ impl Lowerer {
 
         // Check for list built-in methods
         match method {
-            "len" => {
+            builtin_method::LEN => {
                 return Ok(FirExpr::RuntimeCall {
                     name: "aster_list_len".to_string(),
                     args: vec![fir_object],
                     ret_ty: FirType::I64,
                 });
             }
-            "push" => {
+            builtin_method::PUSH => {
                 let mut call_args = vec![fir_object];
                 for (_, _, arg) in args {
                     call_args.push(self.lower_expr(arg)?);
@@ -466,7 +466,7 @@ impl Lowerer {
                     ret_ty: FirType::Ptr,
                 });
             }
-            "random" => {
+            builtin_method::RANDOM => {
                 // list.random() → aster_list_random(list)
                 // Single runtime call avoids double-evaluation and GC issues
                 // with unrooted temporaries.
@@ -513,33 +513,37 @@ impl Lowerer {
                 self.resolve_list_elem_type(object).unwrap_or(FirType::I64)
             };
             match method {
-                "map" | "filter" | "find" | "any" | "all" => {
+                builtin_method::MAP
+                | builtin_method::FILTER
+                | builtin_method::FIND
+                | builtin_method::ANY
+                | builtin_method::ALL => {
                     return self
                         .lower_iterable_with_callback(method, fir_object, args, &elem_ty, object);
                 }
-                "reduce" => {
+                builtin_method::REDUCE => {
                     return self.lower_iterable_reduce(fir_object, args, &elem_ty, object);
                 }
-                "count" => {
+                builtin_method::COUNT => {
                     return Ok(FirExpr::RuntimeCall {
                         name: "aster_list_len".to_string(),
                         args: vec![fir_object],
                         ret_ty: FirType::I64,
                     });
                 }
-                "first" => {
+                builtin_method::FIRST => {
                     return self.lower_iterable_first(fir_object, &elem_ty);
                 }
-                "last" => {
+                builtin_method::LAST => {
                     return self.lower_iterable_last(fir_object, &elem_ty);
                 }
-                "to_list" => {
+                builtin_method::TO_LIST => {
                     return self.lower_iterable_to_list(fir_object, &elem_ty);
                 }
-                "min" | "max" => {
+                builtin_method::MIN | builtin_method::MAX => {
                     return self.lower_iterable_min_max(method, fir_object, &elem_ty);
                 }
-                "sort" => {
+                builtin_method::SORT => {
                     return self.lower_iterable_sort(fir_object, &elem_ty);
                 }
                 _ => {}

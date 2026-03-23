@@ -5,6 +5,7 @@ use ast::type_env::TypeEnv;
 use ast::type_table::TypeTable;
 use ast::{EnumVariant, Expr, MatchPattern, Module, Stmt, Type};
 
+use crate::builtins::{class as builtin_class, method as builtin_method};
 use crate::exprs::{BinOp, FirExpr, UnaryOp};
 use crate::module::{FirClass, FirFunction, FirModule};
 use crate::stmts::{FirPlace, FirStmt};
@@ -301,21 +302,21 @@ impl Lowerer {
                     // Iterable vocabulary methods produce loops
                     if matches!(
                         field.as_str(),
-                        "map"
-                            | "filter"
-                            | "find"
-                            | "any"
-                            | "all"
-                            | "reduce"
-                            | "count"
-                            | "first"
-                            | "last"
-                            | "to_list"
-                            | "min"
-                            | "max"
-                            | "sort"
-                            | "or"
-                            | "or_throw"
+                        builtin_method::MAP
+                            | builtin_method::FILTER
+                            | builtin_method::FIND
+                            | builtin_method::ANY
+                            | builtin_method::ALL
+                            | builtin_method::REDUCE
+                            | builtin_method::COUNT
+                            | builtin_method::FIRST
+                            | builtin_method::LAST
+                            | builtin_method::TO_LIST
+                            | builtin_method::MIN
+                            | builtin_method::MAX
+                            | builtin_method::SORT
+                            | builtin_method::OR
+                            | builtin_method::OR_THROW
                     ) {
                         return true;
                     }
@@ -836,19 +837,19 @@ impl Lowerer {
         }
         if let Expr::Ident(name, _) = expr {
             if let Some(Type::Custom(class_name, _)) = self.local_ast_types.get(name.as_str())
-                && class_name == "Range"
+                && class_name == builtin_class::RANGE
             {
                 return true;
             }
             if let Some(Type::Custom(class_name, _)) = self.type_env.get_var(name)
-                && class_name == "Range"
+                && class_name == builtin_class::RANGE
             {
                 return true;
             }
         }
         matches!(
             self.type_table.get(&expr.span()),
-            Some(Type::Custom(name, _)) if name == "Range"
+            Some(Type::Custom(name, _)) if name == builtin_class::RANGE
         )
     }
 

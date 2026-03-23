@@ -127,7 +127,7 @@ impl Lowerer {
         let (list_id, len_id, idx_id, elem_id) = self.iter_loop_scaffold(fir_list, elem_ty);
 
         match method {
-            "map" => {
+            builtin_method::MAP => {
                 // result = new list; for each elem: result.push(f(elem))
                 let result_id = self.alloc_local();
                 self.local_types.insert(result_id, FirType::Ptr);
@@ -162,7 +162,7 @@ impl Lowerer {
                 });
                 Ok(FirExpr::LocalVar(result_id, FirType::Ptr))
             }
-            "filter" => {
+            builtin_method::FILTER => {
                 let result_id = self.alloc_local();
                 self.local_types.insert(result_id, FirType::Ptr);
                 self.pending_stmts.push(FirStmt::Let {
@@ -200,7 +200,7 @@ impl Lowerer {
                 });
                 Ok(FirExpr::LocalVar(result_id, FirType::Ptr))
             }
-            "find" => {
+            builtin_method::FIND => {
                 // result = nil; for each elem: if f(elem) then result = Some(elem), break
                 let nullable_ty = FirType::TaggedUnion {
                     tag_bits: 1,
@@ -246,7 +246,7 @@ impl Lowerer {
                 });
                 Ok(FirExpr::LocalVar(result_id, nullable_ty))
             }
-            "any" => {
+            builtin_method::ANY => {
                 let result_id = self.alloc_local();
                 self.local_types.insert(result_id, FirType::Bool);
                 self.pending_stmts.push(FirStmt::Let {
@@ -279,7 +279,7 @@ impl Lowerer {
                 });
                 Ok(FirExpr::LocalVar(result_id, FirType::Bool))
             }
-            "all" => {
+            builtin_method::ALL => {
                 let result_id = self.alloc_local();
                 self.local_types.insert(result_id, FirType::Bool);
                 self.pending_stmts.push(FirStmt::Let {
@@ -662,7 +662,7 @@ impl Lowerer {
             value: FirExpr::BoolLit(false),
         });
 
-        let cmp_op = if method == "min" {
+        let cmp_op = if method == builtin_method::MIN {
             BinOp::Lt
         } else {
             BinOp::Gt

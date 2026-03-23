@@ -249,7 +249,7 @@ impl Lowerer {
                     }
 
                     // Mutex(value: x) → aster_mutex_new(x)
-                    if name == "Mutex" {
+                    if name == builtin_class::MUTEX {
                         let value_arg = args
                             .iter()
                             .find(|(n, _, _)| n == "value")
@@ -266,7 +266,10 @@ impl Lowerer {
                     }
 
                     // Channel(capacity?: x) → aster_channel_new(x)
-                    if name == "Channel" || name == "MultiSend" || name == "MultiReceive" {
+                    if name == builtin_class::CHANNEL
+                        || name == builtin_class::MULTI_SEND
+                        || name == builtin_class::MULTI_RECEIVE
+                    {
                         let cap_arg = args
                             .iter()
                             .find(|(n, _, _)| n == "capacity")

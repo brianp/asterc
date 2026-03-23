@@ -521,8 +521,10 @@ impl Lowerer {
                     self.local_ast_types.insert(name.clone(), ann.clone());
                 } else if matches!(value, Expr::Range { .. }) {
                     // Range expressions always produce Type::Custom("Range", [])
-                    self.local_ast_types
-                        .insert(name.clone(), Type::Custom("Range".into(), vec![]));
+                    self.local_ast_types.insert(
+                        name.clone(),
+                        Type::Custom(builtin_class::RANGE.into(), vec![]),
+                    );
                 } else if let Expr::AsyncCall { func, .. } = value {
                     if let Some(async_ty) = self.resolve_async_call_ast_type(func) {
                         self.local_ast_types.insert(name.clone(), async_ty);
@@ -534,10 +536,10 @@ impl Lowerer {
                     // Infer class type from constructor call: ClassName(...)
                     if let Expr::Ident(class_name, _) = func.as_ref()
                         && (self.classes.contains_key(class_name.as_str())
-                            || class_name == "Mutex"
-                            || class_name == "Channel"
-                            || class_name == "MultiSend"
-                            || class_name == "MultiReceive")
+                            || class_name == builtin_class::MUTEX
+                            || class_name == builtin_class::CHANNEL
+                            || class_name == builtin_class::MULTI_SEND
+                            || class_name == builtin_class::MULTI_RECEIVE)
                     {
                         self.local_ast_types
                             .insert(name.clone(), Type::Custom(class_name.clone(), vec![]));
