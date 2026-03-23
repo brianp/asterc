@@ -1172,11 +1172,7 @@ impl TypeChecker {
         }
     }
 
-    fn check_channel_member(
-        field: &str,
-        inner: &Type,
-        object: &Expr,
-    ) -> Result<Type, Diagnostic> {
+    fn check_channel_member(field: &str, inner: &Type, object: &Expr) -> Result<Type, Diagnostic> {
         match field {
             "send" => Ok(Type::Function {
                 param_names: vec!["value".into()],
@@ -1196,7 +1192,10 @@ impl TypeChecker {
                 param_names: vec!["value".into()],
                 params: vec![inner.clone()],
                 ret: Box::new(Type::Void),
-                throws: Some(Box::new(Type::Custom("ChannelFullError".into(), Vec::new()))),
+                throws: Some(Box::new(Type::Custom(
+                    "ChannelFullError".into(),
+                    Vec::new(),
+                ))),
                 suspendable: false,
             }),
             "receive" => Ok(Type::Function {
@@ -1250,7 +1249,10 @@ impl TypeChecker {
             "send" | "wait_send" | "try_send" if is_send => {
                 let suspendable = field == "wait_send";
                 let throws = if field == "try_send" {
-                    Some(Box::new(Type::Custom("ChannelFullError".into(), Vec::new())))
+                    Some(Box::new(Type::Custom(
+                        "ChannelFullError".into(),
+                        Vec::new(),
+                    )))
                 } else {
                     None
                 };
@@ -1315,10 +1317,7 @@ impl TypeChecker {
         }
     }
 
-    fn check_tcp_listener_instance_member(
-        field: &str,
-        object: &Expr,
-    ) -> Result<Type, Diagnostic> {
+    fn check_tcp_listener_instance_member(field: &str, object: &Expr) -> Result<Type, Diagnostic> {
         match field {
             "accept" => Ok(Type::Function {
                 param_names: vec![],
@@ -1371,10 +1370,7 @@ impl TypeChecker {
             _ => Err(
                 Diagnostic::error(format!("TcpStream has no method '{}'", field))
                     .with_code("E010")
-                    .with_label(
-                        object.span(),
-                        format!("no member '{}' on TcpStream", field),
-                    ),
+                    .with_label(object.span(), format!("no member '{}' on TcpStream", field)),
             ),
         }
     }

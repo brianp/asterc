@@ -136,7 +136,9 @@ fn worker_loop(_id: usize, local: Worker<ThreadPtr>) {
         }
 
         debug_assert!(
-            !thread.running_on_worker.swap(true, std::sync::atomic::Ordering::Relaxed),
+            !thread
+                .running_on_worker
+                .swap(true, std::sync::atomic::Ordering::Relaxed),
             "double-scheduling detected: green thread is already running on another worker"
         );
 
@@ -155,7 +157,9 @@ fn worker_loop(_id: usize, local: Worker<ThreadPtr>) {
         }
 
         // Green thread yielded back — save per-green-thread TLS state
-        thread.running_on_worker.store(false, std::sync::atomic::Ordering::Relaxed);
+        thread
+            .running_on_worker
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         thread.error_flag = crate::runtime::error_flag_get();
         thread.shadow_stack_top = crate::runtime::shadow_stack_get();
         WORKER_CURRENT_THREAD.set(std::ptr::null_mut());

@@ -1886,5 +1886,4 @@ impl TypeChecker {
             _ => false,
         }
     }
-
 }
