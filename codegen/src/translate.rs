@@ -676,14 +676,18 @@ fn translate_expr(
             val
         }
 
-        FirExpr::TagWrap { tag, value, .. } => {
+        FirExpr::TagWrap { tag, value, ty } => {
             if *tag == 1 {
                 // Nil: return null pointer (0)
                 builder.ins().iconst(types::I64, 0)
             } else {
-                // Some(value): box the value — allocate 8 bytes, store, return ptr
                 let inner_val = translate_expr(builder, state, value);
-                if let Some(&alloc_ref) = state.runtime_refs.get("aster_class_alloc") {
+                if matches!(ty, FirType::Ptr) {
+                    // Inner type is already a pointer (String, List, Class) —
+                    // use it directly. Null = nil, non-null = Some.
+                    inner_val
+                } else if let Some(&alloc_ref) = state.runtime_refs.get("aster_class_alloc") {
+                    // Value types (Int, Float, Bool): box into 8-byte heap alloc
                     let size = builder.ins().iconst(types::I64, 8);
                     let ptr = builder.ins().call(alloc_ref, &[size]);
                     let ptr_val = builder.inst_results(ptr)[0];
@@ -692,20 +696,24 @@ fn translate_expr(
                         .store(ir::MemFlags::new(), inner_val, ptr_val, Offset32::new(0));
                     ptr_val
                 } else {
-                    // Fallback if runtime not available: just pass through
                     inner_val
                 }
             }
         }
         FirExpr::TagUnwrap { value, ty, .. } => {
-            // Unwrap: load the boxed value from ptr+0
             let ptr_val = translate_expr(builder, state, value);
-            builder.ins().load(
-                fir_type_to_clif(ty),
-                ir::MemFlags::new(),
-                ptr_val,
-                Offset32::new(0),
-            )
+            if matches!(ty, FirType::Ptr) {
+                // Inner type is a pointer — the nullable value IS the pointer
+                ptr_val
+            } else {
+                // Value types: load from the heap box
+                builder.ins().load(
+                    fir_type_to_clif(ty),
+                    ir::MemFlags::new(),
+                    ptr_val,
+                    Offset32::new(0),
+                )
+            }
         }
         FirExpr::TagCheck { value, tag } => {
             // Check if nullable is nil (tag=1) or has value (tag=0)

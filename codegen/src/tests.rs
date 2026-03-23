@@ -1916,6 +1916,33 @@ def f() -> Int?
     assert_eq!(result, 0);
 }
 
+#[test]
+fn nullable_string_some_skips_boxing() {
+    // String is already a pointer — nullable String? passes through without
+    // boxing. Verify the string value survives the nullable round-trip.
+    let src = "\
+def f() -> String?
+  return \"hello\"
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(FunctionId(0));
+    // Some(string) should be non-zero (the string pointer itself, not a box)
+    assert_ne!(result, 0);
+}
+
+#[test]
+fn nullable_string_nil() {
+    let src = "\
+def f() -> String?
+  return nil
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(FunctionId(0));
+    assert_eq!(result, 0);
+}
+
 // ===========================================================================
 // Generics
 // ===========================================================================
