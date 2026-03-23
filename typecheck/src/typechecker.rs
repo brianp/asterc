@@ -974,7 +974,7 @@ impl TypeChecker {
                         self.diagnostics.push(
                             Diagnostic::warning(format!(
                                 "redundant type annotation: type `{}` can be inferred",
-                                Self::format_type(ann)
+                                ann
                             ))
                             .with_code("W001"),
                         );
@@ -1877,8 +1877,4 @@ impl TypeChecker {
         }
     }
 
-    /// Formats a Type for display in diagnostic messages.
-    fn format_type(ty: &Type) -> String {
-        ty.to_string()
-    }
 }
