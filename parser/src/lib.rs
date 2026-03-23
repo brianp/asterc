@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 mod class_trait;
 mod expr;
 mod type_parser;

@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 pub mod diagnostic;
 pub mod expr;
 pub mod span;

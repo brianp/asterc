@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 pub mod builtins;
 pub mod exprs;
 pub mod lower;

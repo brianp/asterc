@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 mod check_call;
 mod check_class;
 mod check_error;
