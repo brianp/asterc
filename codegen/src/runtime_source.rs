@@ -45,6 +45,10 @@ void aster_say_bool(int8_t val) { printf("%s\n", val ? "true" : "false"); }
  * =================================================================== */
 
 void* aster_string_new(void* data, int64_t len) {
+    if (len < 0) len = 0;
+    if (len > INT64_MAX - 8) {
+        fprintf(stderr, "aster_string_new: size overflow\n"); abort();
+    }
     void* p = aster_alloc(8 + len);
     *(int64_t*)p = len;
     if (len > 0) memcpy((char*)p + 8, data, (size_t)len);
@@ -56,6 +60,9 @@ void* aster_string_concat(void* a, void* b) {
     int64_t b_len = b ? *(int64_t*)b : 0;
     if (a_len < 0) a_len = 0;
     if (b_len < 0) b_len = 0;
+    if (a_len > INT64_MAX - 8 - b_len) {
+        fprintf(stderr, "aster_string_concat: size overflow\n"); abort();
+    }
     void* r = aster_alloc(8 + a_len + b_len);
     *(int64_t*)r = a_len + b_len;
     if (a_len > 0) memcpy((char*)r + 8, (char*)a + 8, (size_t)a_len);
@@ -109,8 +116,12 @@ void* aster_list_to_string(void* handle) {
     if (!handle) return aster_string_new("[]", 2);
     void* block = *(void**)handle;
     int64_t len = *(int64_t*)block;
+    if (len < 0) return aster_string_new("<invalid list>", 14);
     int64_t* data = (int64_t*)block + 2;
     /* estimate: "[" + up to 20 digits per elem + ", " separators + "]" */
+    if (len > (INT64_MAX - 2) / 22) {
+        fprintf(stderr, "aster_list_to_string: size overflow\n"); abort();
+    }
     int64_t buf_cap = 2 + len * 22;
     char* buf = (char*)malloc((size_t)buf_cap);
     if (!buf) { fprintf(stderr, "out of memory\n"); abort(); }
@@ -133,6 +144,9 @@ void* aster_list_to_string(void* handle) {
 void* aster_list_new(int64_t cap, int64_t ptr_elems) {
     (void)ptr_elems; /* AOT runtime has no GC, flag unused */
     if (cap < 4) cap = 4;
+    if (cap > (INT64_MAX - 16) / 8) {
+        fprintf(stderr, "aster_list_new: size overflow\n"); abort();
+    }
     void* block = aster_alloc(16 + cap * 8);
     *(int64_t*)block = 0;
     *((int64_t*)block + 1) = cap;
@@ -184,6 +198,9 @@ void* aster_list_push(void* handle, int64_t value) {
     if (len >= cap) {
         int64_t new_cap = cap * 2;
         if (new_cap < 4) new_cap = 4;
+        if (new_cap > (INT64_MAX - 16) / 8) {
+            fprintf(stderr, "aster_list_push: size overflow\n"); abort();
+        }
         void* new_block = aster_alloc(16 + new_cap * 8);
         memcpy(new_block, block, (size_t)(16 + len * 8));
         *((int64_t*)new_block + 1) = new_cap;
@@ -238,6 +255,9 @@ int64_t aster_string_compare(void* a, void* b) {
 
 void* aster_map_new(int64_t cap) {
     if (cap < 4) cap = 4;
+    if (cap > (INT64_MAX - 16) / 16) {
+        fprintf(stderr, "aster_map_new: size overflow\n"); abort();
+    }
     void* block = aster_alloc(16 + cap * 16);
     *(int64_t*)block = 0;
     *((int64_t*)block + 1) = cap;
@@ -261,6 +281,9 @@ void* aster_map_set(void* handle, int64_t key, int64_t value) {
     if (len >= cap) {
         int64_t new_cap = cap * 2;
         if (new_cap < 4) new_cap = 4;
+        if (new_cap > (INT64_MAX - 16) / 16) {
+            fprintf(stderr, "aster_map_set: size overflow\n"); abort();
+        }
         void* new_block = aster_alloc(16 + new_cap * 16);
         memcpy(new_block, block, (size_t)(16 + len * 16));
         *((int64_t*)new_block + 1) = new_cap;
