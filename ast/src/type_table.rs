@@ -37,6 +37,11 @@ impl TypeTable {
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
+
+    /// Merge all entries from another TypeTable into this one.
+    pub fn extend(&mut self, other: TypeTable) {
+        self.map.extend(other.map);
+    }
 }
 
 #[cfg(test)]

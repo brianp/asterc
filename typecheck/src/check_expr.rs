@@ -507,9 +507,10 @@ impl TypeChecker {
                     );
                 }
             }
-            // Propagate diagnostics to parent
+            // Propagate diagnostics and type_table entries to parent
             self.diagnostics
                 .extend(std::mem::take(&mut sub.diagnostics));
+            self.type_table.extend(std::mem::take(&mut sub.type_table));
         }
 
         // Build the Function type. Convert inferred type params from Custom to TypeVar.
