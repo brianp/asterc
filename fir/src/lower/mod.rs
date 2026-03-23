@@ -15,6 +15,7 @@ mod expr;
 mod for_loop;
 mod iterable;
 mod match_lower;
+mod method;
 mod stmt;
 mod synthesize;
 

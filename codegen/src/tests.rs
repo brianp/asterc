@@ -3906,6 +3906,7 @@ fn unsupported_feature_audit() {
         include_str!("../../fir/src/lower/mod.rs"),
         include_str!("../../fir/src/lower/stmt.rs"),
         include_str!("../../fir/src/lower/expr.rs"),
+        include_str!("../../fir/src/lower/method.rs"),
         include_str!("../../fir/src/lower/for_loop.rs"),
         include_str!("../../fir/src/lower/iterable.rs"),
         include_str!("../../fir/src/lower/match_lower.rs"),
