@@ -4,27 +4,11 @@ use ast::{Diagnostic, Expr, Span, Type, TypeEnv};
 
 use crate::typechecker::TypeChecker;
 
-/// Compute Levenshtein edit distance between two strings (O(n) memory).
-fn edit_distance(a: &str, b: &str) -> usize {
-    let n = b.len();
-    let mut prev: Vec<usize> = (0..=n).collect();
-    let mut curr = vec![0; n + 1];
-    for (i, ca) in a.chars().enumerate() {
-        curr[0] = i + 1;
-        for (j, cb) in b.chars().enumerate() {
-            let cost = if ca == cb { 0 } else { 1 };
-            curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
-        }
-        std::mem::swap(&mut prev, &mut curr);
-    }
-    prev[n]
-}
-
 /// Find the closest parameter name to a given argument name (edit distance <= 2).
 fn closest_param_name<'a>(arg_name: &str, param_names: &'a [String]) -> Option<&'a str> {
     let mut best: Option<(&str, usize)> = None;
     for pn in param_names {
-        let dist = edit_distance(arg_name, pn);
+        let dist = TypeChecker::levenshtein(arg_name, pn);
         if dist <= 2 && dist > 0 && (best.is_none() || dist < best.unwrap().1) {
             best = Some((pn.as_str(), dist));
         }
