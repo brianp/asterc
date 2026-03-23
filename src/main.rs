@@ -469,13 +469,19 @@ fn cmd_fmt(args: &[String]) {
     // --stdin: read from stdin, write to stdout
     if stdin_mode {
         use std::io::Read;
+        const MAX_STDIN_SIZE: usize = 10 * 1024 * 1024; // 10 MB, matches lexer limit
         let mut source = String::new();
         std::io::stdin()
+            .take(MAX_STDIN_SIZE as u64 + 1)
             .read_to_string(&mut source)
             .unwrap_or_else(|e| {
                 eprintln!("Failed to read stdin: {}", e);
                 std::process::exit(1);
             });
+        if source.len() > MAX_STDIN_SIZE {
+            eprintln!("stdin input exceeds 10 MB limit");
+            std::process::exit(1);
+        }
         match aster_fmt::format_source(&source, &config) {
             Ok(formatted) => print!("{}", formatted),
             Err(e) => {
