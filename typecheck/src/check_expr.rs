@@ -1573,12 +1573,9 @@ impl TypeChecker {
         func: &Expr,
         args: &[(String, Span, Expr)],
     ) -> Result<Type, Diagnostic> {
+        self.last_call_suspendable = false;
         let ret_ty = self.check_call_inner(func, args, true)?;
-        let callee_ty = self.check_expr(func)?;
-        if callee_ty.is_error() {
-            return Ok(Type::Error);
-        }
-        if !callee_ty.is_suspendable_function() {
+        if !self.last_call_suspendable {
             return Err(
                 Diagnostic::error("blocking expects a suspendable callee".to_string())
                     .with_code("E012")

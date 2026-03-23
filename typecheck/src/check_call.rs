@@ -562,6 +562,7 @@ impl TypeChecker {
             suspendable,
         } = fty
         {
+            self.last_call_suspendable = suspendable;
             if suspendable && !bypass_throws_check {
                 return Err(Diagnostic::error(format!(
                     "Plain call crosses a suspension boundary. {}",

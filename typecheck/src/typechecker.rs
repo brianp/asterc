@@ -47,6 +47,9 @@ pub struct TypeChecker {
     pub(crate) boundary_crossed: HashMap<String, Span>,
     /// Maps expression spans to their resolved types. Consumed by FIR lowerer.
     pub type_table: TypeTable,
+    /// Set by `check_call_inner` to indicate whether the resolved callee was suspendable.
+    /// Read by `check_blocking_call` to avoid re-evaluating the func expression.
+    pub(crate) last_call_suspendable: bool,
 }
 
 struct ScopeState {
@@ -88,6 +91,7 @@ impl TypeChecker {
             task_bindings: HashMap::new(),
             boundary_crossed: HashMap::new(),
             type_table: TypeTable::new(),
+            last_call_suspendable: false,
         }
     }
 
@@ -451,6 +455,7 @@ impl TypeChecker {
             task_bindings: self.task_bindings.clone(),
             boundary_crossed: HashMap::new(),
             type_table: TypeTable::new(),
+            last_call_suspendable: false,
         }
     }
 
