@@ -1193,6 +1193,27 @@ impl Lowerer {
                 if matches!(op, ast::BinOp::Pow) {
                     let fir_left = self.lower_expr(left)?;
                     let fir_right = self.lower_expr(right)?;
+                    let lt = self.infer_fir_type(&fir_left);
+                    let rt = self.infer_fir_type(&fir_right);
+                    let any_float = lt == FirType::F64 || rt == FirType::F64;
+                    if any_float {
+                        // Promote Int operands to Float, call aster_pow_float
+                        let fl = if lt == FirType::I64 {
+                            FirExpr::IntToFloat(Box::new(fir_left))
+                        } else {
+                            fir_left
+                        };
+                        let fr = if rt == FirType::I64 {
+                            FirExpr::IntToFloat(Box::new(fir_right))
+                        } else {
+                            fir_right
+                        };
+                        return Ok(FirExpr::RuntimeCall {
+                            name: "aster_pow_float".to_string(),
+                            args: vec![fl, fr],
+                            ret_ty: FirType::F64,
+                        });
+                    }
                     return Ok(FirExpr::RuntimeCall {
                         name: "aster_pow_int".to_string(),
                         args: vec![fir_left, fir_right],
@@ -1264,6 +1285,18 @@ impl Lowerer {
                 let fir_left = self.lower_expr(left)?;
                 let fir_right = self.lower_expr(right)?;
                 let fir_op = self.lower_binop(op);
+                // Int/Float coercion: promote Int operand to Float
+                let lt = self.infer_fir_type(&fir_left);
+                let rt = self.infer_fir_type(&fir_right);
+                let (fir_left, fir_right) = match (&lt, &rt) {
+                    (FirType::I64, FirType::F64) => {
+                        (FirExpr::IntToFloat(Box::new(fir_left)), fir_right)
+                    }
+                    (FirType::F64, FirType::I64) => {
+                        (fir_left, FirExpr::IntToFloat(Box::new(fir_right)))
+                    }
+                    _ => (fir_left, fir_right),
+                };
                 let result_ty = self.infer_binop_type(&fir_op, &fir_left, &fir_right);
                 // String + String → aster_string_concat runtime call
                 if matches!(fir_op, BinOp::Add) && matches!(result_ty, FirType::Ptr) {
@@ -4329,10 +4362,11 @@ impl Lowerer {
             FirExpr::ClosureCall { ret_ty, .. } => ret_ty.clone(),
             FirExpr::EnvLoad { ty, .. } => ty.clone(),
             FirExpr::GlobalFunc(_) => FirType::Ptr,
+            FirExpr::IntToFloat(_) => FirType::F64,
         }
     }
 
-    fn infer_binop_type(&self, op: &BinOp, left: &FirExpr, _right: &FirExpr) -> FirType {
+    fn infer_binop_type(&self, op: &BinOp, left: &FirExpr, right: &FirExpr) -> FirType {
         match op {
             BinOp::Eq
             | BinOp::Neq
@@ -4342,7 +4376,15 @@ impl Lowerer {
             | BinOp::Gte
             | BinOp::And
             | BinOp::Or => FirType::Bool,
-            _ => self.infer_fir_type(left),
+            _ => {
+                let lt = self.infer_fir_type(left);
+                let rt = self.infer_fir_type(right);
+                if lt == FirType::F64 || rt == FirType::F64 {
+                    FirType::F64
+                } else {
+                    lt
+                }
+            }
         }
     }
 

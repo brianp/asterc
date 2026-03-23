@@ -1718,6 +1718,198 @@ fn lower_float_arithmetic() {
 }
 
 // ===========================================================================
+// Mixed Int/Float arithmetic coercion
+// ===========================================================================
+
+#[test]
+fn lower_mixed_int_float_add() {
+    // 1 + 2.5 should promote the Int to Float, yielding F64 result
+    let src = "def f() -> Float\n  1 + 2.5\n";
+    let fir = lower_ok(src);
+    let func = &fir.functions[0];
+    let expr = func
+        .body
+        .iter()
+        .find_map(|s| match s {
+            FirStmt::Return(e) | FirStmt::Expr(e) => {
+                if matches!(e, FirExpr::BinaryOp { .. }) {
+                    Some(e)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+        .expect("expected BinaryOp");
+
+    match expr {
+        FirExpr::BinaryOp {
+            op: BinOp::Add,
+            left,
+            right,
+            result_ty,
+        } => {
+            assert_eq!(*result_ty, FirType::F64);
+            assert!(
+                matches!(left.as_ref(), FirExpr::IntToFloat(inner) if matches!(inner.as_ref(), FirExpr::IntLit(1))),
+                "left should be IntToFloat(IntLit(1)), got {:?}",
+                left
+            );
+            assert!(
+                matches!(right.as_ref(), FirExpr::FloatLit(f) if (*f - 2.5).abs() < f64::EPSILON),
+                "right should be FloatLit(2.5), got {:?}",
+                right
+            );
+        }
+        other => panic!("expected BinaryOp(Add, F64), got {:?}", other),
+    }
+}
+
+#[test]
+fn lower_mixed_float_int_sub() {
+    // 3.0 - 1 should promote the right Int to Float
+    let src = "def f() -> Float\n  3.0 - 1\n";
+    let fir = lower_ok(src);
+    let func = &fir.functions[0];
+    let expr = func
+        .body
+        .iter()
+        .find_map(|s| match s {
+            FirStmt::Return(e) | FirStmt::Expr(e) => {
+                if matches!(e, FirExpr::BinaryOp { .. }) {
+                    Some(e)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+        .expect("expected BinaryOp");
+
+    match expr {
+        FirExpr::BinaryOp {
+            op: BinOp::Sub,
+            left,
+            right,
+            result_ty,
+        } => {
+            assert_eq!(*result_ty, FirType::F64);
+            assert!(
+                matches!(left.as_ref(), FirExpr::FloatLit(f) if (*f - 3.0).abs() < f64::EPSILON),
+                "left should be FloatLit(3.0), got {:?}",
+                left
+            );
+            assert!(
+                matches!(right.as_ref(), FirExpr::IntToFloat(inner) if matches!(inner.as_ref(), FirExpr::IntLit(1))),
+                "right should be IntToFloat(IntLit(1)), got {:?}",
+                right
+            );
+        }
+        other => panic!("expected BinaryOp(Sub, F64), got {:?}", other),
+    }
+}
+
+#[test]
+fn lower_mixed_int_float_comparison() {
+    // 1 < 2.5 should promote Int, result is Bool
+    let src = "def f() -> Bool\n  1 < 2.5\n";
+    let fir = lower_ok(src);
+    let func = &fir.functions[0];
+    let expr = func
+        .body
+        .iter()
+        .find_map(|s| match s {
+            FirStmt::Return(e) | FirStmt::Expr(e) => {
+                if matches!(e, FirExpr::BinaryOp { .. }) {
+                    Some(e)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+        .expect("expected BinaryOp");
+
+    match expr {
+        FirExpr::BinaryOp {
+            op: BinOp::Lt,
+            left,
+            result_ty,
+            ..
+        } => {
+            assert_eq!(*result_ty, FirType::Bool);
+            assert!(
+                matches!(left.as_ref(), FirExpr::IntToFloat(_)),
+                "left should be IntToFloat, got {:?}",
+                left
+            );
+        }
+        other => panic!("expected BinaryOp(Lt, Bool), got {:?}", other),
+    }
+}
+
+#[test]
+fn lower_float_pow() {
+    // 2.0 ** 3.0 should call aster_pow_float
+    let src = "def f() -> Float\n  2.0 ** 3.0\n";
+    let fir = lower_ok(src);
+    let func = &fir.functions[0];
+    let expr = func
+        .body
+        .iter()
+        .find_map(|s| match s {
+            FirStmt::Return(e) | FirStmt::Expr(e) => match e {
+                FirExpr::RuntimeCall { name, .. } if name == "aster_pow_float" => Some(e),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("expected RuntimeCall(aster_pow_float)");
+
+    match expr {
+        FirExpr::RuntimeCall { name, ret_ty, .. } => {
+            assert_eq!(name, "aster_pow_float");
+            assert_eq!(*ret_ty, FirType::F64);
+        }
+        other => panic!("expected RuntimeCall(aster_pow_float), got {:?}", other),
+    }
+}
+
+#[test]
+fn lower_mixed_int_float_pow() {
+    // 2 ** 3.0 should promote the Int base, call aster_pow_float
+    let src = "def f() -> Float\n  2 ** 3.0\n";
+    let fir = lower_ok(src);
+    let func = &fir.functions[0];
+    let expr = func
+        .body
+        .iter()
+        .find_map(|s| match s {
+            FirStmt::Return(e) | FirStmt::Expr(e) => match e {
+                FirExpr::RuntimeCall { name, .. } if name == "aster_pow_float" => Some(e),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("expected RuntimeCall(aster_pow_float)");
+
+    match expr {
+        FirExpr::RuntimeCall {
+            name, args, ret_ty, ..
+        } => {
+            assert_eq!(name, "aster_pow_float");
+            assert_eq!(*ret_ty, FirType::F64);
+            assert!(
+                matches!(&args[0], FirExpr::IntToFloat(_)),
+                "base should be IntToFloat, got {:?}",
+                &args[0]
+            );
+        }
+        other => panic!("expected RuntimeCall(aster_pow_float), got {:?}", other),
+    }
+}
+
+// ===========================================================================
 // Throw expression lowering
 // ===========================================================================
 

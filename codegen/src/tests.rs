@@ -860,6 +860,132 @@ def main() -> Int
 }
 
 // ===========================================================================
+// Mixed Int/Float arithmetic coercion (C1 audit fix)
+// ===========================================================================
+
+#[test]
+fn mixed_int_float_add() {
+    let src = "def main() -> Float\n  1 + 2.5\n";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.get_function_ptr(fir.entry.unwrap()).unwrap();
+    let f: fn() -> f64 = unsafe { std::mem::transmute(ptr) };
+    let result = f();
+    assert!(
+        (result - 3.5).abs() < 1e-10,
+        "expected 3.5, got {}",
+        result
+    );
+}
+
+#[test]
+fn mixed_float_int_add() {
+    let src = "def main() -> Float\n  2.5 + 1\n";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.get_function_ptr(fir.entry.unwrap()).unwrap();
+    let f: fn() -> f64 = unsafe { std::mem::transmute(ptr) };
+    let result = f();
+    assert!(
+        (result - 3.5).abs() < 1e-10,
+        "expected 3.5, got {}",
+        result
+    );
+}
+
+#[test]
+fn mixed_int_float_mul() {
+    let src = "def main() -> Float\n  3 * 2.5\n";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.get_function_ptr(fir.entry.unwrap()).unwrap();
+    let f: fn() -> f64 = unsafe { std::mem::transmute(ptr) };
+    let result = f();
+    assert!(
+        (result - 7.5).abs() < 1e-10,
+        "expected 7.5, got {}",
+        result
+    );
+}
+
+#[test]
+fn mixed_int_float_div() {
+    let src = "def main() -> Float\n  7 / 2.0\n";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.get_function_ptr(fir.entry.unwrap()).unwrap();
+    let f: fn() -> f64 = unsafe { std::mem::transmute(ptr) };
+    let result = f();
+    assert!(
+        (result - 3.5).abs() < 1e-10,
+        "expected 3.5, got {}",
+        result
+    );
+}
+
+#[test]
+fn mixed_int_float_comparison() {
+    // 1 < 2.5 should be true
+    let src = "\
+def main() -> Int
+  if 1 < 2.5
+    return 1
+  else
+    return 0
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 1);
+}
+
+#[test]
+fn mixed_int_float_eq() {
+    // 2 == 2.0 should be true
+    let src = "\
+def main() -> Int
+  if 2 == 2.0
+    return 1
+  else
+    return 0
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 1);
+}
+
+#[test]
+fn float_pow() {
+    let src = "def main() -> Float\n  2.0 ** 3.0\n";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.get_function_ptr(fir.entry.unwrap()).unwrap();
+    let f: fn() -> f64 = unsafe { std::mem::transmute(ptr) };
+    let result = f();
+    assert!(
+        (result - 8.0).abs() < 1e-10,
+        "expected 8.0, got {}",
+        result
+    );
+}
+
+#[test]
+fn mixed_int_float_pow() {
+    let src = "def main() -> Float\n  2 ** 3.0\n";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.get_function_ptr(fir.entry.unwrap()).unwrap();
+    let f: fn() -> f64 = unsafe { std::mem::transmute(ptr) };
+    let result = f();
+    assert!(
+        (result - 8.0).abs() < 1e-10,
+        "expected 8.0, got {}",
+        result
+    );
+}
+
+// ===========================================================================
 // Control flow
 // ===========================================================================
 

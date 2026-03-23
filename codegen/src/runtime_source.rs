@@ -8,6 +8,7 @@ pub const C_RUNTIME_SOURCE: &str = r#"
 #include <sys/mman.h>
 #include <unistd.h>
 #include <stdatomic.h>
+#include <math.h>
 
 /* ===================================================================
  * Memory allocation
@@ -77,6 +78,10 @@ int64_t aster_pow_int(int64_t base, int64_t exp) {
         exp >>= 1;
     }
     return result;
+}
+
+double aster_pow_float(double base, double exp) {
+    return pow(base, exp);
 }
 
 void* aster_int_to_string(int64_t val) {

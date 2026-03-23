@@ -145,4 +145,6 @@ pub enum FirExpr {
     },
     /// Get the function ID stored in a global slot (for closure indirect calls).
     GlobalFunc(FunctionId),
+    /// Convert an integer to a float (i64 → f64).
+    IntToFloat(Box<FirExpr>),
 }

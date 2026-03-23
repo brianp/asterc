@@ -751,6 +751,11 @@ fn translate_expr(
             // Return the function ID as an integer (for closure creation)
             builder.ins().iconst(types::I64, func.0 as i64)
         }
+
+        FirExpr::IntToFloat(inner) => {
+            let val = translate_expr(builder, state, inner);
+            builder.ins().fcvt_from_sint(types::F64, val)
+        }
     }
 }
 
@@ -998,6 +1003,7 @@ fn infer_operand_type(_state: &TranslationState, expr: &FirExpr) -> FirType {
         FirExpr::TagWrap { ty, .. } => ty.clone(),
         FirExpr::TagUnwrap { ty, .. } => ty.clone(),
         FirExpr::TagCheck { .. } => FirType::Bool,
+        FirExpr::IntToFloat(_) => FirType::F64,
     }
 }
 

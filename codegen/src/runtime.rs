@@ -297,6 +297,11 @@ pub extern "C" fn aster_pow_int(base: i64, exp: i64) -> i64 {
     result
 }
 
+/// Float exponentiation: base ** exp.
+pub extern "C" fn aster_pow_float(base: f64, exp: f64) -> f64 {
+    base.powf(exp)
+}
+
 /// Convert an integer to a heap string.
 pub extern "C" fn aster_int_to_string(val: i64) -> *mut u8 {
     let s = val.to_string();
@@ -1618,6 +1623,7 @@ pub fn runtime_builtin_symbols() -> Vec<(&'static str, *const u8)> {
         ("aster_list_len", aster_list_len as *const u8),
         ("aster_class_alloc", aster_class_alloc as *const u8),
         ("aster_pow_int", aster_pow_int as *const u8),
+        ("aster_pow_float", aster_pow_float as *const u8),
         ("aster_int_to_string", aster_int_to_string as *const u8),
         ("aster_float_to_string", aster_float_to_string as *const u8),
         ("aster_bool_to_string", aster_bool_to_string as *const u8),

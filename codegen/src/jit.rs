@@ -629,6 +629,9 @@ pub(crate) fn collect_string_lits_expr(
         FirExpr::TagCheck { value, .. } => {
             collect_string_lits_expr(value, strings);
         }
+        FirExpr::IntToFloat(inner) => {
+            collect_string_lits_expr(inner, strings);
+        }
         FirExpr::IntLit(_)
         | FirExpr::FloatLit(_)
         | FirExpr::BoolLit(_)

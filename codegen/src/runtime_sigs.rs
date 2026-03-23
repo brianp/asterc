@@ -48,6 +48,7 @@ pub static RUNTIME_SIGS: &[RuntimeSig] = &[
     ("aster_list_len", &[types::I64], Some(types::I64)),
     ("aster_class_alloc", &[types::I64], Some(types::I64)),
     ("aster_pow_int", &[types::I64, types::I64], Some(types::I64)),
+    ("aster_pow_float", &[types::F64, types::F64], Some(types::F64)),
     ("aster_int_to_string", &[types::I64], Some(types::I64)),
     ("aster_float_to_string", &[types::F64], Some(types::I64)),
     ("aster_bool_to_string", &[types::I8], Some(types::I64)),
