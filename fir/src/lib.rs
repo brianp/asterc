@@ -4,6 +4,7 @@ pub mod lower;
 pub mod module;
 pub mod stmts;
 pub mod types;
+pub mod validate;
 
 pub use exprs::{BinOp, FirExpr, UnaryOp};
 pub use lower::{LowerError, Lowerer};

@@ -81,6 +81,7 @@ impl TypeChecker {
 
     /// Register all builtin types, traits, error classes, and enums on the given TypeEnv.
     /// Returns the builtin_traits and builtin_enums maps wrapped in Rc.
+    #[allow(clippy::type_complexity)]
     fn register_builtins(
         env: &mut TypeEnv,
     ) -> (

@@ -153,6 +153,19 @@ fn cmd_run(filename: &str) {
     }
     let fir_module = lowerer.finish();
 
+    // Validate FIR invariants (debug builds only)
+    #[cfg(debug_assertions)]
+    {
+        let fir_errors = fir::validate::validate(&fir_module);
+        for e in &fir_errors {
+            eprintln!("{}", e);
+        }
+        if !fir_errors.is_empty() {
+            eprintln!("FIR validation failed with {} errors", fir_errors.len());
+            std::process::exit(2);
+        }
+    }
+
     // Check for entry point
     let entry = match fir_module.entry {
         Some(id) => id,
@@ -201,6 +214,19 @@ fn cmd_build(opts: &BuildOptions) {
         std::process::exit(2);
     }
     let fir_module = lowerer.finish();
+
+    // Validate FIR invariants (debug builds only)
+    #[cfg(debug_assertions)]
+    {
+        let fir_errors = fir::validate::validate(&fir_module);
+        for e in &fir_errors {
+            eprintln!("{}", e);
+        }
+        if !fir_errors.is_empty() {
+            eprintln!("FIR validation failed with {} errors", fir_errors.len());
+            std::process::exit(2);
+        }
+    }
 
     if fir_module.entry.is_none() {
         render_diagnostic(
