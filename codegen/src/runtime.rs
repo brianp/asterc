@@ -697,105 +697,98 @@ fn gc_alloc_inner(payload_size: usize, obj_ty: u8) -> *mut u8 {
     payload
 }
 
-/// Mark a single object (by payload pointer) and recursively trace children.
-unsafe fn gc_mark(payload: *const u8) {
-    if payload.is_null() {
+/// Mark reachable objects using an iterative worklist instead of recursion.
+/// This avoids stack overflow on deeply nested object graphs (e.g. long linked lists).
+unsafe fn gc_mark(root: *const u8) {
+    if root.is_null() {
         return;
     }
-    // Validate the pointer looks like a GC object
-    let header = payload_header(payload);
-    unsafe {
-        if obj_mark(header) != 0 {
-            return; // already marked
-        }
-        obj_set_mark(header, 1);
+    let mut worklist: Vec<*const u8> = vec![root];
 
-        match obj_type(header) {
-            OBJ_OPAQUE | OBJ_DATA_BLOCK => {
-                // No children to trace
+    while let Some(payload) = worklist.pop() {
+        let header = payload_header(payload);
+        unsafe {
+            if obj_mark(header) != 0 {
+                continue; // already marked
             }
-            OBJ_LIST_HANDLE => {
-                // Handle points to a data block. Mark it, then trace elements.
-                let block = *(payload as *const *const u8);
-                if !block.is_null() {
-                    let block_header = payload_header(block);
-                    if obj_mark(block_header) == 0 {
-                        obj_set_mark(block_header, 1);
+            obj_set_mark(header, 1);
+
+            match obj_type(header) {
+                OBJ_OPAQUE | OBJ_DATA_BLOCK => {}
+                OBJ_LIST_HANDLE => {
+                    let block = *(payload as *const *const u8);
+                    if !block.is_null() {
+                        let block_header = payload_header(block);
+                        if obj_mark(block_header) == 0 {
+                            obj_set_mark(block_header, 1);
+                        }
+                        let len = *(block as *const i64) as usize;
+                        let elements = (block as *const i64).add(2);
+                        for i in 0..len {
+                            let val = *elements.add(i);
+                            if is_gc_payload(val) {
+                                worklist.push(val as *const u8);
+                            }
+                        }
                     }
-                    // List block layout: [len: i64][cap: i64][elements: i64 * cap]
-                    let len = *(block as *const i64) as usize;
-                    let elements = (block as *const i64).add(2);
-                    for i in 0..len {
-                        let val = *elements.add(i);
+                }
+                OBJ_LIST_HANDLE_NOPTR => {
+                    let block = *(payload as *const *const u8);
+                    if !block.is_null() {
+                        let block_header = payload_header(block);
+                        if obj_mark(block_header) == 0 {
+                            obj_set_mark(block_header, 1);
+                        }
+                    }
+                }
+                OBJ_MAP_HANDLE => {
+                    let block = *(payload as *const *const u8);
+                    if !block.is_null() {
+                        let block_header = payload_header(block);
+                        if obj_mark(block_header) == 0 {
+                            obj_set_mark(block_header, 1);
+                        }
+                        let len = *(block as *const i64) as usize;
+                        let entries = (block as *const i64).add(2);
+                        for i in 0..len {
+                            let key = *entries.add(i * 2);
+                            let val = *entries.add(i * 2 + 1);
+                            if is_gc_payload(key) {
+                                worklist.push(key as *const u8);
+                            }
+                            if is_gc_payload(val) {
+                                worklist.push(val as *const u8);
+                            }
+                        }
+                    }
+                }
+                OBJ_CLASS => {
+                    let num_fields = obj_size(header) as usize / 8;
+                    let fields = payload as *const i64;
+                    for i in 0..num_fields {
+                        let val = *fields.add(i);
                         if is_gc_payload(val) {
-                            gc_mark(val as *const u8);
+                            worklist.push(val as *const u8);
                         }
                     }
                 }
-            }
-            OBJ_LIST_HANDLE_NOPTR => {
-                // Handle points to a data block with value-type elements (Int, Float, Bool).
-                // Mark the block but do NOT scan elements — they cannot be GC pointers.
-                let block = *(payload as *const *const u8);
-                if !block.is_null() {
-                    let block_header = payload_header(block);
-                    if obj_mark(block_header) == 0 {
-                        obj_set_mark(block_header, 1);
+                OBJ_CLOSURE => {
+                    let env_ptr = *((payload as *const i64).add(1)) as *const u8;
+                    if !env_ptr.is_null() {
+                        worklist.push(env_ptr);
                     }
                 }
-            }
-            OBJ_MAP_HANDLE => {
-                // Handle points to a data block. Mark it, then trace entries.
-                let block = *(payload as *const *const u8);
-                if !block.is_null() {
-                    let block_header = payload_header(block);
-                    if obj_mark(block_header) == 0 {
-                        obj_set_mark(block_header, 1);
-                    }
-                    // Map block layout: [len: i64][cap: i64][entries: (key: i64, val: i64) * cap]
-                    let len = *(block as *const i64) as usize;
-                    let entries = (block as *const i64).add(2);
-                    for i in 0..len {
-                        let key = *entries.add(i * 2);
-                        let val = *entries.add(i * 2 + 1);
-                        if is_gc_payload(key) {
-                            gc_mark(key as *const u8);
-                        }
+                OBJ_TASK => {
+                    let task_state = *(payload as *const i64);
+                    if task_state == TASK_READY || task_state == TASK_FAILED {
+                        let val = *((payload as *const i64).add(2));
                         if is_gc_payload(val) {
-                            gc_mark(val as *const u8);
+                            worklist.push(val as *const u8);
                         }
                     }
                 }
+                _ => {}
             }
-            OBJ_CLASS => {
-                // All fields are i64 slots — conservatively trace each using magic check.
-                let num_fields = obj_size(header) as usize / 8;
-                let fields = payload as *const i64;
-                for i in 0..num_fields {
-                    let val = *fields.add(i);
-                    if is_gc_payload(val) {
-                        gc_mark(val as *const u8);
-                    }
-                }
-            }
-            OBJ_CLOSURE => {
-                // Closure: [func_ptr: i64][env_ptr: i64]
-                // env_ptr may be a GC-managed environment
-                let env_ptr = *((payload as *const i64).add(1)) as *const u8;
-                if !env_ptr.is_null() {
-                    gc_mark(env_ptr);
-                }
-            }
-            OBJ_TASK => {
-                let task_state = *(payload as *const i64);
-                if task_state == TASK_READY || task_state == TASK_FAILED {
-                    let val = *((payload as *const i64).add(2));
-                    if is_gc_payload(val) {
-                        gc_mark(val as *const u8);
-                    }
-                }
-            }
-            _ => {}
         }
     }
 }
