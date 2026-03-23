@@ -544,10 +544,11 @@ const OBJ_DATA_BLOCK: u8 = 5; // raw data block owned by a handle (not independe
 const OBJ_TASK: u8 = 6; // [state, consumed, payload] — payload may be a GC pointer
 const OBJ_LIST_HANDLE_NOPTR: u8 = 7; // handle → data block with value-type elements (no GC trace)
 
-/// Magic bytes in header slots [2..3] to identify valid GC objects.
-const GC_MAGIC: [u8; 2] = [0xA5, 0x7E];
+/// Magic bytes in header slots [2..5] to identify valid GC objects.
+/// 4 bytes gives a 1-in-2^32 false positive rate for conservative pointer detection.
+const GC_MAGIC: [u8; 4] = [0xA5, 0x7E, 0xC3, 0x91];
 
-const HEADER_SIZE: usize = 16;
+const HEADER_SIZE: usize = 24;
 const GC_THRESHOLD: usize = 256 * 1024; // 256 KB before first collection
 const MAX_GC_ROOTS: i64 = 1024; // defensive upper bound on root count per frame
 
@@ -591,20 +592,20 @@ unsafe fn obj_type(header: *const u8) -> u8 {
 /// Read the payload size from a header.
 #[inline]
 unsafe fn obj_size(header: *const u8) -> u32 {
-    unsafe { *(header.add(4) as *const u32) }
+    unsafe { *(header.add(8) as *const u32) }
 }
 
 /// Read the next pointer from a header.
 #[inline]
 unsafe fn obj_next(header: *const u8) -> *mut u8 {
-    unsafe { *(header.add(8) as *const *mut u8) }
+    unsafe { *(header.add(16) as *const *mut u8) }
 }
 
 /// Set the next pointer on a header.
 #[inline]
 unsafe fn obj_set_next(header: *mut u8, next: *mut u8) {
     unsafe {
-        *(header.add(8) as *mut *mut u8) = next;
+        *(header.add(16) as *mut *mut u8) = next;
     }
 }
 
@@ -639,8 +640,13 @@ unsafe fn is_gc_payload(val: i64) -> bool {
     }
     let payload = val as *const u8;
     let header = unsafe { payload.sub(HEADER_SIZE) };
-    // Check magic bytes at offset 2 and 3
-    unsafe { *header.add(2) == GC_MAGIC[0] && *header.add(3) == GC_MAGIC[1] }
+    // Check magic bytes at offset 2..5
+    unsafe {
+        *header.add(2) == GC_MAGIC[0]
+            && *header.add(3) == GC_MAGIC[1]
+            && *header.add(4) == GC_MAGIC[2]
+            && *header.add(5) == GC_MAGIC[3]
+    }
 }
 
 /// Allocate a GC-tracked object. Returns a pointer to the payload (after the header).
@@ -666,12 +672,14 @@ fn gc_alloc_inner(payload_size: usize, obj_ty: u8) -> *mut u8 {
     let ptr = aster_alloc(total_size);
 
     unsafe {
-        // Write header: [mark: u8][type: u8][magic: u8; 2][size: u32][next: *mut u8]
+        // Write header: [mark: u8][type: u8][magic: u8; 4][pad: 2][size: u32][pad: 4][next: *mut u8]
         *ptr = 0; // mark = 0 (white)
         *ptr.add(1) = obj_ty; // object type
         *ptr.add(2) = GC_MAGIC[0];
         *ptr.add(3) = GC_MAGIC[1];
-        *(ptr.add(4) as *mut u32) = payload_size as u32; // size (safe: objects < 4GB)
+        *ptr.add(4) = GC_MAGIC[2];
+        *ptr.add(5) = GC_MAGIC[3];
+        *(ptr.add(8) as *mut u32) = payload_size as u32;
     }
 
     // Link into heap list
