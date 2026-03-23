@@ -428,14 +428,10 @@ pub(crate) fn consume_thread_result(thread_ptr: *mut GreenThread) -> i64 {
     };
     drop(st);
 
-    // Reclaim the GreenThread allocation. The stack was already recycled
-    // when the thread reached terminal state; after consume, nobody
-    // references this pointer again.
-    let mut thread_box = unsafe { Box::from_raw(thread_ptr) };
-    if let Some(stack) = thread_box.stack.take() {
-        sched().stack_pool.put(stack);
-    }
-    drop(thread_box);
+    // Recycle the stack (64KB) now that the result is consumed. The
+    // GreenThread struct itself stays alive because user code may still
+    // call methods like is_ready() on the handle.
+    recycle_stack(unsafe { &mut *thread_ptr });
 
     result
 }
