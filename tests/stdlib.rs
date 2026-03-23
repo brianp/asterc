@@ -127,25 +127,25 @@ class Score includes Eq, Ord, Printable
     );
 }
 
-// ─── Wildcard import of entire std ──────────────────────────────────
+// ─── Bare `use std` is rejected ─────────────────────────────────────
 
 #[test]
-fn std_wildcard_import() {
-    // `use std` imports everything from all submodules
-    common::check_ok_with_files(
-        r#"use std
+fn std_bare_import_rejected() {
+    // `use std` without a submodule is an error
+    let err = common::check_err("use std\ndef main() -> Int\n  0\n");
+    assert!(
+        err.contains("Import from a submodule"),
+        "expected submodule suggestion, got: {err}"
+    );
+}
 
-class Point includes Eq
-  x: Int
-  y: Int
-
-class Numbers includes Iterable
-  items: List[Int]
-
-  def each(f: (Int) -> Void) -> Void
-    items.each(f: f)
-"#,
-        HashMap::new(),
+#[test]
+fn std_bare_selective_import_rejected() {
+    // `use std { Eq }` should suggest the right submodule
+    let err = common::check_err("use std { Eq }\ndef main() -> Int\n  0\n");
+    assert!(
+        err.contains("std/cmp"),
+        "expected suggestion for std/cmp, got: {err}"
     );
 }
 

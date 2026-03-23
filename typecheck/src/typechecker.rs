@@ -413,11 +413,11 @@ impl TypeChecker {
     }
 
     /// Create a TypeChecker with a module loader for resolving `use` imports.
-    /// Protocol traits are NOT in scope — they must be imported via `use std { ... }`.
+    /// Protocol traits are NOT in scope — they must be imported via `use std/cmp { Eq }` etc.
     pub fn with_loader(loader: Rc<RefCell<ModuleLoader>>) -> Self {
         let mut tc = Self::new();
         tc.module_loader = Some(loader);
-        // Remove protocol traits from env — require `use std { ... }` import
+        // Remove protocol traits from env — require `use std/<submodule>` import
         for name in [
             "Eq",
             "Ord",
@@ -1507,16 +1507,6 @@ impl TypeChecker {
         }
     }
 
-    /// Build exports for the entire "std" module (all submodules merged).
-    fn builtin_std_exports(&self) -> crate::module_loader::ModuleExports {
-        crate::module_loader::ModuleExports {
-            variables: HashMap::new(),
-            classes: HashMap::new(),
-            traits: (*self.builtin_traits).clone(),
-            enums: (*self.builtin_enums).clone(),
-        }
-    }
-
     /// Resolve a `use` statement by loading the target module and injecting exports.
     fn resolve_use(
         &mut self,
@@ -1528,9 +1518,30 @@ impl TypeChecker {
         // Handle built-in std modules — always available, no module loader needed
         if !path.is_empty() && path[0] == "std" {
             if path.len() == 1 {
-                // `use std` or `use std { ... }` — all submodules merged
-                let exports = self.builtin_std_exports();
-                return self.apply_imports(&exports, "std", names, alias, span);
+                // Bare `use std` is no longer supported — require submodule paths
+                let hint = match names {
+                    Some(ns) => {
+                        let suggestions: Vec<String> = ns
+                            .iter()
+                            .map(|n| {
+                                let sub = match n.as_str() {
+                                    "Eq" | "Ord" | "Ordering" => "cmp",
+                                    "Printable" => "fmt",
+                                    "Iterable" | "Iterator" => "collections",
+                                    "From" | "Into" => "convert",
+                                    "Random" => "random",
+                                    _ => "cmp",
+                                };
+                                format!("use std/{} {{ {} }}", sub, n)
+                            })
+                            .collect();
+                        format!("Import from a submodule instead: {}", suggestions.join(", "))
+                    }
+                    None => "Import from a submodule: use std/cmp { Eq }, use std/fmt { Printable }, use std/collections { Iterable }, use std/convert { From }, use std/random { Random }".to_string(),
+                };
+                return Err(Diagnostic::error(hint)
+                    .with_label(*span, "bare `use std` is not supported")
+                    .with_code("M003"));
             }
             if path.len() == 2 {
                 // `use std/cmp { Eq }` etc.
