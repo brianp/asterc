@@ -324,11 +324,7 @@ impl TypeChecker {
                                     ..
                                 } = oty
                                 {
-                                    Type::func(
-                                        param_names.clone(),
-                                        params.clone(),
-                                        *ret.clone(),
-                                    )
+                                    Type::func(param_names.clone(), params.clone(), *ret.clone())
                                 } else {
                                     oty.clone()
                                 };
@@ -374,11 +370,7 @@ impl TypeChecker {
                                     params,
                                     ret,
                                     ..
-                                } => Type::func(
-                                    param_names.clone(),
-                                    params.clone(),
-                                    *ret.clone(),
-                                ),
+                                } => Type::func(param_names.clone(), params.clone(), *ret.clone()),
                                 other => other.clone(),
                             };
                             let mut bindings2 = HashMap::new();

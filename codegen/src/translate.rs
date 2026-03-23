@@ -649,7 +649,11 @@ fn translate_expr(
             }
         }
 
-        FirExpr::ListGet { list, index, elem_ty } => {
+        FirExpr::ListGet {
+            list,
+            index,
+            elem_ty,
+        } => {
             let list_val = translate_expr(builder, state, list);
             let idx_val = translate_expr(builder, state, index);
             if let Some(&get_ref) = state.runtime_refs.get("aster_list_get") {

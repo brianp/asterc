@@ -645,7 +645,10 @@ impl TypeChecker {
                             name, op
                         ))
                         .with_code("E019")
-                        .with_label(left.span().merge(right.span()), "no runtime equality for this type"));
+                        .with_label(
+                            left.span().merge(right.span()),
+                            "no runtime equality for this type",
+                        ));
                     }
                     return Ok(Type::Bool);
                 }

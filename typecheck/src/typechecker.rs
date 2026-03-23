@@ -113,10 +113,7 @@ impl TypeChecker {
         // Note: `len`, `to_string`, and `random` are handled as polymorphic
         // builtins in check_call_inner rather than registered here, because
         // their type signatures depend on context.
-        env.set_var(
-            "random".into(),
-            Type::func(vec![], vec![], Type::Int),
-        );
+        env.set_var("random".into(), Type::func(vec![], vec![], Type::Int));
 
         // Built-in error hierarchy: Exception (root) -> Error (app base)
         env.set_class(
@@ -217,18 +214,11 @@ impl TypeChecker {
                         "each".into(),
                         Type::func(
                             vec!["f".into()],
-                            vec![Type::func(
-                                vec!["_0".into()],
-                                vec![Type::Int],
-                                Type::Void,
-                            )],
+                            vec![Type::func(vec!["_0".into()], vec![Type::Int], Type::Void)],
                             Type::Void,
                         ),
                     ),
-                    (
-                        "random".into(),
-                        Type::func(vec![], vec![], Type::Int),
-                    ),
+                    ("random".into(), Type::func(vec![], vec![], Type::Int)),
                 ]),
             );
             info.includes = vec!["Iterable".into()];
@@ -289,14 +279,8 @@ impl TypeChecker {
             TraitInfo {
                 name: "Printable".into(),
                 methods: HashMap::from([
-                    (
-                        "to_string".into(),
-                        Type::func(vec![], vec![], Type::String),
-                    ),
-                    (
-                        "debug".into(),
-                        Type::func(vec![], vec![], Type::String),
-                    ),
+                    ("to_string".into(), Type::func(vec![], vec![], Type::String)),
+                    ("debug".into(), Type::func(vec![], vec![], Type::String)),
                 ]),
                 required_methods: vec!["to_string".into()],
                 generic_params: None,
@@ -354,10 +338,7 @@ impl TypeChecker {
             "Drop".into(),
             TraitInfo {
                 name: "Drop".into(),
-                methods: HashMap::from([(
-                    "drop".into(),
-                    Type::func(vec![], vec![], Type::Void),
-                )]),
+                methods: HashMap::from([("drop".into(), Type::func(vec![], vec![], Type::Void))]),
                 required_methods: vec!["drop".into()],
                 generic_params: None,
             },

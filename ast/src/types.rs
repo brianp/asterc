@@ -41,11 +41,7 @@ pub enum Type {
 }
 
 impl Type {
-    pub fn func(
-        param_names: Vec<std::string::String>,
-        params: Vec<Type>,
-        ret: Type,
-    ) -> Self {
+    pub fn func(param_names: Vec<std::string::String>, params: Vec<Type>, ret: Type) -> Self {
         Type::Function {
             param_names,
             params,
