@@ -432,10 +432,14 @@ pub(crate) fn consume_thread_result(thread_ptr: *mut GreenThread) -> i64 {
     };
     drop(st);
 
-    // Recycle the stack (64KB) now that the result is consumed. The
-    // GreenThread struct itself stays alive because user code may still
-    // call methods like is_ready() on the handle.
+    // Recycle the stack (64KB) now that the result is consumed.
     recycle_stack(unsafe { &mut *thread_ptr });
+
+    // Free the GreenThread struct. The typechecker enforces single-consumption
+    // of task handles, so no valid accesses can follow this point.
+    unsafe {
+        drop(Box::from_raw(thread_ptr));
+    }
 
     result
 }
