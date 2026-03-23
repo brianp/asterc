@@ -69,8 +69,9 @@ impl Type {
         matches!(self, Type::Error)
     }
 
-    /// Recursively transform a type by applying `f` to each node bottom-up.
-    /// The closure receives each type after its children have been transformed.
+    /// Recursively transform a type by applying `f` top-down.
+    /// Each node is offered to `f` first; if `f` returns `Some`, that result is used
+    /// without visiting children. Otherwise children are transformed recursively.
     /// Leaf types (Int, Float, Bool, etc.) are passed through unchanged unless `f` transforms them.
     pub fn map_type<F>(&self, f: &F) -> Type
     where
