@@ -456,21 +456,21 @@ impl Lowerer {
 
     fn lower_type(&self, ty: &Type) -> FirType {
         match ty {
-            Type::Int => FirType::I64,
+            Type::Int | Type::TypeVar(_, _) => FirType::I64,
             Type::Float => FirType::F64,
             Type::Bool => FirType::Bool,
-            Type::String => FirType::Ptr,
             Type::Nil | Type::Void => FirType::Void,
             Type::Never => FirType::Never,
-            Type::List(_) => FirType::Ptr,
             Type::Nullable(inner) => FirType::TaggedUnion {
                 tag_bits: 1,
                 variants: vec![self.lower_type(inner), FirType::Void],
             },
-            Type::Custom(_, _) => FirType::Ptr, // class instances are heap-allocated
-            Type::Function { .. } => FirType::Ptr, // function pointers
-            Type::Task(_) => FirType::Ptr,
-            Type::Map(_, _) => FirType::Ptr,
+            Type::String
+            | Type::List(_)
+            | Type::Custom(_, _)
+            | Type::Function { .. }
+            | Type::Task(_)
+            | Type::Map(_, _) => FirType::Ptr,
             Type::Error => {
                 debug_assert!(false, "Type::Error should not survive past typechecking");
                 FirType::Void
@@ -485,7 +485,6 @@ impl Lowerer {
                 eprintln!("fir::lower: Type::Inferred fell through to I64 in lower_type");
                 FirType::I64
             }
-            Type::TypeVar(_, _) => FirType::I64,
         }
     }
 
@@ -536,15 +535,15 @@ impl Lowerer {
             FirExpr::Spawn { ret_ty, .. } => ret_ty.clone(),
             FirExpr::BlockOn { ret_ty, .. } => ret_ty.clone(),
             FirExpr::ResolveTask { ret_ty, .. } => ret_ty.clone(),
-            FirExpr::CancelTask { .. } | FirExpr::WaitCancel { .. } | FirExpr::Safepoint => {
-                FirType::Void
-            }
+            FirExpr::CancelTask { .. }
+            | FirExpr::WaitCancel { .. }
+            | FirExpr::Safepoint
+            | FirExpr::FieldSet { .. }
+            | FirExpr::ListSet { .. } => FirType::Void,
             FirExpr::FieldGet { ty, .. } => ty.clone(),
-            FirExpr::FieldSet { .. } => FirType::Void,
             FirExpr::Construct { ty, .. } => ty.clone(),
             FirExpr::ListNew { .. } => FirType::Ptr,
             FirExpr::ListGet { elem_ty, .. } => elem_ty.clone(),
-            FirExpr::ListSet { .. } => FirType::Void,
             FirExpr::TagWrap { ty, .. } => ty.clone(),
             FirExpr::TagUnwrap { ty, .. } => ty.clone(),
             FirExpr::TagCheck { .. } => FirType::Bool,

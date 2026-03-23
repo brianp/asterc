@@ -97,19 +97,9 @@ impl<'a> ValidationContext<'a> {
 
     fn validate_expr(&mut self, expr: &FirExpr) {
         match expr {
-            FirExpr::Call { func, args, .. } => {
-                self.check_func_id(*func);
-                for arg in args {
-                    self.validate_expr(arg);
-                }
-            }
-            FirExpr::Spawn { func, args, .. } => {
-                self.check_func_id(*func);
-                for arg in args {
-                    self.validate_expr(arg);
-                }
-            }
-            FirExpr::BlockOn { func, args, .. } => {
+            FirExpr::Call { func, args, .. }
+            | FirExpr::Spawn { func, args, .. }
+            | FirExpr::BlockOn { func, args, .. } => {
                 self.check_func_id(*func);
                 for arg in args {
                     self.validate_expr(arg);

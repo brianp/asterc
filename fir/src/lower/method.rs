@@ -121,8 +121,6 @@ impl Lowerer {
         if matches!(object_ast_ty, Some(Type::Task(_)))
             && let Some((runtime_name, ret_ty)) = match method {
                 builtin_method::IS_READY => Some(("aster_task_is_ready", FirType::Bool)),
-                builtin_method::CANCEL => None,
-                builtin_method::WAIT_CANCEL => None,
                 _ => None,
             }
         {

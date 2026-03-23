@@ -314,7 +314,7 @@ impl Lowerer {
                 Stmt::Expr(expr, _) | Stmt::Return(expr, _) => {
                     self.find_captures_expr(expr, param_names, captures);
                 }
-                Stmt::Let { value, .. } => {
+                Stmt::Let { value, .. } | Stmt::Assignment { value, .. } => {
                     self.find_captures_expr(value, param_names, captures);
                 }
                 Stmt::If {
@@ -339,9 +339,6 @@ impl Lowerer {
                 Stmt::For { iter, body, .. } => {
                     self.find_captures_expr(iter, param_names, captures);
                     self.find_captures(body, param_names, captures);
-                }
-                Stmt::Assignment { value, .. } => {
-                    self.find_captures_expr(value, param_names, captures);
                 }
                 _ => {}
             }

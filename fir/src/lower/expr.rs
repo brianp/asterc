@@ -536,7 +536,7 @@ impl Lowerer {
 
             Expr::StringInterpolation { parts, .. } => self.lower_string_interpolation(parts),
 
-            Expr::AsyncCall { func, args, .. } => {
+            Expr::AsyncCall { func, args, .. } | Expr::DetachedCall { func, args, .. } => {
                 let args = self.lower_explicit_call_args(func, args)?;
                 let func_id = self.resolve_called_function_id(func)?;
                 let result_ty = self.resolve_called_function_ret_type(func, func_id);
@@ -562,19 +562,6 @@ impl Lowerer {
                     func: func_id,
                     args,
                     ret_ty,
-                })
-            }
-
-            Expr::DetachedCall { func, args, .. } => {
-                let args = self.lower_explicit_call_args(func, args)?;
-                let func_id = self.resolve_called_function_id(func)?;
-                let result_ty = self.resolve_called_function_ret_type(func, func_id);
-                Ok(FirExpr::Spawn {
-                    func: func_id,
-                    args,
-                    ret_ty: FirType::Ptr,
-                    result_ty,
-                    scope: self.async_scope_stack.last().copied(),
                 })
             }
 
