@@ -336,11 +336,16 @@ pub extern "C" fn aster_list_to_string(handle: *const u8) -> *mut u8 {
     }
     unsafe {
         let block = list_block(handle);
-        let len = *(block as *const i64);
+        let raw_len = *(block as *const i64);
+        if raw_len < 0 {
+            let s = "<invalid list>";
+            return aster_string_new(s.as_ptr(), s.len());
+        }
+        let len = raw_len as usize;
         let data = (block as *const i64).add(2);
-        let mut result = String::with_capacity((len as usize) * 4 + 2);
+        let mut result = String::with_capacity(len * 4 + 2);
         result.push('[');
-        for i in 0..len as usize {
+        for i in 0..len {
             if i > 0 {
                 result.push_str(", ");
             }
