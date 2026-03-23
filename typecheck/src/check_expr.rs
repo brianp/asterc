@@ -631,6 +631,22 @@ impl TypeChecker {
                         .with_code("E019")
                         .with_label(left.span().merge(right.span()), "type does not include Eq"));
                     }
+                    // Reject container/wrapper types that lack runtime equality support
+                    let type_name = match &lt {
+                        Type::List(_) => Some("List"),
+                        Type::Map(_, _) => Some("Map"),
+                        Type::Task(_) => Some("Task"),
+                        Type::Nullable(_) => Some("Nullable"),
+                        _ => None,
+                    };
+                    if let Some(name) = type_name {
+                        return Err(Diagnostic::error(format!(
+                            "{} types do not support {} comparison",
+                            name, op
+                        ))
+                        .with_code("E019")
+                        .with_label(left.span().merge(right.span()), "no runtime equality for this type"));
+                    }
                     return Ok(Type::Bool);
                 }
                 // Int/Float mixed comparison promotes to Float, which loses

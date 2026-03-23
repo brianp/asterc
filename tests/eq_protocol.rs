@@ -336,3 +336,90 @@ let result = f == g
         err
     );
 }
+
+// ============================================================
+// Container types cannot use == or !=
+// ============================================================
+
+#[test]
+fn list_eq_rejected() {
+    let err = common::check_err(
+        "\
+let a: List[Int] = [1, 2, 3]
+let b: List[Int] = [1, 2, 3]
+let r = a == b
+",
+    );
+    assert!(
+        err.contains("List") && err.contains("do not support"),
+        "expected List comparison rejection, got: {}",
+        err
+    );
+}
+
+#[test]
+fn list_neq_rejected() {
+    let err = common::check_err(
+        "\
+let a: List[Int] = [1, 2]
+let b: List[Int] = [3, 4]
+let r = a != b
+",
+    );
+    assert!(
+        err.contains("List") && err.contains("do not support"),
+        "expected List comparison rejection, got: {}",
+        err
+    );
+}
+
+#[test]
+fn map_eq_rejected() {
+    let err = common::check_err(
+        "\
+let a: Map[String, Int] = {\"x\": 1}
+let b: Map[String, Int] = {\"x\": 1}
+let r = a == b
+",
+    );
+    assert!(
+        err.contains("Map") && err.contains("do not support"),
+        "expected Map comparison rejection, got: {}",
+        err
+    );
+}
+
+#[test]
+fn nullable_eq_rejected() {
+    let err = common::check_err(
+        "\
+let a: Int? = 1
+let b: Int? = 1
+let r = a == b
+",
+    );
+    assert!(
+        err.contains("Nullable") && err.contains("do not support"),
+        "expected Nullable comparison rejection, got: {}",
+        err
+    );
+}
+
+#[test]
+fn task_eq_rejected() {
+    let err = common::check_err(
+        "\
+def f() -> Int
+  42
+
+let a = async f()
+let b = async f()
+let r = a == b
+",
+    );
+    assert!(
+        err.contains("Task") && err.contains("do not support"),
+        "expected Task comparison rejection, got: {}",
+        err
+    );
+}
