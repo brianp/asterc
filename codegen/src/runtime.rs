@@ -137,8 +137,11 @@ unsafe fn aster_dealloc(ptr: *mut u8, size: usize) {
     if size == 0 || ptr == std::ptr::NonNull::dangling().as_ptr() {
         return;
     }
+    let layout = std::alloc::Layout::from_size_align(size, 8).unwrap_or_else(|_| {
+        eprintln!("aster_dealloc: invalid layout (size={size})");
+        std::process::abort();
+    });
     unsafe {
-        let layout = std::alloc::Layout::from_size_align_unchecked(size, 8);
         std::alloc::dealloc(ptr, layout);
     }
 }
