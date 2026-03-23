@@ -1508,6 +1508,94 @@ def main() -> Int
     assert_eq!(result, 3);
 }
 
+#[test]
+fn list_float_creation_and_get() {
+    let src = "\
+def main() -> Float
+  let xs: List[Float] = [1.5, 2.5, 3.5]
+  xs[1]
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.get_function_ptr(fir.entry.unwrap()).unwrap();
+    let f: fn() -> f64 = unsafe { std::mem::transmute(ptr) };
+    let result = f();
+    assert!((result - 2.5).abs() < 1e-10, "expected 2.5, got {}", result);
+}
+
+#[test]
+fn list_float_set() {
+    let src = "\
+def main() -> Float
+  let xs: List[Float] = [1.0, 2.0, 3.0]
+  xs[0] = 9.5
+  xs[0]
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.get_function_ptr(fir.entry.unwrap()).unwrap();
+    let f: fn() -> f64 = unsafe { std::mem::transmute(ptr) };
+    let result = f();
+    assert!((result - 9.5).abs() < 1e-10, "expected 9.5, got {}", result);
+}
+
+#[test]
+fn list_float_push() {
+    let src = "\
+def main() -> Float
+  let xs: List[Float] = [1.0, 2.0]
+  xs.push(item: 4.5)
+  xs[2]
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let ptr = jit.get_function_ptr(fir.entry.unwrap()).unwrap();
+    let f: fn() -> f64 = unsafe { std::mem::transmute(ptr) };
+    let result = f();
+    assert!((result - 4.5).abs() < 1e-10, "expected 4.5, got {}", result);
+}
+
+#[test]
+fn list_bool_creation_and_get() {
+    let src = "\
+def main() -> Int
+  let xs: List[Bool] = [true, false, true]
+  let a: Bool = xs[0]
+  let b: Bool = xs[1]
+  let c: Bool = xs[2]
+  let r: Int = 0
+  if a
+    r = r + 1
+  if b
+    r = r + 10
+  if c
+    r = r + 100
+  r
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 101);
+}
+
+#[test]
+fn list_bool_set() {
+    let src = "\
+def main() -> Int
+  let xs: List[Bool] = [true, true, true]
+  xs[1] = false
+  let v: Bool = xs[1]
+  let r: Int = 0
+  if v
+    r = 1
+  r
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 0);
+}
+
 // ===========================================================================
 // Maps
 // ===========================================================================

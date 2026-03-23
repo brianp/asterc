@@ -90,6 +90,50 @@ fn unpack_async_result(builder: &mut FunctionBuilder, raw: Value, ty: &FirType) 
     }
 }
 
+/// Coerce a Cranelift value from one type to another (bitcast, extend, reduce).
+fn coerce_value(
+    builder: &mut FunctionBuilder,
+    val: Value,
+    actual: ir::Type,
+    expected: ir::Type,
+) -> Value {
+    if actual == expected {
+        val
+    } else if actual == types::F64 && expected == types::I64 {
+        builder.ins().bitcast(types::I64, ir::MemFlags::new(), val)
+    } else if actual == types::I64 && expected == types::F64 {
+        builder.ins().bitcast(types::F64, ir::MemFlags::new(), val)
+    } else if actual == types::I8 && expected == types::I64 {
+        builder.ins().uextend(types::I64, val)
+    } else if actual == types::I64 && expected == types::I8 {
+        builder.ins().ireduce(types::I8, val)
+    } else {
+        val
+    }
+}
+
+/// Pack a typed Cranelift value into I64 for the type-erased list runtime.
+/// F64 is bitcast to I64, Bool (I8) is zero-extended to I64, others pass through.
+fn pack_list_elem(builder: &mut FunctionBuilder, val: Value) -> Value {
+    let ty = builder.func.dfg.value_type(val);
+    if ty == types::F64 {
+        builder.ins().bitcast(types::I64, ir::MemFlags::new(), val)
+    } else if ty == types::I8 {
+        builder.ins().uextend(types::I64, val)
+    } else {
+        val
+    }
+}
+
+/// Unpack an I64 from the list runtime back to the element's Cranelift type.
+fn unpack_list_elem(builder: &mut FunctionBuilder, raw: Value, elem_ty: &FirType) -> Value {
+    match elem_ty {
+        FirType::F64 => builder.ins().bitcast(types::F64, ir::MemFlags::new(), raw),
+        FirType::Bool => builder.ins().ireduce(types::I8, raw),
+        _ => raw,
+    }
+}
+
 fn lower_async_call_packet(
     builder: &mut FunctionBuilder,
     state: &mut TranslationState,
@@ -233,8 +277,9 @@ fn translate_stmt(builder: &mut FunctionBuilder, state: &mut TranslationState, s
                 FirPlace::Index { list, index } => {
                     let list_val = translate_expr(builder, state, list);
                     let idx_val = translate_expr(builder, state, index);
+                    let packed = pack_list_elem(builder, val);
                     if let Some(&func_ref) = state.runtime_refs.get("aster_list_set") {
-                        builder.ins().call(func_ref, &[list_val, idx_val, val]);
+                        builder.ins().call(func_ref, &[list_val, idx_val, packed]);
                     }
                 }
                 FirPlace::MapIndex { map, key } => {
@@ -591,7 +636,8 @@ fn translate_expr(
                     let mut current_ptr = list_ptr;
                     for elem in elements {
                         let val = translate_expr(builder, state, elem);
-                        let call = builder.ins().call(push_ref, &[current_ptr, val]);
+                        let packed = pack_list_elem(builder, val);
+                        let call = builder.ins().call(push_ref, &[current_ptr, packed]);
                         current_ptr = builder.inst_results(call)[0];
                     }
                     current_ptr
@@ -603,12 +649,13 @@ fn translate_expr(
             }
         }
 
-        FirExpr::ListGet { list, index, .. } => {
+        FirExpr::ListGet { list, index, elem_ty } => {
             let list_val = translate_expr(builder, state, list);
             let idx_val = translate_expr(builder, state, index);
             if let Some(&get_ref) = state.runtime_refs.get("aster_list_get") {
                 let call = builder.ins().call(get_ref, &[list_val, idx_val]);
-                builder.inst_results(call)[0]
+                let raw = builder.inst_results(call)[0];
+                unpack_list_elem(builder, raw, elem_ty)
             } else {
                 builder.ins().iconst(types::I64, 0)
             }
@@ -618,8 +665,9 @@ fn translate_expr(
             let list_val = translate_expr(builder, state, list);
             let idx_val = translate_expr(builder, state, index);
             let val = translate_expr(builder, state, value);
+            let packed = pack_list_elem(builder, val);
             if let Some(&set_ref) = state.runtime_refs.get("aster_list_set") {
-                builder.ins().call(set_ref, &[list_val, idx_val, val]);
+                builder.ins().call(set_ref, &[list_val, idx_val, packed]);
             }
             val
         }
@@ -1037,7 +1085,25 @@ fn translate_runtime_call(
                     .iter()
                     .map(|a| translate_expr(builder, state, a))
                     .collect();
-                let call = builder.ins().call(func_ref, &arg_vals);
+                // Coerce arg types to match the declared function signature.
+                // List/map runtime functions use type-erased I64 params, but
+                // element values may be F64 or Bool (I8) from FIR translation.
+                let sig_ref = builder.func.dfg.ext_funcs[func_ref].signature;
+                let param_types: Vec<ir::Type> = builder.func.dfg.signatures[sig_ref]
+                    .params
+                    .iter()
+                    .map(|p| p.value_type)
+                    .collect();
+                let coerced: Vec<Value> = arg_vals
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, val)| {
+                        let actual = builder.func.dfg.value_type(val);
+                        let expected = param_types.get(i).copied().unwrap_or(actual);
+                        coerce_value(builder, val, actual, expected)
+                    })
+                    .collect();
+                let call = builder.ins().call(func_ref, &coerced);
                 let results = builder.inst_results(call);
                 if !results.is_empty() {
                     return results[0];
