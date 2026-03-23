@@ -32,130 +32,7 @@ impl Lowerer {
 
             Expr::BinaryOp {
                 left, op, right, ..
-            } => {
-                if matches!(op, ast::BinOp::Pow) {
-                    let fir_left = self.lower_expr(left)?;
-                    let fir_right = self.lower_expr(right)?;
-                    let lt = self.infer_fir_type(&fir_left);
-                    let rt = self.infer_fir_type(&fir_right);
-                    let any_float = lt == FirType::F64 || rt == FirType::F64;
-                    if any_float {
-                        // Promote Int operands to Float, call aster_pow_float
-                        let fl = if lt == FirType::I64 {
-                            FirExpr::IntToFloat(Box::new(fir_left))
-                        } else {
-                            fir_left
-                        };
-                        let fr = if rt == FirType::I64 {
-                            FirExpr::IntToFloat(Box::new(fir_right))
-                        } else {
-                            fir_right
-                        };
-                        return Ok(FirExpr::RuntimeCall {
-                            name: "aster_pow_float".to_string(),
-                            args: vec![fl, fr],
-                            ret_ty: FirType::F64,
-                        });
-                    }
-                    return Ok(FirExpr::RuntimeCall {
-                        name: "aster_pow_int".to_string(),
-                        args: vec![fir_left, fir_right],
-                        ret_ty: FirType::I64,
-                    });
-                }
-                // Dispatch == / != on custom types to ClassName.eq(self, other)
-                if matches!(op, ast::BinOp::Eq | ast::BinOp::Neq)
-                    && let Ok(class_name) = self.resolve_class_name(left)
-                {
-                    let eq_name = format!("{}.eq", class_name);
-                    if let Some(&func_id) = self.functions.get(&eq_name) {
-                        let fir_left = self.lower_expr(left)?;
-                        let fir_right = self.lower_expr(right)?;
-                        let eq_result = FirExpr::Call {
-                            func: func_id,
-                            args: vec![fir_left, fir_right],
-                            ret_ty: FirType::Bool,
-                        };
-                        return if matches!(op, ast::BinOp::Neq) {
-                            Ok(FirExpr::UnaryOp {
-                                op: UnaryOp::Not,
-                                operand: Box::new(eq_result),
-                                result_ty: FirType::Bool,
-                            })
-                        } else {
-                            Ok(eq_result)
-                        };
-                    }
-                }
-                // Dispatch <, >, <=, >= on custom types to ClassName.cmp(self, other)
-                if matches!(
-                    op,
-                    ast::BinOp::Lt | ast::BinOp::Gt | ast::BinOp::Lte | ast::BinOp::Gte
-                ) && let Ok(class_name) = self.resolve_class_name(left)
-                {
-                    let cmp_name = format!("{}.cmp", class_name);
-                    if let Some(&func_id) = self.functions.get(&cmp_name) {
-                        let fir_left = self.lower_expr(left)?;
-                        let fir_right = self.lower_expr(right)?;
-                        // cmp returns Ordering (tag: 0=Less, 1=Equal, 2=Greater)
-                        // Extract the tag from the struct at offset 0
-                        let cmp_result = FirExpr::Call {
-                            func: func_id,
-                            args: vec![fir_left, fir_right],
-                            ret_ty: FirType::Ptr,
-                        };
-                        let tag = FirExpr::FieldGet {
-                            object: Box::new(cmp_result),
-                            offset: 0,
-                            ty: FirType::I64,
-                        };
-                        // Compare the tag against expected value
-                        let (cmp_op, cmp_val) = match op {
-                            ast::BinOp::Lt => (BinOp::Eq, 0i64),   // Less = 0
-                            ast::BinOp::Gt => (BinOp::Eq, 2i64),   // Greater = 2
-                            ast::BinOp::Lte => (BinOp::Neq, 2i64), // not Greater
-                            ast::BinOp::Gte => (BinOp::Neq, 0i64), // not Less
-                            _ => unreachable!(),
-                        };
-                        return Ok(FirExpr::BinaryOp {
-                            left: Box::new(tag),
-                            op: cmp_op,
-                            right: Box::new(FirExpr::IntLit(cmp_val)),
-                            result_ty: FirType::Bool,
-                        });
-                    }
-                }
-                let fir_left = self.lower_expr(left)?;
-                let fir_right = self.lower_expr(right)?;
-                let fir_op = self.lower_binop(op);
-                // Int/Float coercion: promote Int operand to Float
-                let lt = self.infer_fir_type(&fir_left);
-                let rt = self.infer_fir_type(&fir_right);
-                let (fir_left, fir_right) = match (&lt, &rt) {
-                    (FirType::I64, FirType::F64) => {
-                        (FirExpr::IntToFloat(Box::new(fir_left)), fir_right)
-                    }
-                    (FirType::F64, FirType::I64) => {
-                        (fir_left, FirExpr::IntToFloat(Box::new(fir_right)))
-                    }
-                    _ => (fir_left, fir_right),
-                };
-                let result_ty = self.infer_binop_type(&fir_op, &fir_left, &fir_right);
-                // String + String → aster_string_concat runtime call
-                if matches!(fir_op, BinOp::Add) && matches!(result_ty, FirType::Ptr) {
-                    return Ok(FirExpr::RuntimeCall {
-                        name: "aster_string_concat".to_string(),
-                        args: vec![fir_left, fir_right],
-                        ret_ty: FirType::Ptr,
-                    });
-                }
-                Ok(FirExpr::BinaryOp {
-                    left: Box::new(fir_left),
-                    op: fir_op,
-                    right: Box::new(fir_right),
-                    result_ty,
-                })
-            }
+            } => self.lower_binop_expr(left, op, right),
 
             Expr::UnaryOp { op, operand, .. } => {
                 let fir_operand = self.lower_expr(operand)?;
@@ -168,270 +45,7 @@ impl Lowerer {
                 })
             }
 
-            Expr::Call { func, args, .. } => {
-                self.pending_stmts.push(FirStmt::Expr(FirExpr::Safepoint));
-                // Method call: obj.method(args)
-                if let Expr::Member { object, field, .. } = func.as_ref() {
-                    return self.lower_method_call(object, field, args);
-                }
-
-                // Resolve function name
-                if let Expr::Ident(name, _) = func.as_ref() {
-                    if name == "to_string"
-                        && let Some((_, _, arg)) = args.first()
-                    {
-                        let fir_arg = self.lower_expr(arg)?;
-                        return Ok(self.to_string_expr(arg, fir_arg));
-                    }
-
-                    // random(max: n) or random(min: a, max: b) → aster_random_int/float/bool
-                    if name == "random" {
-                        let ret_ty = self
-                            .type_table
-                            .get(&expr.span())
-                            .map(|ty| self.lower_type(ty))
-                            .unwrap_or(FirType::I64);
-                        let max_arg = args.iter().find(|(n, _, _)| n == "max");
-                        let min_arg = args.iter().find(|(n, _, _)| n == "min");
-                        return match ret_ty {
-                            FirType::I64 => {
-                                let fir_max = if let Some((_, _, e)) = max_arg {
-                                    self.lower_expr(e)?
-                                } else {
-                                    FirExpr::IntLit(100)
-                                };
-                                let raw_random = FirExpr::RuntimeCall {
-                                    name: "aster_random_int".to_string(),
-                                    args: vec![if let Some(min_val) = &min_arg {
-                                        // random_int(max - min) + min
-                                        let fir_min = self.lower_expr(&min_val.2)?;
-                                        FirExpr::BinaryOp {
-                                            left: Box::new(fir_max),
-                                            op: BinOp::Sub,
-                                            right: Box::new(fir_min),
-                                            result_ty: FirType::I64,
-                                        }
-                                    } else {
-                                        fir_max
-                                    }],
-                                    ret_ty: FirType::I64,
-                                };
-                                if let Some((_, _, min_expr)) = min_arg {
-                                    let fir_min = self.lower_expr(min_expr)?;
-                                    Ok(FirExpr::BinaryOp {
-                                        left: Box::new(raw_random),
-                                        op: BinOp::Add,
-                                        right: Box::new(fir_min),
-                                        result_ty: FirType::I64,
-                                    })
-                                } else {
-                                    Ok(raw_random)
-                                }
-                            }
-                            FirType::F64 => {
-                                let fir_max = if let Some((_, _, e)) = max_arg {
-                                    self.lower_expr(e)?
-                                } else {
-                                    FirExpr::FloatLit(1.0)
-                                };
-                                Ok(FirExpr::RuntimeCall {
-                                    name: "aster_random_float".to_string(),
-                                    args: vec![fir_max],
-                                    ret_ty: FirType::F64,
-                                })
-                            }
-                            _ => Ok(FirExpr::RuntimeCall {
-                                name: "aster_random_bool".to_string(),
-                                args: vec![],
-                                ret_ty: FirType::Bool,
-                            }),
-                        };
-                    }
-
-                    // Mutex(value: x) → aster_mutex_new(x)
-                    if name == builtin_class::MUTEX {
-                        let value_arg = args
-                            .iter()
-                            .find(|(n, _, _)| n == "value")
-                            .map(|(_, _, e)| e)
-                            .or_else(|| args.first().map(|(_, _, e)| e));
-                        if let Some(val) = value_arg {
-                            let fir_val = self.lower_expr(val)?;
-                            return Ok(FirExpr::RuntimeCall {
-                                name: "aster_mutex_new".to_string(),
-                                args: vec![fir_val],
-                                ret_ty: FirType::Ptr,
-                            });
-                        }
-                    }
-
-                    // Channel(capacity?: x) → aster_channel_new(x)
-                    if name == builtin_class::CHANNEL
-                        || name == builtin_class::MULTI_SEND
-                        || name == builtin_class::MULTI_RECEIVE
-                    {
-                        let cap_arg = args
-                            .iter()
-                            .find(|(n, _, _)| n == "capacity")
-                            .map(|(_, _, e)| e);
-                        let fir_cap = if let Some(cap) = cap_arg {
-                            self.lower_expr(cap)?
-                        } else {
-                            FirExpr::IntLit(0) // 0 = unbuffered
-                        };
-                        return Ok(FirExpr::RuntimeCall {
-                            name: "aster_channel_new".to_string(),
-                            args: vec![fir_cap],
-                            ret_ty: FirType::Ptr,
-                        });
-                    }
-
-                    if name == "resolve_all"
-                        && let Some((_, _, arg)) = args.first()
-                    {
-                        let fir_arg = self.lower_expr(arg)?;
-                        let ret_ty = self
-                            .type_table
-                            .get(&expr.span())
-                            .map(|ty| self.lower_type(ty))
-                            .unwrap_or(FirType::Ptr);
-                        return Ok(FirExpr::RuntimeCall {
-                            name: self.resolve_all_runtime_name(arg).to_string(),
-                            args: vec![fir_arg],
-                            ret_ty,
-                        });
-                    }
-
-                    if name == "resolve_first"
-                        && let Some((_, _, arg)) = args.first()
-                    {
-                        let fir_arg = self.lower_expr(arg)?;
-                        let ret_ty = self
-                            .type_table
-                            .get(&expr.span())
-                            .map(|ty| self.lower_type(ty))
-                            .unwrap_or(FirType::I64);
-                        return Ok(FirExpr::RuntimeCall {
-                            name: self.resolve_first_runtime_name(arg).to_string(),
-                            args: vec![fir_arg],
-                            ret_ty,
-                        });
-                    }
-
-                    // Check if this is a closure call (statically resolved)
-                    if let Some((func_id, env_local, _captures)) =
-                        self.closure_info.get(name).cloned()
-                    {
-                        let mut fir_args = Vec::new();
-                        // First arg: env pointer (or nil if no captures)
-                        if let Some(env_id) = env_local {
-                            fir_args.push(FirExpr::LocalVar(env_id, FirType::Ptr));
-                        } else {
-                            fir_args.push(FirExpr::NilLit);
-                        }
-                        // Then the explicit args
-                        for (_, _, arg) in args {
-                            fir_args.push(self.lower_expr(arg)?);
-                        }
-                        let ret_ty = self.resolve_function_ret_type_by_id(func_id);
-                        return Ok(FirExpr::Call {
-                            func: func_id,
-                            args: fir_args,
-                            ret_ty,
-                        });
-                    }
-
-                    // Check if this is a class constructor call
-                    if let Some(&class_id) = self.classes.get(name.as_str()) {
-                        // Constructor: lower args in field order from class layout
-                        let field_layout = self
-                            .class_fields
-                            .get(&class_id)
-                            .cloned()
-                            .unwrap_or_default();
-                        let mut fir_fields = Vec::new();
-                        // Match named args to field order from the class layout
-                        for (field_name, _, _) in &field_layout {
-                            // Find the arg matching this field name
-                            if let Some((_, _, expr)) =
-                                args.iter().find(|(arg_name, _, _)| arg_name == field_name)
-                            {
-                                fir_fields.push(self.lower_expr(expr)?);
-                            } else {
-                                // Positional fallback: use args in order
-                                break;
-                            }
-                        }
-                        // If named matching didn't get all fields, try positional
-                        if fir_fields.len() != field_layout.len() {
-                            fir_fields.clear();
-                            for (_, _, arg) in args {
-                                fir_fields.push(self.lower_expr(arg)?);
-                            }
-                        }
-                        Ok(FirExpr::Construct {
-                            class: class_id,
-                            fields: fir_fields,
-                            ty: FirType::Ptr,
-                        })
-                    } else if let Some(&func_id) = self.functions.get(name.as_str()) {
-                        let fir_args = self.lower_call_args_with_defaults(name, args)?;
-                        let ret_ty = self.resolve_function_ret_type(name);
-                        // Generic type erasure: if params are TypeVar, the FIR
-                        // signature uses I64. Bitcast Float/Bool args to I64 so
-                        // Cranelift types match, and bitcast the result back.
-                        let (fir_args, cast_ret) = self.apply_generic_erasure_casts(
-                            name,
-                            fir_args,
-                            ret_ty.clone(),
-                            &expr.span(),
-                        );
-                        let needs_ret_cast = cast_ret != ret_ty;
-                        let call = FirExpr::Call {
-                            func: func_id,
-                            args: fir_args,
-                            ret_ty,
-                        };
-                        if needs_ret_cast {
-                            Ok(FirExpr::Bitcast {
-                                value: Box::new(call),
-                                to: cast_ret,
-                            })
-                        } else {
-                            Ok(call)
-                        }
-                    } else if self.locals.contains_key(name.as_str()) {
-                        // Local variable with function type — closure call (dynamic dispatch)
-                        let closure_var = self.lower_expr(func)?;
-                        let fir_args: Result<Vec<_>, _> = args
-                            .iter()
-                            .map(|(_, _, arg)| self.lower_expr(arg))
-                            .collect();
-                        let ret_ty = self.resolve_closure_ret_type(name);
-                        Ok(FirExpr::ClosureCall {
-                            closure: Box::new(closure_var),
-                            args: fir_args?,
-                            ret_ty,
-                        })
-                    } else {
-                        // Could be a runtime call (say, etc.)
-                        let fir_args: Result<Vec<_>, _> = args
-                            .iter()
-                            .map(|(_, _, arg)| self.lower_expr(arg))
-                            .collect();
-                        Ok(FirExpr::RuntimeCall {
-                            name: name.clone(),
-                            args: fir_args?,
-                            ret_ty: FirType::Void,
-                        })
-                    }
-                } else {
-                    Err(LowerError::UnsupportedFeature(
-                        UnsupportedFeatureKind::Other("non-ident function call target".into()),
-                        expr.span(),
-                    ))
-                }
-            }
+            Expr::Call { func, args, .. } => self.lower_call_expr(func, args, expr),
 
             Expr::ListLiteral(elems, _) => {
                 if elems.is_empty() {
@@ -574,195 +188,15 @@ impl Lowerer {
                 })
             }
 
-            // Propagate: `expr!` → evaluate, check error flag, trap if error
-            Expr::Propagate(inner, _) => {
-                let fir_inner = self.lower_expr(inner)?;
-                let result_ty = self.infer_fir_type(&fir_inner);
-                let result_id = self.alloc_local();
-                self.local_types.insert(result_id, result_ty.clone());
+            Expr::Propagate(inner, _) => self.lower_propagate_expr(inner),
 
-                // let __result = inner_expr
-                self.pending_stmts.push(FirStmt::Let {
-                    name: result_id,
-                    ty: result_ty.clone(),
-                    value: fir_inner,
-                });
+            Expr::ErrorOr { expr, default, .. } => self.lower_error_or_expr(expr, default),
 
-                // if aster_error_check(): cleanup then aster_panic()
-                let check = FirExpr::RuntimeCall {
-                    name: "aster_error_check".to_string(),
-                    args: vec![],
-                    ret_ty: FirType::Bool,
-                };
-                // Build cleanup + panic as the error branch body.
-                // Save pending_stmts so cleanup emission doesn't steal earlier stmts.
-                let saved = std::mem::take(&mut self.pending_stmts);
-                self.emit_cleanup_calls();
-                if let Some(scope_id) = self.function_scope_id {
-                    self.emit_scope_exit(scope_id);
-                }
-                let mut error_body = std::mem::take(&mut self.pending_stmts);
-                self.pending_stmts = saved;
-                error_body.push(FirStmt::Expr(FirExpr::RuntimeCall {
-                    name: "aster_panic".to_string(),
-                    args: vec![],
-                    ret_ty: FirType::Void,
-                }));
-                self.pending_stmts.push(FirStmt::If {
-                    cond: check,
-                    then_body: error_body,
-                    else_body: vec![],
-                });
+            Expr::ErrorOrElse { expr, handler, .. } => self.lower_error_or_else_expr(expr, handler),
 
-                Ok(FirExpr::LocalVar(result_id, result_ty))
-            }
+            Expr::ErrorCatch { expr, arms, .. } => self.lower_error_catch_expr(expr, arms),
 
-            // Error handling: `expr!.or(default)` → evaluate, check error, fallback
-            Expr::ErrorOr { expr, default, .. } => {
-                // Extract inner expression (skip Propagate wrapper)
-                let inner = if let Expr::Propagate(inner, _) = expr.as_ref() {
-                    inner
-                } else {
-                    expr
-                };
-                let fir_inner = self.lower_expr(inner)?;
-                let fir_default = self.lower_expr(default)?;
-                let result_ty = self.infer_fir_type(&fir_inner);
-                let result_id = self.alloc_local();
-                self.local_types.insert(result_id, result_ty.clone());
-
-                // let __result = inner_expr
-                self.pending_stmts.push(FirStmt::Let {
-                    name: result_id,
-                    ty: result_ty.clone(),
-                    value: fir_inner,
-                });
-
-                // if aster_error_check(): __result = default
-                let check = FirExpr::RuntimeCall {
-                    name: "aster_error_check".to_string(),
-                    args: vec![],
-                    ret_ty: FirType::Bool,
-                };
-                self.pending_stmts.push(FirStmt::If {
-                    cond: check,
-                    then_body: vec![FirStmt::Assign {
-                        target: FirPlace::Local(result_id),
-                        value: fir_default,
-                    }],
-                    else_body: vec![],
-                });
-
-                Ok(FirExpr::LocalVar(result_id, result_ty))
-            }
-
-            // Error handling: `expr!.or_else(-> handler)` → evaluate, check error, call handler
-            Expr::ErrorOrElse { expr, handler, .. } => {
-                let inner = if let Expr::Propagate(inner, _) = expr.as_ref() {
-                    inner
-                } else {
-                    expr
-                };
-                let fir_inner = self.lower_expr(inner)?;
-                // For zero-param lambdas (-> expr), inline the body directly
-                let fir_handler = if let Expr::Lambda { params, body, .. } = handler.as_ref()
-                    && params.is_empty()
-                {
-                    self.lower_inline_body(body)?
-                } else {
-                    self.lower_expr(handler)?
-                };
-                let result_ty = self.infer_fir_type(&fir_inner);
-                let result_id = self.alloc_local();
-                self.local_types.insert(result_id, result_ty.clone());
-
-                self.pending_stmts.push(FirStmt::Let {
-                    name: result_id,
-                    ty: result_ty.clone(),
-                    value: fir_inner,
-                });
-
-                let check = FirExpr::RuntimeCall {
-                    name: "aster_error_check".to_string(),
-                    args: vec![],
-                    ret_ty: FirType::Bool,
-                };
-                self.pending_stmts.push(FirStmt::If {
-                    cond: check,
-                    then_body: vec![FirStmt::Assign {
-                        target: FirPlace::Local(result_id),
-                        value: fir_handler,
-                    }],
-                    else_body: vec![],
-                });
-
-                Ok(FirExpr::LocalVar(result_id, result_ty))
-            }
-
-            // Error handling: `expr!.catch { arms }` → evaluate expr, check error
-            // For now, same as ErrorOr with the first arm's body as fallback
-            Expr::ErrorCatch { expr, arms, .. } => {
-                let inner = if let Expr::Propagate(inner, _) = expr.as_ref() {
-                    inner
-                } else {
-                    expr
-                };
-                let fir_inner = self.lower_expr(inner)?;
-                let result_ty = self.infer_fir_type(&fir_inner);
-                let result_id = self.alloc_local();
-                self.local_types.insert(result_id, result_ty.clone());
-
-                self.pending_stmts.push(FirStmt::Let {
-                    name: result_id,
-                    ty: result_ty.clone(),
-                    value: fir_inner,
-                });
-
-                // Use first arm as catch-all fallback
-                let fallback = if let Some((_, body)) = arms.first() {
-                    self.lower_expr(body)?
-                } else {
-                    FirExpr::IntLit(0) // no arms → default to 0
-                };
-
-                let check = FirExpr::RuntimeCall {
-                    name: "aster_error_check".to_string(),
-                    args: vec![],
-                    ret_ty: FirType::Bool,
-                };
-                self.pending_stmts.push(FirStmt::If {
-                    cond: check,
-                    then_body: vec![FirStmt::Assign {
-                        target: FirPlace::Local(result_id),
-                        value: fallback,
-                    }],
-                    else_body: vec![],
-                });
-
-                Ok(FirExpr::LocalVar(result_id, result_ty))
-            }
-
-            // Throw: set error flag, return dummy value matching the function's return type
-            Expr::Throw(inner, _) => {
-                let _fir_inner = self.lower_expr(inner)?;
-                // Set the error flag
-                self.pending_stmts.push(FirStmt::Expr(FirExpr::RuntimeCall {
-                    name: "aster_error_set".to_string(),
-                    args: vec![],
-                    ret_ty: FirType::Void,
-                }));
-                // Return a type-correct dummy value — the caller checks the error flag
-                let dummy = match self
-                    .current_return_type
-                    .as_ref()
-                    .map(|t| self.lower_type(t))
-                {
-                    Some(FirType::F64) => FirExpr::FloatLit(0.0),
-                    Some(FirType::Bool) => FirExpr::BoolLit(false),
-                    _ => FirExpr::IntLit(0),
-                };
-                Ok(dummy)
-            }
+            Expr::Throw(inner, _) => self.lower_throw_expr(inner),
 
             Expr::Member { object, field, .. } => {
                 // Check if this is an enum variant construction: EnumName.Variant
@@ -829,6 +263,578 @@ impl Lowerer {
         }
     }
 
+    fn lower_binop_expr(
+        &mut self,
+        left: &Expr,
+        op: &ast::BinOp,
+        right: &Expr,
+    ) -> Result<FirExpr, LowerError> {
+        if matches!(op, ast::BinOp::Pow) {
+            let fir_left = self.lower_expr(left)?;
+            let fir_right = self.lower_expr(right)?;
+            let lt = self.infer_fir_type(&fir_left);
+            let rt = self.infer_fir_type(&fir_right);
+            let any_float = lt == FirType::F64 || rt == FirType::F64;
+            if any_float {
+                let fl = if lt == FirType::I64 {
+                    FirExpr::IntToFloat(Box::new(fir_left))
+                } else {
+                    fir_left
+                };
+                let fr = if rt == FirType::I64 {
+                    FirExpr::IntToFloat(Box::new(fir_right))
+                } else {
+                    fir_right
+                };
+                return Ok(FirExpr::RuntimeCall {
+                    name: "aster_pow_float".to_string(),
+                    args: vec![fl, fr],
+                    ret_ty: FirType::F64,
+                });
+            }
+            return Ok(FirExpr::RuntimeCall {
+                name: "aster_pow_int".to_string(),
+                args: vec![fir_left, fir_right],
+                ret_ty: FirType::I64,
+            });
+        }
+        // Dispatch == / != on custom types to ClassName.eq(self, other)
+        if matches!(op, ast::BinOp::Eq | ast::BinOp::Neq)
+            && let Ok(class_name) = self.resolve_class_name(left)
+        {
+            let eq_name = format!("{}.eq", class_name);
+            if let Some(&func_id) = self.functions.get(&eq_name) {
+                let fir_left = self.lower_expr(left)?;
+                let fir_right = self.lower_expr(right)?;
+                let eq_result = FirExpr::Call {
+                    func: func_id,
+                    args: vec![fir_left, fir_right],
+                    ret_ty: FirType::Bool,
+                };
+                return if matches!(op, ast::BinOp::Neq) {
+                    Ok(FirExpr::UnaryOp {
+                        op: UnaryOp::Not,
+                        operand: Box::new(eq_result),
+                        result_ty: FirType::Bool,
+                    })
+                } else {
+                    Ok(eq_result)
+                };
+            }
+        }
+        // Dispatch <, >, <=, >= on custom types to ClassName.cmp(self, other)
+        if matches!(
+            op,
+            ast::BinOp::Lt | ast::BinOp::Gt | ast::BinOp::Lte | ast::BinOp::Gte
+        ) && let Ok(class_name) = self.resolve_class_name(left)
+        {
+            let cmp_name = format!("{}.cmp", class_name);
+            if let Some(&func_id) = self.functions.get(&cmp_name) {
+                let fir_left = self.lower_expr(left)?;
+                let fir_right = self.lower_expr(right)?;
+                // cmp returns Ordering (tag: 0=Less, 1=Equal, 2=Greater)
+                let cmp_result = FirExpr::Call {
+                    func: func_id,
+                    args: vec![fir_left, fir_right],
+                    ret_ty: FirType::Ptr,
+                };
+                let tag = FirExpr::FieldGet {
+                    object: Box::new(cmp_result),
+                    offset: 0,
+                    ty: FirType::I64,
+                };
+                let (cmp_op, cmp_val) = match op {
+                    ast::BinOp::Lt => (BinOp::Eq, 0i64),   // Less = 0
+                    ast::BinOp::Gt => (BinOp::Eq, 2i64),   // Greater = 2
+                    ast::BinOp::Lte => (BinOp::Neq, 2i64), // not Greater
+                    ast::BinOp::Gte => (BinOp::Neq, 0i64), // not Less
+                    _ => unreachable!(),
+                };
+                return Ok(FirExpr::BinaryOp {
+                    left: Box::new(tag),
+                    op: cmp_op,
+                    right: Box::new(FirExpr::IntLit(cmp_val)),
+                    result_ty: FirType::Bool,
+                });
+            }
+        }
+        let fir_left = self.lower_expr(left)?;
+        let fir_right = self.lower_expr(right)?;
+        let fir_op = self.lower_binop(op);
+        // Int/Float coercion: promote Int operand to Float
+        let lt = self.infer_fir_type(&fir_left);
+        let rt = self.infer_fir_type(&fir_right);
+        let (fir_left, fir_right) = match (&lt, &rt) {
+            (FirType::I64, FirType::F64) => (FirExpr::IntToFloat(Box::new(fir_left)), fir_right),
+            (FirType::F64, FirType::I64) => (fir_left, FirExpr::IntToFloat(Box::new(fir_right))),
+            _ => (fir_left, fir_right),
+        };
+        let result_ty = self.infer_binop_type(&fir_op, &fir_left, &fir_right);
+        // String + String → aster_string_concat runtime call
+        if matches!(fir_op, BinOp::Add) && matches!(result_ty, FirType::Ptr) {
+            return Ok(FirExpr::RuntimeCall {
+                name: "aster_string_concat".to_string(),
+                args: vec![fir_left, fir_right],
+                ret_ty: FirType::Ptr,
+            });
+        }
+        Ok(FirExpr::BinaryOp {
+            left: Box::new(fir_left),
+            op: fir_op,
+            right: Box::new(fir_right),
+            result_ty,
+        })
+    }
+
+    fn lower_call_expr(
+        &mut self,
+        func: &Expr,
+        args: &[(String, ast::Span, Expr)],
+        call_expr: &Expr,
+    ) -> Result<FirExpr, LowerError> {
+        self.pending_stmts.push(FirStmt::Expr(FirExpr::Safepoint));
+        // Method call: obj.method(args)
+        if let Expr::Member { object, field, .. } = func {
+            return self.lower_method_call(object, field, args);
+        }
+
+        let Expr::Ident(name, _) = func else {
+            return Err(LowerError::UnsupportedFeature(
+                UnsupportedFeatureKind::Other("non-ident function call target".into()),
+                call_expr.span(),
+            ));
+        };
+
+        if name == "to_string"
+            && let Some((_, _, arg)) = args.first()
+        {
+            let fir_arg = self.lower_expr(arg)?;
+            return Ok(self.to_string_expr(arg, fir_arg));
+        }
+
+        // random(max: n) or random(min: a, max: b) → aster_random_int/float/bool
+        if name == "random" {
+            return self.lower_random_call(args, call_expr);
+        }
+
+        // Mutex(value: x) → aster_mutex_new(x)
+        if name == builtin_class::MUTEX {
+            let value_arg = args
+                .iter()
+                .find(|(n, _, _)| n == "value")
+                .map(|(_, _, e)| e)
+                .or_else(|| args.first().map(|(_, _, e)| e));
+            if let Some(val) = value_arg {
+                let fir_val = self.lower_expr(val)?;
+                return Ok(FirExpr::RuntimeCall {
+                    name: "aster_mutex_new".to_string(),
+                    args: vec![fir_val],
+                    ret_ty: FirType::Ptr,
+                });
+            }
+        }
+
+        // Channel(capacity?: x) → aster_channel_new(x)
+        if name == builtin_class::CHANNEL
+            || name == builtin_class::MULTI_SEND
+            || name == builtin_class::MULTI_RECEIVE
+        {
+            let cap_arg = args
+                .iter()
+                .find(|(n, _, _)| n == "capacity")
+                .map(|(_, _, e)| e);
+            let fir_cap = if let Some(cap) = cap_arg {
+                self.lower_expr(cap)?
+            } else {
+                FirExpr::IntLit(0) // 0 = unbuffered
+            };
+            return Ok(FirExpr::RuntimeCall {
+                name: "aster_channel_new".to_string(),
+                args: vec![fir_cap],
+                ret_ty: FirType::Ptr,
+            });
+        }
+
+        if name == "resolve_all"
+            && let Some((_, _, arg)) = args.first()
+        {
+            let fir_arg = self.lower_expr(arg)?;
+            let ret_ty = self
+                .type_table
+                .get(&call_expr.span())
+                .map(|ty| self.lower_type(ty))
+                .unwrap_or(FirType::Ptr);
+            return Ok(FirExpr::RuntimeCall {
+                name: self.resolve_all_runtime_name(arg).to_string(),
+                args: vec![fir_arg],
+                ret_ty,
+            });
+        }
+
+        if name == "resolve_first"
+            && let Some((_, _, arg)) = args.first()
+        {
+            let fir_arg = self.lower_expr(arg)?;
+            let ret_ty = self
+                .type_table
+                .get(&call_expr.span())
+                .map(|ty| self.lower_type(ty))
+                .unwrap_or(FirType::I64);
+            return Ok(FirExpr::RuntimeCall {
+                name: self.resolve_first_runtime_name(arg).to_string(),
+                args: vec![fir_arg],
+                ret_ty,
+            });
+        }
+
+        // Closure call (statically resolved)
+        if let Some((func_id, env_local, _captures)) = self.closure_info.get(name).cloned() {
+            let mut fir_args = Vec::new();
+            if let Some(env_id) = env_local {
+                fir_args.push(FirExpr::LocalVar(env_id, FirType::Ptr));
+            } else {
+                fir_args.push(FirExpr::NilLit);
+            }
+            for (_, _, arg) in args {
+                fir_args.push(self.lower_expr(arg)?);
+            }
+            let ret_ty = self.resolve_function_ret_type_by_id(func_id);
+            return Ok(FirExpr::Call {
+                func: func_id,
+                args: fir_args,
+                ret_ty,
+            });
+        }
+
+        // Class constructor call
+        if let Some(&class_id) = self.classes.get(name.as_str()) {
+            let field_layout = self
+                .class_fields
+                .get(&class_id)
+                .cloned()
+                .unwrap_or_default();
+            let mut fir_fields = Vec::new();
+            for (field_name, _, _) in &field_layout {
+                if let Some((_, _, expr)) =
+                    args.iter().find(|(arg_name, _, _)| arg_name == field_name)
+                {
+                    fir_fields.push(self.lower_expr(expr)?);
+                } else {
+                    break;
+                }
+            }
+            if fir_fields.len() != field_layout.len() {
+                fir_fields.clear();
+                for (_, _, arg) in args {
+                    fir_fields.push(self.lower_expr(arg)?);
+                }
+            }
+            return Ok(FirExpr::Construct {
+                class: class_id,
+                fields: fir_fields,
+                ty: FirType::Ptr,
+            });
+        }
+
+        if let Some(&func_id) = self.functions.get(name.as_str()) {
+            let fir_args = self.lower_call_args_with_defaults(name, args)?;
+            let ret_ty = self.resolve_function_ret_type(name);
+            let (fir_args, cast_ret) =
+                self.apply_generic_erasure_casts(name, fir_args, ret_ty.clone(), &call_expr.span());
+            let needs_ret_cast = cast_ret != ret_ty;
+            let call = FirExpr::Call {
+                func: func_id,
+                args: fir_args,
+                ret_ty,
+            };
+            if needs_ret_cast {
+                Ok(FirExpr::Bitcast {
+                    value: Box::new(call),
+                    to: cast_ret,
+                })
+            } else {
+                Ok(call)
+            }
+        } else if self.locals.contains_key(name.as_str()) {
+            // Local variable with function type — closure call (dynamic dispatch)
+            let closure_var = self.lower_expr(func)?;
+            let fir_args: Result<Vec<_>, _> = args
+                .iter()
+                .map(|(_, _, arg)| self.lower_expr(arg))
+                .collect();
+            let ret_ty = self.resolve_closure_ret_type(name);
+            Ok(FirExpr::ClosureCall {
+                closure: Box::new(closure_var),
+                args: fir_args?,
+                ret_ty,
+            })
+        } else {
+            // Runtime call (say, etc.)
+            let fir_args: Result<Vec<_>, _> = args
+                .iter()
+                .map(|(_, _, arg)| self.lower_expr(arg))
+                .collect();
+            Ok(FirExpr::RuntimeCall {
+                name: name.clone(),
+                args: fir_args?,
+                ret_ty: FirType::Void,
+            })
+        }
+    }
+
+    fn lower_random_call(
+        &mut self,
+        args: &[(String, ast::Span, Expr)],
+        call_expr: &Expr,
+    ) -> Result<FirExpr, LowerError> {
+        let ret_ty = self
+            .type_table
+            .get(&call_expr.span())
+            .map(|ty| self.lower_type(ty))
+            .unwrap_or(FirType::I64);
+        let max_arg = args.iter().find(|(n, _, _)| n == "max");
+        let min_arg = args.iter().find(|(n, _, _)| n == "min");
+        match ret_ty {
+            FirType::I64 => {
+                let fir_max = if let Some((_, _, e)) = max_arg {
+                    self.lower_expr(e)?
+                } else {
+                    FirExpr::IntLit(100)
+                };
+                let raw_random = FirExpr::RuntimeCall {
+                    name: "aster_random_int".to_string(),
+                    args: vec![if let Some(min_val) = &min_arg {
+                        let fir_min = self.lower_expr(&min_val.2)?;
+                        FirExpr::BinaryOp {
+                            left: Box::new(fir_max),
+                            op: BinOp::Sub,
+                            right: Box::new(fir_min),
+                            result_ty: FirType::I64,
+                        }
+                    } else {
+                        fir_max
+                    }],
+                    ret_ty: FirType::I64,
+                };
+                if let Some((_, _, min_expr)) = min_arg {
+                    let fir_min = self.lower_expr(min_expr)?;
+                    Ok(FirExpr::BinaryOp {
+                        left: Box::new(raw_random),
+                        op: BinOp::Add,
+                        right: Box::new(fir_min),
+                        result_ty: FirType::I64,
+                    })
+                } else {
+                    Ok(raw_random)
+                }
+            }
+            FirType::F64 => {
+                let fir_max = if let Some((_, _, e)) = max_arg {
+                    self.lower_expr(e)?
+                } else {
+                    FirExpr::FloatLit(1.0)
+                };
+                Ok(FirExpr::RuntimeCall {
+                    name: "aster_random_float".to_string(),
+                    args: vec![fir_max],
+                    ret_ty: FirType::F64,
+                })
+            }
+            _ => Ok(FirExpr::RuntimeCall {
+                name: "aster_random_bool".to_string(),
+                args: vec![],
+                ret_ty: FirType::Bool,
+            }),
+        }
+    }
+
+    /// Evaluate expr, check error flag, cleanup + panic if error.
+    fn lower_propagate_expr(&mut self, inner: &Expr) -> Result<FirExpr, LowerError> {
+        let fir_inner = self.lower_expr(inner)?;
+        let result_ty = self.infer_fir_type(&fir_inner);
+        let result_id = self.alloc_local();
+        self.local_types.insert(result_id, result_ty.clone());
+
+        self.pending_stmts.push(FirStmt::Let {
+            name: result_id,
+            ty: result_ty.clone(),
+            value: fir_inner,
+        });
+
+        let check = FirExpr::RuntimeCall {
+            name: "aster_error_check".to_string(),
+            args: vec![],
+            ret_ty: FirType::Bool,
+        };
+        // Save pending_stmts so cleanup emission doesn't steal earlier stmts.
+        let saved = std::mem::take(&mut self.pending_stmts);
+        self.emit_cleanup_calls();
+        if let Some(scope_id) = self.function_scope_id {
+            self.emit_scope_exit(scope_id);
+        }
+        let mut error_body = std::mem::take(&mut self.pending_stmts);
+        self.pending_stmts = saved;
+        error_body.push(FirStmt::Expr(FirExpr::RuntimeCall {
+            name: "aster_panic".to_string(),
+            args: vec![],
+            ret_ty: FirType::Void,
+        }));
+        self.pending_stmts.push(FirStmt::If {
+            cond: check,
+            then_body: error_body,
+            else_body: vec![],
+        });
+
+        Ok(FirExpr::LocalVar(result_id, result_ty))
+    }
+
+    /// Evaluate expr, on error use default value instead of panicking.
+    fn lower_error_or_expr(&mut self, expr: &Expr, default: &Expr) -> Result<FirExpr, LowerError> {
+        let inner = if let Expr::Propagate(inner, _) = expr {
+            inner
+        } else {
+            expr
+        };
+        let fir_inner = self.lower_expr(inner)?;
+        let fir_default = self.lower_expr(default)?;
+        let result_ty = self.infer_fir_type(&fir_inner);
+        let result_id = self.alloc_local();
+        self.local_types.insert(result_id, result_ty.clone());
+
+        self.pending_stmts.push(FirStmt::Let {
+            name: result_id,
+            ty: result_ty.clone(),
+            value: fir_inner,
+        });
+
+        let check = FirExpr::RuntimeCall {
+            name: "aster_error_check".to_string(),
+            args: vec![],
+            ret_ty: FirType::Bool,
+        };
+        self.pending_stmts.push(FirStmt::If {
+            cond: check,
+            then_body: vec![FirStmt::Assign {
+                target: FirPlace::Local(result_id),
+                value: fir_default,
+            }],
+            else_body: vec![],
+        });
+
+        Ok(FirExpr::LocalVar(result_id, result_ty))
+    }
+
+    /// Evaluate expr, on error call handler lambda.
+    fn lower_error_or_else_expr(
+        &mut self,
+        expr: &Expr,
+        handler: &Expr,
+    ) -> Result<FirExpr, LowerError> {
+        let inner = if let Expr::Propagate(inner, _) = expr {
+            inner
+        } else {
+            expr
+        };
+        let fir_inner = self.lower_expr(inner)?;
+        let fir_handler = if let Expr::Lambda { params, body, .. } = handler
+            && params.is_empty()
+        {
+            self.lower_inline_body(body)?
+        } else {
+            self.lower_expr(handler)?
+        };
+        let result_ty = self.infer_fir_type(&fir_inner);
+        let result_id = self.alloc_local();
+        self.local_types.insert(result_id, result_ty.clone());
+
+        self.pending_stmts.push(FirStmt::Let {
+            name: result_id,
+            ty: result_ty.clone(),
+            value: fir_inner,
+        });
+
+        let check = FirExpr::RuntimeCall {
+            name: "aster_error_check".to_string(),
+            args: vec![],
+            ret_ty: FirType::Bool,
+        };
+        self.pending_stmts.push(FirStmt::If {
+            cond: check,
+            then_body: vec![FirStmt::Assign {
+                target: FirPlace::Local(result_id),
+                value: fir_handler,
+            }],
+            else_body: vec![],
+        });
+
+        Ok(FirExpr::LocalVar(result_id, result_ty))
+    }
+
+    /// Evaluate expr, on error use first catch arm as fallback.
+    fn lower_error_catch_expr(
+        &mut self,
+        expr: &Expr,
+        arms: &[(ast::ErrorCatchPattern, Expr)],
+    ) -> Result<FirExpr, LowerError> {
+        let inner = if let Expr::Propagate(inner, _) = expr {
+            inner
+        } else {
+            expr
+        };
+        let fir_inner = self.lower_expr(inner)?;
+        let result_ty = self.infer_fir_type(&fir_inner);
+        let result_id = self.alloc_local();
+        self.local_types.insert(result_id, result_ty.clone());
+
+        self.pending_stmts.push(FirStmt::Let {
+            name: result_id,
+            ty: result_ty.clone(),
+            value: fir_inner,
+        });
+
+        let fallback = if let Some((_, body)) = arms.first() {
+            self.lower_expr(body)?
+        } else {
+            FirExpr::IntLit(0)
+        };
+
+        let check = FirExpr::RuntimeCall {
+            name: "aster_error_check".to_string(),
+            args: vec![],
+            ret_ty: FirType::Bool,
+        };
+        self.pending_stmts.push(FirStmt::If {
+            cond: check,
+            then_body: vec![FirStmt::Assign {
+                target: FirPlace::Local(result_id),
+                value: fallback,
+            }],
+            else_body: vec![],
+        });
+
+        Ok(FirExpr::LocalVar(result_id, result_ty))
+    }
+
+    /// Set error flag and return a type-correct dummy value.
+    fn lower_throw_expr(&mut self, inner: &Expr) -> Result<FirExpr, LowerError> {
+        let _fir_inner = self.lower_expr(inner)?;
+        self.pending_stmts.push(FirStmt::Expr(FirExpr::RuntimeCall {
+            name: "aster_error_set".to_string(),
+            args: vec![],
+            ret_ty: FirType::Void,
+        }));
+        let dummy = match self
+            .current_return_type
+            .as_ref()
+            .map(|t| self.lower_type(t))
+        {
+            Some(FirType::F64) => FirExpr::FloatLit(0.0),
+            Some(FirType::Bool) => FirExpr::BoolLit(false),
+            _ => FirExpr::IntLit(0),
+        };
+        Ok(dummy)
+    }
+
     pub(crate) fn to_string_expr(&self, ast_expr: &Expr, fir_expr: FirExpr) -> FirExpr {
         match self.infer_fir_type(&fir_expr) {
             FirType::Ptr => {
@@ -874,9 +880,6 @@ impl Lowerer {
         }
     }
 
-    /// Wrap a return value in TagWrap if the current function returns a nullable type.
-    /// `return nil` → TagWrap(tag=1, NilLit)  [nil]
-    /// `return expr` → TagWrap(tag=0, expr)    [Some(value)]
     /// Wrap a return value in TagWrap if the current function returns a nullable type.
     /// `return nil` → TagWrap(tag=1, NilLit)  [nil]
     /// `return expr` → TagWrap(tag=0, expr)    [Some(value)]
@@ -931,8 +934,6 @@ impl Lowerer {
 
     /// Lower call arguments, filling in default values for any missing named parameters.
     /// If the function has no defaults or all args are provided, this just lowers args in order.
-    /// Lower call arguments, filling in default values for any missing named parameters.
-    /// If the function has no defaults or all args are provided, this just lowers args in order.
     pub(crate) fn lower_call_args_with_defaults(
         &mut self,
         func_name: &str,
@@ -967,14 +968,6 @@ impl Lowerer {
         }
     }
 
-    /// Lower `for var in iter: body`.
-    /// For List types: index-based while loop (aster_list_len/aster_list_get).
-    /// For Iterator classes: next()-based loop with nullable check.
-    /// Lower a zero-param lambda body inline, returning the last expression as a FirExpr.
-    /// Emits any preceding statements into pending_stmts.
-    /// Lower `for var in iter: body`.
-    /// For List types: index-based while loop (aster_list_len/aster_list_get).
-    /// For Iterator classes: next()-based loop with nullable check.
     /// Lower a zero-param lambda body inline, returning the last expression as a FirExpr.
     /// Emits any preceding statements into pending_stmts.
     pub(crate) fn lower_inline_body(&mut self, body: &[Stmt]) -> Result<FirExpr, LowerError> {
