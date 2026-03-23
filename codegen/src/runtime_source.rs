@@ -204,13 +204,34 @@ int64_t aster_list_len(void* handle) {
  * Map operations (handle-based, linear scan)
  * =================================================================== */
 
-static int aster_string_eq(void* a, void* b) {
+static int string_eq_inner(void* a, void* b) {
     if (a == b) return 1;
     if (!a || !b) return 0;
     int64_t a_len = *(int64_t*)a;
     int64_t b_len = *(int64_t*)b;
     if (a_len != b_len || a_len < 0) return 0;
     return memcmp((char*)a + 8, (char*)b + 8, (size_t)a_len) == 0;
+}
+
+int8_t aster_string_eq(void* a, void* b) {
+    return string_eq_inner(a, b) ? 1 : 0;
+}
+
+int64_t aster_string_compare(void* a, void* b) {
+    int64_t a_len = a ? *(int64_t*)a : 0;
+    int64_t b_len = b ? *(int64_t*)b : 0;
+    if (a_len < 0) a_len = 0;
+    if (b_len < 0) b_len = 0;
+    int64_t min_len = a_len < b_len ? a_len : b_len;
+    int cmp = 0;
+    if (min_len > 0) {
+        cmp = memcmp((char*)a + 8, (char*)b + 8, (size_t)min_len);
+    }
+    if (cmp < 0) return -1;
+    if (cmp > 0) return 1;
+    if (a_len < b_len) return -1;
+    if (a_len > b_len) return 1;
+    return 0;
 }
 
 void* aster_map_new(int64_t cap) {
@@ -230,7 +251,7 @@ void* aster_map_set(void* handle, int64_t key, int64_t value) {
     int64_t cap = *((int64_t*)block + 1);
     int64_t* entries = ((int64_t*)block) + 2;
     for (int64_t i = 0; i < len; i++) {
-        if (aster_string_eq((void*)entries[i * 2], (void*)key)) {
+        if (string_eq_inner((void*)entries[i * 2], (void*)key)) {
             entries[i * 2 + 1] = value;
             return handle;
         }
@@ -258,7 +279,7 @@ int64_t aster_map_get(void* handle, int64_t key) {
     int64_t len = *(int64_t*)block;
     int64_t* entries = ((int64_t*)block) + 2;
     for (int64_t i = 0; i < len; i++) {
-        if (aster_string_eq((void*)entries[i * 2], (void*)key)) {
+        if (string_eq_inner((void*)entries[i * 2], (void*)key)) {
             return entries[i * 2 + 1];
         }
     }

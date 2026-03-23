@@ -540,3 +540,84 @@ def main() -> Int
         common::output_text(&output)
     );
 }
+
+#[test]
+fn run_string_equality_compares_content() {
+    let dir = common::make_temp_dir("str-eq");
+    let src = dir.join("str_eq.aster");
+    std::fs::write(
+        &src,
+        r#"
+let a = "hello"
+let b = "hel" + "lo"
+let result = 0
+if a == b
+  result = 1
+
+def main() -> Int
+  result
+"#,
+    )
+    .unwrap();
+    let output = common::cli(&["run", src.to_str().unwrap()]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "string == should compare content, not pointers: {}",
+        common::output_text(&output)
+    );
+}
+
+#[test]
+fn run_string_inequality_compares_content() {
+    let dir = common::make_temp_dir("str-neq");
+    let src = dir.join("str_neq.aster");
+    std::fs::write(
+        &src,
+        r#"
+let a = "hello"
+let b = "world"
+let result = 0
+if a != b
+  result = 1
+
+def main() -> Int
+  result
+"#,
+    )
+    .unwrap();
+    let output = common::cli(&["run", src.to_str().unwrap()]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "string != should compare content: {}",
+        common::output_text(&output)
+    );
+}
+
+#[test]
+fn run_string_less_than() {
+    let dir = common::make_temp_dir("str-lt");
+    let src = dir.join("str_lt.aster");
+    std::fs::write(
+        &src,
+        r#"
+let a = "apple"
+let b = "banana"
+let result = 0
+if a < b
+  result = 1
+
+def main() -> Int
+  result
+"#,
+    )
+    .unwrap();
+    let output = common::cli(&["run", src.to_str().unwrap()]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "\"apple\" < \"banana\" should be true: {}",
+        common::output_text(&output)
+    );
+}

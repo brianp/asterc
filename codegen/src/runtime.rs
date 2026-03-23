@@ -384,6 +384,47 @@ pub extern "C" fn aster_map_new(cap: i64) -> *mut u8 {
     handle
 }
 
+/// Compare two heap strings by content. Returns 1 (equal) or 0 (not equal).
+pub extern "C" fn aster_string_eq(a: *const u8, b: *const u8) -> i8 {
+    if unsafe { string_eq(a, b) } { 1 } else { 0 }
+}
+
+/// Lexicographic comparison of two heap strings.
+/// Returns -1, 0, or 1 (like C strcmp).
+pub extern "C" fn aster_string_compare(a: *const u8, b: *const u8) -> i64 {
+    unsafe {
+        let (a_data, a_len) = if a.is_null() {
+            (std::ptr::null::<u8>(), 0usize)
+        } else {
+            let raw = *(a as *const i64);
+            let len = if raw < 0 { 0 } else { raw as usize };
+            (a.add(8), len)
+        };
+        let (b_data, b_len) = if b.is_null() {
+            (std::ptr::null::<u8>(), 0usize)
+        } else {
+            let raw = *(b as *const i64);
+            let len = if raw < 0 { 0 } else { raw as usize };
+            (b.add(8), len)
+        };
+        let a_slice = if a_len == 0 {
+            &[]
+        } else {
+            std::slice::from_raw_parts(a_data, a_len)
+        };
+        let b_slice = if b_len == 0 {
+            &[]
+        } else {
+            std::slice::from_raw_parts(b_data, b_len)
+        };
+        match a_slice.cmp(b_slice) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Greater => 1,
+        }
+    }
+}
+
 /// Compare two heap strings by content. Returns true if equal.
 unsafe fn string_eq(a: *const u8, b: *const u8) -> bool {
     if a == b {
@@ -1615,6 +1656,8 @@ pub fn runtime_builtin_symbols() -> Vec<(&'static str, *const u8)> {
         ("aster_string_new", aster_string_new as *const u8),
         ("aster_string_concat", aster_string_concat as *const u8),
         ("aster_string_len", aster_string_len as *const u8),
+        ("aster_string_eq", aster_string_eq as *const u8),
+        ("aster_string_compare", aster_string_compare as *const u8),
         ("aster_list_new", aster_list_new as *const u8),
         ("aster_list_get", aster_list_get as *const u8),
         ("aster_list_random", aster_list_random as *const u8),

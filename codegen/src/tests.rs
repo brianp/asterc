@@ -871,11 +871,7 @@ fn mixed_int_float_add() {
     let ptr = jit.get_function_ptr(fir.entry.unwrap()).unwrap();
     let f: fn() -> f64 = unsafe { std::mem::transmute(ptr) };
     let result = f();
-    assert!(
-        (result - 3.5).abs() < 1e-10,
-        "expected 3.5, got {}",
-        result
-    );
+    assert!((result - 3.5).abs() < 1e-10, "expected 3.5, got {}", result);
 }
 
 #[test]
@@ -886,11 +882,7 @@ fn mixed_float_int_add() {
     let ptr = jit.get_function_ptr(fir.entry.unwrap()).unwrap();
     let f: fn() -> f64 = unsafe { std::mem::transmute(ptr) };
     let result = f();
-    assert!(
-        (result - 3.5).abs() < 1e-10,
-        "expected 3.5, got {}",
-        result
-    );
+    assert!((result - 3.5).abs() < 1e-10, "expected 3.5, got {}", result);
 }
 
 #[test]
@@ -901,11 +893,7 @@ fn mixed_int_float_mul() {
     let ptr = jit.get_function_ptr(fir.entry.unwrap()).unwrap();
     let f: fn() -> f64 = unsafe { std::mem::transmute(ptr) };
     let result = f();
-    assert!(
-        (result - 7.5).abs() < 1e-10,
-        "expected 7.5, got {}",
-        result
-    );
+    assert!((result - 7.5).abs() < 1e-10, "expected 7.5, got {}", result);
 }
 
 #[test]
@@ -916,11 +904,7 @@ fn mixed_int_float_div() {
     let ptr = jit.get_function_ptr(fir.entry.unwrap()).unwrap();
     let f: fn() -> f64 = unsafe { std::mem::transmute(ptr) };
     let result = f();
-    assert!(
-        (result - 3.5).abs() < 1e-10,
-        "expected 3.5, got {}",
-        result
-    );
+    assert!((result - 3.5).abs() < 1e-10, "expected 3.5, got {}", result);
 }
 
 #[test]
@@ -963,11 +947,7 @@ fn float_pow() {
     let ptr = jit.get_function_ptr(fir.entry.unwrap()).unwrap();
     let f: fn() -> f64 = unsafe { std::mem::transmute(ptr) };
     let result = f();
-    assert!(
-        (result - 8.0).abs() < 1e-10,
-        "expected 8.0, got {}",
-        result
-    );
+    assert!((result - 8.0).abs() < 1e-10, "expected 8.0, got {}", result);
 }
 
 #[test]
@@ -978,11 +958,7 @@ fn mixed_int_float_pow() {
     let ptr = jit.get_function_ptr(fir.entry.unwrap()).unwrap();
     let f: fn() -> f64 = unsafe { std::mem::transmute(ptr) };
     let result = f();
-    assert!(
-        (result - 8.0).abs() < 1e-10,
-        "expected 8.0, got {}",
-        result
-    );
+    assert!((result - 8.0).abs() < 1e-10, "expected 8.0, got {}", result);
 }
 
 // ===========================================================================

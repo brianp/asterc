@@ -12,7 +12,7 @@ use fir::module::FirFunction;
 use fir::stmts::{FirPlace, FirStmt};
 use fir::types::{FirType, FunctionId, LocalId};
 
-use crate::types::{fir_type_to_clif, is_float};
+use crate::types::{fir_type_to_clif, is_float, is_ptr};
 
 /// State tracked during translation of a single function.
 pub struct TranslationState {
@@ -767,7 +767,9 @@ fn translate_binop(
     rhs: Value,
     left_expr: &FirExpr,
 ) -> Value {
-    let is_f = is_float(&infer_operand_type(state, left_expr));
+    let left_ty = infer_operand_type(state, left_expr);
+    let is_f = is_float(&left_ty);
+    let is_p = is_ptr(&left_ty);
 
     match op {
         BinOp::Add if is_f => builder.ins().fadd(lhs, rhs),
@@ -859,22 +861,61 @@ fn translate_binop(
             builder.block_params(merge_block)[0]
         }
         BinOp::Eq if is_f => builder.ins().fcmp(FloatCC::Equal, lhs, rhs),
+        BinOp::Eq if is_p => {
+            let eq_ref = state.runtime_refs.get("aster_string_eq").unwrap();
+            let call = builder.ins().call(*eq_ref, &[lhs, rhs]);
+            let result = builder.inst_results(call)[0];
+            let zero = builder.ins().iconst(types::I8, 0);
+            builder.ins().icmp(IntCC::NotEqual, result, zero)
+        }
         BinOp::Eq => builder.ins().icmp(IntCC::Equal, lhs, rhs),
         BinOp::Neq if is_f => builder.ins().fcmp(FloatCC::NotEqual, lhs, rhs),
+        BinOp::Neq if is_p => {
+            let eq_ref = state.runtime_refs.get("aster_string_eq").unwrap();
+            let call = builder.ins().call(*eq_ref, &[lhs, rhs]);
+            let result = builder.inst_results(call)[0];
+            let zero = builder.ins().iconst(types::I8, 0);
+            builder.ins().icmp(IntCC::Equal, result, zero)
+        }
         BinOp::Neq => builder.ins().icmp(IntCC::NotEqual, lhs, rhs),
         BinOp::Lt if is_f => builder.ins().fcmp(FloatCC::LessThan, lhs, rhs),
+        BinOp::Lt if is_p => translate_string_cmp(builder, state, lhs, rhs, IntCC::SignedLessThan),
         BinOp::Lt => builder.ins().icmp(IntCC::SignedLessThan, lhs, rhs),
         BinOp::Gt if is_f => builder.ins().fcmp(FloatCC::GreaterThan, lhs, rhs),
+        BinOp::Gt if is_p => {
+            translate_string_cmp(builder, state, lhs, rhs, IntCC::SignedGreaterThan)
+        }
         BinOp::Gt => builder.ins().icmp(IntCC::SignedGreaterThan, lhs, rhs),
         BinOp::Lte if is_f => builder.ins().fcmp(FloatCC::LessThanOrEqual, lhs, rhs),
+        BinOp::Lte if is_p => {
+            translate_string_cmp(builder, state, lhs, rhs, IntCC::SignedLessThanOrEqual)
+        }
         BinOp::Lte => builder.ins().icmp(IntCC::SignedLessThanOrEqual, lhs, rhs),
         BinOp::Gte if is_f => builder.ins().fcmp(FloatCC::GreaterThanOrEqual, lhs, rhs),
+        BinOp::Gte if is_p => {
+            translate_string_cmp(builder, state, lhs, rhs, IntCC::SignedGreaterThanOrEqual)
+        }
         BinOp::Gte => builder
             .ins()
             .icmp(IntCC::SignedGreaterThanOrEqual, lhs, rhs),
         // And/Or are handled by translate_short_circuit before reaching here
         BinOp::And | BinOp::Or => unreachable!("And/Or handled by short-circuit path"),
     }
+}
+
+/// Call `aster_string_compare(lhs, rhs)` and compare the result against 0.
+fn translate_string_cmp(
+    builder: &mut FunctionBuilder,
+    state: &TranslationState,
+    lhs: Value,
+    rhs: Value,
+    cc: IntCC,
+) -> Value {
+    let cmp_ref = state.runtime_refs.get("aster_string_compare").unwrap();
+    let call = builder.ins().call(*cmp_ref, &[lhs, rhs]);
+    let result = builder.inst_results(call)[0];
+    let zero = builder.ins().iconst(types::I64, 0);
+    builder.ins().icmp(cc, result, zero)
 }
 
 fn translate_unaryop(
