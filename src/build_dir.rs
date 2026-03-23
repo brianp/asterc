@@ -216,7 +216,7 @@ mod tests {
     #[test]
     fn default_build_dir_under_aster() {
         // Use a temp dir with .git marker
-        let tmp = std::env::temp_dir().join("asterc_test_build_dir");
+        let tmp = std::env::temp_dir().join(format!("asterc_test_build_dir_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&tmp);
         let _ = std::fs::create_dir_all(tmp.join(".git"));
         let source = tmp.join("main.aster");
@@ -233,7 +233,7 @@ mod tests {
 
     #[test]
     fn find_root_prefers_aster_dir() {
-        let tmp = std::env::temp_dir().join("asterc_test_root_pref");
+        let tmp = std::env::temp_dir().join(format!("asterc_test_root_pref_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&tmp);
         let _ = std::fs::create_dir_all(tmp.join(".aster"));
         let _ = std::fs::create_dir_all(tmp.join(".git"));
@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn find_root_falls_back_to_git() {
-        let tmp = std::env::temp_dir().join("asterc_test_root_git");
+        let tmp = std::env::temp_dir().join(format!("asterc_test_root_git_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&tmp);
         let _ = std::fs::create_dir_all(tmp.join(".git"));
 
@@ -260,7 +260,7 @@ mod tests {
 
     #[test]
     fn ensure_dirs_creates_subdirs() {
-        let tmp = std::env::temp_dir().join("asterc_test_ensure_dirs");
+        let tmp = std::env::temp_dir().join(format!("asterc_test_ensure_dirs_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
 
         let paths = resolve_build_paths(Path::new("/tmp/main.aster"), Profile::Debug, Some(&tmp));

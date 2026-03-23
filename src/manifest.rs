@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn save_and_load_roundtrip() {
-        let tmp = std::env::temp_dir().join("asterc_test_manifest.json");
+        let tmp = std::env::temp_dir().join(format!("asterc_test_manifest_{}.json", std::process::id()));
 
         let mut m = BuildManifest::new("release", "speed");
         m.record_file("main.aster", "hash1", "obj/main.o");
@@ -215,7 +215,7 @@ mod tests {
 
     #[test]
     fn load_corrupt_file_returns_none() {
-        let tmp = std::env::temp_dir().join("asterc_test_corrupt_manifest.json");
+        let tmp = std::env::temp_dir().join(format!("asterc_test_corrupt_manifest_{}.json", std::process::id()));
         std::fs::write(&tmp, "not valid json").unwrap();
 
         let result = BuildManifest::load(&tmp);
