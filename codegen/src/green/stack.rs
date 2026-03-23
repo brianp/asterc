@@ -12,7 +12,7 @@ unsafe impl Send for GreenStack {}
 
 impl GreenStack {
     pub(crate) fn alloc(size: usize, guard: usize) -> Self {
-        let total = size + guard;
+        let total = size.checked_add(guard).expect("stack size overflow");
         let base = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
