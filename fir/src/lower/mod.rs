@@ -595,7 +595,7 @@ impl Lowerer {
         }
         // Fall back to type env (top-level bindings)
         if let Some(ty) = self.type_env.get_var(name) {
-            self.lower_type(&ty)
+            self.lower_type(ty)
         } else {
             FirType::Void
         }
@@ -604,7 +604,7 @@ impl Lowerer {
     /// Resolve the return type of a closure-typed local variable.
     fn resolve_closure_ret_type(&self, name: &str) -> FirType {
         if let Some(Type::Function { ret, .. }) = self.type_env.get_var(name) {
-            return self.lower_type(&ret);
+            return self.lower_type(ret);
         }
         // Check local AST types
         if let Some(Type::Function { ret, .. }) = self.local_ast_types.get(name) {
@@ -615,7 +615,7 @@ impl Lowerer {
 
     fn resolve_function_ret_type(&self, name: &str) -> FirType {
         if let Some(Type::Function { ret, .. }) = self.type_env.get_var(name) {
-            self.lower_type(&ret)
+            self.lower_type(ret)
         } else {
             FirType::Void
         }
@@ -735,7 +735,7 @@ impl Lowerer {
                 return self.lower_type(inner_ty);
             }
             if let Some(Type::Task(inner_ty)) = self.type_env.get_var(name) {
-                return self.lower_type(&inner_ty);
+                return self.lower_type(inner_ty);
             }
         }
         self.infer_fir_type(task)
@@ -744,7 +744,7 @@ impl Lowerer {
     fn resolve_async_call_ast_type(&self, func: &Expr) -> Option<Type> {
         match func {
             Expr::Ident(name, _) => match self.type_env.get_var(name) {
-                Some(Type::Function { ret, .. }) => Some(Type::Task(Box::new((*ret).clone()))),
+                Some(Type::Function { ret, .. }) => Some(Type::Task(ret.clone())),
                 _ => None,
             },
             _ => None,
@@ -864,10 +864,8 @@ impl Lowerer {
                     return Ok(class_name.clone());
                 }
                 // Fall back to the type env (top-level bindings)
-                if let Some(ty) = self.type_env.get_var(name)
-                    && let Type::Custom(class_name, _) = ty
-                {
-                    return Ok(class_name);
+                if let Some(Type::Custom(class_name, _)) = self.type_env.get_var(name) {
+                    return Ok(class_name.clone());
                 }
                 // Inside a method body, bare field names resolve via self
                 // e.g. `addr.zip` where `addr` is a field of the current class

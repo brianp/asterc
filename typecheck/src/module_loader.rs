@@ -178,7 +178,7 @@ fn extract_exports(module: &ast::Module, tc: &crate::typechecker::TypeChecker) -
                 ..
             } => {
                 if let Some(ty) = tc.env.get_var(name) {
-                    exports.variables.insert(name.clone(), ty);
+                    exports.variables.insert(name.clone(), ty.clone());
                 }
             }
             Stmt::Class {
@@ -191,7 +191,7 @@ fn extract_exports(module: &ast::Module, tc: &crate::typechecker::TypeChecker) -
                 }
                 // Also export the constructor function
                 if let Some(ctor_ty) = tc.env.get_var(name) {
-                    exports.variables.insert(name.clone(), ctor_ty);
+                    exports.variables.insert(name.clone(), ctor_ty.clone());
                 }
             }
             Stmt::Trait {
@@ -213,7 +213,7 @@ fn extract_exports(module: &ast::Module, tc: &crate::typechecker::TypeChecker) -
                 }
                 // Also export the enum type variable
                 if let Some(ty) = tc.env.get_var(name) {
-                    exports.variables.insert(name.clone(), ty);
+                    exports.variables.insert(name.clone(), ty.clone());
                 }
             }
             // pub use — re-export items from another module
@@ -285,7 +285,7 @@ fn export_name_from_env(
         exports.classes.insert(name.to_string(), info.clone());
         // Also export the constructor
         if let Some(ctor) = tc.env.get_var(name) {
-            exports.variables.insert(name.to_string(), ctor);
+            exports.variables.insert(name.to_string(), ctor.clone());
         }
     }
     if let Some(info) = tc.env.get_trait(name) {
@@ -294,10 +294,10 @@ fn export_name_from_env(
     if let Some(info) = tc.env.get_enum(name) {
         exports.enums.insert(name.to_string(), info.clone());
         if let Some(ty) = tc.env.get_var(name) {
-            exports.variables.insert(name.to_string(), ty);
+            exports.variables.insert(name.to_string(), ty.clone());
         }
     }
     if let Some(ty) = tc.env.get_var(name) {
-        exports.variables.insert(name.to_string(), ty);
+        exports.variables.insert(name.to_string(), ty.clone());
     }
 }

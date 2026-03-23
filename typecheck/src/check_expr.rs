@@ -26,7 +26,7 @@ impl TypeChecker {
                     // Remove to warn only once per variable
                     self.boundary_crossed.remove(name);
                 }
-                self.env.get_var(name).ok_or_else(|| {
+                self.env.get_var(name).cloned().ok_or_else(|| {
                     let mut diag = Diagnostic::error(format!("Unknown identifier '{}'", name))
                         .with_code("E002")
                         .with_label(*span, "not found in this scope");
@@ -803,7 +803,7 @@ impl TypeChecker {
 
         // Check for namespace member access: ns.ExportedName
         if let Expr::Ident(name, _) = object
-            && let Some(ns) = self.env.get_namespace(name)
+            && let Some(ns) = self.env.get_namespace(name).cloned()
         {
             // Try each export category
             if let Some(info) = ns.classes.get(field) {
@@ -936,7 +936,7 @@ impl TypeChecker {
                         // Check Ord constraint for conditional Iterable methods
                         if (field == "min" || field == "max" || field == "sort")
                             && info.includes.contains(&"Iterable".to_string())
-                            && let Some(elem_ty) = Self::get_iterable_element_type_from_class(&info)
+                            && let Some(elem_ty) = Self::get_iterable_element_type_from_class(info)
                             && !self.type_includes_ord(&elem_ty)
                         {
                             return Err(Diagnostic::error(format!(

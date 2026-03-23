@@ -1124,7 +1124,7 @@ impl TypeChecker {
                         throws: Some(Box::new(Type::Custom("CancelledError".into(), Vec::new()))),
                         suspendable: true,
                     }),
-                    _ => self.env.get_var(name).ok_or_else(|| {
+                    _ => self.env.get_var(name).cloned().ok_or_else(|| {
                         let mut diag = Diagnostic::error(format!("Unknown identifier '{}'", name))
                             .with_code("E002")
                             .with_label(*span, "not found in this scope");

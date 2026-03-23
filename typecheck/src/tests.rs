@@ -55,7 +55,7 @@ fn let_and_ident_lookup() {
         span: s(),
     };
     assert_eq!(tc.check_stmt(&stmt).unwrap(), Type::Int);
-    assert_eq!(tc.env.get_var("x"), Some(Type::Int));
+    assert_eq!(tc.env.get_var("x").cloned(), Some(Type::Int));
 }
 
 #[test]
@@ -768,7 +768,7 @@ fn let_with_matching_type_annotation() {
         span: s(),
     };
     assert!(tc.check_stmt(&stmt).is_ok());
-    assert_eq!(tc.env.get_var("x"), Some(Type::Int));
+    assert_eq!(tc.env.get_var("x").cloned(), Some(Type::Int));
 }
 
 #[test]
@@ -968,7 +968,10 @@ fn let_empty_list_with_annotation_gets_annotated_type() {
         span: s(),
     };
     assert!(tc.check_stmt(&stmt).is_ok());
-    assert_eq!(tc.env.get_var("xs"), Some(Type::List(Box::new(Type::Int))));
+    assert_eq!(
+        tc.env.get_var("xs").cloned(),
+        Some(Type::List(Box::new(Type::Int)))
+    );
 }
 
 // ─── Phase 4: Builtins ──────────────────────────────────────────────

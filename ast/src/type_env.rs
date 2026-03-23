@@ -125,10 +125,9 @@ impl TypeEnv {
         }
     }
 
-    pub fn get_var(&self, name: &str) -> Option<Type> {
+    pub fn get_var(&self, name: &str) -> Option<&Type> {
         self.variables
             .get(name)
-            .cloned()
             .or_else(|| self.parent.as_ref().and_then(|p| p.get_var(name)))
     }
 
@@ -143,10 +142,9 @@ impl TypeEnv {
         Rc::make_mut(&mut self.variables).insert(name, ty);
     }
 
-    pub fn get_class(&self, name: &str) -> Option<ClassInfo> {
+    pub fn get_class(&self, name: &str) -> Option<&ClassInfo> {
         self.classes
             .get(name)
-            .cloned()
             .or_else(|| self.parent.as_ref().and_then(|p| p.get_class(name)))
     }
 
@@ -154,10 +152,9 @@ impl TypeEnv {
         Rc::make_mut(&mut self.classes).insert(name, info);
     }
 
-    pub fn get_trait(&self, name: &str) -> Option<TraitInfo> {
+    pub fn get_trait(&self, name: &str) -> Option<&TraitInfo> {
         self.traits
             .get(name)
-            .cloned()
             .or_else(|| self.parent.as_ref().and_then(|p| p.get_trait(name)))
     }
 
@@ -169,10 +166,9 @@ impl TypeEnv {
         Rc::make_mut(&mut self.traits).remove(name);
     }
 
-    pub fn get_enum(&self, name: &str) -> Option<EnumInfo> {
+    pub fn get_enum(&self, name: &str) -> Option<&EnumInfo> {
         self.enums
             .get(name)
-            .cloned()
             .or_else(|| self.parent.as_ref().and_then(|p| p.get_enum(name)))
     }
 
@@ -184,10 +180,9 @@ impl TypeEnv {
         Rc::make_mut(&mut self.enums).remove(name);
     }
 
-    pub fn get_namespace(&self, name: &str) -> Option<NamespaceInfo> {
+    pub fn get_namespace(&self, name: &str) -> Option<&NamespaceInfo> {
         self.namespaces
             .get(name)
-            .cloned()
             .or_else(|| self.parent.as_ref().and_then(|p| p.get_namespace(name)))
     }
 
@@ -229,7 +224,7 @@ mod tests {
     fn set_and_get_var_in_same_env() {
         let mut env = TypeEnv::new();
         env.set_var("x".into(), Type::Int);
-        assert_eq!(env.get_var("x"), Some(Type::Int));
+        assert_eq!(env.get_var("x"), Some(&Type::Int));
         assert_eq!(env.get_var("y"), None);
     }
 
@@ -238,7 +233,7 @@ mod tests {
         let mut parent = TypeEnv::new();
         parent.set_var("x".into(), Type::Int);
         let child = parent.child();
-        assert_eq!(child.get_var("x"), Some(Type::Int));
+        assert_eq!(child.get_var("x"), Some(&Type::Int));
     }
 
     #[test]
@@ -247,7 +242,7 @@ mod tests {
         parent.set_var("x".into(), Type::Int);
         let mut child = parent.child();
         child.set_var("x".into(), Type::Float);
-        assert_eq!(child.get_var("x"), Some(Type::Float));
+        assert_eq!(child.get_var("x"), Some(&Type::Float));
     }
 
     #[test]
@@ -255,7 +250,7 @@ mod tests {
         let mut env = TypeEnv::new();
         let info = dummy_class("Foo");
         env.set_class("Foo".into(), info.clone());
-        assert_eq!(env.get_class("Foo"), Some(info));
+        assert_eq!(env.get_class("Foo"), Some(&info));
         assert_eq!(env.get_class("Bar"), None);
     }
 
@@ -265,7 +260,7 @@ mod tests {
         let info = dummy_class("Foo");
         parent.set_class("Foo".into(), info.clone());
         let child = parent.child();
-        assert_eq!(child.get_class("Foo"), Some(info));
+        assert_eq!(child.get_class("Foo"), Some(&info));
     }
 
     #[test]
@@ -276,7 +271,7 @@ mod tests {
         let mut child = parent.child();
         let info_child = dummy_class("FooChild");
         child.set_class("Foo".into(), info_child.clone());
-        assert_eq!(child.get_class("Foo"), Some(info_child));
+        assert_eq!(child.get_class("Foo"), Some(&info_child));
     }
 
     #[test]
@@ -305,8 +300,8 @@ mod tests {
         let child = parent.child();
         // Parent is shared via Rc, not cloned deeply
         assert!(child.parent.is_some());
-        assert_eq!(child.get_var("x"), Some(Type::Int));
-        assert_eq!(child.get_var("y"), Some(Type::Float));
+        assert_eq!(child.get_var("x"), Some(&Type::Int));
+        assert_eq!(child.get_var("y"), Some(&Type::Float));
     }
 
     #[test]
@@ -315,10 +310,10 @@ mod tests {
         env.set_var("x".into(), Type::Int);
         env.enter_scope();
         env.set_var("y".into(), Type::Float);
-        assert_eq!(env.get_var("x"), Some(Type::Int)); // inherited
-        assert_eq!(env.get_var("y"), Some(Type::Float)); // local
+        assert_eq!(env.get_var("x"), Some(&Type::Int)); // inherited
+        assert_eq!(env.get_var("y"), Some(&Type::Float)); // local
         env.exit_scope();
-        assert_eq!(env.get_var("x"), Some(Type::Int));
+        assert_eq!(env.get_var("x"), Some(&Type::Int));
         assert_eq!(env.get_var("y"), None); // gone after exit
     }
 }

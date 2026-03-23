@@ -654,7 +654,7 @@ impl TypeChecker {
                     ret,
                     throws,
                     suspendable,
-                }) = self.env.get_var(name)
+                }) = self.env.get_var(name).cloned()
                 else {
                     continue;
                 };
@@ -1074,7 +1074,7 @@ impl TypeChecker {
                     Type::Custom(ref class_name, _) => {
                         if let Some(class_info) = self.env.get_class(class_name) {
                             if class_info.includes.contains(&"Iterable".to_string()) {
-                                Self::get_iterable_element_type_from_class(&class_info)
+                                Self::get_iterable_element_type_from_class(class_info)
                                     .ok_or_else(|| {
                                         Diagnostic::error(format!(
                                             "Class '{}' includes Iterable but has no valid each() method",
@@ -1084,7 +1084,7 @@ impl TypeChecker {
                                         .with_label(iter.span(), "missing each() method")
                                     })?
                             } else if class_info.includes.contains(&"Iterator".to_string()) {
-                                Self::get_iterator_element_type_from_class(&class_info)
+                                Self::get_iterator_element_type_from_class(class_info)
                                     .ok_or_else(|| {
                                         Diagnostic::error(format!(
                                             "Class '{}' includes Iterator but has no valid next() method",
@@ -1142,7 +1142,7 @@ impl TypeChecker {
                             .with_code("E026")
                             .with_label(*ident_span, "const binding cannot be reassigned"));
                         }
-                        let target_ty = self.env.get_var(name).ok_or_else(|| {
+                        let target_ty = self.env.get_var(name).cloned().ok_or_else(|| {
                             let mut diag = Diagnostic::error(format!(
                                 "Assignment to undeclared variable '{}'",
                                 name
@@ -1404,7 +1404,7 @@ impl TypeChecker {
             }
             if let Some(ancestor) = self.env.get_class(cname) {
                 let next = ancestor.extends.clone();
-                result.push(ancestor);
+                result.push(ancestor.clone());
                 current_name = next;
             } else {
                 break;
