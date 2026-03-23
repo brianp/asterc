@@ -49,6 +49,18 @@ pub struct TypeChecker {
     pub type_table: TypeTable,
 }
 
+struct ScopeState {
+    loop_depth: usize,
+    expected_return_type: Option<Type>,
+    current_function: Option<String>,
+    throws_type: Option<Type>,
+    diagnostics: Vec<Diagnostic>,
+    expected_type: Option<Type>,
+    const_names: std::collections::HashSet<String>,
+    consumed_tasks: std::collections::HashSet<String>,
+    task_bindings: HashMap<String, Span>,
+}
+
 impl Default for TypeChecker {
     fn default() -> Self {
         Self::new()
@@ -550,53 +562,51 @@ impl TypeChecker {
         }
     }
 
+    fn save_scope_state(&mut self) -> ScopeState {
+        ScopeState {
+            loop_depth: self.loop_depth,
+            expected_return_type: self.expected_return_type.clone(),
+            current_function: self.current_function.clone(),
+            throws_type: self.throws_type.clone(),
+            diagnostics: std::mem::take(&mut self.diagnostics),
+            expected_type: self.expected_type.clone(),
+            const_names: self.const_names.clone(),
+            consumed_tasks: self.consumed_tasks.clone(),
+            task_bindings: self.task_bindings.clone(),
+        }
+    }
+
+    fn restore_scope_state(&mut self, saved: ScopeState) {
+        let child_diagnostics = std::mem::take(&mut self.diagnostics);
+        let child_task_bindings = std::mem::take(&mut self.task_bindings);
+
+        self.loop_depth = saved.loop_depth;
+        self.expected_return_type = saved.expected_return_type;
+        self.current_function = saved.current_function;
+        self.throws_type = saved.throws_type;
+        self.diagnostics = saved.diagnostics;
+        self.expected_type = saved.expected_type;
+        self.const_names = saved.const_names;
+        self.consumed_tasks = saved.consumed_tasks;
+        self.task_bindings = saved.task_bindings;
+
+        self.task_bindings.extend(child_task_bindings);
+        self.diagnostics.extend(child_diagnostics);
+    }
+
     /// Execute `f` in a child scope. The env is scoped via enter/exit (zero-copy),
     /// and TypeChecker state (loop_depth, throws, etc.) is saved and restored.
     pub(crate) fn with_child_scope<F, R>(&mut self, f: F) -> R
     where
         F: FnOnce(&mut Self) -> R,
     {
-        // Save state
-        let saved_loop_depth = self.loop_depth;
-        let saved_expected_return_type = self.expected_return_type.clone();
-        let saved_current_function = self.current_function.clone();
-        let saved_throws_type = self.throws_type.clone();
-        let saved_diagnostics = std::mem::take(&mut self.diagnostics);
-        let saved_expected_type = self.expected_type.clone();
-        let saved_const_names = self.const_names.clone();
-        let saved_consumed_tasks = self.consumed_tasks.clone();
-        let saved_task_bindings = self.task_bindings.clone();
-
-        // Enter child scope (O(1) — moves data, no clone)
+        let saved = self.save_scope_state();
         self.env.enter_scope();
 
         let result = f(self);
 
-        // Exit child scope (O(1) if Rc is unique)
         self.env.exit_scope();
-
-        // Collect diagnostics emitted during child scope
-        let child_diagnostics = std::mem::take(&mut self.diagnostics);
-
-        // Tasks created in child scope must still be tracked for must-consume
-        let child_task_bindings = std::mem::take(&mut self.task_bindings);
-
-        // Restore state
-        self.loop_depth = saved_loop_depth;
-        self.expected_return_type = saved_expected_return_type;
-        self.current_function = saved_current_function;
-        self.throws_type = saved_throws_type;
-        self.diagnostics = saved_diagnostics;
-        self.expected_type = saved_expected_type;
-        self.const_names = saved_const_names;
-        self.consumed_tasks = saved_consumed_tasks;
-        self.task_bindings = saved_task_bindings;
-
-        // Merge child task bindings into parent (created tasks must be tracked)
-        self.task_bindings.extend(child_task_bindings);
-
-        // Merge child diagnostics into parent
-        self.diagnostics.extend(child_diagnostics);
+        self.restore_scope_state(saved);
 
         result
     }
