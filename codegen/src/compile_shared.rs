@@ -107,11 +107,7 @@ impl<M: Module> CompileState<M> {
             sig.returns.push(AbiParam::new(types::I64));
             let func_id = self
                 .module
-                .declare_function(
-                    &format!("{}__async_entry", func.name),
-                    Linkage::Local,
-                    &sig,
-                )
+                .declare_function(&format!("{}__async_entry", func.name), Linkage::Local, &sig)
                 .map_err(|e| e.to_string())?;
             self.async_entry_declared.insert(func.id, func_id);
         }
@@ -142,8 +138,7 @@ impl<M: Module> CompileState<M> {
         let string_data = self.collect_and_register_strings(func)?;
 
         {
-            let mut builder =
-                FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_context);
+            let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_context);
 
             let entry_block = builder.create_block();
             builder.append_block_params_for_function_params(entry_block);

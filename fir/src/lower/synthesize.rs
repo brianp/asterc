@@ -158,7 +158,11 @@ impl Lowerer {
     /// Compares all fields pairwise: self.f1 == other.f1 and self.f2 == other.f2 ...
     /// Synthesize an auto-derived `eq` method for a class.
     /// Compares all fields pairwise: self.f1 == other.f1 and self.f2 == other.f2 ...
-    pub(crate) fn synthesize_eq(&mut self, class_name: &str, class_id: ClassId) -> Result<(), LowerError> {
+    pub(crate) fn synthesize_eq(
+        &mut self,
+        class_name: &str,
+        class_id: ClassId,
+    ) -> Result<(), LowerError> {
         let qualified = format!("{}.eq", class_name);
         let func_id = FunctionId(self.next_function);
         self.next_function += 1;
@@ -224,7 +228,11 @@ impl Lowerer {
     /// Compares fields in order, returning an Ordering enum variant.
     /// Synthesize an auto-derived `cmp` method for a class.
     /// Compares fields in order, returning an Ordering enum variant.
-    pub(crate) fn synthesize_cmp(&mut self, class_name: &str, class_id: ClassId) -> Result<(), LowerError> {
+    pub(crate) fn synthesize_cmp(
+        &mut self,
+        class_name: &str,
+        class_id: ClassId,
+    ) -> Result<(), LowerError> {
         let qualified = format!("{}.cmp", class_name);
         let func_id = FunctionId(self.next_function);
         self.next_function += 1;
@@ -379,5 +387,4 @@ impl Lowerer {
             ],
         );
     }
-
 }

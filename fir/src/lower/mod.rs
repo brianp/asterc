@@ -18,7 +18,6 @@ mod match_lower;
 mod stmt;
 mod synthesize;
 
-
 #[derive(Debug)]
 pub enum UnsupportedFeatureKind {
     TopLevelStatement(&'static str),
@@ -294,16 +293,6 @@ impl Lowerer {
         &self.module
     }
 
-
-
-
-
-
-
-
-
-
-
     fn value_has_pending_stmts(&self, value: &Expr) -> bool {
         match value {
             Expr::Call { func, .. } => {
@@ -363,8 +352,6 @@ impl Lowerer {
     // -----------------------------------------------------------------------
     // Iterable vocabulary method helpers (list-based)
     // -----------------------------------------------------------------------
-
-
 
     fn lower_place(&self, expr: &Expr) -> Result<FirPlace, LowerError> {
         match expr {
@@ -702,7 +689,6 @@ impl Lowerer {
         (fir_args, cast_ret)
     }
 
-
     fn resolve_called_function_id(&self, func: &Expr) -> Result<FunctionId, LowerError> {
         match func {
             Expr::Ident(name, _) => self
@@ -1020,4 +1006,3 @@ impl Lowerer {
         }
     }
 }
-

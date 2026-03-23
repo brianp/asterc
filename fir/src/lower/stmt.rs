@@ -712,7 +712,6 @@ impl Lowerer {
         self.pending_stmts = restored;
         Ok(result)
     }
-
 }
 
 pub(crate) fn unsupported_top_level_stmt(stmt: &Stmt) -> LowerError {

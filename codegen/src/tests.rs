@@ -3901,7 +3901,18 @@ fn unsupported_feature_audit() {
     //   3 — class field resolution errors (unknown class, no layout, unknown field)
     //   5 — resolve_class_name failures (variable, call expr, member-fallback, index-fallback, other expr)
     //
-    let lower_src = include_str!("../../fir/src/lower.rs");
+    // lower.rs was split into fir/src/lower/*.rs — count across all sub-modules.
+    let lower_files: &[&str] = &[
+        include_str!("../../fir/src/lower/mod.rs"),
+        include_str!("../../fir/src/lower/stmt.rs"),
+        include_str!("../../fir/src/lower/expr.rs"),
+        include_str!("../../fir/src/lower/for_loop.rs"),
+        include_str!("../../fir/src/lower/iterable.rs"),
+        include_str!("../../fir/src/lower/match_lower.rs"),
+        include_str!("../../fir/src/lower/closure.rs"),
+        include_str!("../../fir/src/lower/synthesize.rs"),
+    ];
+    let lower_src: String = lower_files.join("\n");
     // Count error construction sites: LowerError::UnsupportedFeature(
     let lower_count = lower_src.matches("LowerError::UnsupportedFeature").count();
 
