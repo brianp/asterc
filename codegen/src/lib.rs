@@ -1,6 +1,7 @@
 pub mod aot;
 pub mod asm_source;
 pub mod async_runtime;
+pub(crate) mod compile_shared;
 pub mod config;
 pub(crate) mod green;
 pub mod jit;
