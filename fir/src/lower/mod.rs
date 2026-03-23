@@ -496,7 +496,7 @@ impl Lowerer {
             ast::BinOp::Mul => BinOp::Mul,
             ast::BinOp::Div => BinOp::Div,
             ast::BinOp::Mod => BinOp::Mod,
-            ast::BinOp::Pow => BinOp::Add, // unreachable: Pow handled in lower_expr
+            ast::BinOp::Pow => unreachable!("Pow should be handled before reaching lower_binop"),
             ast::BinOp::Eq => BinOp::Eq,
             ast::BinOp::Neq => BinOp::Neq,
             ast::BinOp::Lt => BinOp::Lt,
