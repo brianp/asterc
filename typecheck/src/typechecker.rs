@@ -58,6 +58,35 @@ impl Default for TypeChecker {
 impl TypeChecker {
     pub fn new() -> Self {
         let mut env = TypeEnv::new();
+        let (builtin_traits, builtin_enums) = Self::register_builtins(&mut env);
+        Self {
+            env,
+            loop_depth: 0,
+            expected_return_type: None,
+            current_function: None,
+            throws_type: None,
+            diagnostics: Vec::new(),
+            module_loader: None,
+            builtin_traits,
+            builtin_enums,
+            expected_type: None,
+            const_names: std::collections::HashSet::new(),
+            default_params: HashMap::new(),
+            consumed_tasks: std::collections::HashSet::new(),
+            task_bindings: HashMap::new(),
+            boundary_crossed: HashMap::new(),
+            type_table: TypeTable::new(),
+        }
+    }
+
+    /// Register all builtin types, traits, error classes, and enums on the given TypeEnv.
+    /// Returns the builtin_traits and builtin_enums maps wrapped in Rc.
+    fn register_builtins(
+        env: &mut TypeEnv,
+    ) -> (
+        Rc<HashMap<String, TraitInfo>>,
+        Rc<HashMap<String, EnumInfo>>,
+    ) {
         // Register log/say so they appear in scope for diagnostics (e.g. typo suggestions).
         // Actual type checking is handled as polymorphic builtins in check_call_inner.
         env.set_var(
@@ -480,24 +509,7 @@ impl TypeChecker {
             env.set_enum(name.clone(), info.clone());
         }
 
-        Self {
-            env,
-            loop_depth: 0,
-            expected_return_type: None,
-            current_function: None,
-            throws_type: None,
-            diagnostics: Vec::new(),
-            module_loader: None,
-            builtin_traits: Rc::new(builtin_traits),
-            builtin_enums: Rc::new(builtin_enums),
-            expected_type: None,
-            const_names: std::collections::HashSet::new(),
-            default_params: HashMap::new(),
-            consumed_tasks: std::collections::HashSet::new(),
-            task_bindings: HashMap::new(),
-            boundary_crossed: HashMap::new(),
-            type_table: TypeTable::new(),
-        }
+        (Rc::new(builtin_traits), Rc::new(builtin_enums))
     }
 
     /// Create a TypeChecker with a module loader for resolving `use` imports.
