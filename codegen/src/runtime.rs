@@ -657,6 +657,11 @@ fn gc_alloc_inner(payload_size: usize, obj_ty: u8) -> *mut u8 {
         });
     });
 
+    assert!(
+        payload_size <= u32::MAX as usize,
+        "gc_alloc: payload_size {payload_size} exceeds u32::MAX"
+    );
+
     let total_size = payload_size + HEADER_SIZE;
     let ptr = aster_alloc(total_size);
 
