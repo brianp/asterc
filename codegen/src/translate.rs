@@ -645,12 +645,15 @@ fn translate_expr(
                 }
             }
         }
-        FirExpr::TagUnwrap { value, .. } => {
+        FirExpr::TagUnwrap { value, ty, .. } => {
             // Unwrap: load the boxed value from ptr+0
             let ptr_val = translate_expr(builder, state, value);
-            builder
-                .ins()
-                .load(types::I64, ir::MemFlags::new(), ptr_val, Offset32::new(0))
+            builder.ins().load(
+                fir_type_to_clif(ty),
+                ir::MemFlags::new(),
+                ptr_val,
+                Offset32::new(0),
+            )
         }
         FirExpr::TagCheck { value, tag } => {
             // Check if nullable is nil (tag=1) or has value (tag=0)
