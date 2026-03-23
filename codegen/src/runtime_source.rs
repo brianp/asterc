@@ -1683,13 +1683,16 @@ static char* aster_string_to_cstr(void *ptr) {
     return buf;
 }
 
+/* Maximum file size file_read will load (256 MB). */
+#define FILE_READ_MAX_SIZE (256L * 1024 * 1024)
+
 void* aster_file_read(void *path_ptr) {
     char *path = aster_string_to_cstr(path_ptr);
     FILE *f = fopen(path, "r");
     if (!f) { free(path); aster_error_set(); return aster_string_new(NULL, 0); }
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
-    if (sz < 0) { fclose(f); free(path); aster_error_set(); return aster_string_new(NULL, 0); }
+    if (sz < 0 || sz > FILE_READ_MAX_SIZE) { fclose(f); free(path); aster_error_set(); return aster_string_new(NULL, 0); }
     fseek(f, 0, SEEK_SET);
     char *buf = (char*)malloc(sz);
     if (!buf) { fclose(f); free(path); aster_error_set(); return aster_string_new(NULL, 0); }
