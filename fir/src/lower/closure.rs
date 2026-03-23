@@ -1,0 +1,391 @@
+use super::*;
+
+impl Lowerer {
+    /// Lower a lambda/closure expression.
+    /// All lambdas are lifted to top-level functions with `__env: Ptr` as first param.
+    /// Captures are stored in a heap-allocated env struct.
+    /// Returns a dummy value; the important side effect is registering closure_info
+    /// so that call sites can resolve the closure statically.
+    pub(crate) fn lower_lambda(
+        &mut self,
+        params: &[(String, Type)],
+        ret_type: &Type,
+        body: &[Stmt],
+    ) -> Result<FirExpr, LowerError> {
+        // Capture analysis: find references to outer locals
+        let param_names: std::collections::HashSet<&str> =
+            params.iter().map(|(n, _)| n.as_str()).collect();
+        let mut captures = Vec::new();
+        self.find_captures(body, &param_names, &mut captures);
+        captures.sort();
+        captures.dedup();
+
+        let lambda_name = format!("__lambda_{}", self.next_function);
+
+        // Build the lifted function's params: __env: Ptr, then original params
+        let mut lifted_params =
+            vec![("__env".to_string(), Type::Custom("Ptr".to_string(), vec![]))];
+        lifted_params.extend(params.iter().cloned());
+
+        // Before lowering the lambda body, set up the capture mapping.
+        // Save outer scope, then set up inner scope with env loads.
+        let snapshot = self.save_scope();
+        self.next_local = 0;
+        self.current_return_type = Some(ret_type.clone());
+
+        // Allocate __env as local 0
+        let env_local = self.alloc_local(); // LocalId(0)
+        self.locals.insert("__env".to_string(), env_local);
+        self.local_types.insert(env_local, FirType::Ptr);
+
+        // Allocate params as locals 1..N
+        let mut fir_params = vec![("__env".to_string(), FirType::Ptr)];
+        for (pname, pty) in params {
+            let local_id = self.alloc_local();
+            let fir_type = self.lower_type(pty);
+            self.locals.insert(pname.clone(), local_id);
+            self.local_types.insert(local_id, fir_type.clone());
+            self.local_ast_types.insert(pname.clone(), pty.clone());
+            fir_params.push((pname.clone(), fir_type));
+        }
+
+        // Implicit task scope for lambda (same as functions)
+        let scope_id = self.alloc_local();
+        self.local_types.insert(scope_id, FirType::Ptr);
+        self.async_scope_stack.push(scope_id);
+        self.function_scope_id = Some(scope_id);
+
+        // Map captured variables to env loads
+        for cap_name in &captures {
+            let local_id = self.alloc_local();
+            let cap_ty = snapshot
+                .local_types
+                .get(snapshot.locals.get(cap_name).unwrap_or(&LocalId(0)))
+                .cloned()
+                .unwrap_or(FirType::I64);
+            self.locals.insert(cap_name.clone(), local_id);
+            self.local_types.insert(local_id, cap_ty.clone());
+        }
+
+        // Lower the body
+        let mut fir_body = Vec::new();
+
+        // Emit env loads for captures at the start of the body
+        for (i, cap_name) in captures.iter().enumerate() {
+            let local_id = match self.locals.get(cap_name) {
+                Some(&id) => id,
+                None => {
+                    return Err(LowerError::UnboundVariable(
+                        format!("closure capture '{}'", cap_name),
+                        Span::dummy(),
+                    ));
+                }
+            };
+            let cap_ty = self
+                .local_types
+                .get(&local_id)
+                .cloned()
+                .unwrap_or(FirType::I64);
+            fir_body.push(FirStmt::Let {
+                name: local_id,
+                ty: cap_ty.clone(),
+                value: FirExpr::EnvLoad {
+                    env: Box::new(FirExpr::LocalVar(env_local, FirType::Ptr)),
+                    offset: i * 8,
+                    ty: cap_ty,
+                },
+            });
+        }
+
+        // Lower the user's body statements
+        let user_body = self.lower_body(body)?;
+        fir_body.extend(user_body);
+
+        // Convert last expression to return (like lower_function does)
+        if let Some(last) = fir_body.last()
+            && matches!(last, FirStmt::Expr(_))
+            && *ret_type != Type::Void
+            && let Some(FirStmt::Expr(expr)) = fir_body.pop()
+        {
+            self.emit_scope_exit(scope_id);
+            fir_body.append(&mut self.pending_stmts);
+            fir_body.push(FirStmt::Return(expr));
+        } else {
+            // Void lambda or no trailing expr — emit scope exit at end
+            self.emit_scope_exit(scope_id);
+            fir_body.append(&mut self.pending_stmts);
+        }
+
+        self.async_scope_stack.pop();
+
+        // Prepend scope_enter
+        fir_body.insert(
+            0,
+            FirStmt::Let {
+                name: scope_id,
+                ty: FirType::Ptr,
+                value: FirExpr::RuntimeCall {
+                    name: "aster_async_scope_enter".to_string(),
+                    args: vec![],
+                    ret_ty: FirType::Ptr,
+                },
+            },
+        );
+
+        // Get or create function ID
+        let func_id = if let Some(&existing_id) = self.functions.get(&lambda_name) {
+            existing_id
+        } else {
+            let id = FunctionId(self.next_function);
+            self.next_function += 1;
+            self.functions.insert(lambda_name.clone(), id);
+            id
+        };
+
+        let func = FirFunction {
+            id: func_id,
+            name: lambda_name.clone(),
+            params: fir_params,
+            ret_type: self.lower_type(ret_type),
+            body: fir_body,
+            is_entry: false,
+            suspendable: false,
+        };
+        self.module.add_function(func);
+
+        self.restore_scope(snapshot);
+
+        // Re-register the function name
+        self.functions.insert(lambda_name, func_id);
+
+        if captures.is_empty() {
+            // No captures: env is null. Return a ClosureCreate so the value
+            // can be passed as a first-class closure.
+            Ok(FirExpr::ClosureCreate {
+                func: func_id,
+                env: Box::new(FirExpr::NilLit),
+                ret_ty: self.lower_type(ret_type),
+            })
+        } else {
+            // Allocate env struct and store captures
+            let env_size = captures.len() * 8;
+            let env_id = self.alloc_local();
+            let env_name = format!("__env_{}", func_id.0);
+            self.locals.insert(env_name.clone(), env_id);
+            self.local_types.insert(env_id, FirType::Ptr);
+
+            self.pending_stmts.push(FirStmt::Let {
+                name: env_id,
+                ty: FirType::Ptr,
+                value: FirExpr::RuntimeCall {
+                    name: "aster_class_alloc".to_string(),
+                    args: vec![FirExpr::IntLit(env_size as i64)],
+                    ret_ty: FirType::Ptr,
+                },
+            });
+
+            // Store capture values into env
+            for (i, cap_name) in captures.iter().enumerate() {
+                if let Some(&local_id) = self.locals.get(cap_name.as_str()) {
+                    let ty = self
+                        .local_types
+                        .get(&local_id)
+                        .cloned()
+                        .unwrap_or(FirType::I64);
+                    self.pending_stmts.push(FirStmt::Assign {
+                        target: FirPlace::Field {
+                            object: Box::new(FirExpr::LocalVar(env_id, FirType::Ptr)),
+                            offset: i * 8,
+                        },
+                        value: FirExpr::LocalVar(local_id, ty),
+                    });
+                }
+            }
+
+            Ok(FirExpr::ClosureCreate {
+                func: func_id,
+                env: Box::new(FirExpr::LocalVar(env_id, FirType::Ptr)),
+                ret_ty: self.lower_type(ret_type),
+            })
+        }
+    }
+
+    /// Lower a string interpolation to a chain of to_string + concat calls.
+    /// Lower a string interpolation to a chain of to_string + concat calls.
+    pub(crate) fn lower_string_interpolation(
+        &mut self,
+        parts: &[ast::StringPart],
+    ) -> Result<FirExpr, LowerError> {
+        // Convert each part to a string FirExpr, then fold-concat them.
+        let mut string_exprs = Vec::new();
+
+        for part in parts {
+            match part {
+                ast::StringPart::Literal(s) => {
+                    string_exprs.push(FirExpr::StringLit(s.clone()));
+                }
+                ast::StringPart::Expr(expr) => {
+                    let fir_expr = self.lower_expr(expr)?;
+                    let fir_ty = self.infer_fir_type(&fir_expr);
+                    // Convert to string based on type
+                    let str_expr = match fir_ty {
+                        FirType::Ptr => {
+                            // Check if this is a List (needs runtime to_string)
+                            let ast_ty = self.resolve_expr_ast_type(expr);
+                            if matches!(ast_ty.as_ref(), Some(Type::List(_))) {
+                                FirExpr::RuntimeCall {
+                                    name: "aster_list_to_string".to_string(),
+                                    args: vec![fir_expr],
+                                    ret_ty: FirType::Ptr,
+                                }
+                            // Check if this is a class instance (needs to_string call)
+                            } else if let Ok(class_name) = self.resolve_class_name(expr) {
+                                let qualified = format!("{}.to_string", class_name);
+                                if let Some(&func_id) = self.functions.get(&qualified) {
+                                    FirExpr::Call {
+                                        func: func_id,
+                                        args: vec![fir_expr],
+                                        ret_ty: FirType::Ptr,
+                                    }
+                                } else {
+                                    fir_expr // no to_string lowered, pass through
+                                }
+                            } else {
+                                fir_expr // plain string or unknown — pass through
+                            }
+                        }
+                        FirType::I64 => FirExpr::RuntimeCall {
+                            name: "aster_int_to_string".to_string(),
+                            args: vec![fir_expr],
+                            ret_ty: FirType::Ptr,
+                        },
+                        FirType::F64 => FirExpr::RuntimeCall {
+                            name: "aster_float_to_string".to_string(),
+                            args: vec![fir_expr],
+                            ret_ty: FirType::Ptr,
+                        },
+                        FirType::Bool => FirExpr::RuntimeCall {
+                            name: "aster_bool_to_string".to_string(),
+                            args: vec![fir_expr],
+                            ret_ty: FirType::Ptr,
+                        },
+                        _ => fir_expr, // fallback: pass through
+                    };
+                    string_exprs.push(str_expr);
+                }
+            }
+        }
+
+        // If empty, return empty string
+        if string_exprs.is_empty() {
+            return Ok(FirExpr::StringLit(String::new()));
+        }
+
+        // If single part, return it directly
+        if string_exprs.len() == 1 {
+            return Ok(string_exprs.into_iter().next().unwrap());
+        }
+
+        // Fold left with aster_string_concat
+        let mut result = string_exprs.remove(0);
+        for part in string_exprs {
+            result = FirExpr::RuntimeCall {
+                name: "aster_string_concat".to_string(),
+                args: vec![result, part],
+                ret_ty: FirType::Ptr,
+            };
+        }
+
+        Ok(result)
+    }
+
+    /// Find variables referenced in a body that are not in the given param set
+    /// but exist in the current local scope.
+    /// Find variables referenced in a body that are not in the given param set
+    /// but exist in the current local scope.
+    pub(crate) fn find_captures(
+        &self,
+        stmts: &[Stmt],
+        param_names: &std::collections::HashSet<&str>,
+        captures: &mut Vec<String>,
+    ) {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Expr(expr, _) | Stmt::Return(expr, _) => {
+                    self.find_captures_expr(expr, param_names, captures);
+                }
+                Stmt::Let { value, .. } => {
+                    self.find_captures_expr(value, param_names, captures);
+                }
+                Stmt::If {
+                    cond,
+                    then_body,
+                    elif_branches,
+                    else_body,
+                    ..
+                } => {
+                    self.find_captures_expr(cond, param_names, captures);
+                    self.find_captures(then_body, param_names, captures);
+                    for (c, b) in elif_branches {
+                        self.find_captures_expr(c, param_names, captures);
+                        self.find_captures(b, param_names, captures);
+                    }
+                    self.find_captures(else_body, param_names, captures);
+                }
+                Stmt::While { cond, body, .. } => {
+                    self.find_captures_expr(cond, param_names, captures);
+                    self.find_captures(body, param_names, captures);
+                }
+                Stmt::For { iter, body, .. } => {
+                    self.find_captures_expr(iter, param_names, captures);
+                    self.find_captures(body, param_names, captures);
+                }
+                Stmt::Assignment { value, .. } => {
+                    self.find_captures_expr(value, param_names, captures);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub(crate) fn find_captures_expr(
+        &self,
+        expr: &Expr,
+        param_names: &std::collections::HashSet<&str>,
+        captures: &mut Vec<String>,
+    ) {
+        match expr {
+            Expr::Ident(name, _) => {
+                if !param_names.contains(name.as_str()) && self.locals.contains_key(name.as_str()) {
+                    captures.push(name.clone());
+                }
+            }
+            Expr::BinaryOp { left, right, .. } => {
+                self.find_captures_expr(left, param_names, captures);
+                self.find_captures_expr(right, param_names, captures);
+            }
+            Expr::UnaryOp { operand, .. } => {
+                self.find_captures_expr(operand, param_names, captures);
+            }
+            Expr::Call { func, args, .. } => {
+                self.find_captures_expr(func, param_names, captures);
+                for (_, _, arg) in args {
+                    self.find_captures_expr(arg, param_names, captures);
+                }
+            }
+            Expr::Member { object, .. } => {
+                self.find_captures_expr(object, param_names, captures);
+            }
+            Expr::Index { object, index, .. } => {
+                self.find_captures_expr(object, param_names, captures);
+                self.find_captures_expr(index, param_names, captures);
+            }
+            Expr::ListLiteral(elems, _) => {
+                for e in elems {
+                    self.find_captures_expr(e, param_names, captures);
+                }
+            }
+            _ => {}
+        }
+    }
+}
