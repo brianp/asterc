@@ -20,6 +20,10 @@ use typecheck::typechecker::TypeChecker;
 use crate::build_dir::resolve_build_paths;
 use crate::manifest::{BuildManifest, sha256_hex};
 
+fn cc_compiler() -> String {
+    env::var("CC").unwrap_or_else(|_| "cc".into())
+}
+
 fn render_diagnostic(source: &str, filename: &str, diag: &Diagnostic) {
     let kind = match diag.severity {
         Severity::Error => ReportKind::Error,
@@ -323,7 +327,8 @@ fn cmd_build(opts: &BuildOptions) {
             Profile::Debug => &["-c", "-g"],
             Profile::Release => &["-c", "-O2"],
         };
-        let status = std::process::Command::new("cc")
+        let cc = cc_compiler();
+        let status = std::process::Command::new(&cc)
             .args(cc_flags)
             .arg("-pthread")
             .arg(runtime_c.to_string_lossy().as_ref())
@@ -353,7 +358,7 @@ fn cmd_build(opts: &BuildOptions) {
             std::process::exit(2);
         });
 
-        let status = std::process::Command::new("cc")
+        let status = std::process::Command::new(&cc)
             .arg("-c")
             .arg(asm_s.to_string_lossy().as_ref())
             .arg("-o")
@@ -383,7 +388,8 @@ fn cmd_build(opts: &BuildOptions) {
         eprintln!("[4/4] Linking → {}", final_output);
     }
 
-    let status = std::process::Command::new("cc")
+    let cc = cc_compiler();
+    let status = std::process::Command::new(&cc)
         .arg(obj_path.to_string_lossy().as_ref())
         .arg(runtime_o.to_string_lossy().as_ref())
         .arg(asm_o.to_string_lossy().as_ref())
