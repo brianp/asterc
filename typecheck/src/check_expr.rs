@@ -632,6 +632,8 @@ impl TypeChecker {
                     }
                     return Ok(Type::Bool);
                 }
+                // Int/Float mixed comparison promotes to Float, which loses
+                // precision for integers larger than 2^53.
                 match (&lt, &rt) {
                     (Type::Int, Type::Float) | (Type::Float, Type::Int) => Ok(Type::Bool),
                     _ => Err(Diagnostic::error(format!(
