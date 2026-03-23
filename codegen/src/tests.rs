@@ -2835,6 +2835,21 @@ def main() -> Int
     assert_eq!(result, 10);
 }
 
+#[test]
+fn pow_int_overflow_wraps() {
+    // 3 ** 40 overflows i64 — should wrap (matching JIT wrapping_mul behavior)
+    let src = "\
+def main() -> Int
+  3 ** 40
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    // Compute expected: 3i64.wrapping_pow(40)
+    let expected = 3i64.wrapping_pow(40);
+    assert_eq!(result, expected);
+}
+
 // ===========================================================================
 // String interpolation
 // ===========================================================================

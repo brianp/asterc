@@ -71,13 +71,15 @@ int64_t aster_string_len(void* ptr) {
 
 int64_t aster_pow_int(int64_t base, int64_t exp) {
     if (exp < 0) return 0;
-    int64_t result = 1;
-    while (exp > 0) {
-        if (exp & 1) result *= base;
-        base *= base;
-        exp >>= 1;
+    uint64_t result = 1;
+    uint64_t b = (uint64_t)base;
+    uint64_t e = (uint64_t)exp;
+    while (e > 0) {
+        if (e & 1) result *= b;
+        b *= b;
+        e >>= 1;
     }
-    return result;
+    return (int64_t)result;
 }
 
 double aster_pow_float(double base, double exp) {
