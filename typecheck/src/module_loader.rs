@@ -20,6 +20,13 @@ impl FileResolver for FsResolver {
     fn resolve(&self, module_path: &[String]) -> Option<(String, String)> {
         let mut path = self.root.clone();
         for segment in module_path {
+            if segment.contains('.')
+                || segment.contains('/')
+                || segment.contains('\\')
+                || segment.contains('\0')
+            {
+                return None;
+            }
             path.push(segment);
         }
         path.set_extension("aster");
