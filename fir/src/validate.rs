@@ -22,6 +22,195 @@ impl std::fmt::Display for FirError {
     }
 }
 
+struct ValidationContext<'a> {
+    func_name: &'a str,
+    num_functions: usize,
+    num_classes: usize,
+    declared_locals: &'a HashSet<LocalId>,
+    errors: &'a mut Vec<FirError>,
+}
+
+impl<'a> ValidationContext<'a> {
+    fn check_func_id(&mut self, id: FunctionId) {
+        if (id.0 as usize) >= self.num_functions {
+            self.errors.push(FirError {
+                function: self.func_name.into(),
+                message: format!(
+                    "references FunctionId({}) but only {} functions exist",
+                    id.0, self.num_functions
+                ),
+            });
+        }
+    }
+
+    fn validate_stmts(&mut self, stmts: &[FirStmt]) {
+        for stmt in stmts {
+            match stmt {
+                FirStmt::Let { value, .. } => {
+                    self.validate_expr(value);
+                }
+                FirStmt::Assign { value, target, .. } => {
+                    self.validate_expr(value);
+                    match target {
+                        crate::stmts::FirPlace::Field { object, .. } => {
+                            self.validate_expr(object);
+                        }
+                        crate::stmts::FirPlace::Index { list, index } => {
+                            self.validate_expr(list);
+                            self.validate_expr(index);
+                        }
+                        crate::stmts::FirPlace::MapIndex { map, key } => {
+                            self.validate_expr(map);
+                            self.validate_expr(key);
+                        }
+                        crate::stmts::FirPlace::Local(_) => {}
+                    }
+                }
+                FirStmt::Return(expr) | FirStmt::Expr(expr) => {
+                    self.validate_expr(expr);
+                }
+                FirStmt::If {
+                    cond,
+                    then_body,
+                    else_body,
+                } => {
+                    self.validate_expr(cond);
+                    self.validate_stmts(then_body);
+                    self.validate_stmts(else_body);
+                }
+                FirStmt::While {
+                    cond,
+                    body,
+                    increment,
+                } => {
+                    self.validate_expr(cond);
+                    self.validate_stmts(body);
+                    self.validate_stmts(increment);
+                }
+                FirStmt::Block(stmts) => {
+                    self.validate_stmts(stmts);
+                }
+                FirStmt::Break | FirStmt::Continue => {}
+            }
+        }
+    }
+
+    fn validate_expr(&mut self, expr: &FirExpr) {
+        match expr {
+            FirExpr::Call { func, args, .. } => {
+                self.check_func_id(*func);
+                for arg in args {
+                    self.validate_expr(arg);
+                }
+            }
+            FirExpr::Spawn { func, args, .. } => {
+                self.check_func_id(*func);
+                for arg in args {
+                    self.validate_expr(arg);
+                }
+            }
+            FirExpr::BlockOn { func, args, .. } => {
+                self.check_func_id(*func);
+                for arg in args {
+                    self.validate_expr(arg);
+                }
+            }
+            FirExpr::ClosureCreate { func, env, .. } => {
+                self.check_func_id(*func);
+                self.validate_expr(env);
+            }
+            FirExpr::GlobalFunc(func) => {
+                self.check_func_id(*func);
+            }
+            FirExpr::Construct { class, fields, .. } => {
+                if (class.0 as usize) >= self.num_classes {
+                    self.errors.push(FirError {
+                        function: self.func_name.into(),
+                        message: format!(
+                            "references ClassId({}) but only {} classes exist",
+                            class.0, self.num_classes
+                        ),
+                    });
+                }
+                for f in fields {
+                    self.validate_expr(f);
+                }
+            }
+            FirExpr::LocalVar(id, _) => {
+                if !self.declared_locals.contains(id) {
+                    self.errors.push(FirError {
+                        function: self.func_name.into(),
+                        message: format!("references undeclared LocalId({})", id.0),
+                    });
+                }
+            }
+            FirExpr::BinaryOp { left, right, .. } => {
+                self.validate_expr(left);
+                self.validate_expr(right);
+            }
+            FirExpr::UnaryOp { operand, .. } => {
+                self.validate_expr(operand);
+            }
+            FirExpr::RuntimeCall { args, .. } => {
+                for arg in args {
+                    self.validate_expr(arg);
+                }
+            }
+            FirExpr::ClosureCall { closure, args, .. } => {
+                self.validate_expr(closure);
+                for arg in args {
+                    self.validate_expr(arg);
+                }
+            }
+            FirExpr::FieldGet { object, .. } | FirExpr::FieldSet { object, .. } => {
+                self.validate_expr(object);
+                if let FirExpr::FieldSet { value, .. } = expr {
+                    self.validate_expr(value);
+                }
+            }
+            FirExpr::ListNew { elements, .. } => {
+                for elem in elements {
+                    self.validate_expr(elem);
+                }
+            }
+            FirExpr::ListGet { list, index, .. } => {
+                self.validate_expr(list);
+                self.validate_expr(index);
+            }
+            FirExpr::ListSet {
+                list, index, value, ..
+            } => {
+                self.validate_expr(list);
+                self.validate_expr(index);
+                self.validate_expr(value);
+            }
+            FirExpr::TagWrap { value, .. }
+            | FirExpr::TagUnwrap { value, .. }
+            | FirExpr::TagCheck { value, .. } => {
+                self.validate_expr(value);
+            }
+            FirExpr::ResolveTask { task, .. }
+            | FirExpr::CancelTask { task }
+            | FirExpr::WaitCancel { task } => {
+                self.validate_expr(task);
+            }
+            FirExpr::EnvLoad { env, .. } => {
+                self.validate_expr(env);
+            }
+            FirExpr::IntToFloat(inner) | FirExpr::Bitcast { value: inner, .. } => {
+                self.validate_expr(inner);
+            }
+            // Literals have no sub-expressions
+            FirExpr::IntLit(_)
+            | FirExpr::FloatLit(_)
+            | FirExpr::BoolLit(_)
+            | FirExpr::StringLit(_)
+            | FirExpr::NilLit
+            | FirExpr::Safepoint => {}
+        }
+    }
+}
+
 /// Validate a FIR module's structural invariants before codegen.
 ///
 /// Checks:
@@ -69,15 +258,14 @@ pub fn validate(module: &FirModule) -> Vec<FirError> {
         }
         collect_declared_locals(&func.body, &mut declared_locals);
 
-        // Validate expressions in body
-        validate_stmts(
-            &func.body,
-            &func.name,
+        let mut ctx = ValidationContext {
+            func_name: &func.name,
             num_functions,
             num_classes,
-            &declared_locals,
-            &mut errors,
-        );
+            declared_locals: &declared_locals,
+            errors: &mut errors,
+        };
+        ctx.validate_stmts(&func.body);
     }
 
     errors
@@ -108,470 +296,5 @@ fn collect_declared_locals(stmts: &[FirStmt], locals: &mut HashSet<LocalId>) {
             }
             _ => {}
         }
-    }
-}
-
-fn validate_stmts(
-    stmts: &[FirStmt],
-    func_name: &str,
-    num_functions: usize,
-    num_classes: usize,
-    declared_locals: &HashSet<LocalId>,
-    errors: &mut Vec<FirError>,
-) {
-    for stmt in stmts {
-        match stmt {
-            FirStmt::Let { value, .. } => {
-                validate_expr(
-                    value,
-                    func_name,
-                    num_functions,
-                    num_classes,
-                    declared_locals,
-                    errors,
-                );
-            }
-            FirStmt::Assign { value, target, .. } => {
-                validate_expr(
-                    value,
-                    func_name,
-                    num_functions,
-                    num_classes,
-                    declared_locals,
-                    errors,
-                );
-                match target {
-                    crate::stmts::FirPlace::Field { object, .. } => {
-                        validate_expr(
-                            object,
-                            func_name,
-                            num_functions,
-                            num_classes,
-                            declared_locals,
-                            errors,
-                        );
-                    }
-                    crate::stmts::FirPlace::Index { list, index } => {
-                        validate_expr(
-                            list,
-                            func_name,
-                            num_functions,
-                            num_classes,
-                            declared_locals,
-                            errors,
-                        );
-                        validate_expr(
-                            index,
-                            func_name,
-                            num_functions,
-                            num_classes,
-                            declared_locals,
-                            errors,
-                        );
-                    }
-                    crate::stmts::FirPlace::MapIndex { map, key } => {
-                        validate_expr(
-                            map,
-                            func_name,
-                            num_functions,
-                            num_classes,
-                            declared_locals,
-                            errors,
-                        );
-                        validate_expr(
-                            key,
-                            func_name,
-                            num_functions,
-                            num_classes,
-                            declared_locals,
-                            errors,
-                        );
-                    }
-                    crate::stmts::FirPlace::Local(_) => {}
-                }
-            }
-            FirStmt::Return(expr) | FirStmt::Expr(expr) => {
-                validate_expr(
-                    expr,
-                    func_name,
-                    num_functions,
-                    num_classes,
-                    declared_locals,
-                    errors,
-                );
-            }
-            FirStmt::If {
-                cond,
-                then_body,
-                else_body,
-            } => {
-                validate_expr(
-                    cond,
-                    func_name,
-                    num_functions,
-                    num_classes,
-                    declared_locals,
-                    errors,
-                );
-                validate_stmts(
-                    then_body,
-                    func_name,
-                    num_functions,
-                    num_classes,
-                    declared_locals,
-                    errors,
-                );
-                validate_stmts(
-                    else_body,
-                    func_name,
-                    num_functions,
-                    num_classes,
-                    declared_locals,
-                    errors,
-                );
-            }
-            FirStmt::While {
-                cond,
-                body,
-                increment,
-            } => {
-                validate_expr(
-                    cond,
-                    func_name,
-                    num_functions,
-                    num_classes,
-                    declared_locals,
-                    errors,
-                );
-                validate_stmts(
-                    body,
-                    func_name,
-                    num_functions,
-                    num_classes,
-                    declared_locals,
-                    errors,
-                );
-                validate_stmts(
-                    increment,
-                    func_name,
-                    num_functions,
-                    num_classes,
-                    declared_locals,
-                    errors,
-                );
-            }
-            FirStmt::Block(stmts) => {
-                validate_stmts(
-                    stmts,
-                    func_name,
-                    num_functions,
-                    num_classes,
-                    declared_locals,
-                    errors,
-                );
-            }
-            FirStmt::Break | FirStmt::Continue => {}
-        }
-    }
-}
-
-fn check_func_id(
-    id: FunctionId,
-    func_name: &str,
-    num_functions: usize,
-    errors: &mut Vec<FirError>,
-) {
-    if (id.0 as usize) >= num_functions {
-        errors.push(FirError {
-            function: func_name.into(),
-            message: format!(
-                "references FunctionId({}) but only {} functions exist",
-                id.0, num_functions
-            ),
-        });
-    }
-}
-
-fn validate_expr(
-    expr: &FirExpr,
-    func_name: &str,
-    num_functions: usize,
-    num_classes: usize,
-    declared_locals: &HashSet<LocalId>,
-    errors: &mut Vec<FirError>,
-) {
-    match expr {
-        FirExpr::Call { func, args, .. } => {
-            check_func_id(*func, func_name, num_functions, errors);
-            for arg in args {
-                validate_expr(
-                    arg,
-                    func_name,
-                    num_functions,
-                    num_classes,
-                    declared_locals,
-                    errors,
-                );
-            }
-        }
-        FirExpr::Spawn { func, args, .. } => {
-            check_func_id(*func, func_name, num_functions, errors);
-            for arg in args {
-                validate_expr(
-                    arg,
-                    func_name,
-                    num_functions,
-                    num_classes,
-                    declared_locals,
-                    errors,
-                );
-            }
-        }
-        FirExpr::BlockOn { func, args, .. } => {
-            check_func_id(*func, func_name, num_functions, errors);
-            for arg in args {
-                validate_expr(
-                    arg,
-                    func_name,
-                    num_functions,
-                    num_classes,
-                    declared_locals,
-                    errors,
-                );
-            }
-        }
-        FirExpr::ClosureCreate { func, env, .. } => {
-            check_func_id(*func, func_name, num_functions, errors);
-            validate_expr(
-                env,
-                func_name,
-                num_functions,
-                num_classes,
-                declared_locals,
-                errors,
-            );
-        }
-        FirExpr::GlobalFunc(func) => {
-            check_func_id(*func, func_name, num_functions, errors);
-        }
-        FirExpr::Construct { class, fields, .. } => {
-            if (class.0 as usize) >= num_classes {
-                errors.push(FirError {
-                    function: func_name.into(),
-                    message: format!(
-                        "references ClassId({}) but only {} classes exist",
-                        class.0, num_classes
-                    ),
-                });
-            }
-            for f in fields {
-                validate_expr(
-                    f,
-                    func_name,
-                    num_functions,
-                    num_classes,
-                    declared_locals,
-                    errors,
-                );
-            }
-        }
-        FirExpr::LocalVar(id, _) => {
-            if !declared_locals.contains(id) {
-                errors.push(FirError {
-                    function: func_name.into(),
-                    message: format!("references undeclared LocalId({})", id.0),
-                });
-            }
-        }
-        // Recurse into sub-expressions
-        FirExpr::BinaryOp { left, right, .. } => {
-            validate_expr(
-                left,
-                func_name,
-                num_functions,
-                num_classes,
-                declared_locals,
-                errors,
-            );
-            validate_expr(
-                right,
-                func_name,
-                num_functions,
-                num_classes,
-                declared_locals,
-                errors,
-            );
-        }
-        FirExpr::UnaryOp { operand, .. } => {
-            validate_expr(
-                operand,
-                func_name,
-                num_functions,
-                num_classes,
-                declared_locals,
-                errors,
-            );
-        }
-        FirExpr::RuntimeCall { args, .. } => {
-            for arg in args {
-                validate_expr(
-                    arg,
-                    func_name,
-                    num_functions,
-                    num_classes,
-                    declared_locals,
-                    errors,
-                );
-            }
-        }
-        FirExpr::ClosureCall { closure, args, .. } => {
-            validate_expr(
-                closure,
-                func_name,
-                num_functions,
-                num_classes,
-                declared_locals,
-                errors,
-            );
-            for arg in args {
-                validate_expr(
-                    arg,
-                    func_name,
-                    num_functions,
-                    num_classes,
-                    declared_locals,
-                    errors,
-                );
-            }
-        }
-        FirExpr::FieldGet { object, .. } | FirExpr::FieldSet { object, .. } => {
-            validate_expr(
-                object,
-                func_name,
-                num_functions,
-                num_classes,
-                declared_locals,
-                errors,
-            );
-            if let FirExpr::FieldSet { value, .. } = expr {
-                validate_expr(
-                    value,
-                    func_name,
-                    num_functions,
-                    num_classes,
-                    declared_locals,
-                    errors,
-                );
-            }
-        }
-        FirExpr::ListNew { elements, .. } => {
-            for elem in elements {
-                validate_expr(
-                    elem,
-                    func_name,
-                    num_functions,
-                    num_classes,
-                    declared_locals,
-                    errors,
-                );
-            }
-        }
-        FirExpr::ListGet { list, index, .. } => {
-            validate_expr(
-                list,
-                func_name,
-                num_functions,
-                num_classes,
-                declared_locals,
-                errors,
-            );
-            validate_expr(
-                index,
-                func_name,
-                num_functions,
-                num_classes,
-                declared_locals,
-                errors,
-            );
-        }
-        FirExpr::ListSet {
-            list, index, value, ..
-        } => {
-            validate_expr(
-                list,
-                func_name,
-                num_functions,
-                num_classes,
-                declared_locals,
-                errors,
-            );
-            validate_expr(
-                index,
-                func_name,
-                num_functions,
-                num_classes,
-                declared_locals,
-                errors,
-            );
-            validate_expr(
-                value,
-                func_name,
-                num_functions,
-                num_classes,
-                declared_locals,
-                errors,
-            );
-        }
-        FirExpr::TagWrap { value, .. }
-        | FirExpr::TagUnwrap { value, .. }
-        | FirExpr::TagCheck { value, .. } => {
-            validate_expr(
-                value,
-                func_name,
-                num_functions,
-                num_classes,
-                declared_locals,
-                errors,
-            );
-        }
-        FirExpr::ResolveTask { task, .. }
-        | FirExpr::CancelTask { task }
-        | FirExpr::WaitCancel { task } => {
-            validate_expr(
-                task,
-                func_name,
-                num_functions,
-                num_classes,
-                declared_locals,
-                errors,
-            );
-        }
-        FirExpr::EnvLoad { env, .. } => {
-            validate_expr(
-                env,
-                func_name,
-                num_functions,
-                num_classes,
-                declared_locals,
-                errors,
-            );
-        }
-        FirExpr::IntToFloat(inner) | FirExpr::Bitcast { value: inner, .. } => {
-            validate_expr(
-                inner,
-                func_name,
-                num_functions,
-                num_classes,
-                declared_locals,
-                errors,
-            );
-        }
-        // Literals have no sub-expressions
-        FirExpr::IntLit(_)
-        | FirExpr::FloatLit(_)
-        | FirExpr::BoolLit(_)
-        | FirExpr::StringLit(_)
-        | FirExpr::NilLit
-        | FirExpr::Safepoint => {}
     }
 }
