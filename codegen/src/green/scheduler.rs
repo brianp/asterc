@@ -415,7 +415,7 @@ pub(crate) fn consume_thread_result(thread_ptr: *mut GreenThread) -> i64 {
     }
     st.consumed = true;
 
-    match st.status {
+    let result = match st.status {
         ThreadStatus::Ready => st.result,
         ThreadStatus::Failed | ThreadStatus::Cancelled => {
             crate::runtime::error_flag_set(true);
@@ -425,7 +425,19 @@ pub(crate) fn consume_thread_result(thread_ptr: *mut GreenThread) -> i64 {
             crate::runtime::error_flag_set(true);
             0
         }
+    };
+    drop(st);
+
+    // Reclaim the GreenThread allocation. The stack was already recycled
+    // when the thread reached terminal state; after consume, nobody
+    // references this pointer again.
+    let mut thread_box = unsafe { Box::from_raw(thread_ptr) };
+    if let Some(stack) = thread_box.stack.take() {
+        sched().stack_pool.put(stack);
     }
+    drop(thread_box);
+
+    result
 }
 
 fn wait_for_terminal(thread_ptr: *mut GreenThread) {
