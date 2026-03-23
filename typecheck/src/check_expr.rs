@@ -663,12 +663,11 @@ impl TypeChecker {
                         .with_label(left.span().merge(right.span()), "type does not include Ord"))
                     }
                 }
-                _ => Err(Diagnostic::error(format!(
-                    "Cannot order {} and {} with {}",
-                    lt, rt, op
-                ))
-                .with_code("E019")
-                .with_label(left.span().merge(right.span()), "incompatible types")),
+                _ => Err(
+                    Diagnostic::error(format!("Cannot order {} and {} with {}", lt, rt, op))
+                        .with_code("E019")
+                        .with_label(left.span().merge(right.span()), "incompatible types"),
+                ),
             },
             BinOp::And | BinOp::Or => {
                 if lt == Type::Bool && rt == Type::Bool {
@@ -1235,15 +1234,15 @@ impl TypeChecker {
                             && !self.type_includes_ord(&elem_ty)
                         {
                             return Err(Diagnostic::error(format!(
-                                        "Cannot call '{}()' on '{}': element type {} does not include Ord. \
+                                "Cannot call '{}()' on '{}': element type {} does not include Ord. \
                                          Add 'includes Ord' to the element type to enable {}",
-                                        field, class_name, elem_ty, field
-                                    ))
-                                    .with_code("E025")
-                                    .with_label(
-                                        object.span(),
-                                        format!("{} requires element type to include Ord", field),
-                                    ));
+                                field, class_name, elem_ty, field
+                            ))
+                            .with_code("E025")
+                            .with_label(
+                                object.span(),
+                                format!("{} requires element type to include Ord", field),
+                            ));
                         }
                         let resolved = Self::substitute_typevars(t, &bindings);
                         return Ok(resolved);

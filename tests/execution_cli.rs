@@ -211,7 +211,12 @@ def main() -> Int
     )
     .unwrap();
     let output = common::build_and_run(&src);
-    assert_eq!(output.status.code(), Some(3), "{}", common::output_text(&output));
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "{}",
+        common::output_text(&output)
+    );
 }
 
 #[test]
@@ -229,7 +234,12 @@ def main() -> Int
     )
     .unwrap();
     let output = common::build_and_run(&src);
-    assert_eq!(output.status.code(), Some(10), "{}", common::output_text(&output));
+    assert_eq!(
+        output.status.code(),
+        Some(10),
+        "{}",
+        common::output_text(&output)
+    );
 }
 
 #[test]
@@ -247,7 +257,12 @@ def main() -> Int
     )
     .unwrap();
     let output = common::build_and_run(&src);
-    assert_eq!(output.status.code(), Some(60), "{}", common::output_text(&output));
+    assert_eq!(
+        output.status.code(),
+        Some(60),
+        "{}",
+        common::output_text(&output)
+    );
 }
 
 #[test]
@@ -265,7 +280,12 @@ def main() -> Int
     )
     .unwrap();
     let output = common::build_and_run(&src);
-    assert_eq!(output.status.code(), Some(2), "{}", common::output_text(&output));
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "{}",
+        common::output_text(&output)
+    );
 }
 
 #[test]
@@ -286,7 +306,12 @@ def main() -> Int
     )
     .unwrap();
     let output = common::build_and_run(&src);
-    assert_eq!(output.status.code(), Some(1), "{}", common::output_text(&output));
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{}",
+        common::output_text(&output)
+    );
 }
 
 #[test]
@@ -307,7 +332,12 @@ def main() -> Int
     )
     .unwrap();
     let output = common::build_and_run(&src);
-    assert_eq!(output.status.code(), Some(1), "{}", common::output_text(&output));
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{}",
+        common::output_text(&output)
+    );
 }
 
 #[test]
@@ -326,7 +356,12 @@ def main() -> Int
     )
     .unwrap();
     let output = common::build_and_run(&src);
-    assert_eq!(output.status.code(), Some(40), "{}", common::output_text(&output));
+    assert_eq!(
+        output.status.code(),
+        Some(40),
+        "{}",
+        common::output_text(&output)
+    );
 }
 
 #[test]
@@ -344,7 +379,12 @@ def main() -> Int
     )
     .unwrap();
     let output = common::build_and_run(&src);
-    assert_eq!(output.status.code(), Some(3), "{}", common::output_text(&output));
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "{}",
+        common::output_text(&output)
+    );
 }
 
 #[test]
@@ -365,7 +405,12 @@ def main() -> Int
     .unwrap();
     let output = common::build_and_run(&src);
     // sorted = [1,2,3], first=1, last=3, 1*100+3 = 103
-    assert_eq!(output.status.code(), Some(103), "{}", common::output_text(&output));
+    assert_eq!(
+        output.status.code(),
+        Some(103),
+        "{}",
+        common::output_text(&output)
+    );
 }
 
 #[test]
@@ -385,7 +430,12 @@ def main() -> Int
     .unwrap();
     let output = common::build_and_run(&src);
     // min=1, max=9, 1*100+9 = 109
-    assert_eq!(output.status.code(), Some(109), "{}", common::output_text(&output));
+    assert_eq!(
+        output.status.code(),
+        Some(109),
+        "{}",
+        common::output_text(&output)
+    );
 }
 
 #[test]
@@ -403,5 +453,10 @@ def main() -> Int
     )
     .unwrap();
     let output = common::build_and_run(&src);
-    assert_eq!(output.status.code(), Some(20), "{}", common::output_text(&output));
+    assert_eq!(
+        output.status.code(),
+        Some(20),
+        "{}",
+        common::output_text(&output)
+    );
 }

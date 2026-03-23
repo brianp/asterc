@@ -337,7 +337,7 @@ fn translate_stmt(builder: &mut FunctionBuilder, state: &mut TranslationState, s
                 builder.switch_to_block(latch);
                 builder.seal_block(latch);
                 state.terminated = false;
-                translate_body(builder, state, &increment);
+                translate_body(builder, state, increment);
                 if !state.terminated {
                     builder.ins().jump(header_block, &[]);
                 }

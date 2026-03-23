@@ -32,7 +32,10 @@ impl Parser {
         let name = match &name_tok.kind {
             TokenKind::Ident(n) => n.clone(),
             t => {
-                let span = Span { start: name_tok.start, end: name_tok.end };
+                let span = Span {
+                    start: name_tok.start,
+                    end: name_tok.end,
+                };
                 return Err(
                     Diagnostic::error(format!("Expected type name, got `{}`", t))
                         .with_code("P001")
@@ -119,7 +122,10 @@ impl Parser {
             // No nested nullability: T?? is a compile error
             if self.at(&TokenKind::Question) {
                 let tok = self.peek();
-                let span = Span { start: tok.start, end: tok.end };
+                let span = Span {
+                    start: tok.start,
+                    end: tok.end,
+                };
                 return Err(
                     Diagnostic::error("Nested nullable types (T??) are not allowed")
                         .with_code("P001")
@@ -129,12 +135,13 @@ impl Parser {
             // Don't allow Nullable(Nullable(...))
             if matches!(&base, Type::Nullable(_)) {
                 let tok = self.peek();
-                let span = Span { start: tok.start, end: tok.end };
-                return Err(
-                    Diagnostic::error("Nested nullable types are not allowed")
-                        .with_code("P001")
-                        .with_label(span, "type is already nullable"),
-                );
+                let span = Span {
+                    start: tok.start,
+                    end: tok.end,
+                };
+                return Err(Diagnostic::error("Nested nullable types are not allowed")
+                    .with_code("P001")
+                    .with_label(span, "type is already nullable"));
             }
             Ok(Type::Nullable(Box::new(base)))
         } else {

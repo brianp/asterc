@@ -1326,9 +1326,9 @@ impl Lowerer {
                                 };
                                 let raw_random = FirExpr::RuntimeCall {
                                     name: "aster_random_int".to_string(),
-                                    args: vec![if min_arg.is_some() {
+                                    args: vec![if let Some(min_val) = &min_arg {
                                         // random_int(max - min) + min
-                                        let fir_min = self.lower_expr(&min_arg.unwrap().2)?;
+                                        let fir_min = self.lower_expr(&min_val.2)?;
                                         FirExpr::BinaryOp {
                                             left: Box::new(fir_max),
                                             op: BinOp::Sub,
@@ -1391,7 +1391,10 @@ impl Lowerer {
 
                     // Channel(capacity?: x) → aster_channel_new(x)
                     if name == "Channel" || name == "MultiSend" || name == "MultiReceive" {
-                        let cap_arg = args.iter().find(|(n, _, _)| n == "capacity").map(|(_, _, e)| e);
+                        let cap_arg = args
+                            .iter()
+                            .find(|(n, _, _)| n == "capacity")
+                            .map(|(_, _, e)| e);
                         let fir_cap = if let Some(cap) = cap_arg {
                             self.lower_expr(cap)?
                         } else {
@@ -1503,8 +1506,10 @@ impl Lowerer {
                     } else if self.locals.contains_key(name.as_str()) {
                         // Local variable with function type — closure call (dynamic dispatch)
                         let closure_var = self.lower_expr(func)?;
-                        let fir_args: Result<Vec<_>, _> =
-                            args.iter().map(|(_, _, arg)| self.lower_expr(arg)).collect();
+                        let fir_args: Result<Vec<_>, _> = args
+                            .iter()
+                            .map(|(_, _, arg)| self.lower_expr(arg))
+                            .collect();
                         let ret_ty = self.resolve_closure_ret_type(name);
                         Ok(FirExpr::ClosureCall {
                             closure: Box::new(closure_var),
@@ -1513,8 +1518,10 @@ impl Lowerer {
                         })
                     } else {
                         // Could be a runtime call (say, etc.)
-                        let fir_args: Result<Vec<_>, _> =
-                            args.iter().map(|(_, _, arg)| self.lower_expr(arg)).collect();
+                        let fir_args: Result<Vec<_>, _> = args
+                            .iter()
+                            .map(|(_, _, arg)| self.lower_expr(arg))
+                            .collect();
                         Ok(FirExpr::RuntimeCall {
                             name: name.clone(),
                             args: fir_args?,
@@ -1952,8 +1959,10 @@ impl Lowerer {
         {
             let ctor_name = format!("{}.{}", name, method);
             if let Some(&func_id) = self.functions.get(&ctor_name) {
-                let fir_args: Result<Vec<_>, _> =
-                    args.iter().map(|(_, _, arg)| self.lower_expr(arg)).collect();
+                let fir_args: Result<Vec<_>, _> = args
+                    .iter()
+                    .map(|(_, _, arg)| self.lower_expr(arg))
+                    .collect();
                 return Ok(FirExpr::Call {
                     func: func_id,
                     args: fir_args?,
@@ -2447,9 +2456,8 @@ impl Lowerer {
             };
             match method {
                 "map" | "filter" | "find" | "any" | "all" => {
-                    return self.lower_iterable_with_callback(
-                        method, fir_object, args, &elem_ty, object,
-                    );
+                    return self
+                        .lower_iterable_with_callback(method, fir_object, args, &elem_ty, object);
                 }
                 "reduce" => {
                     return self.lower_iterable_reduce(fir_object, args, &elem_ty, object);
@@ -2594,7 +2602,8 @@ impl Lowerer {
             // Build args in parameter order, using defaults for missing args
             let mut fir_args = Vec::new();
             for (param_name, default_expr) in &param_defaults {
-                if let Some((_, _, arg_expr)) = args.iter().find(|(name, _, _)| name == param_name) {
+                if let Some((_, _, arg_expr)) = args.iter().find(|(name, _, _)| name == param_name)
+                {
                     fir_args.push(self.lower_expr(arg_expr)?);
                 } else if let Some(default) = default_expr {
                     fir_args.push(self.lower_expr(default)?);
@@ -2612,7 +2621,9 @@ impl Lowerer {
             Ok(fir_args)
         } else {
             // No defaults — lower args in the order provided
-            args.iter().map(|(_, _, arg)| self.lower_expr(arg)).collect()
+            args.iter()
+                .map(|(_, _, arg)| self.lower_expr(arg))
+                .collect()
         }
     }
 
@@ -2813,10 +2824,21 @@ impl Lowerer {
                     // Iterable vocabulary methods produce loops
                     if matches!(
                         field.as_str(),
-                        "map" | "filter" | "find" | "any" | "all" | "reduce"
-                            | "count" | "first" | "last" | "to_list" | "min"
-                            | "max" | "sort"
-                            | "or" | "or_throw"
+                        "map"
+                            | "filter"
+                            | "find"
+                            | "any"
+                            | "all"
+                            | "reduce"
+                            | "count"
+                            | "first"
+                            | "last"
+                            | "to_list"
+                            | "min"
+                            | "max"
+                            | "sort"
+                            | "or"
+                            | "or_throw"
                     ) {
                         return true;
                     }
@@ -2937,7 +2959,12 @@ impl Lowerer {
     }
 
     /// Get element at current index.
-    fn iter_get_elem(list_id: LocalId, idx_id: LocalId, elem_id: LocalId, elem_ty: &FirType) -> FirStmt {
+    fn iter_get_elem(
+        list_id: LocalId,
+        idx_id: LocalId,
+        elem_id: LocalId,
+        elem_ty: &FirType,
+    ) -> FirStmt {
         FirStmt::Let {
             name: elem_id,
             ty: elem_ty.clone(),
@@ -2967,8 +2994,7 @@ impl Lowerer {
             .map(|(_, _, e)| e)
             .or_else(|| args.first().map(|(_, _, e)| e));
 
-        let (list_id, len_id, idx_id, elem_id) =
-            self.iter_loop_scaffold(fir_list, elem_ty);
+        let (list_id, len_id, idx_id, elem_id) = self.iter_loop_scaffold(fir_list, elem_ty);
 
         match method {
             "map" => {
@@ -2980,26 +3006,22 @@ impl Lowerer {
                     ty: FirType::Ptr,
                     value: FirExpr::RuntimeCall {
                         name: "aster_list_new".to_string(),
-                        args: vec![FirExpr::LocalVar(len_id, FirType::I64), Self::list_ptr_elems_flag(elem_ty)],
+                        args: vec![
+                            FirExpr::LocalVar(len_id, FirType::I64),
+                            Self::list_ptr_elems_flag(elem_ty),
+                        ],
                         ret_ty: FirType::Ptr,
                     },
                 });
 
-                let mut loop_body = vec![
-                    Self::iter_get_elem(list_id, idx_id, elem_id, elem_ty),
-                ];
+                let mut loop_body = vec![Self::iter_get_elem(list_id, idx_id, elem_id, elem_ty)];
                 let saved_pending = std::mem::take(&mut self.pending_stmts);
-                let mapped_val = self.apply_inline_lambda(
-                    callback, elem_id, elem_ty, object,
-                )?;
+                let mapped_val = self.apply_inline_lambda(callback, elem_id, elem_ty, object)?;
                 loop_body.append(&mut self.pending_stmts);
                 self.pending_stmts = saved_pending;
                 loop_body.push(FirStmt::Expr(FirExpr::RuntimeCall {
                     name: "aster_list_push".to_string(),
-                    args: vec![
-                        FirExpr::LocalVar(result_id, FirType::Ptr),
-                        mapped_val,
-                    ],
+                    args: vec![FirExpr::LocalVar(result_id, FirType::Ptr), mapped_val],
                     ret_ty: FirType::Ptr,
                 }));
 
@@ -3023,13 +3045,9 @@ impl Lowerer {
                     },
                 });
 
-                let mut loop_body = vec![
-                    Self::iter_get_elem(list_id, idx_id, elem_id, elem_ty),
-                ];
+                let mut loop_body = vec![Self::iter_get_elem(list_id, idx_id, elem_id, elem_ty)];
                 let saved_pending = std::mem::take(&mut self.pending_stmts);
-                let cond_val = self.apply_inline_lambda(
-                    callback, elem_id, elem_ty, object,
-                )?;
+                let cond_val = self.apply_inline_lambda(callback, elem_id, elem_ty, object)?;
                 loop_body.append(&mut self.pending_stmts);
                 self.pending_stmts = saved_pending;
                 loop_body.push(FirStmt::If {
@@ -3070,13 +3088,9 @@ impl Lowerer {
                     },
                 });
 
-                let mut loop_body = vec![
-                    Self::iter_get_elem(list_id, idx_id, elem_id, elem_ty),
-                ];
+                let mut loop_body = vec![Self::iter_get_elem(list_id, idx_id, elem_id, elem_ty)];
                 let saved_pending = std::mem::take(&mut self.pending_stmts);
-                let cond_val = self.apply_inline_lambda(
-                    callback, elem_id, elem_ty, object,
-                )?;
+                let cond_val = self.apply_inline_lambda(callback, elem_id, elem_ty, object)?;
                 loop_body.append(&mut self.pending_stmts);
                 self.pending_stmts = saved_pending;
                 loop_body.push(FirStmt::If {
@@ -3111,13 +3125,9 @@ impl Lowerer {
                     value: FirExpr::BoolLit(false),
                 });
 
-                let mut loop_body = vec![
-                    Self::iter_get_elem(list_id, idx_id, elem_id, elem_ty),
-                ];
+                let mut loop_body = vec![Self::iter_get_elem(list_id, idx_id, elem_id, elem_ty)];
                 let saved_pending = std::mem::take(&mut self.pending_stmts);
-                let cond_val = self.apply_inline_lambda(
-                    callback, elem_id, elem_ty, object,
-                )?;
+                let cond_val = self.apply_inline_lambda(callback, elem_id, elem_ty, object)?;
                 loop_body.append(&mut self.pending_stmts);
                 self.pending_stmts = saved_pending;
                 loop_body.push(FirStmt::If {
@@ -3148,13 +3158,9 @@ impl Lowerer {
                     value: FirExpr::BoolLit(true),
                 });
 
-                let mut loop_body = vec![
-                    Self::iter_get_elem(list_id, idx_id, elem_id, elem_ty),
-                ];
+                let mut loop_body = vec![Self::iter_get_elem(list_id, idx_id, elem_id, elem_ty)];
                 let saved_pending = std::mem::take(&mut self.pending_stmts);
-                let cond_val = self.apply_inline_lambda(
-                    callback, elem_id, elem_ty, object,
-                )?;
+                let cond_val = self.apply_inline_lambda(callback, elem_id, elem_ty, object)?;
                 loop_body.append(&mut self.pending_stmts);
                 self.pending_stmts = saved_pending;
                 // if NOT cond: result = false, break
@@ -3263,8 +3269,7 @@ impl Lowerer {
         };
         let acc_ty = self.infer_fir_type(&fir_init);
 
-        let (list_id, len_id, idx_id, elem_id) =
-            self.iter_loop_scaffold(fir_list, elem_ty);
+        let (list_id, len_id, idx_id, elem_id) = self.iter_loop_scaffold(fir_list, elem_ty);
 
         let acc_id = self.alloc_local();
         self.local_types.insert(acc_id, acc_ty.clone());
@@ -3274,13 +3279,10 @@ impl Lowerer {
             value: fir_init,
         });
 
-        let mut loop_body = vec![
-            Self::iter_get_elem(list_id, idx_id, elem_id, elem_ty),
-        ];
+        let mut loop_body = vec![Self::iter_get_elem(list_id, idx_id, elem_id, elem_ty)];
 
         let saved_pending = std::mem::take(&mut self.pending_stmts);
-        let result_val =
-            self.apply_inline_lambda2(callback, acc_id, &acc_ty, elem_id, elem_ty)?;
+        let result_val = self.apply_inline_lambda2(callback, acc_id, &acc_ty, elem_id, elem_ty)?;
         loop_body.append(&mut self.pending_stmts);
         self.pending_stmts = saved_pending;
         loop_body.push(FirStmt::Assign {
@@ -3348,10 +3350,7 @@ impl Lowerer {
                     tag: 0,
                     value: Box::new(FirExpr::RuntimeCall {
                         name: "aster_list_get".to_string(),
-                        args: vec![
-                            FirExpr::LocalVar(list_id, FirType::Ptr),
-                            FirExpr::IntLit(0),
-                        ],
+                        args: vec![FirExpr::LocalVar(list_id, FirType::Ptr), FirExpr::IntLit(0)],
                         ret_ty: elem_ty.clone(),
                     }),
                     ty: elem_ty.clone(),
@@ -3446,8 +3445,7 @@ impl Lowerer {
         fir_list: FirExpr,
         elem_ty: &FirType,
     ) -> Result<FirExpr, LowerError> {
-        let (list_id, len_id, idx_id, elem_id) =
-            self.iter_loop_scaffold(fir_list, elem_ty);
+        let (list_id, len_id, idx_id, elem_id) = self.iter_loop_scaffold(fir_list, elem_ty);
 
         let result_id = self.alloc_local();
         self.local_types.insert(result_id, FirType::Ptr);
@@ -3456,7 +3454,10 @@ impl Lowerer {
             ty: FirType::Ptr,
             value: FirExpr::RuntimeCall {
                 name: "aster_list_new".to_string(),
-                args: vec![FirExpr::LocalVar(len_id, FirType::I64), Self::list_ptr_elems_flag(elem_ty)],
+                args: vec![
+                    FirExpr::LocalVar(len_id, FirType::I64),
+                    Self::list_ptr_elems_flag(elem_ty),
+                ],
                 ret_ty: FirType::Ptr,
             },
         });
@@ -3493,8 +3494,7 @@ impl Lowerer {
             variants: vec![elem_ty.clone(), FirType::Void],
         };
 
-        let (list_id, len_id, idx_id, elem_id) =
-            self.iter_loop_scaffold(fir_list, elem_ty);
+        let (list_id, len_id, idx_id, elem_id) = self.iter_loop_scaffold(fir_list, elem_ty);
 
         let result_id = self.alloc_local();
         self.local_types.insert(result_id, nullable_ty.clone());
@@ -3524,7 +3524,11 @@ impl Lowerer {
             value: FirExpr::BoolLit(false),
         });
 
-        let cmp_op = if method == "min" { BinOp::Lt } else { BinOp::Gt };
+        let cmp_op = if method == "min" {
+            BinOp::Lt
+        } else {
+            BinOp::Gt
+        };
 
         let loop_body = vec![
             Self::iter_get_elem(list_id, idx_id, elem_id, elem_ty),
@@ -3589,8 +3593,7 @@ impl Lowerer {
         elem_ty: &FirType,
     ) -> Result<FirExpr, LowerError> {
         // Copy to new list, then insertion sort in place
-        let (list_id, len_id, idx_id, elem_id) =
-            self.iter_loop_scaffold(fir_list, elem_ty);
+        let (list_id, len_id, idx_id, elem_id) = self.iter_loop_scaffold(fir_list, elem_ty);
 
         // Build result list as a copy
         let result_id = self.alloc_local();
@@ -3600,7 +3603,10 @@ impl Lowerer {
             ty: FirType::Ptr,
             value: FirExpr::RuntimeCall {
                 name: "aster_list_new".to_string(),
-                args: vec![FirExpr::LocalVar(len_id, FirType::I64), Self::list_ptr_elems_flag(elem_ty)],
+                args: vec![
+                    FirExpr::LocalVar(len_id, FirType::I64),
+                    Self::list_ptr_elems_flag(elem_ty),
+                ],
                 ret_ty: FirType::Ptr,
             },
         });
@@ -4034,10 +4040,13 @@ impl Lowerer {
         // Resolve the next() method
         let next_name = format!("{}.next", class_name);
         let next_func_id = self.functions.get(&next_name).copied().ok_or_else(|| {
-            LowerError::UnsupportedFeature(UnsupportedFeatureKind::Other(format!(
-                "Iterator class '{}' has no next() method in FIR",
-                class_name
-            )), iter.span())
+            LowerError::UnsupportedFeature(
+                UnsupportedFeatureKind::Other(format!(
+                    "Iterator class '{}' has no next() method in FIR",
+                    class_name
+                )),
+                iter.span(),
+            )
         })?;
 
         // let __next (will be reassigned each iteration)
@@ -4386,7 +4395,10 @@ impl Lowerer {
     ) -> Result<Vec<FirExpr>, LowerError> {
         match func {
             Expr::Ident(name, _) => self.lower_call_args_with_defaults(name, args),
-            _ => args.iter().map(|(_, _, arg)| self.lower_expr(arg)).collect(),
+            _ => args
+                .iter()
+                .map(|(_, _, arg)| self.lower_expr(arg))
+                .collect(),
         }
     }
 
@@ -4496,18 +4508,18 @@ impl Lowerer {
 
         // Look up the class ID
         let class_id = self.classes.get(&class_name).ok_or_else(|| {
-            LowerError::UnsupportedFeature(UnsupportedFeatureKind::Other(format!(
-                "unknown class: {}",
-                class_name
-            )), object.span())
+            LowerError::UnsupportedFeature(
+                UnsupportedFeatureKind::Other(format!("unknown class: {}", class_name)),
+                object.span(),
+            )
         })?;
 
         // Look up the field in the class layout
         let fields = self.class_fields.get(class_id).ok_or_else(|| {
-            LowerError::UnsupportedFeature(UnsupportedFeatureKind::Other(format!(
-                "no field layout for class: {}",
-                class_name
-            )), object.span())
+            LowerError::UnsupportedFeature(
+                UnsupportedFeatureKind::Other(format!("no field layout for class: {}", class_name)),
+                object.span(),
+            )
         })?;
 
         for (fname, fty, foffset) in fields {
@@ -4530,15 +4542,15 @@ impl Lowerer {
             return true;
         }
         if let Expr::Ident(name, _) = expr {
-            if let Some(Type::Custom(class_name, _)) = self.local_ast_types.get(name.as_str()) {
-                if class_name == "Range" {
-                    return true;
-                }
+            if let Some(Type::Custom(class_name, _)) = self.local_ast_types.get(name.as_str())
+                && class_name == "Range"
+            {
+                return true;
             }
-            if let Some(Type::Custom(class_name, _)) = self.type_env.get_var(name) {
-                if class_name == "Range" {
-                    return true;
-                }
+            if let Some(Type::Custom(class_name, _)) = self.type_env.get_var(name)
+                && class_name == "Range"
+            {
+                return true;
             }
         }
         matches!(
@@ -5341,10 +5353,10 @@ impl Lowerer {
             let local_id = match self.locals.get(cap_name) {
                 Some(&id) => id,
                 None => {
-                    return Err(LowerError::UnboundVariable(format!(
-                        "closure capture '{}'",
-                        cap_name
-                    ), Span::dummy()));
+                    return Err(LowerError::UnboundVariable(
+                        format!("closure capture '{}'", cap_name),
+                        Span::dummy(),
+                    ));
                 }
             };
             let cap_ty = self

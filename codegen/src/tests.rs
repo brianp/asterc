@@ -2437,7 +2437,7 @@ def main() -> Int
   def adder(x: Int) -> Int
     x + 10
   let f: (Int) -> Int = adder
-  f(_0: 32)
+  f(x: 32)
 ";
     let fir = compile_and_run(src);
     let jit = jit_compile(&fir);
@@ -2453,7 +2453,7 @@ def main() -> Int
   def add_offset(x: Int) -> Int
     x + offset
   let f: (Int) -> Int = add_offset
-  f(_0: 32)
+  f(x: 32)
 ";
     let fir = compile_and_run(src);
     let jit = jit_compile(&fir);
@@ -3788,8 +3788,8 @@ fn unsupported_feature_audit() {
     // Count error construction sites: LowerError::UnsupportedFeature(
     let lower_count = lower_src.matches("LowerError::UnsupportedFeature").count();
 
-    // Subtract 1 for the Display impl match arm (not an error site).
-    let actual_call_sites = lower_count - 1;
+    // Subtract 2 for the Display impl and span() match arms (not error sites).
+    let actual_call_sites = lower_count - 2;
 
     assert_eq!(
         actual_call_sites, 18,

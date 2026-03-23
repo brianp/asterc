@@ -580,18 +580,14 @@ fn payload_header(payload: *const u8) -> *mut u8 {
 #[inline]
 unsafe fn is_gc_payload(val: i64) -> bool {
     // Reject zero, negative values, and misaligned values.
-    if val <= 0 || val as u64 % 8 != 0 {
+    if val <= 0 || !(val as u64).is_multiple_of(8) {
         return false;
     }
     let addr = val as usize;
     // Only consider values that fall within the known GC heap address range.
     // This prevents reading from arbitrary addresses (e.g. small integers that
     // happen to be aligned) which would cause segfaults.
-    let in_range = GC_HEAP_LO.with(|lo| {
-        GC_HEAP_HI.with(|hi| {
-            addr >= lo.get() && addr < hi.get()
-        })
-    });
+    let in_range = GC_HEAP_LO.with(|lo| GC_HEAP_HI.with(|hi| addr >= lo.get() && addr < hi.get()));
     if !in_range {
         return false;
     }
@@ -1625,10 +1621,7 @@ pub fn runtime_builtin_symbols() -> Vec<(&'static str, *const u8)> {
         ("aster_int_to_string", aster_int_to_string as *const u8),
         ("aster_float_to_string", aster_float_to_string as *const u8),
         ("aster_bool_to_string", aster_bool_to_string as *const u8),
-        (
-            "aster_list_to_string",
-            aster_list_to_string as *const u8,
-        ),
+        ("aster_list_to_string", aster_list_to_string as *const u8),
         ("aster_map_new", aster_map_new as *const u8),
         ("aster_map_set", aster_map_set as *const u8),
         ("aster_map_get", aster_map_get as *const u8),

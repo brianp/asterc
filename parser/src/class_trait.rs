@@ -16,7 +16,10 @@ impl Parser {
             let name = match &tok.kind {
                 TokenKind::Ident(n) => n.clone(),
                 t => {
-                    let span = Span { start: tok.start, end: tok.end };
+                    let span = Span {
+                        start: tok.start,
+                        end: tok.end,
+                    };
                     return Err(Diagnostic::error(format!(
                         "Expected {} name, got `{}`",
                         context, t
@@ -47,7 +50,10 @@ impl Parser {
             let name = match &tok.kind {
                 TokenKind::Ident(n) => n.clone(),
                 t => {
-                    let span = Span { start: tok.start, end: tok.end };
+                    let span = Span {
+                        start: tok.start,
+                        end: tok.end,
+                    };
                     return Err(
                         Diagnostic::error(format!("Expected trait name, got `{}`", t))
                             .with_code("P001")
@@ -108,7 +114,10 @@ impl Parser {
         let name = match &name_tok.kind {
             Ident(n) => n.clone(),
             t => {
-                let span = Span { start: name_tok.start, end: name_tok.end };
+                let span = Span {
+                    start: name_tok.start,
+                    end: name_tok.end,
+                };
                 return Err(
                     Diagnostic::error(format!("Expected enum name, got `{}`", t))
                         .with_code("P001")
@@ -139,7 +148,10 @@ impl Parser {
                     match &pub_next.kind {
                         Def => methods.push(self.parse_def_as_let(Some(name.clone()), true)?),
                         _ => {
-                            let span = Span { start: pub_next.start, end: pub_next.end };
+                            let span = Span {
+                                start: pub_next.start,
+                                end: pub_next.end,
+                            };
                             return Err(Diagnostic::error("Expected def after 'pub' in enum")
                                 .with_code("P001")
                                 .with_label(span, "expected 'def'"));
@@ -162,7 +174,10 @@ impl Parser {
                                 let fname = match &fname_tok.kind {
                                     Ident(n) => n.clone(),
                                     t => {
-                                        let span = Span { start: fname_tok.start, end: fname_tok.end };
+                                        let span = Span {
+                                            start: fname_tok.start,
+                                            end: fname_tok.end,
+                                        };
                                         return Err(Diagnostic::error(format!(
                                             "Expected field name in enum variant, got `{}`",
                                             t
@@ -194,7 +209,10 @@ impl Parser {
                 }
                 _ => {
                     let tok = self.peek();
-                    let span = Span { start: tok.start, end: tok.end };
+                    let span = Span {
+                        start: tok.start,
+                        end: tok.end,
+                    };
                     return Err(Diagnostic::error(format!(
                         "Expected variant name or method in enum, got `{}`",
                         tok.kind
@@ -226,10 +244,15 @@ impl Parser {
         let name = match &name_tok.kind {
             Ident(n) => n.clone(),
             t => {
-                let span = Span { start: name_tok.start, end: name_tok.end };
-                return Err(Diagnostic::error(format!("Expected class name, got `{}`", t))
-                    .with_code("P001")
-                    .with_label(span, "expected class name"));
+                let span = Span {
+                    start: name_tok.start,
+                    end: name_tok.end,
+                };
+                return Err(
+                    Diagnostic::error(format!("Expected class name, got `{}`", t))
+                        .with_code("P001")
+                        .with_label(span, "expected class name"),
+                );
             }
         };
 
@@ -248,7 +271,10 @@ impl Parser {
             let parent = match &parent_tok.kind {
                 Ident(n) => n.clone(),
                 t => {
-                    let span = Span { start: parent_tok.start, end: parent_tok.end };
+                    let span = Span {
+                        start: parent_tok.start,
+                        end: parent_tok.end,
+                    };
                     return Err(Diagnostic::error(format!(
                         "Expected class name after 'extends', got `{}`",
                         t
@@ -289,7 +315,10 @@ impl Parser {
                     match &pub_next.kind {
                         Def => methods.push(self.parse_def_as_let(Some(name.clone()), true)?),
                         _ => {
-                            let span = Span { start: pub_next.start, end: pub_next.end };
+                            let span = Span {
+                                start: pub_next.start,
+                                end: pub_next.end,
+                            };
                             return Err(Diagnostic::error("Expected def after 'pub' in class")
                                 .with_code("P001")
                                 .with_label(span, "expected 'def'"));
@@ -304,10 +333,16 @@ impl Parser {
                     let fname = match &fname_tok.kind {
                         Ident(n) => n.clone(),
                         t => {
-                            let span = Span { start: fname_tok.start, end: fname_tok.end };
-                            return Err(Diagnostic::error(format!("Expected field name, got `{}`", t))
-                                .with_code("P001")
-                                .with_label(span, "expected field name"));
+                            let span = Span {
+                                start: fname_tok.start,
+                                end: fname_tok.end,
+                            };
+                            return Err(Diagnostic::error(format!(
+                                "Expected field name, got `{}`",
+                                t
+                            ))
+                            .with_code("P001")
+                            .with_label(span, "expected field name"));
                         }
                     };
                     self.expect(Colon)?;
@@ -345,7 +380,10 @@ impl Parser {
         let name = match &name_tok.kind {
             Ident(n) => n.clone(),
             t => {
-                let span = Span { start: name_tok.start, end: name_tok.end };
+                let span = Span {
+                    start: name_tok.start,
+                    end: name_tok.end,
+                };
                 return Err(
                     Diagnostic::error(format!("Expected trait name, got `{}`", t))
                         .with_code("P001")
@@ -382,7 +420,10 @@ impl Parser {
                     match &pub_next.kind {
                         Def => methods.push(self.parse_def_as_let(Some(name.clone()), true)?),
                         _ => {
-                            let span = Span { start: pub_next.start, end: pub_next.end };
+                            let span = Span {
+                                start: pub_next.start,
+                                end: pub_next.end,
+                            };
                             return Err(Diagnostic::error("Expected def after 'pub' in trait")
                                 .with_code("P001")
                                 .with_label(span, "expected 'def'"));
@@ -391,7 +432,10 @@ impl Parser {
                 }
                 _ => {
                     let tok = self.peek();
-                    let span = Span { start: tok.start, end: tok.end };
+                    let span = Span {
+                        start: tok.start,
+                        end: tok.end,
+                    };
                     return Err(Diagnostic::error(format!(
                         "Expected method definition in trait, got `{}`",
                         tok.kind
@@ -438,10 +482,15 @@ impl Parser {
         let name = match &name_tok.kind {
             Ident(n) => n.clone(),
             t => {
-                let span = Span { start: name_tok.start, end: name_tok.end };
-                return Err(Diagnostic::error(format!("Expected function name, got `{}`", t))
-                    .with_code("P001")
-                    .with_label(span, "expected function name"));
+                let span = Span {
+                    start: name_tok.start,
+                    end: name_tok.end,
+                };
+                return Err(
+                    Diagnostic::error(format!("Expected function name, got `{}`", t))
+                        .with_code("P001")
+                        .with_label(span, "expected function name"),
+                );
             }
         };
 
@@ -466,10 +515,16 @@ impl Parser {
                     let pname = match &pname_tok.kind {
                         Ident(n) => n.clone(),
                         t => {
-                            let span = Span { start: pname_tok.start, end: pname_tok.end };
-                            return Err(Diagnostic::error(format!("Expected parameter name, got `{}`", t))
-                                .with_code("P001")
-                                .with_label(span, "expected parameter name"));
+                            let span = Span {
+                                start: pname_tok.start,
+                                end: pname_tok.end,
+                            };
+                            return Err(Diagnostic::error(format!(
+                                "Expected parameter name, got `{}`",
+                                t
+                            ))
+                            .with_code("P001")
+                            .with_label(span, "expected parameter name"));
                         }
                     };
                     self.expect(Colon)?;
@@ -483,7 +538,10 @@ impl Parser {
                         let class_name = match &class_tok.kind {
                             Ident(n) => n.clone(),
                             t => {
-                                let span = Span { start: class_tok.start, end: class_tok.end };
+                                let span = Span {
+                                    start: class_tok.start,
+                                    end: class_tok.end,
+                                };
                                 return Err(Diagnostic::error(format!(
                                     "Expected class name after 'extends', got `{}`",
                                     t
@@ -500,7 +558,10 @@ impl Parser {
                         let trait_name = match &trait_tok.kind {
                             Ident(n) => n.clone(),
                             t => {
-                                let span = Span { start: trait_tok.start, end: trait_tok.end };
+                                let span = Span {
+                                    start: trait_tok.start,
+                                    end: trait_tok.end,
+                                };
                                 return Err(Diagnostic::error(format!(
                                     "Expected trait name after 'includes', got `{}`",
                                     t

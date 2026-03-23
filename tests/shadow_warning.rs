@@ -22,8 +22,17 @@ if true
     let x = 2
 ";
     let warnings = shadow_warnings(src);
-    assert_eq!(warnings.len(), 1, "expected 1 shadow warning, got: {:?}", warnings);
-    assert!(warnings[0].message.contains("x"), "should mention 'x': {}", warnings[0].message);
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected 1 shadow warning, got: {:?}",
+        warnings
+    );
+    assert!(
+        warnings[0].message.contains("x"),
+        "should mention 'x': {}",
+        warnings[0].message
+    );
 }
 
 #[test]
@@ -34,8 +43,17 @@ for i in [1, 2, 3]
     let unused = i
 ";
     let warnings = shadow_warnings(src);
-    assert_eq!(warnings.len(), 1, "expected 1 shadow warning, got: {:?}", warnings);
-    assert!(warnings[0].message.contains("i"), "should mention 'i': {}", warnings[0].message);
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected 1 shadow warning, got: {:?}",
+        warnings
+    );
+    assert!(
+        warnings[0].message.contains("i"),
+        "should mention 'i': {}",
+        warnings[0].message
+    );
 }
 
 #[test]
@@ -46,7 +64,12 @@ def foo(x: Int) -> Int
     return x + 1
 ";
     let warnings = shadow_warnings(src);
-    assert_eq!(warnings.len(), 1, "expected 1 shadow warning, got: {:?}", warnings);
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected 1 shadow warning, got: {:?}",
+        warnings
+    );
 }
 
 #[test]
@@ -97,7 +120,12 @@ if true
     let y = 20
 ";
     let warnings = shadow_warnings(src);
-    assert_eq!(warnings.len(), 2, "expected 2 shadow warnings, got: {:?}", warnings);
+    assert_eq!(
+        warnings.len(),
+        2,
+        "expected 2 shadow warnings, got: {:?}",
+        warnings
+    );
 }
 
 #[test]
@@ -109,7 +137,12 @@ if true
         let x = 2
 ";
     let warnings = shadow_warnings(src);
-    assert_eq!(warnings.len(), 1, "expected 1 shadow warning, got: {:?}", warnings);
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected 1 shadow warning, got: {:?}",
+        warnings
+    );
 }
 
 // =============================================================================
@@ -123,14 +156,22 @@ let x = 1
 let y = 2
 ";
     let warnings = shadow_warnings(src);
-    assert!(warnings.is_empty(), "expected no shadow warnings, got: {:?}", warnings);
+    assert!(
+        warnings.is_empty(),
+        "expected no shadow warnings, got: {:?}",
+        warnings
+    );
 }
 
 #[test]
 fn no_warn_single_binding() {
     let src = "let x = 42";
     let warnings = shadow_warnings(src);
-    assert!(warnings.is_empty(), "expected no shadow warnings, got: {:?}", warnings);
+    assert!(
+        warnings.is_empty(),
+        "expected no shadow warnings, got: {:?}",
+        warnings
+    );
 }
 
 #[test]
@@ -142,7 +183,11 @@ def bar(x: Int) -> Int
     return x + 2
 ";
     let warnings = shadow_warnings(src);
-    assert!(warnings.is_empty(), "expected no shadow warnings, got: {:?}", warnings);
+    assert!(
+        warnings.is_empty(),
+        "expected no shadow warnings, got: {:?}",
+        warnings
+    );
 }
 
 #[test]
@@ -154,7 +199,11 @@ else
     let x = 2
 ";
     let warnings = shadow_warnings(src);
-    assert!(warnings.is_empty(), "expected no shadow warnings, got: {:?}", warnings);
+    assert!(
+        warnings.is_empty(),
+        "expected no shadow warnings, got: {:?}",
+        warnings
+    );
 }
 
 // =============================================================================

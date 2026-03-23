@@ -1304,7 +1304,11 @@ fn format_call(
     format_call_inner_with_span(func, args, Some(span), config)
 }
 
-fn format_call_inner(func: &Expr, args: &[(String, ast::Span, Expr)], config: &FormatConfig) -> Doc {
+fn format_call_inner(
+    func: &Expr,
+    args: &[(String, ast::Span, Expr)],
+    config: &FormatConfig,
+) -> Doc {
     format_call_inner_with_span(func, args, None, config)
 }
 

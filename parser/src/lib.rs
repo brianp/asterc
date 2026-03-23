@@ -223,7 +223,10 @@ impl Parser {
         let name = match &name_tok.kind {
             TokenKind::Ident(n) => n.clone(),
             t => {
-                let span = Span { start: name_tok.start, end: name_tok.end };
+                let span = Span {
+                    start: name_tok.start,
+                    end: name_tok.end,
+                };
                 return Err(Diagnostic::error(format!(
                     "Expected module name after 'use', got `{}`",
                     t
@@ -241,7 +244,10 @@ impl Parser {
             let seg = match &seg_tok.kind {
                 TokenKind::Ident(n) => n.clone(),
                 t => {
-                    let span = Span { start: seg_tok.start, end: seg_tok.end };
+                    let span = Span {
+                        start: seg_tok.start,
+                        end: seg_tok.end,
+                    };
                     return Err(Diagnostic::error(format!(
                         "Expected module name after '/', got `{}`",
                         t
@@ -263,7 +269,10 @@ impl Parser {
                     let n = match &n_tok.kind {
                         TokenKind::Ident(n) => n.clone(),
                         t => {
-                            let span = Span { start: n_tok.start, end: n_tok.end };
+                            let span = Span {
+                                start: n_tok.start,
+                                end: n_tok.end,
+                            };
                             return Err(Diagnostic::error(format!(
                                 "Expected identifier in use list, got `{}`",
                                 t
@@ -293,7 +302,10 @@ impl Parser {
             let a = match &a_tok.kind {
                 TokenKind::Ident(n) => n.clone(),
                 t => {
-                    let span = Span { start: a_tok.start, end: a_tok.end };
+                    let span = Span {
+                        start: a_tok.start,
+                        end: a_tok.end,
+                    };
                     return Err(Diagnostic::error(format!(
                         "Expected alias name after 'as', got `{}`",
                         t
@@ -328,7 +340,10 @@ impl Parser {
             TokenKind::Use => self.parse_use(true),
             t => {
                 let tok = self.peek();
-                let span = Span { start: tok.start, end: tok.end };
+                let span = Span {
+                    start: tok.start,
+                    end: tok.end,
+                };
                 Err(Diagnostic::error(format!(
                     "Expected def, class, trait, enum, let, or use after 'pub', got `{}`",
                     t
@@ -389,7 +404,10 @@ impl Parser {
         let var = match &var_tok.kind {
             Ident(n) => n.clone(),
             t => {
-                let span = Span { start: var_tok.start, end: var_tok.end };
+                let span = Span {
+                    start: var_tok.start,
+                    end: var_tok.end,
+                };
                 return Err(Diagnostic::error(format!(
                     "Expected variable name after 'for', got `{}`",
                     t
@@ -417,7 +435,10 @@ impl Parser {
         let name = if let TokenKind::Ident(s) = name_tok.kind {
             s
         } else {
-            let span = Span { start: name_tok.start, end: name_tok.end };
+            let span = Span {
+                start: name_tok.start,
+                end: name_tok.end,
+            };
             return Err(Diagnostic::error(format!(
                 "Expected identifier after const at line {}",
                 name_tok.line
@@ -453,7 +474,10 @@ impl Parser {
         let name = if let TokenKind::Ident(s) = name_tok.kind {
             s
         } else {
-            let span = Span { start: name_tok.start, end: name_tok.end };
+            let span = Span {
+                start: name_tok.start,
+                end: name_tok.end,
+            };
             return Err(Diagnostic::error(format!(
                 "Expected identifier after let at line {}",
                 name_tok.line

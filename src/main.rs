@@ -430,7 +430,9 @@ fn render_execution_error(source: &str, filename: &str, err: &LowerError) {
             let diag = Diagnostic::error(format!("unbound variable '{name}' during lowering"))
                 .with_code("E028")
                 .with_label(span, "not found in lowered scope")
-                .with_note("this file can still pass `asterc check` while `run` and `build` reject it");
+                .with_note(
+                    "this file can still pass `asterc check` while `run` and `build` reject it",
+                );
             render_diagnostic(source, filename, &diag);
         }
     }

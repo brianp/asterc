@@ -303,7 +303,10 @@ impl Parser {
                     TokenKind::Or => "or".to_string(),
                     TokenKind::Catch => "catch".to_string(),
                     t => {
-                        let span = Span { start: next.start, end: next.end };
+                        let span = Span {
+                            start: next.start,
+                            end: next.end,
+                        };
                         return Err(Diagnostic::error(format!(
                             "Expected field name after '.', got `{}`",
                             t
@@ -348,7 +351,10 @@ impl Parser {
                     let var = match &var_tok.kind {
                         Ident(v) => v.clone(),
                         t => {
-                            let span = Span { start: var_tok.start, end: var_tok.end };
+                            let span = Span {
+                                start: var_tok.start,
+                                end: var_tok.end,
+                            };
                             return Err(Diagnostic::error(format!(
                                 "Expected variable name after error type '{}', got `{}`",
                                 tname, t
@@ -365,7 +371,10 @@ impl Parser {
                 }
                 t => {
                     let tok = self.peek();
-                    let span = Span { start: tok.start, end: tok.end };
+                    let span = Span {
+                        start: tok.start,
+                        end: tok.end,
+                    };
                     let msg = format!("Expected error type or '_' in catch arm, got `{}`", t);
                     return Err(Diagnostic::error(msg)
                         .with_code("P001")
@@ -410,7 +419,10 @@ impl Parser {
                     }
                     t => {
                         let tok = self.peek();
-                        let span = Span { start: tok.start, end: tok.end };
+                        let span = Span {
+                            start: tok.start,
+                            end: tok.end,
+                        };
                         Err(Diagnostic::error(format!(
                             "Expected number after '-' in match pattern, got `{}`",
                             t
@@ -479,7 +491,10 @@ impl Parser {
                         });
                     } else {
                         let tok = self.peek();
-                        let span = Span { start: tok.start, end: tok.end };
+                        let span = Span {
+                            start: tok.start,
+                            end: tok.end,
+                        };
                         return Err(Diagnostic::error(
                             "Expected variant name after '.' in enum pattern".to_string(),
                         )
@@ -496,10 +511,15 @@ impl Parser {
             }
             t => {
                 let tok = self.peek();
-                let span = Span { start: tok.start, end: tok.end };
-                Err(Diagnostic::error(format!("Expected match pattern, got `{}`", t))
-                    .with_code("P001")
-                    .with_label(span, "not a valid pattern"))
+                let span = Span {
+                    start: tok.start,
+                    end: tok.end,
+                };
+                Err(
+                    Diagnostic::error(format!("Expected match pattern, got `{}`", t))
+                        .with_code("P001")
+                        .with_label(span, "not a valid pattern"),
+                )
             }
         }
     }
@@ -689,12 +709,13 @@ impl Parser {
                 self.advance();
                 if !self.at(&Async) {
                     let tok = self.peek();
-                    let span = Span { start: tok.start, end: tok.end };
-                    return Err(
-                        Diagnostic::error("Expected 'async' after 'detached'")
-                            .with_code("P001")
-                            .with_label(span, "expected 'async' here"),
-                    );
+                    let span = Span {
+                        start: tok.start,
+                        end: tok.end,
+                    };
+                    return Err(Diagnostic::error("Expected 'async' after 'detached'")
+                        .with_code("P001")
+                        .with_label(span, "expected 'async' here"));
                 }
                 self.advance();
                 let func_expr = self.parse_postfix()?;
@@ -768,7 +789,10 @@ impl Parser {
                 }
                 t => {
                     let tok = self.peek();
-                    let span = Span { start: tok.start, end: tok.end };
+                    let span = Span {
+                        start: tok.start,
+                        end: tok.end,
+                    };
                     return Err(Diagnostic::error(format!(
                         "Expected string continuation or end, got `{}`",
                         t
@@ -818,7 +842,10 @@ impl Parser {
             let pname = match &ptok.kind {
                 Ident(n) => n.clone(),
                 t => {
-                    let span = Span { start: ptok.start, end: ptok.end };
+                    let span = Span {
+                        start: ptok.start,
+                        end: ptok.end,
+                    };
                     return Err(
                         Diagnostic::error(format!("Expected parameter name, got `{}`", t))
                             .with_code("P001")

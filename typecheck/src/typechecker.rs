@@ -550,12 +550,9 @@ impl TypeChecker {
     pub(crate) fn warn_if_shadowed(&mut self, name: &str, span: Span) {
         if self.env.parent_has_var(name) {
             self.diagnostics.push(
-                Diagnostic::warning(format!(
-                    "variable '{}' shadows a previous binding",
-                    name
-                ))
-                .with_code("W003")
-                .with_label(span, "shadows earlier binding"),
+                Diagnostic::warning(format!("variable '{}' shadows a previous binding", name))
+                    .with_code("W003")
+                    .with_label(span, "shadows earlier binding"),
             );
         }
     }
@@ -1291,10 +1288,7 @@ impl TypeChecker {
                                             val_ty, field, field_ty
                                         ))
                                         .with_code("E001")
-                                        .with_label(
-                                            stmt_span,
-                                            format!("expected {}", field_ty),
-                                        ));
+                                        .with_label(stmt_span, format!("expected {}", field_ty)));
                                     }
                                 } else {
                                     return Err(Diagnostic::error(format!(

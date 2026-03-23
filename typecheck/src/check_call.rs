@@ -9,11 +9,11 @@ fn edit_distance(a: &str, b: &str) -> usize {
     let m = a.len();
     let n = b.len();
     let mut dp = vec![vec![0usize; n + 1]; m + 1];
-    for i in 0..=m {
-        dp[i][0] = i;
+    for (i, row) in dp.iter_mut().enumerate() {
+        row[0] = i;
     }
-    for j in 0..=n {
-        dp[0][j] = j;
+    for (j, val) in dp[0].iter_mut().enumerate() {
+        *val = j;
     }
     for (i, ca) in a.chars().enumerate() {
         for (j, cb) in b.chars().enumerate() {
@@ -31,10 +31,8 @@ fn closest_param_name<'a>(arg_name: &str, param_names: &'a [String]) -> Option<&
     let mut best: Option<(&str, usize)> = None;
     for pn in param_names {
         let dist = edit_distance(arg_name, pn);
-        if dist <= 2 && dist > 0 {
-            if best.is_none() || dist < best.unwrap().1 {
-                best = Some((pn.as_str(), dist));
-            }
+        if dist <= 2 && dist > 0 && (best.is_none() || dist < best.unwrap().1) {
+            best = Some((pn.as_str(), dist));
         }
     }
     best.map(|(name, _)| name)
@@ -148,29 +146,28 @@ impl TypeChecker {
             }
 
             // List[Nil] promotion: pushing into an empty list infers the element type
-            if field == "push" {
-                if let Type::List(inner) = &obj_ty {
-                    if **inner == Type::Nil {
-                        if args.len() != 1 {
-                            return Err(Diagnostic::error(format!(
-                                "push() takes 1 argument, got {}",
-                                args.len()
-                            ))
-                            .with_code("E006")
-                            .with_label(func.span(), "expected 1 argument"));
-                        }
-                        let arg_ty = self.check_expr(&args[0].2)?;
-                        if arg_ty.is_error() {
-                            return Ok(Type::Void);
-                        }
-                        // Promote the variable from List[Nil] to List[T]
-                        if let Expr::Ident(var_name, _) = object.as_ref() {
-                            let promoted = Type::List(Box::new(arg_ty));
-                            self.env.set_var(var_name.clone(), promoted);
-                        }
-                        return Ok(Type::Void);
-                    }
+            if field == "push"
+                && let Type::List(inner) = &obj_ty
+                && **inner == Type::Nil
+            {
+                if args.len() != 1 {
+                    return Err(Diagnostic::error(format!(
+                        "push() takes 1 argument, got {}",
+                        args.len()
+                    ))
+                    .with_code("E006")
+                    .with_label(func.span(), "expected 1 argument"));
                 }
+                let arg_ty = self.check_expr(&args[0].2)?;
+                if arg_ty.is_error() {
+                    return Ok(Type::Void);
+                }
+                // Promote the variable from List[Nil] to List[T]
+                if let Expr::Ident(var_name, _) = object.as_ref() {
+                    let promoted = Type::List(Box::new(arg_ty));
+                    self.env.set_var(var_name.clone(), promoted);
+                }
+                return Ok(Type::Void);
             }
         }
         self.check_call_inner(func, args, false)
@@ -553,13 +550,10 @@ impl TypeChecker {
                                     "Argument '{arg_name}' expects {pty}, got {aty}",
                                 ))
                                 .with_code("E001")
-                                .with_label(
-                                    arg_expr.span(),
-                                    format!("expected {pty}, got {aty}"),
-                                )
+                                .with_label(arg_expr.span(), format!("expected {pty}, got {aty}"))
                             })?;
                     } else {
-                        let suggestion = closest_param_name(arg_name, &param_names);
+                        let suggestion = closest_param_name(arg_name, param_names);
                         let label_msg = if let Some(s) = suggestion {
                             format!("did you mean '{s}'?")
                         } else {
@@ -619,25 +613,24 @@ impl TypeChecker {
                 for (arg_name, _, arg_expr) in args {
                     if arg_name.starts_with('_')
                         && !param_names.contains(arg_name)
+                        && let Ok(pos) = arg_name[1..].parse::<usize>()
                     {
-                        if let Ok(pos) = arg_name[1..].parse::<usize>() {
-                            let hint = if pos < param_names.len() {
-                                format!(
-                                    "All arguments must be named (e.g. `{}: value`)",
-                                    param_names[pos]
-                                )
-                            } else {
-                                "All arguments must be named (e.g. `name: value`)".to_string()
-                            };
-                            let label = if pos < param_names.len() {
-                                format!("add `{}: ` before this", param_names[pos])
-                            } else {
-                                "expected argument name".to_string()
-                            };
-                            return Err(Diagnostic::error(hint)
-                                .with_code("P001")
-                                .with_label(arg_expr.span(), label));
-                        }
+                        let hint = if pos < param_names.len() {
+                            format!(
+                                "All arguments must be named (e.g. `{}: value`)",
+                                param_names[pos]
+                            )
+                        } else {
+                            "All arguments must be named (e.g. `name: value`)".to_string()
+                        };
+                        let label = if pos < param_names.len() {
+                            format!("add `{}: ` before this", param_names[pos])
+                        } else {
+                            "expected argument name".to_string()
+                        };
+                        return Err(Diagnostic::error(hint)
+                            .with_code("P001")
+                            .with_label(arg_expr.span(), label));
                     }
                 }
             }
@@ -738,14 +731,13 @@ impl TypeChecker {
                 };
                 let Some(idx) = param_idx else {
                     // Pick a suggestion: edit-distance match first, then single-param fallback
-                    let suggestion = closest_param_name(arg_name, &param_names)
-                        .or_else(|| {
-                            if param_names.len() == 1 {
-                                Some(param_names[0].as_str())
-                            } else {
-                                None
-                            }
-                        });
+                    let suggestion = closest_param_name(arg_name, &param_names).or_else(|| {
+                        if param_names.len() == 1 {
+                            Some(param_names[0].as_str())
+                        } else {
+                            None
+                        }
+                    });
                     let label_msg = if let Some(s) = suggestion {
                         format!("did you mean '{s}'?")
                     } else {
@@ -780,17 +772,15 @@ impl TypeChecker {
                 if aty.is_error() {
                     return Ok(Type::Error);
                 }
-                Self::unify_type_with_env(pty, &aty, &mut bindings, Some(&self.env))
-                    .map_err(|_| {
-                        Diagnostic::error(format!(
-                            "Argument '{arg_name}' expects {pty}, got {aty}",
-                        ))
-                        .with_code("E001")
-                        .with_label(
-                            arg_expr.span(),
-                            format!("expected {pty}, got {aty}"),
+                Self::unify_type_with_env(pty, &aty, &mut bindings, Some(&self.env)).map_err(
+                    |_| {
+                        Diagnostic::error(
+                            format!("Argument '{arg_name}' expects {pty}, got {aty}",),
                         )
-                    })?;
+                        .with_code("E001")
+                        .with_label(arg_expr.span(), format!("expected {pty}, got {aty}"))
+                    },
+                )?;
                 // Mark task idents as consumed when passed as arguments
                 self.mark_task_ident_consumed(arg_expr);
             }
@@ -1189,11 +1179,9 @@ impl TypeChecker {
                 }
                 Type::Bool => {
                     if !args.is_empty() {
-                        return Err(
-                            Diagnostic::error("random() for Bool takes no arguments")
-                                .with_code("E006")
-                                .with_label(func.span(), "remove arguments"),
-                        );
+                        return Err(Diagnostic::error("random() for Bool takes no arguments")
+                            .with_code("E006")
+                            .with_label(func.span(), "remove arguments"));
                     }
                     return Ok(Type::Bool);
                 }

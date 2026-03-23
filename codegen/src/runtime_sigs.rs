@@ -24,17 +24,17 @@ pub static RUNTIME_SIGS: &[RuntimeSig] = &[
         Some(types::I64),
     ),
     ("aster_string_len", &[types::I64], Some(types::I64)),
-    ("aster_list_new", &[types::I64, types::I64], Some(types::I64)),
+    (
+        "aster_list_new",
+        &[types::I64, types::I64],
+        Some(types::I64),
+    ),
     (
         "aster_list_get",
         &[types::I64, types::I64],
         Some(types::I64),
     ),
-    (
-        "aster_list_random",
-        &[types::I64],
-        Some(types::I64),
-    ),
+    ("aster_list_random", &[types::I64], Some(types::I64)),
     (
         "aster_list_set",
         &[types::I64, types::I64, types::I64],

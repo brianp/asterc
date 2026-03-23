@@ -29,7 +29,33 @@ fn lower_err(src: &str) -> LowerError {
     let mut tc = typecheck::TypeChecker::new();
     tc.check_module(&module).expect("typecheck ok");
     let mut lowerer = Lowerer::new(tc.env, tc.type_table);
-    lowerer.lower_module(&module).expect_err("expected lower error")
+    lowerer
+        .lower_module(&module)
+        .expect_err("expected lower error")
+}
+
+/// Return the function body with the async scope prologue stripped.
+/// Every lowered function starts with a `Let { value: RuntimeCall { name: "aster_async_scope_enter" } }`
+/// statement; this helper skips it so tests can focus on the user-visible statements.
+fn real_body(func: &FirFunction) -> &[FirStmt] {
+    if let Some(FirStmt::Let {
+        value: FirExpr::RuntimeCall { name, .. },
+        ..
+    }) = func.body.first()
+    {
+        if name == "aster_async_scope_enter" {
+            return &func.body[1..];
+        }
+    }
+    &func.body
+}
+
+/// Return the first non-aster_ statement in a function body, skipping both the
+/// async scope prologue and any `aster_*` runtime calls (e.g. scope_exit).
+fn first_user_stmt(func: &FirFunction) -> Option<&FirStmt> {
+    real_body(func).iter().find(|s| {
+        !matches!(s, FirStmt::Expr(FirExpr::RuntimeCall { name, .. }) if name.starts_with("aster_"))
+    })
 }
 
 // ===========================================================================
@@ -226,11 +252,12 @@ fn lower_nested_arithmetic() {
     let fir = lower_ok("def f() -> Int\n  1 + 2 * 3\n");
     let func = &fir.functions[0];
 
-    // Find the expression (could be Expr or Return)
+    // Find the expression (could be Expr or Return), skip aster_ runtime calls
     let expr = func
         .body
         .iter()
         .find_map(|s| match s {
+            FirStmt::Expr(FirExpr::RuntimeCall { name, .. }) if name.starts_with("aster_") => None,
             FirStmt::Expr(e) | FirStmt::Return(e) => Some(e),
             _ => None,
         })
@@ -257,8 +284,8 @@ fn lower_nested_arithmetic() {
 fn lower_explicit_return() {
     let fir = lower_ok("def f() -> Int\n  return 42\n");
     let func = &fir.functions[0];
-    match &func.body[0] {
-        FirStmt::Return(FirExpr::IntLit(42)) => {}
+    match first_user_stmt(func) {
+        Some(FirStmt::Return(FirExpr::IntLit(42))) => {}
         other => panic!("expected Return(IntLit(42)), got {:?}", other),
     }
 }
@@ -267,12 +294,12 @@ fn lower_explicit_return() {
 fn lower_unary_negation() {
     let fir = lower_ok("def f() -> Int\n  return -5\n");
     let func = &fir.functions[0];
-    match &func.body[0] {
-        FirStmt::Return(FirExpr::UnaryOp {
+    match first_user_stmt(func) {
+        Some(FirStmt::Return(FirExpr::UnaryOp {
             op: UnaryOp::Neg,
             operand,
             result_ty,
-        }) => {
+        })) => {
             assert!(matches!(operand.as_ref(), FirExpr::IntLit(5)));
             assert_eq!(*result_ty, FirType::I64);
         }
@@ -284,12 +311,12 @@ fn lower_unary_negation() {
 fn lower_not_operator() {
     let fir = lower_ok("def f() -> Bool\n  return not true\n");
     let func = &fir.functions[0];
-    match &func.body[0] {
-        FirStmt::Return(FirExpr::UnaryOp {
+    match first_user_stmt(func) {
+        Some(FirStmt::Return(FirExpr::UnaryOp {
             op: UnaryOp::Not,
             operand,
             result_ty,
-        }) => {
+        })) => {
             assert!(matches!(operand.as_ref(), FirExpr::BoolLit(true)));
             assert_eq!(*result_ty, FirType::Bool);
         }
@@ -305,6 +332,7 @@ fn lower_comparison_returns_bool() {
         .body
         .iter()
         .find_map(|s| match s {
+            FirStmt::Expr(FirExpr::RuntimeCall { name, .. }) if name.starts_with("aster_") => None,
             FirStmt::Expr(e) | FirStmt::Return(e) => Some(e),
             _ => None,
         })
@@ -330,11 +358,12 @@ fn lower_comparison_returns_bool() {
 fn lower_let_binding_in_function() {
     let fir = lower_ok("def f() -> Int\n  let x: Int = 42\n  x\n");
     let func = &fir.functions[0];
-    assert!(func.body.len() >= 2);
+    let body = real_body(func);
+    assert!(body.len() >= 2);
 
     // First statement: Let x = 42
-    match &func.body[0] {
-        FirStmt::Let { ty, value, .. } => {
+    match body.first() {
+        Some(FirStmt::Let { ty, value, .. }) => {
             assert_eq!(*ty, FirType::I64);
             assert!(matches!(value, FirExpr::IntLit(42)));
         }
@@ -512,8 +541,9 @@ fn lower_main_sets_entry() {
 #[test]
 fn lower_int_literal() {
     let fir = lower_ok("def f() -> Int\n  return 42\n");
-    match &fir.functions[0].body[0] {
-        FirStmt::Return(FirExpr::IntLit(42)) => {}
+    let func = &fir.functions[0];
+    match first_user_stmt(func) {
+        Some(FirStmt::Return(FirExpr::IntLit(42))) => {}
         other => panic!("expected IntLit(42), got {:?}", other),
     }
 }
@@ -522,8 +552,9 @@ fn lower_int_literal() {
 #[allow(clippy::approx_constant)]
 fn lower_float_literal() {
     let fir = lower_ok("def f() -> Float\n  return 3.14\n");
-    match &fir.functions[0].body[0] {
-        FirStmt::Return(FirExpr::FloatLit(f)) => {
+    let func = &fir.functions[0];
+    match first_user_stmt(func) {
+        Some(FirStmt::Return(FirExpr::FloatLit(f))) => {
             assert!((f - 3.14).abs() < f64::EPSILON);
         }
         other => panic!("expected FloatLit, got {:?}", other),
@@ -533,8 +564,9 @@ fn lower_float_literal() {
 #[test]
 fn lower_bool_literals() {
     let fir = lower_ok("def f() -> Bool\n  return true\n");
-    match &fir.functions[0].body[0] {
-        FirStmt::Return(FirExpr::BoolLit(true)) => {}
+    let func = &fir.functions[0];
+    match first_user_stmt(func) {
+        Some(FirStmt::Return(FirExpr::BoolLit(true))) => {}
         other => panic!("expected BoolLit(true), got {:?}", other),
     }
 }
@@ -542,8 +574,9 @@ fn lower_bool_literals() {
 #[test]
 fn lower_string_literal() {
     let fir = lower_ok("def f() -> String\n  return \"hello\"\n");
-    match &fir.functions[0].body[0] {
-        FirStmt::Return(FirExpr::StringLit(s)) => {
+    let func = &fir.functions[0];
+    match first_user_stmt(func) {
+        Some(FirStmt::Return(FirExpr::StringLit(s))) => {
             assert_eq!(s, "hello");
         }
         other => panic!("expected StringLit, got {:?}", other),
@@ -553,8 +586,9 @@ fn lower_string_literal() {
 #[test]
 fn lower_nil_literal() {
     let fir = lower_ok("def f() -> Void\n  return nil\n");
-    match &fir.functions[0].body[0] {
-        FirStmt::Return(FirExpr::NilLit) => {}
+    let func = &fir.functions[0];
+    match first_user_stmt(func) {
+        Some(FirStmt::Return(FirExpr::NilLit)) => {}
         other => panic!("expected NilLit, got {:?}", other),
     }
 }
@@ -568,15 +602,17 @@ fn lower_variable_assignment() {
     let src = "def f() -> Int\n  let x: Int = 1\n  x = 2\n  return x\n";
     let fir = lower_ok(src);
     let func = &fir.functions[0];
-    assert_eq!(func.body.len(), 3); // let, assign, return
+    let body = real_body(func);
+    // body: let, assign, [scope_exit,] return — at least 3 user stmts
+    assert!(body.len() >= 3);
 
-    match &func.body[1] {
+    match &body[1] {
         FirStmt::Assign {
             target: FirPlace::Local(id),
             ..
         } => {
             // The LocalId should match the one from the let binding
-            let let_id = match &func.body[0] {
+            let let_id = match &body[0] {
                 FirStmt::Let { name, .. } => *name,
                 _ => panic!("expected Let"),
             };
@@ -598,6 +634,7 @@ fn lower_list_literal() {
         .body
         .iter()
         .find_map(|s| match s {
+            FirStmt::Expr(FirExpr::RuntimeCall { name, .. }) if name.starts_with("aster_") => None,
             FirStmt::Expr(e) | FirStmt::Return(e) => Some(e),
             _ => None,
         })
@@ -707,12 +744,13 @@ fn lower_all_comparison_ops() {
     let src = "def f(a: Int, b: Int) -> Bool\n  let r1: Bool = a == b\n  let r2: Bool = a != b\n  let r3: Bool = a < b\n  let r4: Bool = a > b\n  let r5: Bool = a <= b\n  let r6: Bool = a >= b\n  r1\n";
     let fir = lower_ok(src);
     let func = &fir.functions[0];
-    // 6 let bindings + 1 expr
-    assert!(func.body.len() >= 7);
+    let body = real_body(func);
+    // 6 let bindings + 1 expr (+ possible scope_exit before return)
+    assert!(body.len() >= 7);
 
     // Each let should have a BinaryOp with Bool result type
     for i in 0..6 {
-        match &func.body[i] {
+        match &body[i] {
             FirStmt::Let { ty, value, .. } => {
                 assert_eq!(*ty, FirType::Bool);
                 match value {
@@ -737,6 +775,7 @@ fn lower_logical_and_or() {
         .body
         .iter()
         .find_map(|s| match s {
+            FirStmt::Expr(FirExpr::RuntimeCall { name, .. }) if name.starts_with("aster_") => None,
             FirStmt::Expr(e) | FirStmt::Return(e) => Some(e),
             _ => None,
         })
@@ -1235,7 +1274,7 @@ def main() -> Int
     let fir = lower_ok(src);
     let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
     assert!(matches!(
-        main_func.body.first(),
+        first_user_stmt(main_func),
         Some(FirStmt::Expr(FirExpr::Safepoint))
     ));
 }
@@ -1297,6 +1336,7 @@ fn lower_string_interpolation_literal_only() {
         .body
         .iter()
         .find_map(|s| match s {
+            FirStmt::Expr(FirExpr::RuntimeCall { name, .. }) if name.starts_with("aster_") => None,
             FirStmt::Expr(e) | FirStmt::Return(e) => Some(e),
             _ => None,
         })
@@ -1322,6 +1362,11 @@ def f() -> String
         .body
         .iter()
         .find_map(|s| match s {
+            FirStmt::Expr(FirExpr::RuntimeCall { name, .. })
+                if name.starts_with("aster_") && name != "aster_string_concat" =>
+            {
+                None
+            }
             FirStmt::Expr(e) | FirStmt::Return(e) => Some(e),
             _ => None,
         })
@@ -1643,6 +1688,7 @@ fn lower_float_arithmetic() {
         .body
         .iter()
         .find_map(|s| match s {
+            FirStmt::Expr(FirExpr::RuntimeCall { name, .. }) if name.starts_with("aster_") => None,
             FirStmt::Expr(e) | FirStmt::Return(e) => Some(e),
             _ => None,
         })
@@ -1829,8 +1875,10 @@ def fetch() -> Int
   42
 
 def main() -> Int
-  let a = async fetch()
-  let b = async fetch()
+  let a: Task[Int] = async fetch()
+  let b: Task[Int] = async fetch()
+  resolve a!
+  resolve b!
   1
 ";
     let fir = lower_ok(src);
@@ -1874,6 +1922,8 @@ def fetch() -> Int
 def main() -> Int
   let a: Task[Int] = async fetch()
   let b: Task[Int] = async fetch()
+  resolve a!
+  resolve b!
   1
 ";
     let fir = lower_ok(src);
