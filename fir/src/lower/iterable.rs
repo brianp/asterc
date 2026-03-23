@@ -13,8 +13,6 @@ impl Lowerer {
 
     /// Build a list iteration loop scaffold. Returns (list_id, len_id, idx_id, elem_id).
     /// Caller must fill in the loop body. Setup stmts go into pending_stmts.
-    /// Build a list iteration loop scaffold. Returns (list_id, len_id, idx_id, elem_id).
-    /// Caller must fill in the loop body. Setup stmts go into pending_stmts.
     pub(crate) fn iter_loop_scaffold(
         &mut self,
         fir_list: FirExpr,
