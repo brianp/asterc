@@ -818,79 +818,14 @@ impl TypeChecker {
             .with_label(object.span(), format!("'{}' not exported", field)));
         }
 
-        // File built-in static methods
-        if let Expr::Ident(name, _) = object
-            && name == "File"
-        {
-            return match field {
-                "read" => Ok(Type::Function {
-                    param_names: vec!["path".into()],
-                    params: vec![Type::String],
-                    ret: Box::new(Type::String),
-                    throws: Some(Box::new(Type::Custom("IOError".into(), Vec::new()))),
-                    suspendable: false,
-                }),
-                "write" => Ok(Type::Function {
-                    param_names: vec!["path".into(), "content".into()],
-                    params: vec![Type::String, Type::String],
-                    ret: Box::new(Type::Void),
-                    throws: Some(Box::new(Type::Custom("IOError".into(), Vec::new()))),
-                    suspendable: false,
-                }),
-                "append" => Ok(Type::Function {
-                    param_names: vec!["path".into(), "content".into()],
-                    params: vec![Type::String, Type::String],
-                    ret: Box::new(Type::Void),
-                    throws: Some(Box::new(Type::Custom("IOError".into(), Vec::new()))),
-                    suspendable: false,
-                }),
-                _ => Err(Diagnostic::error(format!("File has no method '{}'", field))
-                    .with_code("E010")
-                    .with_label(object.span(), format!("no member '{}' on File", field))),
-            };
-        }
-
-        // TcpListener built-in static methods
-        if let Expr::Ident(name, _) = object
-            && name == "TcpListener"
-        {
-            return match field {
-                "bind" => Ok(Type::Function {
-                    param_names: vec!["port".into()],
-                    params: vec![Type::Int],
-                    ret: Box::new(Type::Custom("TcpListener".into(), Vec::new())),
-                    throws: Some(Box::new(Type::Custom("IOError".into(), Vec::new()))),
-                    suspendable: false,
-                }),
-                _ => Err(
-                    Diagnostic::error(format!("TcpListener has no method '{}'", field))
-                        .with_code("E010")
-                        .with_label(
-                            object.span(),
-                            format!("no member '{}' on TcpListener", field),
-                        ),
-                ),
-            };
-        }
-
-        // TcpStream static methods
-        if let Expr::Ident(name, _) = object
-            && name == "TcpStream"
-        {
-            return match field {
-                "connect" => Ok(Type::Function {
-                    param_names: vec!["host".into(), "port".into()],
-                    params: vec![Type::String, Type::Int],
-                    ret: Box::new(Type::Custom("TcpStream".into(), Vec::new())),
-                    throws: Some(Box::new(Type::Custom("IOError".into(), Vec::new()))),
-                    suspendable: true,
-                }),
-                _ => Err(
-                    Diagnostic::error(format!("TcpStream has no method '{}'", field))
-                        .with_code("E010")
-                        .with_label(object.span(), format!("no member '{}' on TcpStream", field)),
-                ),
-            };
+        // Built-in static methods
+        if let Expr::Ident(name, _) = object {
+            match name.as_str() {
+                "File" => return Self::check_file_static_member(field, object),
+                "TcpListener" => return Self::check_tcp_listener_static_member(field, object),
+                "TcpStream" => return Self::check_tcp_stream_static_member(field, object),
+                _ => {}
+            }
         }
 
         // Check for enum variant access: EnumName.VariantName
@@ -926,281 +861,33 @@ impl TypeChecker {
             .with_label(object.span(), "nullable type"));
         }
         if let Type::Task(ref inner) = obj_ty {
-            // Any method call on a Task counts as consumption
             self.mark_task_ident_consumed(object);
-            return match field {
-                "is_ready" => Ok(Type::Function {
-                    param_names: vec![],
-                    params: vec![],
-                    ret: Box::new(Type::Bool),
-                    throws: None,
-                    suspendable: false,
-                }),
-                "cancel" | "wait_cancel" => Ok(Type::Function {
-                    param_names: vec![],
-                    params: vec![],
-                    ret: Box::new(Type::Void),
-                    throws: None,
-                    suspendable: false,
-                }),
-                _ => Err(
-                    Diagnostic::error(format!("Task[{}] has no method '{}'", inner, field))
-                        .with_code("E010")
-                        .with_label(object.span(), format!("no member '{}' on Task", field)),
-                ),
-            };
+            return Self::check_task_member(field, inner, object);
         }
-        // Handle Mutex[T] built-in methods
         if let Type::Custom(ref name, ref type_args) = obj_ty
             && name == "Mutex"
             && !type_args.is_empty()
         {
-            let inner = &type_args[0];
-            return match field {
-                "acquire" => Ok(Type::Function {
-                    param_names: vec![],
-                    params: vec![],
-                    ret: Box::new(inner.clone()),
-                    throws: None,
-                    suspendable: true,
-                }),
-                "release" => Ok(Type::Function {
-                    param_names: vec!["value".into()],
-                    params: vec![inner.clone()],
-                    ret: Box::new(Type::Void),
-                    throws: None,
-                    suspendable: false,
-                }),
-                "lock" => Ok(Type::Function {
-                    param_names: vec!["block".into()],
-                    params: vec![Type::Function {
-                        param_names: vec!["_0".into()],
-                        params: vec![inner.clone()],
-                        ret: Box::new(Type::Void),
-                        throws: None,
-                        suspendable: false,
-                    }],
-                    ret: Box::new(Type::Void),
-                    throws: None,
-                    suspendable: true,
-                }),
-                _ => Err(
-                    Diagnostic::error(format!("Mutex[{}] has no method '{}'", inner, field))
-                        .with_code("E010")
-                        .with_label(object.span(), format!("no member '{}' on Mutex", field)),
-                ),
-            };
+            return Self::check_mutex_member(field, &type_args[0], object);
         }
-        // Handle Channel[T] built-in methods
         if let Type::Custom(ref name, ref type_args) = obj_ty
             && name == "Channel"
             && !type_args.is_empty()
         {
-            let inner = &type_args[0];
-            return match field {
-                "send" => Ok(Type::Function {
-                    param_names: vec!["value".into()],
-                    params: vec![inner.clone()],
-                    ret: Box::new(Type::Void),
-                    throws: None,
-                    suspendable: false,
-                }),
-                "wait_send" => Ok(Type::Function {
-                    param_names: vec!["value".into()],
-                    params: vec![inner.clone()],
-                    ret: Box::new(Type::Void),
-                    throws: None,
-                    suspendable: true,
-                }),
-                "try_send" => Ok(Type::Function {
-                    param_names: vec!["value".into()],
-                    params: vec![inner.clone()],
-                    ret: Box::new(Type::Void),
-                    throws: Some(Box::new(Type::Custom(
-                        "ChannelFullError".into(),
-                        Vec::new(),
-                    ))),
-                    suspendable: false,
-                }),
-                "receive" => Ok(Type::Function {
-                    param_names: vec![],
-                    params: vec![],
-                    ret: Box::new(Type::Nullable(Box::new(inner.clone()))),
-                    throws: None,
-                    suspendable: false,
-                }),
-                "wait_receive" => Ok(Type::Function {
-                    param_names: vec![],
-                    params: vec![],
-                    ret: Box::new(inner.clone()),
-                    throws: None,
-                    suspendable: true,
-                }),
-                "try_receive" => Ok(Type::Function {
-                    param_names: vec![],
-                    params: vec![],
-                    ret: Box::new(inner.clone()),
-                    throws: Some(Box::new(Type::Custom(
-                        "ChannelEmptyError".into(),
-                        Vec::new(),
-                    ))),
-                    suspendable: false,
-                }),
-                "close" => Ok(Type::Function {
-                    param_names: vec![],
-                    params: vec![],
-                    ret: Box::new(Type::Void),
-                    throws: None,
-                    suspendable: false,
-                }),
-                _ => Err(Diagnostic::error(format!(
-                    "Channel[{}] has no method '{}'",
-                    inner, field
-                ))
-                .with_code("E010")
-                .with_label(object.span(), format!("no member '{}' on Channel", field))),
-            };
+            return Self::check_channel_member(field, &type_args[0], object);
         }
-        // MultiSend[T] / MultiReceive[T] built-in methods
         if let Type::Custom(ref name, ref type_args) = obj_ty
             && (name == "MultiSend" || name == "MultiReceive")
             && !type_args.is_empty()
         {
-            let inner = &type_args[0];
-            let is_multi_send = name == "MultiSend";
-            return match field {
-                "send" | "wait_send" | "try_send" if is_multi_send => {
-                    let suspendable = field == "wait_send";
-                    let throws = if field == "try_send" {
-                        Some(Box::new(Type::Custom(
-                            "ChannelFullError".into(),
-                            Vec::new(),
-                        )))
-                    } else {
-                        None
-                    };
-                    Ok(Type::Function {
-                        param_names: vec!["value".into()],
-                        params: vec![inner.clone()],
-                        ret: Box::new(Type::Void),
-                        throws,
-                        suspendable,
-                    })
-                }
-                "receive" if !is_multi_send => Ok(Type::Function {
-                    param_names: vec![],
-                    params: vec![],
-                    ret: Box::new(Type::Nullable(Box::new(inner.clone()))),
-                    throws: None,
-                    suspendable: false,
-                }),
-                "wait_receive" if !is_multi_send => Ok(Type::Function {
-                    param_names: vec![],
-                    params: vec![],
-                    ret: Box::new(inner.clone()),
-                    throws: None,
-                    suspendable: true,
-                }),
-                "try_receive" if !is_multi_send => Ok(Type::Function {
-                    param_names: vec![],
-                    params: vec![],
-                    ret: Box::new(inner.clone()),
-                    throws: Some(Box::new(Type::Custom(
-                        "ChannelEmptyError".into(),
-                        Vec::new(),
-                    ))),
-                    suspendable: false,
-                }),
-                "close" => Ok(Type::Function {
-                    param_names: vec![],
-                    params: vec![],
-                    ret: Box::new(Type::Void),
-                    throws: None,
-                    suspendable: false,
-                }),
-                "clone_sender" if is_multi_send => Ok(Type::Function {
-                    param_names: vec![],
-                    params: vec![],
-                    ret: Box::new(Type::Custom(name.clone(), type_args.clone())),
-                    throws: None,
-                    suspendable: false,
-                }),
-                "clone_receiver" if !is_multi_send => Ok(Type::Function {
-                    param_names: vec![],
-                    params: vec![],
-                    ret: Box::new(Type::Custom(name.clone(), type_args.clone())),
-                    throws: None,
-                    suspendable: false,
-                }),
-                _ => Err(Diagnostic::error(format!(
-                    "{}[{}] has no method '{}'",
-                    name, inner, field
-                ))
-                .with_code("E010")
-                .with_label(object.span(), format!("no member '{}' on {}", field, name))),
-            };
+            return Self::check_multi_channel_member(field, name, type_args, object);
         }
-
-        // TcpListener instance methods
         if let Type::Custom(ref name, _) = obj_ty {
             if name == "TcpListener" {
-                return match field {
-                    "accept" => Ok(Type::Function {
-                        param_names: vec![],
-                        params: vec![],
-                        ret: Box::new(Type::Custom("TcpStream".into(), Vec::new())),
-                        throws: Some(Box::new(Type::Custom("IOError".into(), Vec::new()))),
-                        suspendable: true,
-                    }),
-                    "close" => Ok(Type::Function {
-                        param_names: vec![],
-                        params: vec![],
-                        ret: Box::new(Type::Void),
-                        throws: None,
-                        suspendable: false,
-                    }),
-                    _ => Err(
-                        Diagnostic::error(format!("TcpListener has no method '{}'", field))
-                            .with_code("E010")
-                            .with_label(
-                                object.span(),
-                                format!("no member '{}' on TcpListener", field),
-                            ),
-                    ),
-                };
+                return Self::check_tcp_listener_instance_member(field, object);
             }
             if name == "TcpStream" {
-                return match field {
-                    "read" => Ok(Type::Function {
-                        param_names: vec![],
-                        params: vec![],
-                        ret: Box::new(Type::String),
-                        throws: Some(Box::new(Type::Custom("IOError".into(), Vec::new()))),
-                        suspendable: true,
-                    }),
-                    "write" => Ok(Type::Function {
-                        param_names: vec!["data".into()],
-                        params: vec![Type::String],
-                        ret: Box::new(Type::Void),
-                        throws: Some(Box::new(Type::Custom("IOError".into(), Vec::new()))),
-                        suspendable: true,
-                    }),
-                    "close" => Ok(Type::Function {
-                        param_names: vec![],
-                        params: vec![],
-                        ret: Box::new(Type::Void),
-                        throws: None,
-                        suspendable: false,
-                    }),
-                    _ => Err(
-                        Diagnostic::error(format!("TcpStream has no method '{}'", field))
-                            .with_code("E010")
-                            .with_label(
-                                object.span(),
-                                format!("no member '{}' on TcpStream", field),
-                            ),
-                    ),
-                };
+                return Self::check_tcp_stream_instance_member(field, object);
             }
         }
 
@@ -1364,6 +1051,334 @@ impl TypeChecker {
     }
 
     /// Handle member access on List[T] -- built-in methods plus Iterable vocabulary.
+    fn check_file_static_member(field: &str, object: &Expr) -> Result<Type, Diagnostic> {
+        let io_err = || Some(Box::new(Type::Custom("IOError".into(), Vec::new())));
+        match field {
+            "read" => Ok(Type::Function {
+                param_names: vec!["path".into()],
+                params: vec![Type::String],
+                ret: Box::new(Type::String),
+                throws: io_err(),
+                suspendable: false,
+            }),
+            "write" | "append" => Ok(Type::Function {
+                param_names: vec!["path".into(), "content".into()],
+                params: vec![Type::String, Type::String],
+                ret: Box::new(Type::Void),
+                throws: io_err(),
+                suspendable: false,
+            }),
+            _ => Err(Diagnostic::error(format!("File has no method '{}'", field))
+                .with_code("E010")
+                .with_label(object.span(), format!("no member '{}' on File", field))),
+        }
+    }
+
+    fn check_tcp_listener_static_member(field: &str, object: &Expr) -> Result<Type, Diagnostic> {
+        match field {
+            "bind" => Ok(Type::Function {
+                param_names: vec!["port".into()],
+                params: vec![Type::Int],
+                ret: Box::new(Type::Custom("TcpListener".into(), Vec::new())),
+                throws: Some(Box::new(Type::Custom("IOError".into(), Vec::new()))),
+                suspendable: false,
+            }),
+            _ => Err(
+                Diagnostic::error(format!("TcpListener has no method '{}'", field))
+                    .with_code("E010")
+                    .with_label(
+                        object.span(),
+                        format!("no member '{}' on TcpListener", field),
+                    ),
+            ),
+        }
+    }
+
+    fn check_tcp_stream_static_member(field: &str, object: &Expr) -> Result<Type, Diagnostic> {
+        match field {
+            "connect" => Ok(Type::Function {
+                param_names: vec!["host".into(), "port".into()],
+                params: vec![Type::String, Type::Int],
+                ret: Box::new(Type::Custom("TcpStream".into(), Vec::new())),
+                throws: Some(Box::new(Type::Custom("IOError".into(), Vec::new()))),
+                suspendable: true,
+            }),
+            _ => Err(
+                Diagnostic::error(format!("TcpStream has no method '{}'", field))
+                    .with_code("E010")
+                    .with_label(object.span(), format!("no member '{}' on TcpStream", field)),
+            ),
+        }
+    }
+
+    fn check_task_member(field: &str, inner: &Type, object: &Expr) -> Result<Type, Diagnostic> {
+        match field {
+            "is_ready" => Ok(Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(Type::Bool),
+                throws: None,
+                suspendable: false,
+            }),
+            "cancel" | "wait_cancel" => Ok(Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(Type::Void),
+                throws: None,
+                suspendable: false,
+            }),
+            _ => Err(
+                Diagnostic::error(format!("Task[{}] has no method '{}'", inner, field))
+                    .with_code("E010")
+                    .with_label(object.span(), format!("no member '{}' on Task", field)),
+            ),
+        }
+    }
+
+    fn check_mutex_member(field: &str, inner: &Type, object: &Expr) -> Result<Type, Diagnostic> {
+        match field {
+            "acquire" => Ok(Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(inner.clone()),
+                throws: None,
+                suspendable: true,
+            }),
+            "release" => Ok(Type::Function {
+                param_names: vec!["value".into()],
+                params: vec![inner.clone()],
+                ret: Box::new(Type::Void),
+                throws: None,
+                suspendable: false,
+            }),
+            "lock" => Ok(Type::Function {
+                param_names: vec!["block".into()],
+                params: vec![Type::Function {
+                    param_names: vec!["_0".into()],
+                    params: vec![inner.clone()],
+                    ret: Box::new(Type::Void),
+                    throws: None,
+                    suspendable: false,
+                }],
+                ret: Box::new(Type::Void),
+                throws: None,
+                suspendable: true,
+            }),
+            _ => Err(
+                Diagnostic::error(format!("Mutex[{}] has no method '{}'", inner, field))
+                    .with_code("E010")
+                    .with_label(object.span(), format!("no member '{}' on Mutex", field)),
+            ),
+        }
+    }
+
+    fn check_channel_member(
+        field: &str,
+        inner: &Type,
+        object: &Expr,
+    ) -> Result<Type, Diagnostic> {
+        match field {
+            "send" => Ok(Type::Function {
+                param_names: vec!["value".into()],
+                params: vec![inner.clone()],
+                ret: Box::new(Type::Void),
+                throws: None,
+                suspendable: false,
+            }),
+            "wait_send" => Ok(Type::Function {
+                param_names: vec!["value".into()],
+                params: vec![inner.clone()],
+                ret: Box::new(Type::Void),
+                throws: None,
+                suspendable: true,
+            }),
+            "try_send" => Ok(Type::Function {
+                param_names: vec!["value".into()],
+                params: vec![inner.clone()],
+                ret: Box::new(Type::Void),
+                throws: Some(Box::new(Type::Custom("ChannelFullError".into(), Vec::new()))),
+                suspendable: false,
+            }),
+            "receive" => Ok(Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(Type::Nullable(Box::new(inner.clone()))),
+                throws: None,
+                suspendable: false,
+            }),
+            "wait_receive" => Ok(Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(inner.clone()),
+                throws: None,
+                suspendable: true,
+            }),
+            "try_receive" => Ok(Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(inner.clone()),
+                throws: Some(Box::new(Type::Custom(
+                    "ChannelEmptyError".into(),
+                    Vec::new(),
+                ))),
+                suspendable: false,
+            }),
+            "close" => Ok(Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(Type::Void),
+                throws: None,
+                suspendable: false,
+            }),
+            _ => Err(
+                Diagnostic::error(format!("Channel[{}] has no method '{}'", inner, field))
+                    .with_code("E010")
+                    .with_label(object.span(), format!("no member '{}' on Channel", field)),
+            ),
+        }
+    }
+
+    fn check_multi_channel_member(
+        field: &str,
+        name: &str,
+        type_args: &[Type],
+        object: &Expr,
+    ) -> Result<Type, Diagnostic> {
+        let inner = &type_args[0];
+        let is_send = name == "MultiSend";
+        match field {
+            "send" | "wait_send" | "try_send" if is_send => {
+                let suspendable = field == "wait_send";
+                let throws = if field == "try_send" {
+                    Some(Box::new(Type::Custom("ChannelFullError".into(), Vec::new())))
+                } else {
+                    None
+                };
+                Ok(Type::Function {
+                    param_names: vec!["value".into()],
+                    params: vec![inner.clone()],
+                    ret: Box::new(Type::Void),
+                    throws,
+                    suspendable,
+                })
+            }
+            "receive" if !is_send => Ok(Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(Type::Nullable(Box::new(inner.clone()))),
+                throws: None,
+                suspendable: false,
+            }),
+            "wait_receive" if !is_send => Ok(Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(inner.clone()),
+                throws: None,
+                suspendable: true,
+            }),
+            "try_receive" if !is_send => Ok(Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(inner.clone()),
+                throws: Some(Box::new(Type::Custom(
+                    "ChannelEmptyError".into(),
+                    Vec::new(),
+                ))),
+                suspendable: false,
+            }),
+            "close" => Ok(Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(Type::Void),
+                throws: None,
+                suspendable: false,
+            }),
+            "clone_sender" if is_send => Ok(Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(Type::Custom(name.to_string(), type_args.to_vec())),
+                throws: None,
+                suspendable: false,
+            }),
+            "clone_receiver" if !is_send => Ok(Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(Type::Custom(name.to_string(), type_args.to_vec())),
+                throws: None,
+                suspendable: false,
+            }),
+            _ => Err(
+                Diagnostic::error(format!("{}[{}] has no method '{}'", name, inner, field))
+                    .with_code("E010")
+                    .with_label(object.span(), format!("no member '{}' on {}", field, name)),
+            ),
+        }
+    }
+
+    fn check_tcp_listener_instance_member(
+        field: &str,
+        object: &Expr,
+    ) -> Result<Type, Diagnostic> {
+        match field {
+            "accept" => Ok(Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(Type::Custom("TcpStream".into(), Vec::new())),
+                throws: Some(Box::new(Type::Custom("IOError".into(), Vec::new()))),
+                suspendable: true,
+            }),
+            "close" => Ok(Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(Type::Void),
+                throws: None,
+                suspendable: false,
+            }),
+            _ => Err(
+                Diagnostic::error(format!("TcpListener has no method '{}'", field))
+                    .with_code("E010")
+                    .with_label(
+                        object.span(),
+                        format!("no member '{}' on TcpListener", field),
+                    ),
+            ),
+        }
+    }
+
+    fn check_tcp_stream_instance_member(field: &str, object: &Expr) -> Result<Type, Diagnostic> {
+        match field {
+            "read" => Ok(Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(Type::String),
+                throws: Some(Box::new(Type::Custom("IOError".into(), Vec::new()))),
+                suspendable: true,
+            }),
+            "write" => Ok(Type::Function {
+                param_names: vec!["data".into()],
+                params: vec![Type::String],
+                ret: Box::new(Type::Void),
+                throws: Some(Box::new(Type::Custom("IOError".into(), Vec::new()))),
+                suspendable: true,
+            }),
+            "close" => Ok(Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(Type::Void),
+                throws: None,
+                suspendable: false,
+            }),
+            _ => Err(
+                Diagnostic::error(format!("TcpStream has no method '{}'", field))
+                    .with_code("E010")
+                    .with_label(
+                        object.span(),
+                        format!("no member '{}' on TcpStream", field),
+                    ),
+            ),
+        }
+    }
+
     fn check_list_member(
         &self,
         field: &str,
