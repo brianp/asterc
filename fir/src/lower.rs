@@ -143,6 +143,21 @@ pub struct Lowerer {
     cleanup_scope_stack: Vec<usize>,
 }
 
+/// Snapshot of per-function-scope state in the Lowerer. Saved before entering
+/// a nested function/lambda scope and restored on exit.
+struct ScopeSnapshot {
+    locals: HashMap<String, LocalId>,
+    local_types: HashMap<LocalId, FirType>,
+    local_ast_types: HashMap<String, Type>,
+    closure_info: HashMap<String, (FunctionId, Option<LocalId>, Vec<String>)>,
+    next_local: u32,
+    current_return_type: Option<Type>,
+    function_scope_id: Option<LocalId>,
+    cleanup_locals: Vec<(LocalId, String, bool, bool)>,
+    cleanup_scope_stack: Vec<usize>,
+    async_scope_stack: Vec<LocalId>,
+}
+
 impl Lowerer {
     pub fn new(type_env: TypeEnv, type_table: TypeTable) -> Self {
         Self {
@@ -172,6 +187,38 @@ impl Lowerer {
             cleanup_locals: Vec::new(),
             cleanup_scope_stack: Vec::new(),
         }
+    }
+
+    /// Save per-function scope state and reset for a nested scope.
+    fn save_scope(&mut self) -> ScopeSnapshot {
+        let snapshot = ScopeSnapshot {
+            locals: std::mem::take(&mut self.locals),
+            local_types: std::mem::take(&mut self.local_types),
+            local_ast_types: std::mem::take(&mut self.local_ast_types),
+            closure_info: std::mem::take(&mut self.closure_info),
+            next_local: self.next_local,
+            current_return_type: self.current_return_type.take(),
+            function_scope_id: self.function_scope_id.take(),
+            cleanup_locals: std::mem::take(&mut self.cleanup_locals),
+            cleanup_scope_stack: std::mem::take(&mut self.cleanup_scope_stack),
+            async_scope_stack: std::mem::take(&mut self.async_scope_stack),
+        };
+        self.next_local = 0;
+        snapshot
+    }
+
+    /// Restore per-function scope state from a previous snapshot.
+    fn restore_scope(&mut self, snapshot: ScopeSnapshot) {
+        self.locals = snapshot.locals;
+        self.local_types = snapshot.local_types;
+        self.local_ast_types = snapshot.local_ast_types;
+        self.closure_info = snapshot.closure_info;
+        self.next_local = snapshot.next_local;
+        self.current_return_type = snapshot.current_return_type;
+        self.function_scope_id = snapshot.function_scope_id;
+        self.cleanup_locals = snapshot.cleanup_locals;
+        self.cleanup_scope_stack = snapshot.cleanup_scope_stack;
+        self.async_scope_stack = snapshot.async_scope_stack;
     }
 
     /// Inject the built-in `Ordering` enum (Less/Equal/Greater) into the FIR.
@@ -326,15 +373,7 @@ impl Lowerer {
     /// Synthesize a `__top_main` entry function from accumulated top-level stmts.
     /// Injects the global prelude + top-level control flow in a proper function scope.
     fn synthesize_entry_function(&mut self) -> Result<(), LowerError> {
-        let saved_locals = std::mem::take(&mut self.locals);
-        let saved_local_types = std::mem::take(&mut self.local_types);
-        let saved_local_ast_types = std::mem::take(&mut self.local_ast_types);
-        let saved_closure_info = std::mem::take(&mut self.closure_info);
-        let saved_next_local = self.next_local;
-        let saved_return_type = self.current_return_type.take();
-        let saved_cleanup_locals = std::mem::take(&mut self.cleanup_locals);
-        let saved_cleanup_scope_stack = std::mem::take(&mut self.cleanup_scope_stack);
-        self.next_local = 0;
+        let snapshot = self.save_scope();
         self.current_return_type = Some(Type::Void);
 
         // Inject globals
@@ -385,15 +424,7 @@ impl Lowerer {
         self.module.add_function(func);
         self.module.entry = Some(id);
 
-        // Restore
-        self.locals = saved_locals;
-        self.local_types = saved_local_types;
-        self.local_ast_types = saved_local_ast_types;
-        self.closure_info = saved_closure_info;
-        self.next_local = saved_next_local;
-        self.current_return_type = saved_return_type;
-        self.cleanup_locals = saved_cleanup_locals;
-        self.cleanup_scope_stack = saved_cleanup_scope_stack;
+        self.restore_scope(snapshot);
         Ok(())
     }
 
@@ -534,18 +565,7 @@ impl Lowerer {
         ret_type: &Type,
         body: &[Stmt],
     ) -> Result<FunctionId, LowerError> {
-        // Save and reset local scope
-        let saved_locals = std::mem::take(&mut self.locals);
-        let saved_local_types = std::mem::take(&mut self.local_types);
-        let saved_local_ast_types = std::mem::take(&mut self.local_ast_types);
-        let saved_closure_info = std::mem::take(&mut self.closure_info);
-        let saved_next_local = self.next_local;
-        let saved_return_type = self.current_return_type.take();
-        let saved_function_scope_id = self.function_scope_id.take();
-        let saved_cleanup_locals = std::mem::take(&mut self.cleanup_locals);
-        let saved_cleanup_scope_stack = std::mem::take(&mut self.cleanup_scope_stack);
-        let saved_async_scope_stack = std::mem::take(&mut self.async_scope_stack);
-        self.next_local = 0;
+        let snapshot = self.save_scope();
         self.current_return_type = Some(ret_type.clone());
 
         // Allocate parameters as locals FIRST (codegen expects params at LocalId(0..N))
@@ -664,17 +684,7 @@ impl Lowerer {
             self.module.entry = Some(id);
         }
 
-        // Restore outer scope
-        self.locals = saved_locals;
-        self.local_types = saved_local_types;
-        self.local_ast_types = saved_local_ast_types;
-        self.closure_info = saved_closure_info;
-        self.next_local = saved_next_local;
-        self.current_return_type = saved_return_type;
-        self.function_scope_id = saved_function_scope_id;
-        self.cleanup_locals = saved_cleanup_locals;
-        self.cleanup_scope_stack = saved_cleanup_scope_stack;
-        self.async_scope_stack = saved_async_scope_stack;
+        self.restore_scope(snapshot);
 
         Ok(id)
     }
@@ -5434,16 +5444,7 @@ impl Lowerer {
 
         // Before lowering the lambda body, set up the capture mapping.
         // Save outer scope, then set up inner scope with env loads.
-        let saved_locals = std::mem::take(&mut self.locals);
-        let saved_local_types = std::mem::take(&mut self.local_types);
-        let saved_local_ast_types = std::mem::take(&mut self.local_ast_types);
-        let saved_closure_info = std::mem::take(&mut self.closure_info);
-        let saved_next_local = self.next_local;
-        let saved_return_type = self.current_return_type.take();
-        let saved_function_scope_id = self.function_scope_id.take();
-        let saved_cleanup_locals = std::mem::take(&mut self.cleanup_locals);
-        let saved_cleanup_scope_stack = std::mem::take(&mut self.cleanup_scope_stack);
-        let saved_async_scope_stack = std::mem::take(&mut self.async_scope_stack);
+        let snapshot = self.save_scope();
         self.next_local = 0;
         self.current_return_type = Some(ret_type.clone());
 
@@ -5472,8 +5473,9 @@ impl Lowerer {
         // Map captured variables to env loads
         for cap_name in &captures {
             let local_id = self.alloc_local();
-            let cap_ty = saved_local_types
-                .get(saved_locals.get(cap_name).unwrap_or(&LocalId(0)))
+            let cap_ty = snapshot
+                .local_types
+                .get(snapshot.locals.get(cap_name).unwrap_or(&LocalId(0)))
                 .cloned()
                 .unwrap_or(FirType::I64);
             self.locals.insert(cap_name.clone(), local_id);
@@ -5566,17 +5568,7 @@ impl Lowerer {
         };
         self.module.add_function(func);
 
-        // Restore outer scope
-        self.locals = saved_locals;
-        self.local_types = saved_local_types;
-        self.local_ast_types = saved_local_ast_types;
-        self.closure_info = saved_closure_info;
-        self.next_local = saved_next_local;
-        self.current_return_type = saved_return_type;
-        self.function_scope_id = saved_function_scope_id;
-        self.cleanup_locals = saved_cleanup_locals;
-        self.cleanup_scope_stack = saved_cleanup_scope_stack;
-        self.async_scope_stack = saved_async_scope_stack;
+        self.restore_scope(snapshot);
 
         // Re-register the function name
         self.functions.insert(lambda_name, func_id);
