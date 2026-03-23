@@ -460,3 +460,83 @@ def main() -> Int
         common::output_text(&output)
     );
 }
+
+#[test]
+fn run_int_min_div_neg_one_returns_zero() {
+    let dir = common::make_temp_dir("min-div");
+    let src = dir.join("min_div.aster");
+    std::fs::write(
+        &src,
+        "\
+let min = -9223372036854775807 - 1
+let result = min / -1
+def main() -> Int
+  result
+",
+    )
+    .unwrap();
+    let output = common::cli(&["run", src.to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "i64::MIN / -1 should not SIGFPE: {}",
+        common::output_text(&output)
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "i64::MIN / -1 returns 0: {}",
+        common::output_text(&output)
+    );
+}
+
+#[test]
+fn run_int_min_mod_neg_one_returns_zero() {
+    let dir = common::make_temp_dir("min-mod");
+    let src = dir.join("min_mod.aster");
+    std::fs::write(
+        &src,
+        "\
+let min = -9223372036854775807 - 1
+let result = min % -1
+def main() -> Int
+  result
+",
+    )
+    .unwrap();
+    let output = common::cli(&["run", src.to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "i64::MIN %% -1 should not SIGFPE: {}",
+        common::output_text(&output)
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "i64::MIN %% -1 returns 0: {}",
+        common::output_text(&output)
+    );
+}
+
+#[test]
+fn run_normal_division_still_works() {
+    let dir = common::make_temp_dir("normal-div");
+    let src = dir.join("normal_div.aster");
+    std::fs::write(
+        &src,
+        "\
+def main() -> Int
+  let a = 100 / 3
+  let b = 100 % 3
+  a + b
+",
+    )
+    .unwrap();
+    let output = common::cli(&["run", src.to_str().unwrap()]);
+    // 100/3 = 33, 100%3 = 1, sum = 34
+    assert_eq!(
+        output.status.code(),
+        Some(34),
+        "{}",
+        common::output_text(&output)
+    );
+}

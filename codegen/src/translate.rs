@@ -782,6 +782,13 @@ fn translate_binop(
             // Both cause hardware traps (SIGFPE) with no recovery path.
             let zero = builder.ins().iconst(types::I64, 0);
             let is_zero = builder.ins().icmp(IntCC::Equal, rhs, zero);
+            let neg_one = builder.ins().iconst(types::I64, -1i64);
+            let is_neg_one = builder.ins().icmp(IntCC::Equal, rhs, neg_one);
+            let min_val = builder.ins().iconst(types::I64, i64::MIN);
+            let is_min = builder.ins().icmp(IntCC::Equal, lhs, min_val);
+            let is_overflow = builder.ins().band(is_neg_one, is_min);
+            let is_trap = builder.ins().bor(is_zero, is_overflow);
+
             let safe_block = builder.create_block();
             let trap_block = builder.create_block();
             let merge_block = builder.create_block();
@@ -789,7 +796,7 @@ fn translate_binop(
 
             builder
                 .ins()
-                .brif(is_zero, trap_block, &[], safe_block, &[]);
+                .brif(is_trap, trap_block, &[], safe_block, &[]);
 
             builder.switch_to_block(trap_block);
             builder.seal_block(trap_block);
@@ -815,9 +822,17 @@ fn translate_binop(
             builder.ins().fsub(lhs, prod)
         }
         BinOp::Mod => {
-            // Guard against modulo by zero (same trap as division)
+            // Guard against modulo by zero and i64::MIN % -1 overflow.
+            // Both cause hardware traps (SIGFPE) with no recovery path.
             let zero = builder.ins().iconst(types::I64, 0);
             let is_zero = builder.ins().icmp(IntCC::Equal, rhs, zero);
+            let neg_one = builder.ins().iconst(types::I64, -1i64);
+            let is_neg_one = builder.ins().icmp(IntCC::Equal, rhs, neg_one);
+            let min_val = builder.ins().iconst(types::I64, i64::MIN);
+            let is_min = builder.ins().icmp(IntCC::Equal, lhs, min_val);
+            let is_overflow = builder.ins().band(is_neg_one, is_min);
+            let is_trap = builder.ins().bor(is_zero, is_overflow);
+
             let safe_block = builder.create_block();
             let trap_block = builder.create_block();
             let merge_block = builder.create_block();
@@ -825,7 +840,7 @@ fn translate_binop(
 
             builder
                 .ins()
-                .brif(is_zero, trap_block, &[], safe_block, &[]);
+                .brif(is_trap, trap_block, &[], safe_block, &[]);
 
             builder.switch_to_block(trap_block);
             builder.seal_block(trap_block);
