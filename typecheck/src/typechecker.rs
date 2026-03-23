@@ -1453,8 +1453,14 @@ impl TypeChecker {
                     ..
                 },
             ) => ap == bp && ar == br && at == bt,
-            // S3: Check subtype relationship for Custom types
-            (Type::Custom(an, _), Type::Custom(bn, _)) if an != bn => {
+            // S3: Check subtype relationship for Custom types.
+            // Generic containers are invariant: Box[Dog] is NOT compatible with
+            // Box[Animal] even if Dog extends Animal. Only bare (non-generic)
+            // custom types participate in subtype compatibility.
+            (Type::Custom(an, a_args), Type::Custom(bn, b_args)) if an != bn => {
+                if !a_args.is_empty() || !b_args.is_empty() {
+                    return false;
+                }
                 Self::is_subtype_of(bn, an, env)
             }
             _ => a == b,

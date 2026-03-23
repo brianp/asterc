@@ -625,3 +625,45 @@ fn tab_indentation_rejected() {
     let err = result.unwrap_err().to_string();
     assert!(err.contains("tab") || err.contains("Tab") || err.contains("indent"));
 }
+
+// LANG-MEDIUM-1: Generic containers must be invariant in subtype checks
+#[test]
+fn generic_container_invariance_rejected() {
+    let err = common::check_err(
+        r#"class Animal
+  tag: String
+
+class Dog extends Animal
+  breed: String
+
+class Box[T]
+  value: T
+
+def take_box(b: Box[Animal]) -> String
+  b.value.tag
+
+let dog_box = Box[Dog](value: Dog(tag: "a", breed: "lab"))
+take_box(b: dog_box)
+"#,
+    );
+    assert!(
+        err.contains("E001") || err.contains("type mismatch") || err.contains("expected"),
+        "Generic containers should be invariant, got: {err}"
+    );
+}
+
+// Bare (non-generic) subtype compatibility should still work
+#[test]
+fn bare_subtype_compatible_in_let() {
+    common::check_ok(
+        r#"class Animal
+  tag: String
+
+class Dog extends Animal
+  breed: String
+
+let a: Animal = Dog(tag: "a", breed: "lab")
+say(message: a.tag)
+"#,
+    );
+}
