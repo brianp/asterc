@@ -474,11 +474,16 @@ impl Lowerer {
                 debug_assert!(false, "Type::Error should not survive past typechecking");
                 FirType::Void
             }
-            // Inferred/TypeVar should be resolved via TypeTable before reaching here.
-            // The I64 fallback is correct for Int/String/Class (all 64-bit pointers)
-            // but wrong for Float (F64) and Bool (I8). Lambda params are resolved
-            // in lower_expr's Lambda arm via the TypeTable.
-            Type::Inferred => FirType::I64,
+            // Inferred/TypeVar should ideally be resolved via TypeTable before reaching
+            // here. The I64 fallback is correct for Int/String/Class (all 64-bit values
+            // or pointers) but wrong for Float (F64) and Bool (I8). Lambda params are
+            // resolved in lower_expr's Lambda arm via the TypeTable, so this path only
+            // fires for class fields and other contexts where I64 is correct.
+            Type::Inferred => {
+                #[cfg(debug_assertions)]
+                eprintln!("fir::lower: Type::Inferred fell through to I64 in lower_type");
+                FirType::I64
+            }
             Type::TypeVar(_, _) => FirType::I64,
         }
     }
