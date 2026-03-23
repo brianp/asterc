@@ -14,6 +14,79 @@ const MAX_STRING_LENGTH: usize = 1_000_000;
 // Helpers called from lex()
 // ---------------------------------------------------------------------------
 
+/// Match a single operator character (possibly consuming a second lookahead char).
+/// Returns `Some((token_kind, extra_chars_consumed))` if the character is a recognized
+/// operator, `None` otherwise. Used by both the main lexer and the interpolation
+/// mini-lexer to avoid duplicating operator matching logic.
+fn match_operator(
+    ch: char,
+    chars: &mut std::iter::Peekable<std::str::Chars>,
+) -> Option<(TokenKind, usize)> {
+    use TokenKind::*;
+    match ch {
+        '(' => Some((LParen, 0)),
+        ')' => Some((RParen, 0)),
+        '+' => Some((Plus, 0)),
+        '/' => Some((Slash, 0)),
+        '%' => Some((Percent, 0)),
+        '?' => Some((Question, 0)),
+        ',' => Some((Comma, 0)),
+        ':' => Some((Colon, 0)),
+        '.' => Some((Dot, 0)),
+        '[' => Some((LBracket, 0)),
+        ']' => Some((RBracket, 0)),
+        '-' => {
+            if chars.peek() == Some(&'>') {
+                chars.next();
+                Some((Arrow, 1))
+            } else {
+                Some((Minus, 0))
+            }
+        }
+        '*' => {
+            if chars.peek() == Some(&'*') {
+                chars.next();
+                Some((StarStar, 1))
+            } else {
+                Some((Star, 0))
+            }
+        }
+        '!' => {
+            if chars.peek() == Some(&'=') {
+                chars.next();
+                Some((BangEqual, 1))
+            } else {
+                Some((Bang, 0))
+            }
+        }
+        '<' => {
+            if chars.peek() == Some(&'=') {
+                chars.next();
+                Some((LessEqual, 1))
+            } else {
+                Some((Less, 0))
+            }
+        }
+        '>' => {
+            if chars.peek() == Some(&'=') {
+                chars.next();
+                Some((GreaterEqual, 1))
+            } else {
+                Some((Greater, 0))
+            }
+        }
+        '=' => {
+            if chars.peek() == Some(&'=') {
+                chars.next();
+                Some((EqualEqual, 1))
+            } else {
+                Some((Equals, 0))
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Result of lexing a string — either a plain string or an interpolated string
 /// with embedded expression tokens.
 enum StringResult {
@@ -162,245 +235,46 @@ fn lex_string_full(
                     let tok_start = ls + expr_col;
                     expr_col += 1;
                     expr_chars.next();
-                    match ech {
-                        '(' => expr_tokens.push(Token {
-                            kind: TokenKind::LParen,
+                    if let Some((kind, extra)) = match_operator(ech, &mut expr_chars) {
+                        expr_col += extra;
+                        expr_tokens.push(Token {
+                            kind,
                             line: line_no,
                             col: expr_col,
                             start: tok_start,
-                            end: tok_start + 1,
-                        }),
-                        ')' => expr_tokens.push(Token {
-                            kind: TokenKind::RParen,
+                            end: tok_start + 1 + extra,
+                        });
+                    } else if ech.is_ascii_digit() {
+                        let (kind, new_col) =
+                            lex_number(&mut expr_chars, ech, expr_col, line_no, tok_start)?;
+                        expr_col = new_col;
+                        expr_tokens.push(Token {
+                            kind,
                             line: line_no,
                             col: expr_col,
                             start: tok_start,
-                            end: tok_start + 1,
-                        }),
-                        '+' => expr_tokens.push(Token {
-                            kind: TokenKind::Plus,
+                            end: ls + expr_col,
+                        });
+                    } else if ech.is_ascii_alphabetic() || ech == '_' {
+                        let (kind, new_col) = lex_ident_or_keyword(&mut expr_chars, ech, expr_col);
+                        expr_col = new_col;
+                        expr_tokens.push(Token {
+                            kind,
                             line: line_no,
                             col: expr_col,
                             start: tok_start,
-                            end: tok_start + 1,
-                        }),
-                        '-' => {
-                            if expr_chars.peek() == Some(&'>') {
-                                expr_chars.next();
-                                expr_col += 1;
-                                expr_tokens.push(Token {
-                                    kind: TokenKind::Arrow,
-                                    line: line_no,
-                                    col: expr_col,
-                                    start: tok_start,
-                                    end: tok_start + 2,
-                                });
-                            } else {
-                                expr_tokens.push(Token {
-                                    kind: TokenKind::Minus,
-                                    line: line_no,
-                                    col: expr_col,
-                                    start: tok_start,
-                                    end: tok_start + 1,
-                                });
-                            }
-                        }
-                        '*' => {
-                            if expr_chars.peek() == Some(&'*') {
-                                expr_chars.next();
-                                expr_col += 1;
-                                expr_tokens.push(Token {
-                                    kind: TokenKind::StarStar,
-                                    line: line_no,
-                                    col: expr_col,
-                                    start: tok_start,
-                                    end: tok_start + 2,
-                                });
-                            } else {
-                                expr_tokens.push(Token {
-                                    kind: TokenKind::Star,
-                                    line: line_no,
-                                    col: expr_col,
-                                    start: tok_start,
-                                    end: tok_start + 1,
-                                });
-                            }
-                        }
-                        '/' => expr_tokens.push(Token {
-                            kind: TokenKind::Slash,
-                            line: line_no,
-                            col: expr_col,
-                            start: tok_start,
-                            end: tok_start + 1,
-                        }),
-                        '%' => expr_tokens.push(Token {
-                            kind: TokenKind::Percent,
-                            line: line_no,
-                            col: expr_col,
-                            start: tok_start,
-                            end: tok_start + 1,
-                        }),
-                        '.' => expr_tokens.push(Token {
-                            kind: TokenKind::Dot,
-                            line: line_no,
-                            col: expr_col,
-                            start: tok_start,
-                            end: tok_start + 1,
-                        }),
-                        ',' => expr_tokens.push(Token {
-                            kind: TokenKind::Comma,
-                            line: line_no,
-                            col: expr_col,
-                            start: tok_start,
-                            end: tok_start + 1,
-                        }),
-                        ':' => expr_tokens.push(Token {
-                            kind: TokenKind::Colon,
-                            line: line_no,
-                            col: expr_col,
-                            start: tok_start,
-                            end: tok_start + 1,
-                        }),
-                        '[' => expr_tokens.push(Token {
-                            kind: TokenKind::LBracket,
-                            line: line_no,
-                            col: expr_col,
-                            start: tok_start,
-                            end: tok_start + 1,
-                        }),
-                        ']' => expr_tokens.push(Token {
-                            kind: TokenKind::RBracket,
-                            line: line_no,
-                            col: expr_col,
-                            start: tok_start,
-                            end: tok_start + 1,
-                        }),
-                        '=' => {
-                            if expr_chars.peek() == Some(&'=') {
-                                expr_chars.next();
-                                expr_col += 1;
-                                expr_tokens.push(Token {
-                                    kind: TokenKind::EqualEqual,
-                                    line: line_no,
-                                    col: expr_col,
-                                    start: tok_start,
-                                    end: tok_start + 2,
-                                });
-                            } else {
-                                expr_tokens.push(Token {
-                                    kind: TokenKind::Equals,
-                                    line: line_no,
-                                    col: expr_col,
-                                    start: tok_start,
-                                    end: tok_start + 1,
-                                });
-                            }
-                        }
-                        '!' => {
-                            if expr_chars.peek() == Some(&'=') {
-                                expr_chars.next();
-                                expr_col += 1;
-                                expr_tokens.push(Token {
-                                    kind: TokenKind::BangEqual,
-                                    line: line_no,
-                                    col: expr_col,
-                                    start: tok_start,
-                                    end: tok_start + 2,
-                                });
-                            } else {
-                                expr_tokens.push(Token {
-                                    kind: TokenKind::Bang,
-                                    line: line_no,
-                                    col: expr_col,
-                                    start: tok_start,
-                                    end: tok_start + 1,
-                                });
-                            }
-                        }
-                        '<' => {
-                            if expr_chars.peek() == Some(&'=') {
-                                expr_chars.next();
-                                expr_col += 1;
-                                expr_tokens.push(Token {
-                                    kind: TokenKind::LessEqual,
-                                    line: line_no,
-                                    col: expr_col,
-                                    start: tok_start,
-                                    end: tok_start + 2,
-                                });
-                            } else {
-                                expr_tokens.push(Token {
-                                    kind: TokenKind::Less,
-                                    line: line_no,
-                                    col: expr_col,
-                                    start: tok_start,
-                                    end: tok_start + 1,
-                                });
-                            }
-                        }
-                        '>' => {
-                            if expr_chars.peek() == Some(&'=') {
-                                expr_chars.next();
-                                expr_col += 1;
-                                expr_tokens.push(Token {
-                                    kind: TokenKind::GreaterEqual,
-                                    line: line_no,
-                                    col: expr_col,
-                                    start: tok_start,
-                                    end: tok_start + 2,
-                                });
-                            } else {
-                                expr_tokens.push(Token {
-                                    kind: TokenKind::Greater,
-                                    line: line_no,
-                                    col: expr_col,
-                                    start: tok_start,
-                                    end: tok_start + 1,
-                                });
-                            }
-                        }
-                        '?' => expr_tokens.push(Token {
-                            kind: TokenKind::Question,
-                            line: line_no,
-                            col: expr_col,
-                            start: tok_start,
-                            end: tok_start + 1,
-                        }),
-                        '0'..='9' => {
-                            let (kind, new_col) =
-                                lex_number(&mut expr_chars, ech, expr_col, line_no, tok_start)?;
-                            expr_col = new_col;
-                            expr_tokens.push(Token {
-                                kind,
-                                line: line_no,
-                                col: expr_col,
-                                start: tok_start,
-                                end: ls + expr_col,
-                            });
-                        }
-                        _ if ech.is_ascii_alphabetic() || ech == '_' => {
-                            let (kind, new_col) =
-                                lex_ident_or_keyword(&mut expr_chars, ech, expr_col);
-                            expr_col = new_col;
-                            expr_tokens.push(Token {
-                                kind,
-                                line: line_no,
-                                col: expr_col,
-                                start: tok_start,
-                                end: ls + expr_col,
-                            });
-                        }
-                        _ => {
-                            return Err(Diagnostic::error(format!(
-                                "Unexpected character '{}' in string interpolation at line {}",
-                                ech, line_no
-                            ))
-                            .with_code("L001")
-                            .with_label(
-                                Span::new(tok_start, tok_start + 1),
-                                "unexpected character in interpolation",
-                            ));
-                        }
+                            end: ls + expr_col,
+                        });
+                    } else {
+                        return Err(Diagnostic::error(format!(
+                            "Unexpected character '{}' in string interpolation at line {}",
+                            ech, line_no
+                        ))
+                        .with_code("L001")
+                        .with_label(
+                            Span::new(tok_start, tok_start + 1),
+                            "unexpected character in interpolation",
+                        ));
                     }
                 }
                 segments.push((literal_part, expr_tokens));
