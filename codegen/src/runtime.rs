@@ -42,10 +42,11 @@ pub extern "C" fn aster_say_str(ptr: *const u8) {
         println!("nil");
         return;
     }
+    const MAX_STRING_LENGTH: usize = 1_000_000;
     unsafe {
         let raw_len = *(ptr as *const i64);
-        if raw_len < 0 {
-            println!("<invalid string: negative length>");
+        if raw_len < 0 || raw_len as usize > MAX_STRING_LENGTH {
+            println!("<invalid string: length {} out of bounds>", raw_len);
             return;
         }
         let len = raw_len as usize;
