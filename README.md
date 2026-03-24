@@ -78,7 +78,7 @@ Generics with constraints, traits and protocols (Eq, Ord, Printable, Iterable, F
 
 ### What's next
 
-The [TODO](TODO.md) tracks everything that's specced but not built yet. The big-ticket items right now are closing the remaining codegen gaps (so more of the front-end surface actually executes), building out the standard library, and getting a testing story in place. After that: REPL, LSP, and an MCP server that gives AI agents direct access to compiler internals.
+The big-ticket items right now are closing the remaining codegen gaps (so more of the front-end surface actually executes), building out the standard library, and getting a testing story in place. After that: REPL, LSP, and an MCP server that gives AI agents direct access to compiler internals.
 
 ## Build and run
 
@@ -151,7 +151,7 @@ All the "why" lives in the design RFCs:
 
 ## Contributing
 
-File issues using the templates. Pick Bug, Feature Request, or Gap depending on what you're reporting. Check [TODO.md](TODO.md) for the full backlog.
+File issues using the templates. Pick Bug, Feature Request, or Gap depending on what you're reporting.
 
 ### Issue labels
 
