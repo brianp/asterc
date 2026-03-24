@@ -9,7 +9,7 @@ impl Lowerer {
             return expr;
         }
         let ty = self.infer_fir_type(&expr);
-        if !matches!(ty, FirType::Ptr | FirType::Struct(_)) {
+        if !ty.needs_gc_root() {
             return expr;
         }
         let tmp_id = self.alloc_local();
@@ -25,7 +25,7 @@ impl Lowerer {
     /// Return a FirExpr flag indicating whether list elements are GC pointers.
     /// 1 for Ptr/Struct (need tracing), 0 for value types (Int/Float/Bool).
     pub(crate) fn list_ptr_elems_flag(elem_ty: &FirType) -> FirExpr {
-        if matches!(elem_ty, FirType::Ptr | FirType::Struct(_)) {
+        if elem_ty.needs_gc_root() {
             FirExpr::IntLit(1)
         } else {
             FirExpr::IntLit(0)

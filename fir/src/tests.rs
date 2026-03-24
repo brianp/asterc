@@ -2423,3 +2423,45 @@ def main() -> Int
     let fir = lower_ok(src);
     assert!(fir.entry.is_some());
 }
+
+// ---------------------------------------------------------------------------
+// FirType::needs_gc_root
+// ---------------------------------------------------------------------------
+
+#[test]
+fn needs_gc_root_ptr() {
+    assert!(FirType::Ptr.needs_gc_root());
+}
+
+#[test]
+fn needs_gc_root_struct() {
+    assert!(FirType::Struct(ClassId(0)).needs_gc_root());
+}
+
+#[test]
+fn needs_gc_root_tagged_union_with_ptr_variant() {
+    let ty = FirType::TaggedUnion {
+        tag_bits: 1,
+        variants: vec![FirType::Ptr, FirType::Void],
+    };
+    assert!(ty.needs_gc_root());
+}
+
+#[test]
+fn needs_gc_root_tagged_union_no_ptr_variant() {
+    let ty = FirType::TaggedUnion {
+        tag_bits: 1,
+        variants: vec![FirType::I64, FirType::Bool],
+    };
+    assert!(!ty.needs_gc_root());
+}
+
+#[test]
+fn needs_gc_root_value_types() {
+    assert!(!FirType::I64.needs_gc_root());
+    assert!(!FirType::F64.needs_gc_root());
+    assert!(!FirType::Bool.needs_gc_root());
+    assert!(!FirType::Void.needs_gc_root());
+    assert!(!FirType::Never.needs_gc_root());
+    assert!(!FirType::FnPtr(FunctionId(0)).needs_gc_root());
+}

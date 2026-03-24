@@ -722,7 +722,7 @@ def main() -> Int
 
 #[test]
 fn run_iterable_map_with_string_interpolation_capture() {
-    // GH-1: This test exercises the critical path — map callback produces Ptr
+    // GH-1: This test exercises the critical path -- map callback produces Ptr
     // temporaries (via string interpolation with captured variable) that must be
     // rooted before passing to aster_list_push. Without the fix, GC pressure
     // during list_push can collect the unrooted temporary.
@@ -744,6 +744,34 @@ def main() -> Int
         output.status.code(),
         Some(10),
         "map with string interpolation capture: {}",
+        common::output_text(&output)
+    );
+}
+
+#[test]
+fn run_iterable_map_gc_pressure_string_alloc() {
+    // GC-pressure test: map over a large list producing Ptr results (strings)
+    // each iteration. With enough allocations, aster_list_push will trigger GC
+    // while an unrooted Ptr temporary is live. This test would segfault or
+    // produce wrong results without the root_if_ptr fix.
+    let dir = common::make_temp_dir("iter-map-gc-pressure");
+    let src = dir.join("gc_pressure.aster");
+    std::fs::write(
+        &src,
+        r#"
+def main() -> Int
+  let items = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50]
+  let tag = "item"
+  let strs = items.map(f: -> x: "{tag}{x}")
+  strs.count()
+"#,
+    )
+    .unwrap();
+    let output = common::build_and_run(&src);
+    assert_eq!(
+        output.status.code(),
+        Some(50),
+        "map gc pressure (50 string allocs): {}",
         common::output_text(&output)
     );
 }

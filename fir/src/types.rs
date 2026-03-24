@@ -27,4 +27,16 @@ pub enum FirType {
     FnPtr(FunctionId),
 }
 
+impl FirType {
+    /// Whether this type can hold a GC-managed heap pointer and therefore
+    /// needs a shadow stack root slot to stay alive across allocations.
+    pub fn needs_gc_root(&self) -> bool {
+        match self {
+            FirType::Ptr | FirType::Struct(_) => true,
+            FirType::TaggedUnion { variants, .. } => variants.iter().any(|v| v.needs_gc_root()),
+            _ => false,
+        }
+    }
+}
+
 impl Eq for FirType {}

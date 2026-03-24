@@ -181,7 +181,7 @@ impl<M: Module> CompileState<M> {
             let param_roots: usize = func
                 .params
                 .iter()
-                .filter(|(_, ty)| matches!(ty, fir::FirType::Ptr | fir::FirType::Struct(_)))
+                .filter(|(_, ty)| ty.needs_gc_root())
                 .count();
             let body_roots = count_body_gc_roots(&func.body);
             let total_gc_roots = param_roots + body_roots;
@@ -200,7 +200,7 @@ impl<M: Module> CompileState<M> {
 
                 let mut root_idx: i32 = 0;
                 for (i, (_, ty)) in func.params.iter().enumerate() {
-                    if matches!(ty, fir::FirType::Ptr | fir::FirType::Struct(_)) {
+                    if ty.needs_gc_root() {
                         let local_id = fir::LocalId(i as u32);
                         let slot_offset = (2 + root_idx) * 8;
                         state.gc_root_slots.insert(local_id, slot_offset);
@@ -349,14 +349,14 @@ fn pack_shim_result(builder: &mut FunctionBuilder, value: ir::Value, ty: &FirTyp
     }
 }
 
-/// Count Ptr/Struct-typed Let bindings in a function body (recursive).
+/// Count GC-rooted Let bindings in a function body (recursive).
 pub(crate) fn count_body_gc_roots(stmts: &[fir::stmts::FirStmt]) -> usize {
     use fir::stmts::FirStmt;
     let mut count = 0;
     for stmt in stmts {
         match stmt {
             FirStmt::Let { ty, .. } => {
-                if matches!(ty, fir::FirType::Ptr | fir::FirType::Struct(_)) {
+                if ty.needs_gc_root() {
                     count += 1;
                 }
             }

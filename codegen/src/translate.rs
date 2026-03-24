@@ -173,7 +173,7 @@ pub fn assign_body_gc_root_slots(
     for stmt in stmts {
         match stmt {
             FirStmt::Let { name, ty, .. } => {
-                if matches!(ty, FirType::Ptr | FirType::Struct(_)) {
+                if ty.needs_gc_root() {
                     let slot_offset = (2 + *next_root_idx) * 8;
                     state.gc_root_slots.insert(*name, slot_offset);
                     *next_root_idx += 1;
@@ -624,7 +624,7 @@ fn translate_expr(
             if let Some(&new_ref) = state.runtime_refs.get("aster_list_new") {
                 let cap = elements.len().max(4) as i64;
                 let cap_val = builder.ins().iconst(types::I64, cap);
-                let ptr_elems = if matches!(elem_ty, FirType::Ptr | FirType::Struct(_)) {
+                let ptr_elems = if elem_ty.needs_gc_root() {
                     1i64
                 } else {
                     0i64
