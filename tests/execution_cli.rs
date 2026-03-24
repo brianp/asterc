@@ -828,7 +828,11 @@ def main() -> Int
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let ok_count = stdout.matches("ok").count();
-    assert_eq!(ok_count, 3, "each should call callback 3 times, got: {}", stdout);
+    assert_eq!(
+        ok_count, 3,
+        "each should call callback 3 times, got: {}",
+        stdout
+    );
 }
 
 #[test]
@@ -855,7 +859,11 @@ def main() -> Int
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let tag_count = stdout.matches("val").count();
-    assert_eq!(tag_count, 3, "each should call callback 3 times with capture, got: {}", stdout);
+    assert_eq!(
+        tag_count, 3,
+        "each should call callback 3 times with capture, got: {}",
+        stdout
+    );
 }
 
 #[test]

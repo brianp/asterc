@@ -2450,7 +2450,10 @@ def main() -> Int
 ";
     let fir = lower_ok(src);
     let entry = fir.get_function(fir.entry.unwrap());
-    let has_while = entry.body.iter().any(|s| matches!(s, FirStmt::While { .. }));
+    let has_while = entry
+        .body
+        .iter()
+        .any(|s| matches!(s, FirStmt::While { .. }));
     assert!(has_while, "each should emit a While loop in FIR");
 }
 

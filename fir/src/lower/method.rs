@@ -520,8 +520,7 @@ impl Lowerer {
                         .lower_iterable_with_callback(method, fir_object, args, &elem_ty, object);
                 }
                 builtin_method::EACH => {
-                    return self
-                        .lower_iterable_each(fir_object, args, &elem_ty, object);
+                    return self.lower_iterable_each(fir_object, args, &elem_ty, object);
                 }
                 builtin_method::REDUCE => {
                     return self.lower_iterable_reduce(fir_object, args, &elem_ty, object);

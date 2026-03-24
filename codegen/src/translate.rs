@@ -624,11 +624,7 @@ fn translate_expr(
             if let Some(&new_ref) = state.runtime_refs.get("aster_list_new") {
                 let cap = elements.len().max(4) as i64;
                 let cap_val = builder.ins().iconst(types::I64, cap);
-                let ptr_elems = if elem_ty.needs_gc_root() {
-                    1i64
-                } else {
-                    0i64
-                };
+                let ptr_elems = if elem_ty.needs_gc_root() { 1i64 } else { 0i64 };
                 let ptr_elems_val = builder.ins().iconst(types::I64, ptr_elems);
                 let call = builder.ins().call(new_ref, &[cap_val, ptr_elems_val]);
                 let list_ptr = builder.inst_results(call)[0];
