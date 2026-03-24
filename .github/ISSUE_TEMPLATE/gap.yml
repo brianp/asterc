@@ -1,0 +1,53 @@
+name: Gap
+description: Something that's specced or planned but not yet implemented
+labels: ["gap"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for things that should work based on the RFCs or plans but don't yet.
+        Different from a bug — the feature was never implemented, not broken.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What's missing?
+      description: Describe the gap. What does the spec/RFC say should work?
+      placeholder: "The REPL RFC specifies `:type` command but it's not implemented."
+    validations:
+      required: true
+
+  - type: textarea
+    id: where
+    attributes:
+      label: Where is it specced?
+      description: Link to the RFC, plan, or design doc that describes this.
+      placeholder: "workingfiles/plans/repl.md, Phase 3"
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Anything else — workarounds, blocking issues, priority thoughts.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of the compiler?
+      options:
+        - Lexer
+        - Parser
+        - Type checker
+        - FIR lowering
+        - Codegen (JIT)
+        - Codegen (AOT)
+        - Runtime
+        - CLI
+        - Formatter (aster-fmt)
+        - LSP
+        - REPL
+        - Stdlib
+        - Other
+    validations:
+      required: false

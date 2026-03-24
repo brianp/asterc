@@ -1,0 +1,61 @@
+name: Feature Request
+description: Propose a new language feature, compiler capability, or tooling improvement
+labels: ["feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the feature you'd like to see. If there's an existing RFC, link to it.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: What's the pain point or use case that motivates this feature?
+      placeholder: "Right now there's no way to X, so users have to Y which is error-prone."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would the feature look like? Include syntax examples if relevant.
+      render: text
+      placeholder: |
+        ```aster
+        // Example of how the feature would work
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you thought about and why they don't work as well.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Where does this feature land?
+      options:
+        - Language syntax
+        - Type system
+        - Standard library
+        - Async / concurrency
+        - Error handling
+        - Tooling (CLI, formatter, LSP)
+        - Runtime / codegen
+        - Documentation
+        - Other
+    validations:
+      required: false
+
+  - type: input
+    id: rfc
+    attributes:
+      label: Related RFC
+      description: Link to an existing RFC if one exists.
+      placeholder: "workingfiles/docs/src/content/docs/rfcs/..."

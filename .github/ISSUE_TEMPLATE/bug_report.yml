@@ -1,0 +1,72 @@
+name: Bug Report
+description: Something isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Fill in what you can — the more detail, the faster we can fix it.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the bug. What did you expect vs what actually happened?
+      placeholder: "I ran `asterc run foo.aster` and got a panic instead of a type error."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Minimal Aster source or CLI command that triggers the bug.
+      render: text
+      placeholder: |
+        ```aster
+        let x: Int = "hello"
+        ```
+
+        ```sh
+        asterc run example.aster
+        ```
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened instead?
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened? Paste error output, panics, or wrong results.
+      render: text
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of the compiler is affected?
+      options:
+        - Lexer
+        - Parser
+        - Type checker
+        - FIR lowering
+        - Codegen (JIT)
+        - Codegen (AOT)
+        - Runtime
+        - CLI
+        - Formatter (aster-fmt)
+        - Stdlib
+        - Don't know
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: Version / Commit
+      description: Output of `asterc --version` or the commit SHA you're on.
+      placeholder: "main @ 41acccf"
