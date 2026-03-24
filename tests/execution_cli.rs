@@ -621,3 +621,155 @@ def main() -> Int
         common::output_text(&output)
     );
 }
+
+// ─── Iterable closures with captured variables (GH-1) ───────────────
+
+#[test]
+fn run_iterable_map_with_captured_int() {
+    let dir = common::make_temp_dir("iter-map-capture-int");
+    let src = dir.join("map_capture.aster");
+    std::fs::write(
+        &src,
+        "\
+let items = [1, 2, 3]
+let multiplier = 10
+let result = items.map(f: -> x: x * multiplier)
+def main() -> Int
+  result.reduce(init: 0, f: -> acc, x: acc + x)
+",
+    )
+    .unwrap();
+    let output = common::build_and_run(&src);
+    assert_eq!(
+        output.status.code(),
+        Some(60),
+        "map with captured int: {}",
+        common::output_text(&output)
+    );
+}
+
+#[test]
+fn run_iterable_filter_with_captured_int() {
+    let dir = common::make_temp_dir("iter-filter-capture-int");
+    let src = dir.join("filter_capture.aster");
+    std::fs::write(
+        &src,
+        "\
+let items = [1, 2, 3, 4, 5]
+let threshold = 3
+let big = items.filter(f: -> x: x > threshold)
+def main() -> Int
+  big.count()
+",
+    )
+    .unwrap();
+    let output = common::build_and_run(&src);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "filter with captured int: {}",
+        common::output_text(&output)
+    );
+}
+
+#[test]
+fn run_iterable_map_with_captured_string() {
+    let dir = common::make_temp_dir("iter-map-capture-str");
+    let src = dir.join("map_capture_str.aster");
+    std::fs::write(
+        &src,
+        r#"
+let items = [1, 2, 3]
+let tag = "v"
+let strs = items.map(f: -> x: tag)
+def main() -> Int
+  strs.count()
+"#,
+    )
+    .unwrap();
+    let output = common::build_and_run(&src);
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "map with captured string: {}",
+        common::output_text(&output)
+    );
+}
+
+#[test]
+fn run_iterable_reduce_with_captured_int() {
+    let dir = common::make_temp_dir("iter-reduce-capture");
+    let src = dir.join("reduce_capture.aster");
+    std::fs::write(
+        &src,
+        "\
+let items = [1, 2, 3, 4]
+let bonus = 10
+let total = items.reduce(init: bonus, f: -> acc, x: acc + x)
+def main() -> Int
+  total
+",
+    )
+    .unwrap();
+    let output = common::build_and_run(&src);
+    assert_eq!(
+        output.status.code(),
+        Some(20),
+        "reduce with captured init: {}",
+        common::output_text(&output)
+    );
+}
+
+#[test]
+fn run_iterable_map_with_string_interpolation_capture() {
+    // GH-1: This test exercises the critical path — map callback produces Ptr
+    // temporaries (via string interpolation with captured variable) that must be
+    // rooted before passing to aster_list_push. Without the fix, GC pressure
+    // during list_push can collect the unrooted temporary.
+    let dir = common::make_temp_dir("iter-map-strinterp");
+    let src = dir.join("map_strinterp.aster");
+    std::fs::write(
+        &src,
+        r#"
+let items = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+let tag = "v"
+let strs = items.map(f: -> x: "{tag}{x}")
+def main() -> Int
+  strs.count()
+"#,
+    )
+    .unwrap();
+    let output = common::build_and_run(&src);
+    assert_eq!(
+        output.status.code(),
+        Some(10),
+        "map with string interpolation capture: {}",
+        common::output_text(&output)
+    );
+}
+
+#[test]
+fn run_iterable_map_chain_with_capture() {
+    let dir = common::make_temp_dir("iter-map-chain-capture");
+    let src = dir.join("map_chain_capture.aster");
+    std::fs::write(
+        &src,
+        "\
+let items = [1, 2, 3, 4]
+let scale = 2
+let offset = 1
+let result = items.map(f: -> x: x * scale).map(f: -> x: x + offset)
+def main() -> Int
+  result.reduce(init: 0, f: -> acc, x: acc + x)
+",
+    )
+    .unwrap();
+    let output = common::build_and_run(&src);
+    // items: [1,2,3,4] -> *2 -> [2,4,6,8] -> +1 -> [3,5,7,9] -> sum = 24
+    assert_eq!(
+        output.status.code(),
+        Some(24),
+        "chained map with captures: {}",
+        common::output_text(&output)
+    );
+}

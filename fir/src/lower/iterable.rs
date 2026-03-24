@@ -1,6 +1,27 @@
 use super::*;
 
 impl Lowerer {
+    /// Root a Ptr-typed expression in a temporary Let binding so the GC shadow
+    /// stack can track it. If the expression is already a LocalVar (already
+    /// rooted) or is not a Ptr/Struct type, returns it unchanged.
+    fn root_if_ptr(&mut self, expr: FirExpr, stmts: &mut Vec<FirStmt>) -> FirExpr {
+        if matches!(expr, FirExpr::LocalVar(_, _)) {
+            return expr;
+        }
+        let ty = self.infer_fir_type(&expr);
+        if !matches!(ty, FirType::Ptr | FirType::Struct(_)) {
+            return expr;
+        }
+        let tmp_id = self.alloc_local();
+        self.local_types.insert(tmp_id, ty.clone());
+        stmts.push(FirStmt::Let {
+            name: tmp_id,
+            ty: ty.clone(),
+            value: expr,
+        });
+        FirExpr::LocalVar(tmp_id, ty)
+    }
+
     /// Return a FirExpr flag indicating whether list elements are GC pointers.
     /// 1 for Ptr/Struct (need tracing), 0 for value types (Int/Float/Bool).
     pub(crate) fn list_ptr_elems_flag(elem_ty: &FirType) -> FirExpr {
@@ -147,9 +168,16 @@ impl Lowerer {
                 let mapped_val = self.apply_inline_lambda(callback, elem_id, elem_ty, object)?;
                 loop_body.append(&mut self.pending_stmts);
                 self.pending_stmts = saved_pending;
+
+                // GH-1: Root the mapped value in a Let binding so the GC shadow
+                // stack tracks it. Without this, a Ptr-typed expression temporary
+                // (e.g. from string concat or object construction) can be collected
+                // if aster_list_push triggers a GC cycle.
+                let mapped_ref = self.root_if_ptr(mapped_val, &mut loop_body);
+
                 loop_body.push(FirStmt::Expr(FirExpr::RuntimeCall {
                     name: "aster_list_push".to_string(),
-                    args: vec![FirExpr::LocalVar(result_id, FirType::Ptr), mapped_val],
+                    args: vec![FirExpr::LocalVar(result_id, FirType::Ptr), mapped_ref],
                     ret_ty: FirType::Ptr,
                 }));
 

@@ -371,6 +371,38 @@ let lowest = scores.min()
     );
 }
 
+// ─── Captured variables in iterable closures ────────────────────────
+
+#[test]
+fn iterable_map_with_captured_variable() {
+    common::check_ok(
+        r#"let items = [1, 2, 3, 4, 5]
+let multiplier = 10
+let result = items.map(f: -> x: x * multiplier)
+"#,
+    );
+}
+
+#[test]
+fn iterable_filter_with_captured_variable() {
+    common::check_ok(
+        r#"let items = [1, 2, 3, 4, 5]
+let threshold = 3
+let result = items.filter(f: -> x: x > threshold)
+"#,
+    );
+}
+
+#[test]
+fn iterable_map_with_captured_string() {
+    common::check_ok(
+        r#"let items = [1, 2, 3]
+let prefix = "item"
+let result = items.map(f: -> x: prefix)
+"#,
+    );
+}
+
 // ─── Chaining ────────────────────────────────────────────────────────
 
 #[test]
