@@ -1,8 +1,6 @@
 mod common;
 
-// =============================================================================
-// Phase 3: Rich Error Messages — Diagnostics carry spans, codes, and notes
-// =============================================================================
+// ─── Rich error messages: spans, codes, and notes ───────────────────
 
 #[test]
 fn diagnostic_type_mismatch_has_span() {
@@ -86,9 +84,7 @@ fn diagnostic_no_suggestion_for_very_different_name() {
     let _ = has_did_you_mean;
 }
 
-// =============================================================================
-// Phase 4: Error Recovery — Type::Error prevents cascading, multiple errors
-// =============================================================================
+// ─── Error recovery: Type::Error prevents cascading ────────────────
 
 #[test]
 fn type_error_variant_exists() {
@@ -139,9 +135,7 @@ fn parser_recovery_reports_multiple_errors() {
     );
 }
 
-// =============================================================================
-// Phase 5: TOONS — Serialization, NodeId, DiagnosticTemplate
-// =============================================================================
+// ─── Serialization, NodeId, DiagnosticTemplate ─────────────────────
 
 #[test]
 fn span_serializable() {
@@ -236,4 +230,88 @@ fn existing_check_err_still_works() {
 fn existing_check_parse_err_still_works() {
     let msg = common::check_parse_err("let x = )");
     assert!(msg.contains("Expected") || msg.contains("unexpected"));
+}
+
+// ─── Input size and literal limits ──────────────────────────────────
+
+#[test]
+fn file_size_limit_rejects_large_input() {
+    // 10MB+ input should be rejected
+    let huge = "a".repeat(11 * 1024 * 1024);
+    let result = lexer::lex(&huge);
+    assert!(result.is_err(), "Huge input should be rejected");
+}
+
+#[test]
+fn string_literal_length_limit() {
+    let long_str = format!("let x = \"{}\"", "a".repeat(1_000_001));
+    let result = lexer::lex(&long_str);
+    assert!(
+        result.is_err(),
+        "Very long string literal should be rejected"
+    );
+}
+
+#[test]
+fn number_literal_digit_limit() {
+    let long_num = format!("let x = {}", "9".repeat(1001));
+    let result = lexer::lex(&long_num);
+    assert!(
+        result.is_err(),
+        "Very long number literal should be rejected"
+    );
+}
+
+// ─── Type name suggestions ──────────────────────────────────────────
+
+#[test]
+fn lowercase_builtin_type_rejected() {
+    for (wrong, right) in [
+        ("bool", "Bool"),
+        ("int", "Int"),
+        ("float", "Float"),
+        ("string", "String"),
+        ("void", "Void"),
+    ] {
+        let src = format!("def f() -> {}\n  1\n", wrong);
+        let err = common::check_parse_err(&src);
+        assert!(
+            err.contains(&format!("Did you mean '{}'?", right)),
+            "'{}' should suggest '{}', got: {}",
+            wrong,
+            right,
+            err
+        );
+    }
+}
+
+// ─── Identifier validation ──────────────────────────────────────────
+
+#[test]
+fn unicode_homoglyph_identifier_rejected() {
+    // Cyrillic 'а' (U+0430) looks identical to Latin 'a' but is a different character
+    let result = lexer::lex("let \u{0430} = 1");
+    assert!(result.is_err(), "Cyrillic homoglyph should be rejected");
+}
+
+#[test]
+fn ascii_identifiers_accepted() {
+    let result = lexer::lex("let abc = 1");
+    assert!(result.is_ok());
+}
+
+#[test]
+fn underscore_identifiers_accepted() {
+    let result = lexer::lex("let _foo = 1");
+    assert!(result.is_ok());
+}
+
+// ─── Indentation validation ─────────────────────────────────────────
+
+#[test]
+fn tab_indentation_rejected() {
+    let result = lexer::lex("def f() -> Int\n\treturn 1\n");
+    assert!(result.is_err(), "Tab indentation should be rejected");
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("tab") || err.contains("Tab") || err.contains("indent"));
 }

@@ -1,8 +1,6 @@
 mod common;
 
-// ============================================================
-// Phase 1: Parametric Trait Parsing
-// ============================================================
+// ─── Parametric trait parsing ───────────────────────────────────────
 
 #[test]
 fn parse_parametric_trait_single_param() {
@@ -36,9 +34,7 @@ class Wrapper includes From[Int]
     );
 }
 
-// ============================================================
-// Phase 2: Parametric Trait Satisfaction
-// ============================================================
+// ─── Parametric trait satisfaction ──────────────────────────────────
 
 #[test]
 fn parametric_trait_satisfied_with_correct_method() {
@@ -110,9 +106,7 @@ class IntWrapper includes Wrap[Int]
     );
 }
 
-// ============================================================
-// Phase 3: Non-parametric traits still work (regression)
-// ============================================================
+// ─── Non-parametric traits still work (regression guard) ───────────
 
 #[test]
 fn eq_still_works_after_parametric_trait_changes() {
@@ -161,9 +155,7 @@ class Point includes Eq
     );
 }
 
-// ============================================================
-// Phase 4: Built-in From[T] Protocol
-// ============================================================
+// ─── Built-in From[T] protocol ─────────────────────────────────────
 
 #[test]
 fn from_trait_registered_builtin() {
@@ -238,9 +230,7 @@ let c = Celsius.from(value: 100.0)",
     );
 }
 
-// ============================================================
-// Phase 5: Built-in Into[T] Protocol
-// ============================================================
+// ─── Built-in Into[T] protocol ─────────────────────────────────────
 
 #[test]
 fn into_trait_registered_builtin() {
@@ -300,9 +290,7 @@ class Celsius includes Into[Float]
     );
 }
 
-// ============================================================
-// Phase 6: From + Into together
-// ============================================================
+// ─── From + Into composition ────────────────────────────────────────
 
 #[test]
 fn class_with_both_from_and_into() {
@@ -330,9 +318,7 @@ class UserId includes From[Int], Into[String]
     );
 }
 
-// ============================================================
-// Phase 7: Parametric trait + non-parametric trait combined
-// ============================================================
+// ─── Parametric + non-parametric trait combined ─────────────────────
 
 #[test]
 fn class_includes_eq_and_from() {
@@ -359,9 +345,7 @@ class UserId includes Eq, From[Int]
     );
 }
 
-// ============================================================
-// Phase 8: From[T] fallible conversion (throws)
-// ============================================================
+// ─── From[T] fallible conversion (throws) ──────────────────────────
 
 #[test]
 fn from_with_throws() {
@@ -376,9 +360,7 @@ class Port includes From[Int]
     );
 }
 
-// ============================================================
-// Phase 9: Edge cases
-// ============================================================
+// ─── Edge cases ────────────────────────────────────────────────────
 
 #[test]
 fn unknown_parametric_trait_error() {
@@ -427,9 +409,7 @@ class IntToString includes Mapper[String]
     );
 }
 
-// ============================================================
-// Phase 10: Multiple parametric trait inclusions
-// ============================================================
+// ─── Multiple parametric trait inclusions ───────────────────────────
 
 #[test]
 fn multiple_into_inclusions_different_types() {
@@ -463,9 +443,7 @@ class UserId includes From[Int], From[String]
     );
 }
 
-// ============================================================
-// Phase 11: Expected-type resolution for .into()
-// ============================================================
+// ─── Expected-type resolution for .into() ──────────────────────────
 
 #[test]
 fn into_resolved_by_let_annotation() {
@@ -550,9 +528,7 @@ let f = c.into()",
     );
 }
 
-// ============================================================
-// Phase 12: From/Into auto-reverse
-// ============================================================
+// ─── From/Into auto-reverse ─────────────────────────────────────────
 
 #[test]
 fn from_implies_into_with_expected_type() {
@@ -608,9 +584,7 @@ let user: User = row.into()",
     );
 }
 
-// ============================================================
-// Phase 13: Expected-type resolution for Type.from() with multiple From
-// ============================================================
+// ─── Expected-type resolution for Type.from() with multiple From ───
 
 #[test]
 fn multiple_from_type_dot_from_selects_by_arg_type() {

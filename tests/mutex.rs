@@ -1,8 +1,8 @@
 mod common;
 
-// --- Phase 7: Mutex[T] ---
+// ─── Mutex[T] type-checking ─────────────────────────────────────────
 
-// 7.2 — Mutex constructor
+// Mutex constructor
 
 #[test]
 fn mutex_constructor() {
@@ -30,7 +30,7 @@ def main() -> Int
     );
 }
 
-// 7.2 — Scoped lock
+// Scoped lock
 
 #[test]
 fn mutex_lock_basic() {
@@ -104,7 +104,7 @@ def main() -> Int
     );
 }
 
-// 7.5 — Manual acquire/release
+// Manual acquire/release
 
 #[test]
 fn mutex_acquire_release() {
@@ -119,7 +119,7 @@ def main() throws Error -> Int
     );
 }
 
-// 7.2 — Method type errors
+// Method type errors
 
 #[test]
 fn mutex_unknown_method_error() {
@@ -137,7 +137,7 @@ def main() -> Int
     );
 }
 
-// 7.1 — Constructor arg count
+// Constructor arg count
 
 #[test]
 fn mutex_constructor_no_args_error() {

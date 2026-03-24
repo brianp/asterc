@@ -417,3 +417,118 @@ fn unconstrained_generic_still_works() {
 fn unconstrained_multi_param_still_works() {
     common::check_ok("def first(a: A, b: B) -> A\n  a\nlet y = first(a: 1, b: \"hello\")\n");
 }
+
+// ─── Nullable typevar substitution in generics ──────────────────────
+
+#[test]
+fn nullable_typevar_substitution_in_generic() {
+    // A generic function returning T? should produce Int? when called with Int
+    common::check_ok(
+        r#"class Box[T]
+  value: T
+
+def maybe_first(xs: List[T]) -> T?
+  nil
+
+let items = [1, 2, 3]
+let result: Int? = maybe_first(xs: items)
+"#,
+    );
+}
+
+// ─── Container invariance ───────────────────────────────────────────
+
+#[test]
+fn generic_container_invariance_rejected() {
+    let err = common::check_err(
+        r#"class Animal
+  tag: String
+
+class Dog extends Animal
+  breed: String
+
+class Box[T]
+  value: T
+
+def take_box(b: Box[Animal]) -> String
+  b.value.tag
+
+let dog_box = Box[Dog](value: Dog(tag: "a", breed: "lab"))
+take_box(b: dog_box)
+"#,
+    );
+    assert!(
+        err.contains("E001") || err.contains("type mismatch") || err.contains("expected"),
+        "Generic containers should be invariant, got: {err}"
+    );
+}
+
+#[test]
+fn list_invariant_rejects_subtype() {
+    // List[Dog] should NOT be accepted where List[Animal] is expected
+    let err = common::check_err(
+        r#"class Animal
+  name: String
+
+class Dog extends Animal
+  breed: String
+
+def add_animal(animals: List[Animal]) -> Void
+  let x = 1
+
+let dogs = [Dog(name: "Rex", breed: "Lab")]
+add_animal(animals: dogs)
+"#,
+    );
+    assert!(
+        err.contains("mismatch") || err.contains("expects"),
+        "List[Dog] should not match List[Animal], got: {}",
+        err
+    );
+}
+
+#[test]
+fn list_exact_type_accepted() {
+    // List[Animal] should match List[Animal]
+    common::check_ok(
+        r#"class Animal
+  name: String
+
+def count_animals(animals: List[Animal]) -> Int
+  animals.count()
+
+let animals = [Animal(name: "Cat"), Animal(name: "Dog")]
+count_animals(animals: animals)
+"#,
+    );
+}
+
+#[test]
+fn generic_extends_constraint_accepts_subtype() {
+    // Passing Dog directly (not in List) to a constrained generic still works
+    common::check_ok(
+        r#"class Animal
+  name: String
+
+class Dog extends Animal
+  breed: String
+
+def get_name(a: T extends Animal) -> String
+  a.name
+
+get_name(a: Dog(name: "Rex", breed: "Lab"))
+"#,
+    );
+}
+
+#[test]
+fn list_type_satisfies_eq_constraint() {
+    // List[Int] should satisfy T includes Eq constraint since Int includes Eq
+    common::check_ok(
+        r#"def needs_eq(a: T includes Eq, b: T) -> Bool
+  a == b
+
+needs_eq(a: [1, 2], b: [1, 2])
+"#,
+    );
+}

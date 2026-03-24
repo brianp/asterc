@@ -1,10 +1,8 @@
 mod common;
 
-// ═══════════════════════════════════════════════════════════════════════
-// Regression tests for audit mitigations
-// ═══════════════════════════════════════════════════════════════════════
+// ─── Async call-site error handling ─────────────────────────────────
 
-// C1: BC-9 removed async context restrictions — async calls work anywhere
+// Async calls work anywhere (no context restriction)
 // This test verifies that async f() works from any context (no spoofing needed)
 #[test]
 fn async_call_works_anywhere() {
@@ -19,7 +17,7 @@ def caller() -> Task[Int]
     );
 }
 
-// C2: Structural type unification for generic params in compound types
+// Structural type unification for generic params
 #[test]
 fn generic_list_param_unifies() {
     common::check_ok(
@@ -32,7 +30,7 @@ let y = first_elem(items: xs)
     );
 }
 
-// H2: Match ident pattern binds the variable
+// Match ident pattern binds the variable
 #[test]
 fn match_ident_binds_variable() {
     common::check_ok(
@@ -43,9 +41,7 @@ fn match_ident_binds_variable() {
     );
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Round 2: Post-mitigation audit regression tests
-// ═══════════════════════════════════════════════════════════════════════
+// ─── Error propagation and try/catch ────────────────────────────────
 
 // R2-1: Nested return must be validated against declared return type
 #[test]
@@ -149,11 +145,9 @@ let r = apply(f: double, x: 5)
     );
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Phase 7: Error Handling RFC — extends, throws, throw, !, T?
-// ═══════════════════════════════════════════════════════════════════════
+// ─── Error handling RFC: extends, throws, throw, !, T? ──────────────
 
-// ─── 7A. extends keyword ─────────────────────────────────────────────
+// ─── extends keyword ────────────────────────────────────────────────
 
 #[test]
 fn extends_basic_inheritance() {
@@ -194,7 +188,7 @@ class Dog extends Animal includes Printable
     );
 }
 
-// ─── 7B. throws / throw / ! ──────────────────────────────────────────
+// ─── throws / throw / ! ─────────────────────────────────────────────
 
 #[test]
 fn throws_declaration_basic() {
@@ -311,7 +305,7 @@ def side_effect() throws AppError
     );
 }
 
-// ─── 7C. !.or(), !.or_else(), !.catch ────────────────────────────────
+// ─── !.or(), !.or_else(), !.catch ───────────────────────────────────
 
 #[test]
 fn bang_or_fallback_basic() {
@@ -416,7 +410,7 @@ def safe() -> Int
     );
 }
 
-// ─── 7D. T? nullable type ────────────────────────────────────────────
+// ─── T? nullable type ──────────────────────────────────────────────
 
 #[test]
 fn nullable_type_annotation() {
@@ -547,7 +541,7 @@ fn nullable_return_value() {
     );
 }
 
-// ─── 7D+. Catch with multiple error types ─────────────────────────────
+// ─── Catch with multiple error types ────────────────────────────────
 
 #[test]
 fn catch_multiple_error_types() {
@@ -570,7 +564,7 @@ def main() -> Int
     );
 }
 
-// ─── 7E. Remove old error constructs ─────────────────────────────────
+// ─── Old error constructs rejected ──────────────────────────────────
 
 // R2-9: Deeply nested expressions produce a clear error, not a stack overflow
 #[test]
@@ -636,5 +630,208 @@ def caller() throws Error -> Int
     AppError e -> 0
     _ -> -1
 "#,
+    );
+}
+
+// ─── Throws and error propagation ───────────────────────────────────
+
+#[test]
+fn throws_call_without_bang_error() {
+    let err = common::check_err(
+        r#"class AppError extends Error
+  code: Int
+
+def risky() throws AppError -> Int
+  42
+
+def safe() -> Int
+  risky()
+"#,
+    );
+    assert!(err.contains("throws") || err.contains("error handling") || err.contains("!"));
+}
+
+#[test]
+fn throws_call_with_bang_ok() {
+    common::check_ok(
+        r#"class AppError extends Error
+  code: Int
+
+def risky() throws AppError -> Int
+  42
+
+def caller() throws AppError -> Int
+  risky()!
+"#,
+    );
+}
+
+#[test]
+fn throws_call_with_or_ok() {
+    common::check_ok(
+        r#"class AppError extends Error
+  code: Int
+
+def risky() throws AppError -> Int
+  42
+
+def safe() -> Int
+  risky()!.or(0)
+"#,
+    );
+}
+
+#[test]
+fn throwing_call_without_error_handling() {
+    let err = common::check_err(
+        r#"class AppError extends Error
+  code: Int
+
+def risky_fetch() throws AppError -> String
+  "data"
+
+def main() -> String
+  risky_fetch()
+"#,
+    );
+    assert!(err.contains("throws") || err.contains("error handling") || err.contains("!"));
+}
+
+#[test]
+fn catch_arm_unreachable_type_error() {
+    let err = common::check_err(
+        r#"class AppError extends Error
+  code: Int
+
+class DatabaseError extends Error
+  code: Int
+
+def risky() throws AppError -> Int
+  42
+
+def caller() throws AppError -> Int
+  risky()!.catch
+    DatabaseError e -> 0
+    _ -> -1
+"#,
+    );
+    assert!(
+        err.contains("DatabaseError")
+            || err.contains("subtype")
+            || err.contains("unreachable")
+            || err.contains("not a subtype")
+    );
+}
+
+#[test]
+fn catch_arm_valid_subtype_ok() {
+    common::check_ok(
+        r#"class AppError extends Error
+  code: Int
+
+def risky() throws AppError -> Int
+  42
+
+def caller() -> Int
+  risky()!.catch
+    AppError e -> 0
+    _ -> -1
+"#,
+    );
+}
+
+#[test]
+fn error_or_returns_success_type() {
+    common::check_ok(
+        r#"class AppError extends Error
+  code: Int
+
+def risky() throws AppError -> String
+  "ok"
+
+def safe() -> String
+  risky()!.or("default")
+"#,
+    );
+}
+
+#[test]
+fn error_or_else_returns_success_type() {
+    common::check_ok(
+        r#"class AppError extends Error
+  code: Int
+
+def risky() throws AppError -> String
+  "ok"
+
+def safe() -> String
+  risky()!.or_else(-> "fallback")
+"#,
+    );
+}
+
+#[test]
+fn error_or_type_mismatch_error() {
+    let err = common::check_err(
+        r#"class AppError extends Error
+  code: Int
+
+def risky() throws AppError -> String
+  "ok"
+
+def safe() -> String
+  risky()!.or(42)
+"#,
+    );
+    assert!(
+        err.contains("mismatch"),
+        "Expected type mismatch, got: {}",
+        err
+    );
+}
+
+#[test]
+fn nullable_or_throw_in_throws_context() {
+    common::check_ok(
+        r#"class AppError extends Error
+  code: Int
+
+def risky(x: Int?) throws AppError -> Int
+  x.or_throw(error: AppError(message: "null", code: 0))
+"#,
+    );
+}
+
+// ─── Nullable .or/.or_else/.or_throw ─────────────────────────────────
+
+#[test]
+fn nullable_or_returns_inner_type() {
+    common::check_ok(
+        r#"let x: Int? = 5
+let y: Int = x.or(default: 0)
+"#,
+    );
+}
+
+#[test]
+fn nullable_or_else_returns_inner_type() {
+    common::check_ok(
+        r#"let x: Int? = nil
+let y: Int = x.or_else(f: 0)
+"#,
+    );
+}
+
+#[test]
+fn nullable_or_type_mismatch_error() {
+    let err = common::check_err(
+        r#"let x: Int? = 5
+let y: Int = x.or(default: "not_int")
+"#,
+    );
+    assert!(
+        err.contains("mismatch"),
+        "Expected type mismatch, got: {}",
+        err
     );
 }

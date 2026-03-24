@@ -290,22 +290,6 @@ def main() -> Int
 }
 
 #[test]
-fn task_resolve_twice_marks_binding_consumed() {
-    let src = "\
-def fetch() -> Int
-  42
-
-def main() -> Int
-  let t: Task[Int] = async fetch()
-  let first = resolve t!
-  let second = resolve t!
-  second
-";
-    let err = module_err(src);
-    assert!(err.contains("Task 't' is already consumed"));
-}
-
-#[test]
 fn plain_call_rejects_suspendability_inferred_from_nested_branch() {
     let src = "\
 def fetch() -> Int

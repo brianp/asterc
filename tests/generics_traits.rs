@@ -1,6 +1,6 @@
 mod common;
 
-// ─── Phase 5: Generics and Traits ───────────────────────────────────
+// ─── Generics and traits ────────────────────────────────────────────
 
 #[test]
 fn generic_class() {
@@ -99,7 +99,7 @@ class Container[T] includes Printable
     );
 }
 
-// ─── S4: Generic class Self type carries type args ──────────────────
+// ─── Generic class Self type carries type args ─────────────────────
 
 #[test]
 fn generic_class_self_carries_type_params() {
@@ -133,7 +133,7 @@ let c2 = c.identity()
     );
 }
 
-// ─── Fix #1: Generic function call-site unification ─────────────────
+// ─── Generic function call-site unification ─────────────────────────
 
 #[test]
 fn generic_function_call() {
@@ -150,7 +150,7 @@ fn generic_multi_param_call() {
     common::check_ok("def first(a: A, b: B) -> A\n  a\nlet y = first(a: 1, b: \"hello\")\n");
 }
 
-// ─── Fix #4: Trait signature mismatch ───────────────────────────────
+// ─── Trait signature mismatch ────────────────────────────────────────
 
 #[test]
 fn trait_signature_mismatch_error() {
@@ -166,7 +166,7 @@ class Item includes Displayable
     assert!(err.contains("signature") || err.contains("mismatch") || err.contains("display"));
 }
 
-// ─── Fix #5: Method access uses unqualified name ────────────────────
+// ─── Method access uses unqualified name ────────────────────────────
 
 #[test]
 fn member_method_access() {
@@ -179,7 +179,7 @@ fn member_method_access() {
     );
 }
 
-// ─── Fix #7: Return type validation ─────────────────────────────────
+// ─── Return type validation ─────────────────────────────────────────
 
 #[test]
 fn return_type_mismatch_error() {
@@ -187,7 +187,7 @@ fn return_type_mismatch_error() {
     assert!(err.contains("return") || err.contains("mismatch") || err.contains("Return"));
 }
 
-// ─── Fix #6: Scoping ────────────────────────────────────────────────
+// ─── Block scoping ─────────────────────────────────────────────────
 
 #[test]
 fn if_scope_doesnt_leak() {
@@ -207,7 +207,7 @@ fn for_var_doesnt_leak() {
     assert!(err.contains("Unknown") || err.contains("x"));
 }
 
-// ─── H1: Symmetric TypeVar unification ─────────────────────────────
+// ─── Symmetric TypeVar unification ──────────────────────────────────
 
 #[test]
 fn typevar_unification_symmetric() {
@@ -224,7 +224,7 @@ let result = apply(f: identity, val: 5)
     );
 }
 
-// ─── S3: General subtype polymorphism ──────────────────────────────
+// ─── General subtype polymorphism ───────────────────────────────────
 
 #[test]
 fn subtype_in_function_arg() {
@@ -315,5 +315,200 @@ class Dog extends Animal
   def speak() -> String
     \"woof\"
 ",
+    );
+}
+
+// ─── Class inheritance: field and method access ─────────────────────
+
+#[test]
+fn inherited_field_access() {
+    common::check_ok(
+        r#"class Animal
+  name: String
+
+class Dog extends Animal
+  breed: String
+
+let d = Dog(name: "buddy", breed: "lab")
+let n: String = d.name
+"#,
+    );
+}
+
+#[test]
+fn inherited_method_access() {
+    common::check_ok(
+        r#"class Base
+  x: Int
+
+  def greet() -> String
+    "hello"
+
+class Child extends Base
+  y: Int
+
+let c = Child(x: 1, y: 2)
+let val: String = c.greet()
+"#,
+    );
+}
+
+// ─── Cyclic and shadowed inheritance ────────────────────────────────
+
+#[test]
+fn cyclic_extends_detection() {
+    // Self-cycle: class extends itself
+    let err = common::check_err(
+        r#"class A extends A
+  message: String
+"#,
+    );
+    assert!(
+        err.contains("ircular") || err.contains("ycle"),
+        "Expected cycle error, got: {}",
+        err
+    );
+}
+
+#[test]
+fn field_shadowing_in_extends_error() {
+    let err = common::check_err(
+        r#"class Base
+  message: String
+
+class Child extends Base
+  message: String
+  extra: Int
+"#,
+    );
+    assert!(
+        err.contains("shadow") || err.contains("redeclar") || err.contains("already"),
+        "Expected field shadowing error, got: {}",
+        err
+    );
+}
+
+// ─── Generic and trait parsing behavior-locks ───────────────────────
+
+#[test]
+fn generic_class_params_parsed() {
+    common::check_ok(
+        r#"class Pair[A, B]
+  first: A
+  second: B
+"#,
+    );
+}
+
+#[test]
+fn generic_function_params_parsed() {
+    common::check_ok(
+        r#"def identity(x: T) -> T
+  x
+"#,
+    );
+}
+
+#[test]
+fn includes_multiple_traits_parsed() {
+    common::check_ok(
+        r#"trait Printable
+  def to_str() -> String
+
+trait Serializable
+  def serialize() -> String
+
+class Widget includes Printable, Serializable
+  name: String
+  def to_str() -> String
+    "widget"
+  def serialize() -> String
+    "json"
+"#,
+    );
+}
+
+// ─── Subtype polymorphism: return types and bare passing ────────────
+
+#[test]
+fn return_subtype_accepted() {
+    // Returning a Dog from a function declared -> Animal should work
+    common::check_ok(
+        r#"class Animal
+  name: String
+
+class Dog extends Animal
+  breed: String
+
+def test() -> Animal
+  return Dog(name: "Rex", breed: "Lab")
+"#,
+    );
+}
+
+#[test]
+fn implicit_return_subtype_accepted() {
+    common::check_ok(
+        r#"class Animal
+  name: String
+
+class Dog extends Animal
+  breed: String
+
+def test() -> Animal
+  Dog(name: "Rex", breed: "Lab")
+"#,
+    );
+}
+
+#[test]
+fn return_unrelated_type_rejected() {
+    let err = common::check_err(
+        r#"class Animal
+  name: String
+
+class Car
+  model: String
+
+def test() -> Animal
+  return Car(model: "Tesla")
+"#,
+    );
+    assert!(
+        err.contains("mismatch") || err.contains("expected"),
+        "Expected type mismatch error, got: {}",
+        err
+    );
+}
+
+#[test]
+fn bare_subtype_compatible_in_let() {
+    common::check_ok(
+        r#"class Animal
+  tag: String
+
+class Dog extends Animal
+  breed: String
+
+let a: Animal = Dog(tag: "a", breed: "lab")
+say(message: a.tag)
+"#,
+    );
+}
+
+#[test]
+fn direct_subtype_passing_accepted() {
+    common::check_ok(
+        r#"class Animal
+  name: String
+
+class Dog extends Animal
+  breed: String
+
+def greet(a: Animal) -> String
+  a.name
+
+greet(a: Dog(name: "Rex", breed: "Lab"))
+"#,
     );
 }

@@ -1,8 +1,8 @@
 mod common;
 
-// --- Phase 6: Drop and Close Traits ---
+// ─── Drop and Close trait registration ──────────────────────────────
 
-// 6.1 — Trait definitions: Drop and Close are registered in the virtual stdlib
+// Drop and Close are registered in the virtual stdlib
 
 #[test]
 fn class_includes_drop_with_method() {
@@ -46,7 +46,7 @@ class Connection includes Drop, Close
     );
 }
 
-// 6.2 — Parser + typecheck validation
+// Parser + typecheck validation
 
 #[test]
 fn drop_missing_method_is_error() {
@@ -76,7 +76,7 @@ class BadClose includes Close
     );
 }
 
-// 6.4 — Codegen: drop() called on scope exit
+// Codegen: drop() called on scope exit
 
 #[test]
 fn drop_called_on_scope_exit() {
@@ -167,7 +167,7 @@ def main() -> Int
     );
 }
 
-// 6.5 — Cleanup on break inside loop
+// Cleanup on break inside loop
 
 #[test]
 fn drop_called_on_break() {

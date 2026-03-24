@@ -2,11 +2,7 @@ mod common;
 
 use std::collections::HashMap;
 
-// ===========================================================
-// Phase M1: Module system tests — TDD specification
-// ===========================================================
-// These tests define the contract for the module system.
-// All must FAIL before implementation, then PASS after.
+// ─── Module system: imports and visibility ───────────────────────────
 
 // --- Contract tests: basic import mechanics ---
 
@@ -303,7 +299,7 @@ pub def risky_op(x: Int) throws MyError -> Int
 }
 
 // ===========================================================
-// Phase M2: Namespace imports — TDD specification
+// ─── Namespace imports ──────────────────────────────────────────────
 // ===========================================================
 
 // --- Namespace import: class access via alias ---
@@ -454,7 +450,7 @@ fn namespace_class_with_eq_supports_equality() {
 }
 
 // ===========================================================
-// Phase M3: Re-exports (pub use) — TDD specification
+// ─── Re-exports (pub use) ───────────────────────────────────────────
 // ===========================================================
 
 // --- Basic re-export: selective ---
@@ -709,5 +705,20 @@ fn import_class_hierarchy() {
     common::check_ok_with_files(
         "use animals { Animal, Dog }\nlet d = Dog(name: \"Rex\", breed: \"Lab\")\n",
         files,
+    );
+}
+
+// ─── Path traversal rejection ───────────────────────────────────────
+
+#[test]
+fn path_traversal_in_module_rejected() {
+    // A module path with ".." should be rejected at the parser level.
+    let err = common::check_parse_err(
+        r#"use ..secret
+"#,
+    );
+    assert!(
+        !err.is_empty(),
+        "Path traversal should be rejected at parse time"
     );
 }

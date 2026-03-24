@@ -1,8 +1,8 @@
 mod common;
 
-// --- Phase 8: Channels ---
+// ─── Channel[T] type-checking ───────────────────────────────────────
 
-// 8.2 — Channel constructor
+// Channel constructor
 
 #[test]
 fn channel_constructor_with_capacity() {
@@ -26,7 +26,7 @@ def main() -> Int
     );
 }
 
-// 8.3 — Send methods
+// Send methods
 
 #[test]
 fn channel_send() {
@@ -52,7 +52,7 @@ def main() -> Int
     );
 }
 
-// 8.3 — Receive methods
+// Receive methods
 
 #[test]
 fn channel_receive_nullable() {
@@ -80,7 +80,7 @@ def main() -> Int
     );
 }
 
-// 8.4 — Close
+// Close
 
 #[test]
 fn channel_close() {
@@ -94,7 +94,7 @@ def main() -> Int
     );
 }
 
-// 8.5 — Type errors
+// Type errors
 
 #[test]
 fn channel_unknown_method_error() {
@@ -112,7 +112,7 @@ def main() -> Int
     );
 }
 
-// 8.3 — try_send throws
+// try_send throws
 
 #[test]
 fn channel_try_send_throws() {
@@ -126,7 +126,7 @@ def main() throws ChannelFullError -> Int
     );
 }
 
-// 8.3 — try_receive throws
+// try_receive throws
 
 #[test]
 fn channel_try_receive_throws() {

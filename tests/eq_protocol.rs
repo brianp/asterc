@@ -1,8 +1,6 @@
 mod common;
 
-// ============================================================
-// Phase 2: Self Type
-// ============================================================
+// ─── Self type in trait methods ──────────────────────────────────────
 
 #[test]
 fn self_type_in_trait_method_parses() {
@@ -62,9 +60,7 @@ trait Cloneable
     );
 }
 
-// ============================================================
-// Phase 4A: Eq Protocol — Primitives (no regression)
-// ============================================================
+// ─── Eq protocol: primitive equality ────────────────────────────────
 
 #[test]
 fn eq_primitives_int() {
@@ -91,9 +87,7 @@ fn neq_primitives() {
     common::check_ok("let x = 1 != 2");
 }
 
-// ============================================================
-// Phase 4B: Eq Protocol — User types with manual Eq
-// ============================================================
+// ─── Eq protocol: user-defined equality ─────────────────────────────
 
 #[test]
 fn user_type_with_eq_can_use_double_equals() {
@@ -223,9 +217,7 @@ let b: Bool = p1 == p2
     );
 }
 
-// ============================================================
-// Phase 4C: Auto-derive Eq
-// ============================================================
+// ─── Eq protocol: auto-derived equality ─────────────────────────────
 
 #[test]
 fn auto_derive_eq_all_fields_eq() {
@@ -299,9 +291,7 @@ class User includes Eq
     );
 }
 
-// ============================================================
-// Phase 4D: Built-in Eq registration
-// ============================================================
+// ─── Eq protocol: built-in type registration ───────────────────────
 
 #[test]
 fn builtin_eq_trait_exists() {

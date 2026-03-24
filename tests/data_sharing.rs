@@ -1,8 +1,8 @@
 mod common;
 
-// --- Phase 10: Data Sharing Warnings ---
+// ─── Async data sharing warnings ────────────────────────────────────
 
-// 10.1 — Variable used after async pass → warning
+// Variable used after async pass → warning
 
 #[test]
 fn warn_use_after_async_pass() {
@@ -52,7 +52,7 @@ def main() -> Int
     );
 }
 
-// 10.2 — Variable not used after → no warning
+// Variable not used after → no warning
 
 #[test]
 fn no_warn_when_not_used_after() {
@@ -82,7 +82,7 @@ def main() -> Int
     );
 }
 
-// 10.3 — Reassignment after boundary → no warning
+// Reassignment after boundary → no warning
 
 #[test]
 fn no_warn_after_reassignment() {
@@ -110,7 +110,7 @@ def main() -> Int
     );
 }
 
-// 10.4 — Multiple boundaries
+// Multiple boundaries
 
 #[test]
 fn warn_multiple_boundaries() {
@@ -140,7 +140,7 @@ def main() -> Int
     );
 }
 
-// 10.5 — Primitive types also warned (shallow copy semantics)
+// Primitive types also warned (shallow copy semantics)
 
 #[test]
 fn warn_primitive_use_after_async() {

@@ -1,8 +1,8 @@
 mod common;
 
-// --- Phase 9: Must-Consume Task[T] Enforcement ---
+// ─── Must-consume Task[T] enforcement ───────────────────────────────
 
-// 9.1 — Consumed via resolve — no error
+// Consumed via resolve — no error
 
 #[test]
 fn task_consumed_via_resolve() {
@@ -19,7 +19,7 @@ def main() throws Error -> Int
     );
 }
 
-// 9.2 — Unconsumed task — compile error E027
+// Unconsumed task — compile error
 
 #[test]
 fn unconsumed_task_is_error() {
@@ -54,7 +54,7 @@ def main() throws Error -> Int
     );
 }
 
-// 9.3 — Returned from function — no error (caller's responsibility)
+// Returned from function — no error (caller's responsibility)
 
 #[test]
 fn task_returned_from_function_is_consumed() {
@@ -70,7 +70,7 @@ def spawn_work() -> Task[Int]
     );
 }
 
-// 9.4 — Detached async — no task to consume, no error
+// Detached async — no task to consume, no error
 
 #[test]
 fn detached_async_no_consume_needed() {
@@ -86,7 +86,7 @@ def main() -> Int
     );
 }
 
-// 9.5 — Task consumed via resolve in function body — no error
+// Task consumed via resolve in function body — no error
 
 #[test]
 fn task_consumed_in_function_body() {
@@ -102,7 +102,7 @@ def main() throws Error -> Int
     );
 }
 
-// 9.6 — Multiple tasks, one unconsumed
+// Multiple tasks, one unconsumed
 
 #[test]
 fn multiple_tasks_one_unconsumed() {
@@ -126,7 +126,7 @@ def main() throws Error -> Int
     );
 }
 
-// 9.7 — Task consumed via error recovery (resolve t!.or(default))
+// Task consumed via error recovery (resolve t!.or(default))
 
 #[test]
 fn task_consumed_via_error_or() {
@@ -143,7 +143,7 @@ def main() -> Int
     );
 }
 
-// 9.8 — Task consumed via error catch
+// Task consumed via error catch
 
 #[test]
 fn task_consumed_via_error_catch() {
@@ -161,7 +161,7 @@ def main() -> Int
     );
 }
 
-// 9.9 — Task passed as argument to function (consumed)
+// Task passed as argument to function (consumed)
 
 #[test]
 fn task_passed_as_argument_is_consumed() {
@@ -180,7 +180,7 @@ def main() throws Error -> Int
     );
 }
 
-// 9.10 — Task consumed inside if branch
+// Task consumed inside if branch
 
 #[test]
 fn task_consumed_inside_if_branch() {
@@ -199,7 +199,7 @@ def main(flag: Bool) throws Error -> Int
     );
 }
 
-// 9.11 — Task created inside if branch is still tracked
+// Task created inside if branch is still tracked
 
 #[test]
 fn task_created_inside_if_branch_unconsumed() {
@@ -217,7 +217,7 @@ def main(flag: Bool) throws Error -> Int
     assert_eq!(diag.code.as_deref(), Some("E027"));
 }
 
-// 9.12 — Task returned from inside if branch is consumed
+// Task returned from inside if branch is consumed
 
 #[test]
 fn task_returned_from_if_branch() {
@@ -235,7 +235,7 @@ def spawn_maybe(flag: Bool) -> Task[Int]
     );
 }
 
-// 9.13 — Non-task let bindings are not affected
+// Non-task let bindings are not affected
 
 #[test]
 fn non_task_let_not_affected() {

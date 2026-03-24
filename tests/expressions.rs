@@ -1,6 +1,6 @@
 mod common;
 
-// ─── Phase 1: Basic Expressions and Operators ───────────────────────
+// ─── Basic expressions and operators ────────────────────────────────
 
 #[test]
 fn arithmetic_expression() {
@@ -86,7 +86,7 @@ fn comparison_type_mismatch() {
     assert!(err.contains("Cannot compare"));
 }
 
-// ─── Phase 2: Control Flow Integration ──────────────────────────────
+// ─── Control flow integration ───────────────────────────────────────
 
 #[test]
 fn while_loop() {
@@ -138,4 +138,104 @@ fn continue_in_while() {
 #[test]
 fn log_builtin() {
     common::check_ok("log(message: \"hello\")");
+}
+
+// ─── Condition type enforcement ─────────────────────────────────────
+
+#[test]
+fn if_condition_must_be_bool() {
+    let err = common::check_err(
+        r#"if 42
+  let x = 1
+"#,
+    );
+    assert!(
+        err.contains("Bool"),
+        "Expected Bool condition error, got: {}",
+        err
+    );
+}
+
+#[test]
+fn while_body_typechecked() {
+    common::check_ok(
+        r#"let x = 0
+while x < 10
+  x = x + 1
+"#,
+    );
+}
+
+#[test]
+fn for_body_typechecked() {
+    common::check_ok(
+        r#"let items: List[Int] = [1, 2, 3]
+for item in items
+  let y = item + 1
+"#,
+    );
+}
+
+// ─── Expression as statement ────────────────────────────────────────
+
+#[test]
+fn expr_as_statement() {
+    common::check_ok(
+        r#"def f() -> Int
+  let x = 1
+  x + 2
+"#,
+    );
+}
+
+// ─── Parser recursion depth limits ──────────────────────────────────
+
+#[test]
+fn unary_recursion_depth_limit() {
+    let result = std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let depth = 500;
+            let nots: String = "not ".repeat(depth);
+            let src = format!("let x = {}true", nots);
+            let tokens = lexer::lex(&src).expect("lex ok");
+            let mut parser = parser::Parser::new(tokens);
+            let result = parser.parse_module("test");
+            assert!(result.is_err(), "Expected recursion depth error");
+        })
+        .unwrap()
+        .join();
+    assert!(
+        result.is_ok(),
+        "Thread panicked — stack overflow instead of depth error"
+    );
+}
+
+#[test]
+fn block_recursion_depth_limit() {
+    let result = std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let depth = 200;
+            let mut src2 = String::new();
+            for i in 0..depth {
+                let indent = "  ".repeat(i);
+                src2.push_str(&format!("{}if true\n", indent));
+            }
+            let final_indent = "  ".repeat(depth);
+            src2.push_str(&format!("{}let x = 1\n", final_indent));
+            let tokens = lexer::lex(&src2).expect("lex ok");
+            let mut parser = parser::Parser::new(tokens);
+            let result = parser.parse_module("test");
+            assert!(
+                result.is_err(),
+                "Expected recursion depth error for nested blocks"
+            );
+        })
+        .unwrap()
+        .join();
+    assert!(
+        result.is_ok(),
+        "Thread panicked — stack overflow instead of depth error"
+    );
 }

@@ -1,6 +1,6 @@
 mod common;
 
-// ─── Phase 3: Collections and Type Annotations ─────────────────────
+// ─── Collections and type annotations ───────────────────────────────
 
 // ─── Let with type annotation ───────────────────────────────────────
 
@@ -68,7 +68,7 @@ fn for_over_list() {
     common::check_ok("let xs = [1, 2, 3]\nfor x in xs\n  let y = x + 1\n");
 }
 
-// ─── Phase 4: Modules, Imports, Builtins ────────────────────────────
+// ─── Modules, imports, builtins ─────────────────────────────────────
 
 #[test]
 fn use_whole_module() {
@@ -151,4 +151,51 @@ fn let_list_type_annotation() {
 fn let_list_type_annotation_mismatch() {
     let err = common::check_err("let xs: List[String] = [1, 2]");
     assert!(err.contains("annotation") || err.contains("mismatch"));
+}
+
+// ─── Nullable assignment ────────────────────────────────────────────
+
+#[test]
+fn nullable_assignment_accepts_inner_type() {
+    common::check_ok(
+        r#"let x: String? = nil
+x = "hello"
+"#,
+    );
+}
+
+#[test]
+fn nullable_assignment_accepts_nil() {
+    common::check_ok(
+        r#"let x: String? = "hello"
+x = nil
+"#,
+    );
+}
+
+// ─── Never type recognition ────────────────────────────────────────
+
+#[test]
+fn never_type_recognized_by_from_ident() {
+    use ast::Type;
+    assert_eq!(Type::from_ident("Never"), Type::Never);
+}
+
+// ─── Nullable member access ─────────────────────────────────────────
+
+#[test]
+fn nullable_method_call_rejected() {
+    let err = common::check_err(
+        r#"class Foo
+  name: String
+
+let x: Foo? = nil
+let y = x.name
+"#,
+    );
+    assert!(
+        err.contains("nullable") || err.contains("Resolve") || err.contains("Cannot access"),
+        "Expected nullable access error, got: {}",
+        err
+    );
 }

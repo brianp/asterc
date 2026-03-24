@@ -1,6 +1,6 @@
 mod common;
 
-// --- Phase 4: AOT green thread tests ---
+// ─── AOT compilation and green thread execution ────────────────────
 
 #[test]
 fn build_green_spawn_and_resolve() {
@@ -158,7 +158,7 @@ def main() -> Int
     );
 }
 
-// --- Original tests ---
+// ─── AOT compilation: basic tests ───────────────────────────────────
 
 #[test]
 fn build_executes_hello_example() {
