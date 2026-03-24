@@ -394,6 +394,7 @@ fn cmd_build(opts: &BuildOptions) {
         .arg(runtime_o.to_string_lossy().as_ref())
         .arg(asm_o.to_string_lossy().as_ref())
         .arg("-pthread")
+        .arg("-lm")
         .arg("-o")
         .arg(&final_output)
         .status();
