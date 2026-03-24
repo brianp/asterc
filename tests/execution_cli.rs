@@ -773,3 +773,59 @@ def main() -> Int
         common::output_text(&output)
     );
 }
+
+// ─── .each(f:) lowering (GH-4) ──────────────────────────────────────
+
+#[test]
+fn run_iterable_each_executes_callback() {
+    // .each should execute the callback for each element.
+    // Verify via log output.
+    let dir = common::make_temp_dir("iter-each");
+    let src = dir.join("each.aster");
+    std::fs::write(
+        &src,
+        r#"
+def main() -> Int
+  let items = [1, 2, 3]
+  items.each(f: -> x: log(message: "ok"))
+  0
+"#,
+    )
+    .unwrap();
+    let output = common::build_and_run(&src);
+    assert!(
+        output.status.success(),
+        "each should not crash: {}",
+        common::output_text(&output)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let ok_count = stdout.matches("ok").count();
+    assert_eq!(ok_count, 3, "each should call callback 3 times, got: {}", stdout);
+}
+
+#[test]
+fn run_iterable_each_with_capture() {
+    // .each callback captures an outer variable and uses it
+    let dir = common::make_temp_dir("iter-each-capture");
+    let src = dir.join("each_capture.aster");
+    std::fs::write(
+        &src,
+        r#"
+def main() -> Int
+  let items = [10, 20, 30]
+  let tag = "val"
+  items.each(f: -> x: log(message: tag))
+  0
+"#,
+    )
+    .unwrap();
+    let output = common::build_and_run(&src);
+    assert!(
+        output.status.success(),
+        "each with capture should not crash: {}",
+        common::output_text(&output)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let tag_count = stdout.matches("val").count();
+    assert_eq!(tag_count, 3, "each should call callback 3 times with capture, got: {}", stdout);
+}

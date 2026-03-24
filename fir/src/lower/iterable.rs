@@ -347,8 +347,38 @@ impl Lowerer {
         }
     }
 
-    /// Apply an inline lambda to the element variable. Binds the lambda param
-    /// to `elem_id` and inlines the lambda body, returning the result expression.
+    /// Lower .each(f:) -- call the callback for every element, return Void.
+    pub(crate) fn lower_iterable_each(
+        &mut self,
+        fir_list: FirExpr,
+        args: &[(String, ast::Span, Expr)],
+        elem_ty: &FirType,
+        object: &Expr,
+    ) -> Result<FirExpr, LowerError> {
+        let callback = args
+            .iter()
+            .find(|(n, _, _)| n == "f")
+            .map(|(_, _, e)| e)
+            .or_else(|| args.first().map(|(_, _, e)| e));
+
+        let (list_id, len_id, idx_id, elem_id) = self.iter_loop_scaffold(fir_list, elem_ty);
+
+        let mut loop_body = vec![Self::iter_get_elem(list_id, idx_id, elem_id, elem_ty)];
+        let saved_pending = std::mem::take(&mut self.pending_stmts);
+        let result_val = self.apply_inline_lambda(callback, elem_id, elem_ty, object)?;
+        loop_body.append(&mut self.pending_stmts);
+        self.pending_stmts = saved_pending;
+        // Emit the callback result as a statement (for side effects only)
+        loop_body.push(FirStmt::Expr(result_val));
+
+        self.pending_stmts.push(FirStmt::While {
+            cond: Self::iter_cond(idx_id, len_id),
+            body: loop_body,
+            increment: Self::iter_increment(idx_id),
+        });
+        Ok(FirExpr::NilLit)
+    }
+
     /// Apply an inline lambda to the element variable. Binds the lambda param
     /// to `elem_id` and inlines the lambda body, returning the result expression.
     pub(crate) fn apply_inline_lambda(

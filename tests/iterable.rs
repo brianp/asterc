@@ -420,6 +420,27 @@ let result = nums.filter(f: -> x: x > 2).map(f: -> x: x * 10)
     );
 }
 
+// ─── Vocabulary: each ───────────────────────────────────────────────
+
+#[test]
+fn iterable_each_on_list() {
+    common::check_ok(
+        r#"let nums = [1, 2, 3]
+nums.each(f: -> x: log(message: "got one"))
+"#,
+    );
+}
+
+#[test]
+fn iterable_each_with_capture() {
+    common::check_ok(
+        r#"let nums = [1, 2, 3]
+let tag = "item"
+nums.each(f: -> x: log(message: tag))
+"#,
+    );
+}
+
 // ─── each() on List should work (List includes Iterable) ─────────────
 
 #[test]
