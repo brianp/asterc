@@ -2425,6 +2425,61 @@ def main() -> Int
 }
 
 // ---------------------------------------------------------------------------
+// Iterable: each
+// ---------------------------------------------------------------------------
+
+#[test]
+fn iterable_list_each_lowers() {
+    let src = "\
+let xs = [1, 2, 3]
+xs.each(f: -> x: log(message: \"ok\"))
+def main() -> Int
+  0
+";
+    let fir = lower_ok(src);
+    assert!(fir.entry.is_some());
+}
+
+#[test]
+fn iterable_list_each_emits_while() {
+    let src = "\
+def main() -> Int
+  let xs = [1, 2, 3]
+  xs.each(f: -> x: log(message: \"ok\"))
+  0
+";
+    let fir = lower_ok(src);
+    let entry = fir.get_function(fir.entry.unwrap());
+    let has_while = entry.body.iter().any(|s| matches!(s, FirStmt::While { .. }));
+    assert!(has_while, "each should emit a While loop in FIR");
+}
+
+#[test]
+fn iterable_list_each_on_empty_list_lowers() {
+    let src = "\
+let xs: List[Int] = []
+xs.each(f: -> x: log(message: \"nope\"))
+def main() -> Int
+  0
+";
+    let fir = lower_ok(src);
+    assert!(fir.entry.is_some());
+}
+
+#[test]
+fn iterable_list_each_with_capture_lowers() {
+    let src = r#"
+let xs = [1, 2, 3]
+let tag = "hello"
+xs.each(f: -> x: log(message: tag))
+def main() -> Int
+  0
+"#;
+    let fir = lower_ok(src);
+    assert!(fir.entry.is_some());
+}
+
+// ---------------------------------------------------------------------------
 // FirType::needs_gc_root
 // ---------------------------------------------------------------------------
 

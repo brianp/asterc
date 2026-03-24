@@ -857,3 +857,33 @@ def main() -> Int
     let tag_count = stdout.matches("val").count();
     assert_eq!(tag_count, 3, "each should call callback 3 times with capture, got: {}", stdout);
 }
+
+#[test]
+fn run_iterable_each_empty_list() {
+    // .each on an empty list should not execute the callback and not crash.
+    let dir = common::make_temp_dir("iter-each-empty");
+    let src = dir.join("each_empty.aster");
+    std::fs::write(
+        &src,
+        r#"
+def main() -> Int
+  let items: List[Int] = []
+  items.each(f: -> x: log(message: "bad"))
+  0
+"#,
+    )
+    .unwrap();
+    let output = common::build_and_run(&src);
+    assert!(
+        output.status.success(),
+        "each on empty list should not crash: {}",
+        common::output_text(&output)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.matches("bad").count(),
+        0,
+        "each on empty list should not call callback, got: {}",
+        stdout
+    );
+}

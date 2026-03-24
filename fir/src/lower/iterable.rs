@@ -127,7 +127,17 @@ impl Lowerer {
         }
     }
 
-    /// Lower map, filter, find, any, all — methods that take a single callback `f`.
+    /// Resolve the callback argument `f` from a method call's args list.
+    /// Looks for a named arg `f`, falling back to the first positional arg.
+    pub(crate) fn resolve_callback_arg<'a>(
+        args: &'a [(String, ast::Span, Expr)],
+    ) -> Option<&'a Expr> {
+        args.iter()
+            .find(|(n, _, _)| n == "f")
+            .map(|(_, _, e)| e)
+            .or_else(|| args.first().map(|(_, _, e)| e))
+    }
+
     /// Lower map, filter, find, any, all — methods that take a single callback `f`.
     pub(crate) fn lower_iterable_with_callback(
         &mut self,
@@ -137,11 +147,7 @@ impl Lowerer {
         elem_ty: &FirType,
         object: &Expr,
     ) -> Result<FirExpr, LowerError> {
-        let callback = args
-            .iter()
-            .find(|(n, _, _)| n == "f")
-            .map(|(_, _, e)| e)
-            .or_else(|| args.first().map(|(_, _, e)| e));
+        let callback = Self::resolve_callback_arg(args);
 
         let (list_id, len_id, idx_id, elem_id) = self.iter_loop_scaffold(fir_list, elem_ty);
 
@@ -355,11 +361,7 @@ impl Lowerer {
         elem_ty: &FirType,
         object: &Expr,
     ) -> Result<FirExpr, LowerError> {
-        let callback = args
-            .iter()
-            .find(|(n, _, _)| n == "f")
-            .map(|(_, _, e)| e)
-            .or_else(|| args.first().map(|(_, _, e)| e));
+        let callback = Self::resolve_callback_arg(args);
 
         let (list_id, len_id, idx_id, elem_id) = self.iter_loop_scaffold(fir_list, elem_ty);
 

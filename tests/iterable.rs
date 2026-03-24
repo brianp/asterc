@@ -441,6 +441,15 @@ nums.each(f: -> x: log(message: tag))
     );
 }
 
+#[test]
+fn iterable_each_on_empty_list() {
+    common::check_ok(
+        r#"let nums: List[Int] = []
+nums.each(f: -> x: log(message: "nope"))
+"#,
+    );
+}
+
 // ─── each() on List should work (List includes Iterable) ─────────────
 
 #[test]
