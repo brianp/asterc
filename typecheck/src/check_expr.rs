@@ -29,10 +29,9 @@ impl TypeChecker {
                 }
                 {
                     let ty = self.env.get_var(name).cloned().ok_or_else(|| {
-                        let mut diag =
-                            Diagnostic::error(format!("Unknown identifier '{}'", name))
-                                .with_code("E002")
-                                .with_label(*span, "not found in this scope");
+                        let mut diag = Diagnostic::error(format!("Unknown identifier '{}'", name))
+                            .with_code("E002")
+                            .with_label(*span, "not found in this scope");
                         if let Some(suggestion) = self.suggest_similar_name(name) {
                             diag = diag.with_note(format!("did you mean '{}'?", suggestion));
                         }
@@ -438,9 +437,7 @@ impl TypeChecker {
 
         let is_abstract = body.is_empty();
 
-        let (mut sub, last) = Self::check_lambda_body(
-            sub, body, ret_type, params, is_abstract,
-        )?;
+        let (mut sub, last) = Self::check_lambda_body(sub, body, ret_type, params, is_abstract)?;
 
         // If ret_type is Inferred, use the actual body result type
         let effective_ret = if *ret_type == Type::Inferred {
