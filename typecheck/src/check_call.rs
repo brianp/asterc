@@ -143,7 +143,10 @@ impl TypeChecker {
                 // Promote the variable from List[Nil] to List[T]
                 if let Expr::Ident(var_name, _) = object.as_ref() {
                     let promoted = Type::List(Box::new(arg_ty));
-                    self.env.set_var(var_name.clone(), promoted);
+                    self.env.set_var(var_name.clone(), promoted.clone());
+                    // Persist promotion across scope boundaries (if/while/for)
+                    self.nil_promotions
+                        .insert(var_name.clone(), promoted);
                 }
                 return Ok(Type::Void);
             }

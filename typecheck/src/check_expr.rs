@@ -1,4 +1,5 @@
 use ast::{BinOp, Diagnostic, Expr, MatchPattern, Span, Type, UnaryOp};
+use std::collections::HashMap;
 
 use crate::typechecker::TypeChecker;
 
@@ -26,15 +27,25 @@ impl TypeChecker {
                     // Remove to warn only once per variable
                     self.boundary_crossed.remove(name);
                 }
-                self.env.get_var(name).cloned().ok_or_else(|| {
-                    let mut diag = Diagnostic::error(format!("Unknown identifier '{}'", name))
-                        .with_code("E002")
-                        .with_label(*span, "not found in this scope");
-                    if let Some(suggestion) = self.suggest_similar_name(name) {
-                        diag = diag.with_note(format!("did you mean '{}'?", suggestion));
+                {
+                    let ty = self.env.get_var(name).cloned().ok_or_else(|| {
+                        let mut diag =
+                            Diagnostic::error(format!("Unknown identifier '{}'", name))
+                                .with_code("E002")
+                                .with_label(*span, "not found in this scope");
+                        if let Some(suggestion) = self.suggest_similar_name(name) {
+                            diag = diag.with_note(format!("did you mean '{}'?", suggestion));
+                        }
+                        diag
+                    })?;
+                    // Apply nil-list promotions from .push() calls in nested scopes
+                    if matches!(&ty, Type::List(inner) if **inner == Type::Nil)
+                        && let Some(promoted) = self.nil_promotions.get(name)
+                    {
+                        return Ok(promoted.clone());
                     }
-                    diag
-                })
+                    Ok(ty)
+                }
             }
 
             Expr::Lambda {
@@ -427,63 +438,9 @@ impl TypeChecker {
 
         let is_abstract = body.is_empty();
 
-        let mut last = Type::Void;
-        for s in body {
-            // Validate return statements against declared return type
-            if let ast::Stmt::Return(expr, _) = s {
-                let ret_val_ty = sub.check_expr(expr)?;
-                if *ret_type != Type::Void
-                    && *ret_type != Type::Inferred
-                    && ret_val_ty != *ret_type
-                    && ret_val_ty != Type::Never
-                    && !ret_val_ty.is_error()
-                    && !Self::is_nullable_compatible(ret_type, &ret_val_ty)
-                    && !Self::is_subtype_compatible(&ret_val_ty, ret_type, &sub.env)
-                {
-                    return Err(Diagnostic::error(format!(
-                        "Return type mismatch: expected {}, got {}",
-                        ret_type, ret_val_ty
-                    ))
-                    .with_code("E004")
-                    .with_label(expr.span(), format!("expected {}", ret_type)));
-                }
-                // Mark returned task idents as consumed (caller takes responsibility)
-                sub.mark_task_ident_consumed(expr);
-                last = ret_val_ty;
-            } else {
-                last = sub.check_stmt(s)?;
-            }
-        }
-        // Mark implicit return (last expression) as consumed if it's a task ident
-        if let Some(last_stmt) = body.last()
-            && let ast::Stmt::Expr(expr, _) = last_stmt
-        {
-            sub.mark_task_ident_consumed(expr);
-        }
-        if !is_abstract
-            && &last != ret_type
-            && *ret_type != Type::Void
-            && *ret_type != Type::Inferred
-            && last != Type::Never
-            && !last.is_error()
-            && !Self::is_subtype_compatible(&last, ret_type, &sub.env)
-        {
-            if let Type::Nullable(inner) = ret_type {
-                if last != **inner && last != Type::Nil {
-                    return Err(Diagnostic::error(format!(
-                        "Lambda return type mismatch: expected {}, got {}",
-                        ret_type, last
-                    ))
-                    .with_code("E004"));
-                }
-            } else {
-                return Err(Diagnostic::error(format!(
-                    "Lambda return type mismatch: expected {}, got {}",
-                    ret_type, last
-                ))
-                .with_code("E004"));
-            }
-        }
+        let (mut sub, last) = Self::check_lambda_body(
+            sub, body, ret_type, params, is_abstract,
+        )?;
 
         // If ret_type is Inferred, use the actual body result type
         let effective_ret = if *ret_type == Type::Inferred {
@@ -541,6 +498,257 @@ impl TypeChecker {
     }
 
     /// Collect unknown type names from a type. A Custom(name, []) is "unknown" if
+    /// Check a lambda body, returning the sub-checker and the inferred last-expression type.
+    /// Pre-scans for empty list variables that get .push() calls and pre-promotes them,
+    /// so all usages (including those before the .push()) see the correct element type.
+    fn check_lambda_body(
+        mut sub: TypeChecker,
+        body: &[ast::Stmt],
+        ret_type: &Type,
+        _params: &[(String, Type)],
+        _is_abstract: bool,
+    ) -> Result<(TypeChecker, Type), Diagnostic> {
+        // Pre-scan: find `let x = []` and look for x.push() calls to infer element types.
+        Self::prescan_nil_list_promotions(&mut sub, body);
+
+        let last = Self::check_lambda_body_inner(&mut sub, body, ret_type)?;
+        Ok((sub, last))
+    }
+
+    /// Pre-scan body for empty list variables that receive .push() calls.
+    /// Resolves push argument types from function signatures and parameter types,
+    /// without requiring full body type-checking.
+    fn prescan_nil_list_promotions(sub: &mut TypeChecker, body: &[ast::Stmt]) {
+        // Collect names of variables initialized to empty lists
+        let mut nil_list_vars = std::collections::HashSet::new();
+        // Also track `let x = call()` bindings so we can resolve their types
+        let mut let_bindings: HashMap<String, &Expr> = HashMap::new();
+        Self::collect_bindings_recursive(body, &mut nil_list_vars, &mut let_bindings);
+
+        if nil_list_vars.is_empty() {
+            return;
+        }
+
+        // For each nil-list variable, find .push() calls and infer the element type
+        let mut push_args: HashMap<String, &Expr> = HashMap::new();
+        Self::collect_push_calls_recursive(body, &nil_list_vars, &mut push_args);
+
+        for (var_name, arg_expr) in push_args {
+            if sub.nil_promotions.contains_key(&var_name) {
+                continue;
+            }
+            // Try to resolve the push argument type
+            if let Some(ty) = Self::try_resolve_expr_type(sub, arg_expr, &let_bindings)
+                && !ty.is_error()
+                && ty != Type::Nil
+            {
+                sub.nil_promotions
+                    .insert(var_name, Type::List(Box::new(ty)));
+            }
+        }
+    }
+
+    /// Collect let bindings and nil-list variables from the body, recursing into blocks.
+    fn collect_bindings_recursive<'a>(
+        body: &'a [ast::Stmt],
+        nil_list_vars: &mut std::collections::HashSet<String>,
+        let_bindings: &mut HashMap<String, &'a Expr>,
+    ) {
+        for s in body {
+            match s {
+                ast::Stmt::Let { name, value, .. } => {
+                    if matches!(value, Expr::ListLiteral(elems, _) if elems.is_empty()) {
+                        nil_list_vars.insert(name.clone());
+                    } else {
+                        let_bindings.insert(name.clone(), value);
+                    }
+                }
+                ast::Stmt::If {
+                    then_body,
+                    elif_branches,
+                    else_body,
+                    ..
+                } => {
+                    Self::collect_bindings_recursive(then_body, nil_list_vars, let_bindings);
+                    for (_, b) in elif_branches {
+                        Self::collect_bindings_recursive(b, nil_list_vars, let_bindings);
+                    }
+                    Self::collect_bindings_recursive(else_body, nil_list_vars, let_bindings);
+                }
+                ast::Stmt::While { body, .. } | ast::Stmt::For { body, .. } => {
+                    Self::collect_bindings_recursive(body, nil_list_vars, let_bindings);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Collect first .push() call arg for each nil-list variable, recursing into blocks.
+    fn collect_push_calls_recursive<'a>(
+        body: &'a [ast::Stmt],
+        nil_list_vars: &std::collections::HashSet<String>,
+        push_args: &mut HashMap<String, &'a Expr>,
+    ) {
+        for s in body {
+            match s {
+                ast::Stmt::Expr(expr, _) => {
+                    Self::find_push_in_expr(expr, nil_list_vars, push_args);
+                }
+                ast::Stmt::If {
+                    then_body,
+                    elif_branches,
+                    else_body,
+                    ..
+                } => {
+                    Self::collect_push_calls_recursive(then_body, nil_list_vars, push_args);
+                    for (_, b) in elif_branches {
+                        Self::collect_push_calls_recursive(b, nil_list_vars, push_args);
+                    }
+                    Self::collect_push_calls_recursive(else_body, nil_list_vars, push_args);
+                }
+                ast::Stmt::While { body, .. } | ast::Stmt::For { body, .. } => {
+                    Self::collect_push_calls_recursive(body, nil_list_vars, push_args);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn find_push_in_expr<'a>(
+        expr: &'a Expr,
+        nil_list_vars: &std::collections::HashSet<String>,
+        push_args: &mut HashMap<String, &'a Expr>,
+    ) {
+        if let Expr::Call { func, args, .. } = expr
+            && let Expr::Member { object, field, .. } = func.as_ref()
+            && field == "push"
+            && let Expr::Ident(var_name, _) = object.as_ref()
+            && nil_list_vars.contains(var_name)
+            && !push_args.contains_key(var_name)
+            && args.len() == 1
+        {
+            push_args.insert(var_name.clone(), &args[0].2);
+        }
+    }
+
+    /// Try to resolve the type of an expression without full type-checking.
+    /// Handles identifiers (via env lookup and let-binding tracing) and function calls.
+    fn try_resolve_expr_type(
+        sub: &TypeChecker,
+        expr: &Expr,
+        let_bindings: &HashMap<String, &Expr>,
+    ) -> Option<Type> {
+        match expr {
+            Expr::Int(..) => Some(Type::Int),
+            Expr::Float(..) => Some(Type::Float),
+            Expr::Str(..) => Some(Type::String),
+            Expr::Bool(..) => Some(Type::Bool),
+            Expr::Ident(name, _) => {
+                // Check env first (params, pre-registered functions)
+                if let Some(ty) = sub.env.get_var(name) {
+                    return Some(ty.clone());
+                }
+                // Trace through let bindings: let v = f(...)
+                if let Some(binding_expr) = let_bindings.get(name) {
+                    return Self::try_resolve_expr_type(sub, binding_expr, let_bindings);
+                }
+                None
+            }
+            Expr::Call { func, .. } => {
+                // For function calls, try to determine the return type
+                match func.as_ref() {
+                    Expr::Ident(fn_name, _) => {
+                        if let Some(Type::Function { ret, .. }) = sub.env.get_var(fn_name)
+                            && !matches!(ret.as_ref(), Type::Inferred)
+                        {
+                            return Some(ret.as_ref().clone());
+                        }
+                        None
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Inner body-checking loop shared by first and second passes.
+    fn check_lambda_body_inner(
+        sub: &mut TypeChecker,
+        body: &[ast::Stmt],
+        ret_type: &Type,
+    ) -> Result<Type, Diagnostic> {
+        let mut last = Type::Void;
+        for s in body {
+            // Validate return statements against declared return type
+            if let ast::Stmt::Return(expr, _) = s {
+                let ret_val_ty = sub.check_expr(expr)?;
+                // List[Nil] is compatible with any List[T] (empty list)
+                let is_nil_list_ret = matches!(
+                    (&ret_val_ty, ret_type),
+                    (Type::List(inner), Type::List(_)) if **inner == Type::Nil
+                );
+                if *ret_type != Type::Void
+                    && *ret_type != Type::Inferred
+                    && ret_val_ty != *ret_type
+                    && ret_val_ty != Type::Never
+                    && !is_nil_list_ret
+                    && !ret_val_ty.is_error()
+                    && !Self::is_nullable_compatible(ret_type, &ret_val_ty)
+                    && !Self::is_subtype_compatible(&ret_val_ty, ret_type, &sub.env)
+                {
+                    return Err(Diagnostic::error(format!(
+                        "Return type mismatch: expected {}, got {}",
+                        ret_type, ret_val_ty
+                    ))
+                    .with_code("E004")
+                    .with_label(expr.span(), format!("expected {}", ret_type)));
+                }
+                // Mark returned task idents as consumed (caller takes responsibility)
+                sub.mark_task_ident_consumed(expr);
+                last = ret_val_ty;
+            } else {
+                last = sub.check_stmt(s)?;
+            }
+        }
+        // Mark implicit return (last expression) as consumed if it's a task ident
+        if let Some(last_stmt) = body.last()
+            && let ast::Stmt::Expr(expr, _) = last_stmt
+        {
+            sub.mark_task_ident_consumed(expr);
+        }
+        let is_nil_list_implicit = matches!(
+            (&last, ret_type),
+            (Type::List(inner), Type::List(_)) if **inner == Type::Nil
+        );
+        if !body.is_empty()
+            && &last != ret_type
+            && *ret_type != Type::Void
+            && *ret_type != Type::Inferred
+            && last != Type::Never
+            && !is_nil_list_implicit
+            && !last.is_error()
+            && !Self::is_subtype_compatible(&last, ret_type, &sub.env)
+        {
+            if let Type::Nullable(inner) = ret_type {
+                if last != **inner && last != Type::Nil {
+                    return Err(Diagnostic::error(format!(
+                        "Lambda return type mismatch: expected {}, got {}",
+                        ret_type, last
+                    ))
+                    .with_code("E004"));
+                }
+            } else {
+                return Err(Diagnostic::error(format!(
+                    "Lambda return type mismatch: expected {}, got {}",
+                    ret_type, last
+                ))
+                .with_code("E004"));
+            }
+        }
+        Ok(last)
+    }
+
     /// it doesn't correspond to a known class, trait, or enum in the current environment.
     pub(crate) fn collect_unknown_type_names(&self, ty: &Type, out: &mut Vec<String>) {
         let mut collected = Vec::new();
@@ -737,6 +945,10 @@ impl TypeChecker {
 
     fn check_list_literal(&mut self, elems: &[Expr]) -> Result<Type, Diagnostic> {
         if elems.is_empty() {
+            // Use expected type context if available (e.g., return type, assignment)
+            if let Some(Type::List(inner)) = &self.expected_type {
+                return Ok(Type::List(inner.clone()));
+            }
             return Ok(Type::List(Box::new(Type::Nil)));
         }
         let first_ty = self.check_expr(&elems[0])?;

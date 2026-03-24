@@ -50,6 +50,10 @@ pub struct TypeChecker {
     /// Set by `check_call_inner` to indicate whether the resolved callee was suspendable.
     /// Read by `check_blocking_call` to avoid re-evaluating the func expression.
     pub(crate) last_call_suspendable: bool,
+    /// Tracks List[Nil] → List[T] promotions from `.push()` calls.
+    /// Persists across child scopes (not saved/restored by ScopeState),
+    /// so promotions inside if/while/for are visible after the block exits.
+    pub(crate) nil_promotions: HashMap<String, Type>,
 }
 
 struct ScopeState {
@@ -92,6 +96,7 @@ impl TypeChecker {
             boundary_crossed: HashMap::new(),
             type_table: TypeTable::new(),
             last_call_suspendable: false,
+            nil_promotions: HashMap::new(),
         }
     }
 
@@ -456,6 +461,7 @@ impl TypeChecker {
             boundary_crossed: HashMap::new(),
             type_table: TypeTable::new(),
             last_call_suspendable: false,
+            nil_promotions: HashMap::new(),
         }
     }
 
@@ -607,6 +613,67 @@ impl TypeChecker {
         }
 
         self.infer_suspendable_functions(m);
+
+        // Intermediate pass: resolve return types for functions with inferred returns.
+        // Uses fixpoint iteration — keeps re-checking until all return types stabilize,
+        // handling cases where function A calls function B and both have inferred returns.
+        let mut resolved_fns = std::collections::HashSet::new();
+        {
+            let inferred_fns: Vec<usize> = m
+                .body
+                .iter()
+                .enumerate()
+                .filter_map(|(i, s)| {
+                    if let Stmt::Let {
+                        name,
+                        value: Expr::Lambda { .. },
+                        ..
+                    } = s
+                        && let Some(Type::Function { ret, .. }) = self.env.get_var(name)
+                        && matches!(ret.as_ref(), Type::Inferred)
+                    {
+                        return Some(i);
+                    }
+                    None
+                })
+                .collect();
+
+            if !inferred_fns.is_empty() {
+                // Fixpoint: keep checking until no return types change
+                for _ in 0..inferred_fns.len() + 1 {
+                    let mut changed = false;
+                    for &idx in &inferred_fns {
+                        let s = &m.body[idx];
+                        let name = match s {
+                            Stmt::Let { name, .. } => name,
+                            _ => continue,
+                        };
+                        // Clear diagnostics from previous iterations for this function
+                        self.diagnostics.clear();
+                        self.nil_promotions.clear();
+                        match self.check_stmt(s) {
+                            Ok(_) => {}
+                            Err(diag) => {
+                                self.diagnostics.push(diag);
+                            }
+                        }
+                        // Check if the return type was resolved from Inferred
+                        if let Some(Type::Function { ret, .. }) = self.env.get_var(name)
+                            && !matches!(ret.as_ref(), Type::Inferred)
+                        {
+                            changed = true;
+                        }
+                        resolved_fns.insert(name.clone());
+                    }
+                    if !changed {
+                        break;
+                    }
+                }
+                // Clear intermediate diagnostics — the final pass will re-check
+                self.diagnostics.clear();
+                self.nil_promotions.clear();
+            }
+        }
 
         // Second pass: typecheck all statements (function bodies can now see all signatures).
         for s in &m.body {
@@ -988,14 +1055,26 @@ impl TypeChecker {
                 Ok(Type::Void)
             }
             Stmt::Return(expr, span) => {
+                // Set expected_type from return type for inference (e.g., empty list literals)
+                let prev_expected = self.expected_type.take();
+                if let Some(ret) = &self.expected_return_type {
+                    self.expected_type = Some(ret.clone());
+                }
                 let ty = self.check_expr(expr)?;
+                self.expected_type = prev_expected;
                 if ty.is_error() {
                     return Ok(Type::Error);
                 }
                 // Mark returned task idents as consumed (caller takes responsibility)
                 self.mark_task_ident_consumed(expr);
+                // List[Nil] is compatible with any List[T] (empty list)
+                let is_nil_list_compat = matches!(
+                    (&ty, &self.expected_return_type),
+                    (Type::List(inner), Some(Type::List(_))) if **inner == Type::Nil
+                );
                 if let Some(expected) = &self.expected_return_type
                     && ty != *expected
+                    && !is_nil_list_compat
                     && !Self::is_nullable_compatible(expected, &ty)
                     && !Self::is_subtype_compatible(&ty, expected, &self.env)
                 {
