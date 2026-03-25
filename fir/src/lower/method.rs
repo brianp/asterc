@@ -411,6 +411,64 @@ impl Lowerer {
             return Ok(FirExpr::LocalVar(result_id, inner_ty));
         }
 
+        // Nullable `.or_else(f: expr)` — lazy variant of `.or()`.
+        // The fallback expression is only evaluated when the value is nil.
+        if method == builtin_method::OR_ELSE
+            && let FirType::TaggedUnion { ref variants, .. } = fir_object_ty
+            && !variants.is_empty()
+        {
+            let inner_ty = variants[0].clone();
+            let nullable_id = self.alloc_local();
+            self.local_types.insert(nullable_id, fir_object_ty.clone());
+            self.pending_stmts.push(FirStmt::Let {
+                name: nullable_id,
+                ty: fir_object_ty.clone(),
+                value: fir_object,
+            });
+
+            let result_id = self.alloc_local();
+            self.local_types.insert(result_id, inner_ty.clone());
+            self.pending_stmts.push(FirStmt::Let {
+                name: result_id,
+                ty: inner_ty.clone(),
+                value: self.default_value_for_type(&inner_ty),
+            });
+
+            // Lower fallback in an isolated pending_stmts scope so any
+            // emitted statements land inside the else branch (lazy eval).
+            let saved = std::mem::take(&mut self.pending_stmts);
+            let fallback_expr = if let Some((_, _, fallback_arg)) = args.first() {
+                self.lower_expr(fallback_arg)?
+            } else {
+                self.default_value_for_type(&inner_ty)
+            };
+            let mut else_body = std::mem::take(&mut self.pending_stmts);
+            self.pending_stmts = saved;
+
+            else_body.push(FirStmt::Assign {
+                target: FirPlace::Local(result_id),
+                value: fallback_expr,
+            });
+
+            self.pending_stmts.push(FirStmt::If {
+                cond: FirExpr::TagCheck {
+                    value: Box::new(FirExpr::LocalVar(nullable_id, fir_object_ty.clone())),
+                    tag: 0,
+                },
+                then_body: vec![FirStmt::Assign {
+                    target: FirPlace::Local(result_id),
+                    value: FirExpr::TagUnwrap {
+                        value: Box::new(FirExpr::LocalVar(nullable_id, fir_object_ty)),
+                        expected_tag: 0,
+                        ty: inner_ty.clone(),
+                    },
+                }],
+                else_body,
+            });
+
+            return Ok(FirExpr::LocalVar(result_id, inner_ty));
+        }
+
         // Check for Range methods
         if method == builtin_method::RANDOM && self.is_range_expr(object) {
             // range.random() → aster_random_int(end - start) + start

@@ -62,6 +62,7 @@ pub mod method {
 
     // Nullable / error handling
     pub const OR: &str = "or";
+    pub const OR_ELSE: &str = "or_else";
     pub const OR_THROW: &str = "or_throw";
 
     // Task methods

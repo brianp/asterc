@@ -4254,6 +4254,42 @@ def main() -> Int
 }
 
 #[test]
+fn e2e_nullable_or_else_nil() {
+    // .or_else(f:) should return fallback when value is nil (lazy eval)
+    let src = "\
+def maybe_get(flag: Bool) -> Int?
+  if flag
+    return 42
+  nil
+
+def main() -> Int
+  maybe_get(flag: false).or_else(f: 99)
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 99);
+}
+
+#[test]
+fn e2e_nullable_or_else_present() {
+    // .or_else(f:) should return inner value when present
+    let src = "\
+def maybe_get(flag: Bool) -> Int?
+  if flag
+    return 42
+  nil
+
+def main() -> Int
+  maybe_get(flag: true).or_else(f: 0)
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
 fn e2e_nested_field_assignment() {
     // Assignment to a chained field path: o.inner.val = x
     let src = "\
