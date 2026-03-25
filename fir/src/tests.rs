@@ -2359,16 +2359,19 @@ fn error_unsupported_top_level_trait_has_span() {
 }
 
 #[test]
-fn error_unsupported_nested_class_has_span() {
+fn nested_class_in_function_no_longer_errors() {
+    // Previously nested classes caused a lowering error; now they are supported (GH #11)
     let src = "\
 def main() -> Int
   class Inner
     x: Int
   0
 ";
-    let err = lower_err(src);
-    let span = err.span();
-    assert!(span.start < span.end, "span must be non-empty: {:?}", span);
+    let fir = lower_ok(src);
+    assert!(
+        fir.classes.iter().any(|c| c.name == "Inner"),
+        "expected class Inner in module"
+    );
 }
 
 #[test]
@@ -2801,5 +2804,101 @@ def main() -> Int
         has_closure_call,
         "expected ClosureCall in apply body, got: {:?}",
         body
+    );
+}
+
+// ===========================================================================
+// Nested type definitions inside function bodies (GH #11)
+// ===========================================================================
+
+#[test]
+fn nested_class_in_function_body_lowers() {
+    // A class defined inside a function body should lower without error
+    let fir = lower_ok(
+        "\
+def make_point() -> Int
+  class Point
+    x: Int
+    y: Int
+  let p = Point(x: 1, y: 2)
+  p.x
+",
+    );
+    // The module should contain the class Point
+    assert!(
+        fir.classes.iter().any(|c| c.name == "Point"),
+        "expected class Point in module, classes: {:?}",
+        fir.classes.iter().map(|c| &c.name).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn nested_enum_in_function_body_lowers() {
+    // An enum defined inside a function body should lower without error
+    let fir = lower_ok(
+        "\
+def process() -> Int
+  enum Status
+    Ok
+    Failed(reason: String)
+  let s = Status.Ok
+  42
+",
+    );
+    // The module should contain constructor functions for the enum variants
+    assert!(
+        fir.functions.iter().any(|f| f.name == "Status.Ok"),
+        "expected Status.Ok constructor, functions: {:?}",
+        fir.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+    );
+    assert!(
+        fir.functions.iter().any(|f| f.name == "Status.Failed"),
+        "expected Status.Failed constructor, functions: {:?}",
+        fir.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn nested_class_with_constructor_in_function_body() {
+    // A class defined and instantiated inside a function body should lower
+    let fir = lower_ok(
+        "\
+def run() -> Int
+  class Pair
+    a: Int
+    b: Int
+  let p = Pair(a: 3, b: 4)
+  p.a
+",
+    );
+    assert!(
+        fir.classes.iter().any(|c| c.name == "Pair"),
+        "expected class Pair in module, classes: {:?}",
+        fir.classes.iter().map(|c| &c.name).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn nested_enum_variant_call_in_function_body() {
+    // An enum defined and its variant constructor called inside a function body
+    let fir = lower_ok(
+        "\
+def process() -> Int
+  enum Status
+    Ok
+    Failed(reason: String)
+  let s = Status.Ok
+  42
+",
+    );
+    assert!(
+        fir.functions.iter().any(|f| f.name == "Status.Ok"),
+        "expected Status.Ok constructor, functions: {:?}",
+        fir.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+    );
+    assert!(
+        fir.functions.iter().any(|f| f.name == "Status.Failed"),
+        "expected Status.Failed constructor, functions: {:?}",
+        fir.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
     );
 }

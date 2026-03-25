@@ -674,6 +674,53 @@ impl Lowerer {
                     value: fir_value,
                 })
             }
+            Stmt::Class {
+                name,
+                fields,
+                methods,
+                extends,
+                ..
+            } => {
+                // Register class ID (mirrors the first-pass registration in lower_module)
+                if !self.classes.contains_key(name.as_str()) {
+                    let id = ClassId(self.next_class);
+                    self.next_class += 1;
+                    self.classes.insert(name.clone(), id);
+                }
+                self.lower_class(name, fields, methods, extends.as_deref())?;
+                // Return a no-op expression; the class is registered in the module
+                Ok(FirStmt::Expr(FirExpr::IntLit(0)))
+            }
+            Stmt::Enum {
+                name,
+                variants,
+                methods,
+                ..
+            } => {
+                // Register enum variant metadata (mirrors the first-pass registration in lower_module)
+                if !self.enum_variants.contains_key(name.as_str()) {
+                    let mut variant_info = Vec::new();
+                    for (tag, v) in variants.iter().enumerate() {
+                        let fields: Vec<(String, FirType)> = v
+                            .fields
+                            .iter()
+                            .map(|(fname, fty)| (fname.clone(), self.lower_type(fty)))
+                            .collect();
+                        variant_info.push((v.name.clone(), tag as i64, fields));
+                    }
+                    self.enum_variants.insert(name.clone(), variant_info);
+                    // Register variant constructors as functions
+                    for v in variants {
+                        let id = FunctionId(self.next_function);
+                        self.next_function += 1;
+                        let ctor_name = format!("{}.{}", name, v.name);
+                        self.functions.insert(ctor_name, id);
+                    }
+                }
+                self.lower_enum(name, variants, methods)?;
+                // Return a no-op expression; the enum constructors are registered in the module
+                Ok(FirStmt::Expr(FirExpr::IntLit(0)))
+            }
             _ => Err(unsupported_stmt(stmt)),
         }
     }
