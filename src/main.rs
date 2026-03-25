@@ -296,7 +296,12 @@ fn cmd_build(opts: &BuildOptions) {
 
         let cc_flags: &[&str] = match opts.config.profile {
             Profile::Debug => &["-c", "-g"],
-            Profile::Release => &["-c", "-O2"],
+            Profile::Release => &[
+                "-c",
+                "-O2",
+                "-fstack-protector-strong",
+                "-D_FORTIFY_SOURCE=2",
+            ],
         };
         let cc = cc_compiler();
         let status = std::process::Command::new(&cc)
@@ -641,7 +646,28 @@ fn print_unified_diff(filename: &str, original: &str, formatted: &str) {
     }
 }
 
+/// Maximum source file size (10 MB), matching the lexer's MAX_INPUT_SIZE.
+const MAX_SOURCE_SIZE: u64 = 10 * 1024 * 1024;
+
 fn read_source(filename: &str) -> String {
+    // Pre-check file size to avoid reading huge files into memory.
+    match fs::metadata(filename) {
+        Ok(meta) => {
+            if meta.len() > MAX_SOURCE_SIZE {
+                eprintln!(
+                    "Source file '{}' is too large ({} bytes, max {} bytes)",
+                    filename,
+                    meta.len(),
+                    MAX_SOURCE_SIZE
+                );
+                std::process::exit(1);
+            }
+        }
+        Err(e) => {
+            eprintln!("Could not read file '{}': {}", filename, e);
+            std::process::exit(1);
+        }
+    }
     match fs::read_to_string(filename) {
         Ok(s) => s,
         Err(e) => {

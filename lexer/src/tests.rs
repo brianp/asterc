@@ -795,3 +795,54 @@ fn lexes_dot_dot_with_spaces() {
     assert_eq!(ks[1], &TokenKind::DotDot);
     assert_eq!(ks[2], &TokenKind::Int(10));
 }
+
+// ─── Non-ASCII in string literals ────────────────────────────────────
+
+#[test]
+fn string_with_emoji() {
+    let toks = lex("\"hello 🌍\"").expect("lex ok");
+    let ks = kinds(&toks);
+    assert!(
+        matches!(ks[0], TokenKind::Str(s) if s == "hello 🌍"),
+        "expected emoji string, got {:?}",
+        ks[0]
+    );
+}
+
+#[test]
+fn string_with_accented_chars() {
+    let toks = lex("\"café résumé\"").expect("lex ok");
+    let ks = kinds(&toks);
+    assert!(
+        matches!(ks[0], TokenKind::Str(s) if s == "café résumé"),
+        "expected accented string, got {:?}",
+        ks[0]
+    );
+}
+
+#[test]
+fn string_with_cjk_characters() {
+    let toks = lex("\"你好世界\"").expect("lex ok");
+    let ks = kinds(&toks);
+    assert!(
+        matches!(ks[0], TokenKind::Str(s) if s == "你好世界"),
+        "expected CJK string, got {:?}",
+        ks[0]
+    );
+}
+
+#[test]
+fn non_ascii_outside_string_rejected() {
+    let err = lex("let café = 1").unwrap_err();
+    assert!(err.to_string().contains("Unexpected character"));
+}
+
+#[test]
+fn string_with_unicode_then_more_tokens() {
+    let toks = lex("let x = \"héllo\"").expect("lex ok");
+    let ks = kinds(&toks);
+    assert_eq!(ks[0], &TokenKind::Let);
+    assert_eq!(ks[1], &TokenKind::Ident("x".into()));
+    assert_eq!(ks[2], &TokenKind::Equals);
+    assert!(matches!(ks[3], TokenKind::Str(s) if s == "héllo"));
+}

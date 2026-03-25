@@ -959,24 +959,28 @@ impl TypeChecker {
     }
 
     /// Check if `child` is a subtype of `ancestor` by walking the extends chain.
+    /// Uses HashSet cycle detection (consistent with `walk_ancestors`).
     pub(crate) fn is_subtype_of(child: &str, ancestor: &str, env: &TypeEnv) -> bool {
+        let mut visited = std::collections::HashSet::new();
+        visited.insert(child.to_string());
         let mut current = child.to_string();
-        // Limit chain depth to prevent infinite loops
-        for _ in 0..100 {
-            if let Some(class_info) = env.get_class(&current) {
-                if let Some(ref parent) = class_info.extends {
-                    if parent == ancestor {
-                        return true;
+        loop {
+            match env.get_class(&current) {
+                Some(info) => match &info.extends {
+                    Some(parent) => {
+                        if parent == ancestor {
+                            return true;
+                        }
+                        if !visited.insert(parent.clone()) {
+                            return false; // cycle
+                        }
+                        current = parent.clone();
                     }
-                    current = parent.clone();
-                } else {
-                    return false;
-                }
-            } else {
-                return false;
+                    None => return false,
+                },
+                None => return false,
             }
         }
-        false
     }
 
     pub(crate) fn substitute_typevars(ty: &Type, bindings: &HashMap<String, Type>) -> Type {

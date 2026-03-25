@@ -1647,3 +1647,80 @@ fn generic_lambda_body_wrong_typevar_error() {
     let err = err_msg(tc.check_expr(&lambda));
     assert!(err.contains("mismatch") || err.contains("TypeVar"));
 }
+
+// ─── Subtype checking via extends chain ──────────────────────────────
+
+#[test]
+fn subtype_assignment_through_extends_chain() {
+    let src = "\
+class Animal
+  def sound() -> Int
+    0
+
+class Dog extends Animal
+  def sound() -> Int
+    1
+
+def greet(a: Animal) -> Int
+  a.sound()
+
+def main() -> Int
+  let d: Dog = Dog()
+  greet(a: d)
+";
+    let module = module_ok(src);
+    let mut tc = TypeChecker::new();
+    tc.check_module(&module).expect("typecheck ok");
+}
+
+#[test]
+fn subtype_transitive_extends_chain() {
+    let src = "\
+class Base
+  def id() -> Int
+    0
+
+class Mid extends Base
+  def id() -> Int
+    1
+
+class Leaf extends Mid
+  def id() -> Int
+    2
+
+def take_base(b: Base) -> Int
+  b.id()
+
+def main() -> Int
+  let leaf: Leaf = Leaf()
+  take_base(b: leaf)
+";
+    let module = module_ok(src);
+    let mut tc = TypeChecker::new();
+    tc.check_module(&module).expect("typecheck ok");
+}
+
+#[test]
+fn subtype_unrelated_class_rejected() {
+    let src = "\
+class Cat
+  def sound() -> Int
+    0
+
+class Dog
+  def sound() -> Int
+    1
+
+def greet(c: Cat) -> Int
+  c.sound()
+
+def main() -> Int
+  let d: Dog = Dog()
+  greet(c: d)
+";
+    let err = module_err(src);
+    assert!(
+        err.contains("expects Cat, got Dog"),
+        "Expected type error, got: {err}"
+    );
+}

@@ -284,7 +284,7 @@ fn lex_string_full(
             Some(&c) => {
                 chars.next();
                 s.push(c);
-                col += 1;
+                col += c.len_utf8();
                 if s.len() > MAX_STRING_LENGTH {
                     return Err(Diagnostic::error(format!(
                         "String literal exceeds maximum length of {} at line {}",
@@ -508,18 +508,6 @@ pub fn lex(input: &str) -> Result<Vec<Token>, Diagnostic> {
         .with_code("L008"));
     }
 
-    // Reject non-ASCII source for now — byte offsets assume 1 byte per char.
-    // String literals may contain non-ASCII, but identifiers/keywords cannot.
-    if let Some(pos) = input.bytes().position(|b| b > 127) {
-        let line = input[..pos].matches('\n').count() + 1;
-        return Err(Diagnostic::error(format!(
-            "Non-ASCII character at byte offset {} (line {}). Aster currently requires ASCII source files",
-            pos, line
-        ))
-        .with_code("L009")
-        .with_label(Span::new(pos, pos + 1), "non-ASCII byte"));
-    }
-
     let line_starts = compute_line_starts(input);
     let mut tokens: Vec<Token> = Vec::new();
     let mut indent_stack: Vec<usize> = vec![0];
@@ -609,8 +597,9 @@ pub fn lex(input: &str) -> Result<Vec<Token>, Diagnostic> {
         let mut chars = rest.chars().peekable();
 
         while let Some(ch) = chars.next() {
-            col += 1;
-            let tok_start = ls + col - 1; // byte offset of this character
+            let char_bytes = ch.len_utf8();
+            col += char_bytes;
+            let tok_start = ls + col - char_bytes; // byte offset of this character
 
             // D1: push a single-character token.
             macro_rules! push {

@@ -1867,12 +1867,9 @@ double aster_random_float(double max) {
 #ifdef __APPLE__
     arc4random_buf(&val, sizeof(val));
 #else
-    int fd = open("/dev/urandom", O_RDONLY);
-    if (fd >= 0) {
-        read(fd, &val, sizeof(val));
-        close(fd);
-    } else {
-        val = (uint64_t)clock();
+    if (getrandom(&val, sizeof(val), 0) != sizeof(val)) {
+        fprintf(stderr, "aster_random_float: getrandom failed\n");
+        abort();
     }
 #endif
     double unit = (double)(val >> 11) / (double)(1ULL << 53);
@@ -1884,12 +1881,9 @@ int8_t aster_random_bool(void) {
 #ifdef __APPLE__
     arc4random_buf(&val, 1);
 #else
-    int fd = open("/dev/urandom", O_RDONLY);
-    if (fd >= 0) {
-        read(fd, &val, 1);
-        close(fd);
-    } else {
-        val = (uint8_t)clock();
+    if (getrandom(&val, sizeof(val), 0) != sizeof(val)) {
+        fprintf(stderr, "aster_random_bool: getrandom failed\n");
+        abort();
     }
 #endif
     return val & 1;
