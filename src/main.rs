@@ -142,9 +142,10 @@ fn cmd_check(filename: &str) {
     }
 }
 
-fn cmd_run(filename: &str) {
-    let source = read_source(filename);
-    let (module_ast, checker) = match frontend(&source, filename) {
+/// Run the full frontend pipeline: parse, typecheck, lower to FIR, validate,
+/// and verify that a main() entry point exists.
+fn frontend_and_lower(source: &str, filename: &str) -> fir::FirModule {
+    let (module_ast, checker) = match frontend(source, filename) {
         Ok(v) => v,
         Err(()) => std::process::exit(1),
     };
@@ -152,7 +153,7 @@ fn cmd_run(filename: &str) {
     // Lower AST → FIR
     let mut lowerer = fir::Lowerer::new(checker.env, checker.type_table);
     if let Err(e) = lowerer.lower_module(&module_ast) {
-        render_execution_error(&source, filename, &e);
+        render_execution_error(source, filename, &e);
         std::process::exit(2);
     }
     let fir_module = lowerer.finish();
@@ -171,19 +172,24 @@ fn cmd_run(filename: &str) {
     }
 
     // Check for entry point
-    let entry = match fir_module.entry {
-        Some(id) => id,
-        None => {
-            render_diagnostic(
-                &source,
-                filename,
-                &Diagnostic::error("no main() function found")
-                    .with_code("E026")
-                    .with_note("add a `def main() -> Int` function as the program entry point"),
-            );
-            std::process::exit(1);
-        }
-    };
+    if fir_module.entry.is_none() {
+        render_diagnostic(
+            source,
+            filename,
+            &Diagnostic::error("no main() function found")
+                .with_code("E026")
+                .with_note("add a `def main() -> Int` function as the program entry point"),
+        );
+        std::process::exit(1);
+    }
+
+    fir_module
+}
+
+fn cmd_run(filename: &str) {
+    let source = read_source(filename);
+    let fir_module = frontend_and_lower(&source, filename);
+    let entry = fir_module.entry.unwrap();
 
     // JIT compile and run
     let mut jit = codegen::CraneliftJIT::new();
@@ -206,42 +212,7 @@ struct BuildOptions {
 
 fn cmd_build(opts: &BuildOptions) {
     let source = read_source(&opts.filename);
-    let (module_ast, checker) = match frontend(&source, &opts.filename) {
-        Ok(v) => v,
-        Err(()) => std::process::exit(1),
-    };
-
-    // Lower AST → FIR
-    let mut lowerer = fir::Lowerer::new(checker.env, checker.type_table);
-    if let Err(e) = lowerer.lower_module(&module_ast) {
-        render_execution_error(&source, &opts.filename, &e);
-        std::process::exit(2);
-    }
-    let fir_module = lowerer.finish();
-
-    // Validate FIR invariants (debug builds only)
-    #[cfg(debug_assertions)]
-    {
-        let fir_errors = fir::validate::validate(&fir_module);
-        for e in &fir_errors {
-            eprintln!("{}", e);
-        }
-        if !fir_errors.is_empty() {
-            eprintln!("FIR validation failed with {} errors", fir_errors.len());
-            std::process::exit(2);
-        }
-    }
-
-    if fir_module.entry.is_none() {
-        render_diagnostic(
-            &source,
-            &opts.filename,
-            &Diagnostic::error("no main() function found")
-                .with_code("E026")
-                .with_note("add a `def main() -> Int` function as the program entry point"),
-        );
-        std::process::exit(1);
-    }
+    let fir_module = frontend_and_lower(&source, &opts.filename);
 
     // Resolve build paths
     let source_path = Path::new(&opts.filename)

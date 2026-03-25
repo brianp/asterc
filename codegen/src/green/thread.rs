@@ -25,6 +25,9 @@ pub(crate) struct TaskState {
     pub(crate) status: ThreadStatus,
     pub(crate) cancel_requested: bool,
     pub(crate) consumed: bool,
+    /// True if this task is owned by an async scope, which is responsible for
+    /// freeing the struct. Unscoped tasks are freed by consume_thread_result.
+    pub(crate) scoped: bool,
     pub(crate) result: i64,
     pub(crate) failed: bool,
     pub(crate) green_waiters: Vec<*mut GreenThread>,

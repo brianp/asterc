@@ -79,6 +79,37 @@ int64_t aster_string_len(void* ptr) {
     return len < 0 ? 0 : len;
 }
 
+/* Overflow-checked integer arithmetic (interim until BigInt, see bigint-rfc.md). */
+int64_t aster_int_add(int64_t a, int64_t b) {
+    int64_t result;
+    if (__builtin_add_overflow(a, b, &result)) {
+        fprintf(stderr, "integer overflow: %lld + %lld exceeds 64-bit range\n",
+                (long long)a, (long long)b);
+        abort();
+    }
+    return result;
+}
+
+int64_t aster_int_sub(int64_t a, int64_t b) {
+    int64_t result;
+    if (__builtin_sub_overflow(a, b, &result)) {
+        fprintf(stderr, "integer overflow: %lld - %lld exceeds 64-bit range\n",
+                (long long)a, (long long)b);
+        abort();
+    }
+    return result;
+}
+
+int64_t aster_int_mul(int64_t a, int64_t b) {
+    int64_t result;
+    if (__builtin_mul_overflow(a, b, &result)) {
+        fprintf(stderr, "integer overflow: %lld * %lld exceeds 64-bit range\n",
+                (long long)a, (long long)b);
+        abort();
+    }
+    return result;
+}
+
 int64_t aster_pow_int(int64_t base, int64_t exp) {
     if (exp < 0) return 0;
     uint64_t result = 1;
@@ -489,6 +520,7 @@ struct GreenThread {
     int status;
     int cancel_requested;
     int consumed;
+    int scoped;  /* 1 if owned by an async scope (scope frees the struct) */
     int64_t result;
     int failed;
 
@@ -1152,6 +1184,10 @@ typedef struct {
 
 static void scope_register(AsterAsyncScope *scope, GreenThread *task) {
     if (!scope) return;
+    /* Mark as scoped so gt_consume_result defers freeing to scope exit. */
+    pthread_mutex_lock(&task->mu);
+    task->scoped = 1;
+    pthread_mutex_unlock(&task->mu);
     pthread_mutex_lock(&scope->mu);
     if (scope->len >= scope->cap) {
         int64_t new_cap = scope->cap == 0 ? 4 : scope->cap * 2;
@@ -1171,9 +1207,10 @@ void* aster_async_scope_enter(void) {
     return scope;
 }
 
-/* Forward declarations for cancel/wait */
+/* Forward declarations for cancel/wait/free */
 static void gt_cancel(GreenThread *t);
 static void gt_wait_terminal(GreenThread *t);
+static void gt_free(GreenThread *t);
 
 void aster_async_scope_exit(void *scope_ptr) {
     if (!scope_ptr) return;
@@ -1191,6 +1228,10 @@ void aster_async_scope_exit(void *scope_ptr) {
     }
     for (int64_t i = 0; i < len; i++) {
         if (tasks[i]) gt_wait_terminal(tasks[i]);
+    }
+    /* Free all scoped task structs. Scoped tasks defer freeing to scope exit. */
+    for (int64_t i = 0; i < len; i++) {
+        if (tasks[i]) gt_free(tasks[i]);
     }
     free(tasks);
     free(scope);
@@ -1267,6 +1308,15 @@ static void gt_wait_terminal(GreenThread *t) {
     }
 }
 
+static void gt_free(GreenThread *t) {
+    if (t->stack) stack_pool_put(t->stack);
+    t->stack = NULL;
+    free(t->waiters);
+    pthread_mutex_destroy(&t->mu);
+    pthread_cond_destroy(&t->cv);
+    free(t);
+}
+
 static int64_t gt_consume_result(GreenThread *t) {
     gt_wait_terminal(t);
 
@@ -1277,14 +1327,22 @@ static int64_t gt_consume_result(GreenThread *t) {
         return 0;
     }
     t->consumed = 1;
+    int scoped = t->scoped;
+    int64_t val = 0;
     if (t->status == GT_READY) {
-        int64_t val = t->result;
-        pthread_mutex_unlock(&t->mu);
-        return val;
+        val = t->result;
+    } else {
+        aster_error_set();
     }
     pthread_mutex_unlock(&t->mu);
-    aster_error_set();
-    return 0;
+
+    /* Recycle stack */
+    if (t->stack) { stack_pool_put(t->stack); t->stack = NULL; }
+
+    /* Free unscoped tasks immediately. Scoped tasks are freed by scope exit. */
+    if (!scoped) gt_free(t);
+
+    return val;
 }
 
 int64_t aster_task_spawn(int64_t entry_ptr, int64_t args_ptr, int64_t scope_ptr) {
@@ -1778,24 +1836,30 @@ int8_t aster_range_check(int64_t val, int64_t end, int8_t inclusive) {
 #ifdef __APPLE__
 #include <stdlib.h>
 #else
-#include <fcntl.h>
+#include <sys/random.h>
 #endif
 
 int64_t aster_random_int(int64_t max) {
     if (max <= 0) return 0;
+    uint64_t umax = (uint64_t)max;
+    /* Rejection threshold: largest multiple of umax fitting in u64.
+       Values at or above this threshold would introduce modulo bias. */
+    uint64_t threshold = UINT64_MAX - UINT64_MAX % umax;
+    for (;;) {
+        uint64_t val;
 #ifdef __APPLE__
-    return (int64_t)arc4random_uniform((uint32_t)max);
+        arc4random_buf(&val, sizeof(val));
 #else
-    uint64_t val;
-    int fd = open("/dev/urandom", O_RDONLY);
-    if (fd >= 0) {
-        read(fd, &val, sizeof(val));
-        close(fd);
-    } else {
-        val = (uint64_t)clock();
-    }
-    return (int64_t)(val % (uint64_t)max);
+        /* getrandom(2) avoids opening /dev/urandom per call (Linux 3.17+). */
+        if (getrandom(&val, sizeof(val), 0) != sizeof(val)) {
+            fprintf(stderr, "aster_random_int: getrandom failed\n");
+            abort();
+        }
 #endif
+        if (val < threshold) {
+            return (int64_t)(val % umax);
+        }
+    }
 }
 
 double aster_random_float(double max) {

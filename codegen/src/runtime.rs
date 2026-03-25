@@ -304,6 +304,42 @@ pub extern "C" fn aster_pow_int(base: i64, exp: i64) -> i64 {
     result
 }
 
+/// Checked integer addition. Aborts on overflow.
+/// This is an interim measure until BigInt promotion is implemented (see bigint-rfc.md).
+pub extern "C" fn aster_int_add(a: i64, b: i64) -> i64 {
+    match a.checked_add(b) {
+        Some(result) => result,
+        None => {
+            eprintln!("integer overflow: {} + {} exceeds 64-bit range", a, b);
+            std::process::abort();
+        }
+    }
+}
+
+/// Checked integer subtraction. Aborts on overflow.
+/// This is an interim measure until BigInt promotion is implemented (see bigint-rfc.md).
+pub extern "C" fn aster_int_sub(a: i64, b: i64) -> i64 {
+    match a.checked_sub(b) {
+        Some(result) => result,
+        None => {
+            eprintln!("integer overflow: {} - {} exceeds 64-bit range", a, b);
+            std::process::abort();
+        }
+    }
+}
+
+/// Checked integer multiplication. Aborts on overflow.
+/// This is an interim measure until BigInt promotion is implemented (see bigint-rfc.md).
+pub extern "C" fn aster_int_mul(a: i64, b: i64) -> i64 {
+    match a.checked_mul(b) {
+        Some(result) => result,
+        None => {
+            eprintln!("integer overflow: {} * {} exceeds 64-bit range", a, b);
+            std::process::abort();
+        }
+    }
+}
+
 /// Float exponentiation: base ** exp.
 pub extern "C" fn aster_pow_float(base: f64, exp: f64) -> f64 {
     base.powf(exp)
@@ -1092,6 +1128,9 @@ fn live_scope(scope: *const u8) -> Option<&'static AsyncScopeHandle> {
 
 fn register_task_with_scope(scope: *mut u8, task: *mut GreenThread) {
     if let Some(scope) = live_scope(scope) {
+        // Mark the task as scoped so consume_thread_result defers freeing to scope exit.
+        let thread = unsafe { &*task };
+        thread.state.lock().unwrap().scoped = true;
         let mut state = scope.state.lock().unwrap();
         state.tasks.push(task);
     }
@@ -1115,10 +1154,15 @@ pub extern "C" fn aster_async_scope_exit(scope: *mut u8) {
     for &task in &tasks {
         scheduler::cancel_thread(task);
     }
-    for task in tasks {
+    for &task in &tasks {
         scheduler::wait_cancel_thread(task);
     }
-    // Free the scope handle (tasks are freed when consumed/resolved)
+    // Free all scoped task structs. Scoped tasks defer freeing to scope exit,
+    // so even consumed tasks still need their struct freed here.
+    for task in tasks {
+        scheduler::free_scoped_thread(task);
+    }
+    // Free the scope handle itself
     unsafe { drop(Box::from_raw(scope as *mut AsyncScopeHandle)) };
 }
 
@@ -1727,22 +1771,26 @@ pub extern "C" fn aster_range_check(val: i64, end: i64, inclusive: i8) -> i8 {
 // ---------------------------------------------------------------------------
 
 /// Random integer in [0, max).
+/// Uses rejection sampling to avoid modulo bias.
 pub extern "C" fn aster_random_int(max: i64) -> i64 {
     if max <= 0 {
         return 0;
     }
-    // Use getrandom for OS entropy
-    let mut buf = [0u8; 8];
-    getrandom::getrandom(&mut buf).unwrap_or_else(|_| {
-        // Fallback: use system time as seed
-        let t = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        buf = (t as u64).to_le_bytes();
-    });
-    let val = u64::from_le_bytes(buf);
-    (val % max as u64) as i64
+    let umax = max as u64;
+    // Rejection threshold: largest multiple of umax that fits in u64.
+    // Values at or above this threshold would introduce modulo bias.
+    let threshold = u64::MAX - u64::MAX % umax;
+    loop {
+        let mut buf = [0u8; 8];
+        if getrandom::getrandom(&mut buf).is_err() {
+            eprintln!("aster_random_int: getrandom failed");
+            std::process::abort();
+        }
+        let val = u64::from_le_bytes(buf);
+        if val < threshold {
+            return (val % umax) as i64;
+        }
+    }
 }
 
 /// Random float in [0.0, max).
@@ -1798,6 +1846,9 @@ pub fn runtime_builtin_symbols() -> Vec<(&'static str, *const u8)> {
             aster_class_alloc_typed as *const u8,
         ),
         ("aster_closure_alloc", aster_closure_alloc as *const u8),
+        ("aster_int_add", aster_int_add as *const u8),
+        ("aster_int_sub", aster_int_sub as *const u8),
+        ("aster_int_mul", aster_int_mul as *const u8),
         ("aster_pow_int", aster_pow_int as *const u8),
         ("aster_pow_float", aster_pow_float as *const u8),
         ("aster_int_to_string", aster_int_to_string as *const u8),

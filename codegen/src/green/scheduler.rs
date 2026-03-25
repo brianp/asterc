@@ -135,12 +135,24 @@ fn worker_loop(_id: usize, local: Worker<ThreadPtr>) {
             st.status = ThreadStatus::Running;
         }
 
-        debug_assert!(
-            !thread
-                .running_on_worker
-                .swap(true, std::sync::atomic::Ordering::Relaxed),
-            "double-scheduling detected: green thread is already running on another worker"
-        );
+        // Release-mode guard: abort if two workers try to run the same thread.
+        // This was previously a debug_assert; upgraded because the Send/Sync
+        // impls on GreenThread rely on exclusive-access invariants.
+        if thread
+            .running_on_worker
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::Acquire,
+                std::sync::atomic::Ordering::Relaxed,
+            )
+            .is_err()
+        {
+            eprintln!(
+                "FATAL: double-scheduling detected: green thread is already running on another worker"
+            );
+            std::process::abort();
+        }
 
         // Set TLS for the green thread
         WORKER_CURRENT_THREAD.set(thread_ptr);
@@ -321,6 +333,7 @@ pub(crate) fn spawn_green_thread(entry: usize, args: usize) -> *mut GreenThread 
             status: ThreadStatus::Runnable,
             cancel_requested: false,
             consumed: false,
+            scoped: false,
             result: 0,
             failed: false,
             green_waiters: Vec::new(),
@@ -355,6 +368,7 @@ pub(crate) fn allocate_terminal_thread(result: i64, failed: bool) -> *mut GreenT
             status,
             cancel_requested: false,
             consumed: false,
+            scoped: false,
             result,
             failed,
             green_waiters: Vec::new(),
@@ -407,6 +421,8 @@ pub(crate) fn is_thread_ready(thread_ptr: *const GreenThread) -> bool {
 
 /// Consume the result of a terminal green thread.
 /// Sets the error flag if the task failed or was cancelled.
+/// Frees the GreenThread struct after extracting the result; the handle
+/// is invalid after this call.
 pub(crate) fn consume_thread_result(thread_ptr: *mut GreenThread) -> i64 {
     wait_for_terminal(thread_ptr);
 
@@ -430,17 +446,27 @@ pub(crate) fn consume_thread_result(thread_ptr: *mut GreenThread) -> i64 {
             0
         }
     };
+    let scoped = st.scoped;
     drop(st);
 
     // Recycle the stack (64KB) now that the result is consumed.
     recycle_stack(unsafe { &mut *thread_ptr });
 
-    // The GreenThread struct (~400 bytes) is intentionally kept alive here.
-    // Code after resolve can still call is_ready() on the task handle, so
-    // the struct must remain valid. The struct leaks when the handle goes
-    // out of scope — acceptable until task handles gain reference counting.
+    // Free unscoped tasks immediately. Scoped tasks are freed by scope exit.
+    if !scoped {
+        unsafe { drop(Box::from_raw(thread_ptr)) };
+    }
 
     result
+}
+
+/// Free a scoped GreenThread struct. Called by async scope cleanup.
+/// Scoped tasks are never freed by consume_thread_result (they defer to scope exit).
+/// The stack may already be recycled if the task was consumed.
+pub(crate) fn free_scoped_thread(thread_ptr: *mut GreenThread) {
+    // Recycle the stack if it hasn't been recycled already (unconsumed tasks).
+    recycle_stack(unsafe { &mut *thread_ptr });
+    unsafe { drop(Box::from_raw(thread_ptr)) };
 }
 
 fn wait_for_terminal(thread_ptr: *mut GreenThread) {

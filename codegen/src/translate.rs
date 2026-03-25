@@ -865,11 +865,24 @@ fn translate_binop(
 
     match op {
         BinOp::Add if is_f => builder.ins().fadd(lhs, rhs),
-        BinOp::Add => builder.ins().iadd(lhs, rhs),
+        BinOp::Add => {
+            // Overflow-checked add via runtime call (interim until BigInt, see bigint-rfc.md)
+            let func_ref = *state.runtime_refs.get("aster_int_add").unwrap();
+            let call = builder.ins().call(func_ref, &[lhs, rhs]);
+            builder.inst_results(call)[0]
+        }
         BinOp::Sub if is_f => builder.ins().fsub(lhs, rhs),
-        BinOp::Sub => builder.ins().isub(lhs, rhs),
+        BinOp::Sub => {
+            let func_ref = *state.runtime_refs.get("aster_int_sub").unwrap();
+            let call = builder.ins().call(func_ref, &[lhs, rhs]);
+            builder.inst_results(call)[0]
+        }
         BinOp::Mul if is_f => builder.ins().fmul(lhs, rhs),
-        BinOp::Mul => builder.ins().imul(lhs, rhs),
+        BinOp::Mul => {
+            let func_ref = *state.runtime_refs.get("aster_int_mul").unwrap();
+            let call = builder.ins().call(func_ref, &[lhs, rhs]);
+            builder.inst_results(call)[0]
+        }
         BinOp::Div if is_f => builder.ins().fdiv(lhs, rhs),
         BinOp::Div => {
             // Guard against division by zero and i64::MIN / -1 overflow.

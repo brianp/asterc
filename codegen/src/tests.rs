@@ -10,7 +10,8 @@ use crate::async_runtime::{
 };
 use crate::jit::CraneliftJIT;
 use crate::runtime::{
-    aster_task_from_i64, aster_task_is_ready, aster_task_resolve_i64, runtime_builtin_symbols,
+    aster_int_add, aster_int_mul, aster_int_sub, aster_task_from_i64, aster_task_is_ready,
+    aster_task_resolve_i64, runtime_builtin_symbols,
 };
 use crate::runtime_sigs::RUNTIME_SIGS;
 use crate::runtime_source::c_runtime_source;
@@ -654,6 +655,94 @@ fn runtime_task_handle_reports_ready_and_resolves_value() {
     let task = aster_task_from_i64(42, 0);
     assert_eq!(aster_task_is_ready(task), 1);
     assert_eq!(aster_task_resolve_i64(task), 42);
+}
+
+// ---------------------------------------------------------------------------
+// Overflow-checked integer arithmetic
+// ---------------------------------------------------------------------------
+
+#[test]
+fn checked_int_add_normal() {
+    assert_eq!(aster_int_add(1, 2), 3);
+    assert_eq!(aster_int_add(-5, 10), 5);
+    assert_eq!(aster_int_add(0, 0), 0);
+    assert_eq!(aster_int_add(i64::MAX - 1, 1), i64::MAX);
+    assert_eq!(aster_int_add(i64::MIN + 1, -1), i64::MIN);
+}
+
+#[test]
+fn checked_int_sub_normal() {
+    assert_eq!(aster_int_sub(10, 3), 7);
+    assert_eq!(aster_int_sub(-5, -10), 5);
+    assert_eq!(aster_int_sub(i64::MIN + 1, 1), i64::MIN);
+    assert_eq!(aster_int_sub(i64::MAX, 1), i64::MAX - 1);
+}
+
+#[test]
+fn checked_int_mul_normal() {
+    assert_eq!(aster_int_mul(3, 4), 12);
+    assert_eq!(aster_int_mul(-3, 4), -12);
+    assert_eq!(aster_int_mul(0, i64::MAX), 0);
+    assert_eq!(aster_int_mul(1, i64::MAX), i64::MAX);
+}
+
+#[test]
+fn checked_int_add_overflow_aborts() {
+    // Verify that overflow causes process abort (caught as non-zero exit).
+    // Runs an ignored inner test in a subprocess so the abort doesn't kill us.
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "tests::checked_int_add_overflow_aborts_inner",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "should have aborted on overflow");
+}
+
+#[test]
+#[ignore] // run only via the wrapper test above
+fn checked_int_add_overflow_aborts_inner() {
+    aster_int_add(i64::MAX, 1);
+}
+
+#[test]
+fn checked_int_sub_overflow_aborts() {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "tests::checked_int_sub_overflow_aborts_inner",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "should have aborted on overflow");
+}
+
+#[test]
+#[ignore]
+fn checked_int_sub_overflow_aborts_inner() {
+    aster_int_sub(i64::MIN, 1);
+}
+
+#[test]
+fn checked_int_mul_overflow_aborts() {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "tests::checked_int_mul_overflow_aborts_inner",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "should have aborted on overflow");
+}
+
+#[test]
+#[ignore]
+fn checked_int_mul_overflow_aborts_inner() {
+    aster_int_mul(i64::MAX, 2);
 }
 
 #[test]
