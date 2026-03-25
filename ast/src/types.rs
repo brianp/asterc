@@ -103,7 +103,20 @@ impl Type {
             Type::Custom(name, args) => {
                 Type::Custom(name.clone(), args.iter().map(|a| a.map_type(f)).collect())
             }
-            // Leaf types and TypeVar — return as-is
+            Type::TypeVar(name, constraints) => {
+                let new_constraints = constraints
+                    .iter()
+                    .map(|c| match c {
+                        TypeConstraint::Includes(n, args) => TypeConstraint::Includes(
+                            n.clone(),
+                            args.iter().map(|a| a.map_type(f)).collect(),
+                        ),
+                        other => other.clone(),
+                    })
+                    .collect();
+                Type::TypeVar(name.clone(), new_constraints)
+            }
+            // Remaining leaf types — return as-is
             _ => self.clone(),
         }
     }
@@ -130,6 +143,10 @@ impl Type {
                     || throws.as_ref().is_some_and(|t| t.any_type(f))
             }
             Type::Custom(_, args) => args.iter().any(|a| a.any_type(f)),
+            Type::TypeVar(_, constraints) => constraints.iter().any(|c| match c {
+                TypeConstraint::Includes(_, args) => args.iter().any(|a| a.any_type(f)),
+                _ => false,
+            }),
             _ => false,
         }
     }
@@ -176,8 +193,103 @@ impl Type {
                     a.collect_types(f, results);
                 }
             }
+            Type::TypeVar(_, constraints) => {
+                for c in constraints {
+                    if let TypeConstraint::Includes(_, args) = c {
+                        for a in args {
+                            a.collect_types(f, results);
+                        }
+                    }
+                }
+            }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn map_type_transforms_typevar_constraint_args() {
+        // TypeVar with Includes("Iterable", [Int]) should transform Int -> Float
+        let ty = Type::TypeVar(
+            "T".to_string(),
+            vec![TypeConstraint::Includes(
+                "Iterable".to_string(),
+                vec![Type::Int],
+            )],
+        );
+        let result = ty.map_type(&|t| {
+            if matches!(t, Type::Int) {
+                Some(Type::Float)
+            } else {
+                None
+            }
+        });
+        match result {
+            Type::TypeVar(_, constraints) => match &constraints[0] {
+                TypeConstraint::Includes(_, args) => {
+                    assert_eq!(
+                        args[0],
+                        Type::Float,
+                        "Int inside Includes should be transformed to Float"
+                    );
+                }
+                _ => panic!("expected Includes constraint"),
+            },
+            _ => panic!("expected TypeVar"),
+        }
+    }
+
+    #[test]
+    fn map_type_preserves_extends_constraint() {
+        let ty = Type::TypeVar(
+            "T".to_string(),
+            vec![TypeConstraint::Extends("Animal".to_string())],
+        );
+        let result = ty.map_type(&|_| None);
+        assert_eq!(result, ty);
+    }
+
+    #[test]
+    fn any_type_finds_type_in_typevar_constraints() {
+        let ty = Type::TypeVar(
+            "T".to_string(),
+            vec![TypeConstraint::Includes(
+                "Iterable".to_string(),
+                vec![Type::Int],
+            )],
+        );
+        assert!(ty.any_type(&|t| matches!(t, Type::Int)));
+    }
+
+    #[test]
+    fn any_type_returns_false_for_unmatched_typevar() {
+        let ty = Type::TypeVar(
+            "T".to_string(),
+            vec![TypeConstraint::Includes(
+                "Iterable".to_string(),
+                vec![Type::Int],
+            )],
+        );
+        assert!(!ty.any_type(&|t| matches!(t, Type::Float)));
+    }
+
+    #[test]
+    fn collect_types_finds_types_in_typevar_constraints() {
+        let ty = Type::TypeVar(
+            "T".to_string(),
+            vec![TypeConstraint::Includes(
+                "Iterable".to_string(),
+                vec![Type::Int],
+            )],
+        );
+        let mut results = Vec::new();
+        ty.collect_types(&|t| matches!(t, Type::Int), &mut results);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], Type::Int);
     }
 }
 

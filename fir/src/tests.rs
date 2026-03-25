@@ -1638,6 +1638,48 @@ def f(c: Color) -> Int
 }
 
 // ===========================================================================
+// Match fallback panic
+// ===========================================================================
+
+#[test]
+fn lower_match_fallback_emits_panic() {
+    // A match with only literal patterns (no wildcard) should emit aster_panic
+    // as the fallback when no arm matches (defense-in-depth).
+    fn find_runtime_panic(stmts: &[FirStmt]) -> bool {
+        stmts.iter().any(|s| match s {
+            FirStmt::Expr(FirExpr::RuntimeCall { name, .. }) if name == "aster_panic" => true,
+            FirStmt::If {
+                then_body,
+                else_body,
+                ..
+            } => find_runtime_panic(then_body) || find_runtime_panic(else_body),
+            FirStmt::Block(stmts) => find_runtime_panic(stmts),
+            _ => false,
+        })
+    }
+
+    // Test with an exhaustive enum match (no wildcard). The last enum arm's
+    // else branch will hit index >= arms.len() and should emit aster_panic.
+    let src = "\
+enum Color
+  Red
+  Green
+
+def g(c: Color) -> Int
+  match c
+    Color.Red => 1
+    Color.Green => 2
+";
+    let fir = lower_ok(src);
+    let g_func = fir.functions.iter().find(|f| f.name == "g").unwrap();
+    assert!(
+        find_runtime_panic(&g_func.body),
+        "expected aster_panic fallback in exhaustive enum match: {:?}",
+        g_func.body
+    );
+}
+
+// ===========================================================================
 // Field assignment lowering
 // ===========================================================================
 
@@ -2900,5 +2942,141 @@ def process() -> Int
         fir.functions.iter().any(|f| f.name == "Status.Failed"),
         "expected Status.Failed constructor, functions: {:?}",
         fir.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+    );
+}
+
+// ===========================================================================
+// Issue 4: ptr_field_count in Construct for precise GC tracing
+// ===========================================================================
+
+#[test]
+fn construct_has_ptr_field_count() {
+    // Class with mix of pointer and value fields should have correct ptr_field_count
+    let src = "\
+class Mixed
+  name: String
+  age: Int
+  active: Bool
+
+def f() -> Mixed
+  Mixed(name: \"test\", age: 42, active: true)
+";
+    let fir = lower_ok(src);
+    let f_func = fir.functions.iter().find(|f| f.name == "f").unwrap();
+
+    fn find_construct(stmts: &[FirStmt]) -> Option<u8> {
+        for s in stmts {
+            match s {
+                FirStmt::Return(FirExpr::Construct {
+                    ptr_field_count, ..
+                }) => {
+                    return Some(*ptr_field_count);
+                }
+                FirStmt::Let {
+                    value:
+                        FirExpr::Construct {
+                            ptr_field_count, ..
+                        },
+                    ..
+                } => {
+                    return Some(*ptr_field_count);
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    let ptr_count = find_construct(real_body(f_func));
+    assert_eq!(
+        ptr_count,
+        Some(1),
+        "Mixed class has 1 pointer field (name: String)"
+    );
+}
+
+#[test]
+fn construct_all_value_fields_zero_ptr_count() {
+    let src = "\
+class Point
+  x: Int
+  y: Int
+
+def f() -> Point
+  Point(x: 1, y: 2)
+";
+    let fir = lower_ok(src);
+    let f_func = fir.functions.iter().find(|f| f.name == "f").unwrap();
+
+    fn find_construct(stmts: &[FirStmt]) -> Option<u8> {
+        for s in stmts {
+            match s {
+                FirStmt::Return(FirExpr::Construct {
+                    ptr_field_count, ..
+                }) => {
+                    return Some(*ptr_field_count);
+                }
+                FirStmt::Let {
+                    value:
+                        FirExpr::Construct {
+                            ptr_field_count, ..
+                        },
+                    ..
+                } => {
+                    return Some(*ptr_field_count);
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    let ptr_count = find_construct(real_body(f_func));
+    assert_eq!(ptr_count, Some(0), "Point has no pointer fields");
+}
+
+#[test]
+fn construct_ptr_fields_first_in_layout() {
+    // Pointer fields should be ordered before value fields in the layout
+    let src = "\
+class Record
+  id: Int
+  name: String
+  score: Float
+
+def f() -> Record
+  Record(id: 1, name: \"test\", score: 3.14)
+";
+    let fir = lower_ok(src);
+    let f_func = fir.functions.iter().find(|f| f.name == "f").unwrap();
+
+    fn find_construct(stmts: &[FirStmt]) -> Option<u8> {
+        for s in stmts {
+            match s {
+                FirStmt::Return(FirExpr::Construct {
+                    ptr_field_count, ..
+                }) => {
+                    return Some(*ptr_field_count);
+                }
+                FirStmt::Let {
+                    value:
+                        FirExpr::Construct {
+                            ptr_field_count, ..
+                        },
+                    ..
+                } => {
+                    return Some(*ptr_field_count);
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    let ptr_count = find_construct(real_body(f_func));
+    assert_eq!(
+        ptr_count,
+        Some(1),
+        "Record has 1 pointer field (name: String)"
     );
 }

@@ -357,8 +357,35 @@ pub extern "C" fn aster_list_to_string(handle: *const u8) -> *mut u8 {
 }
 
 /// Allocate a class instance. Size is in bytes.
+/// Conservative fallback: marks all fields as potential pointers.
+/// Used by enum constructors and any code that doesn't supply a ptr_count.
 pub extern "C" fn aster_class_alloc(size: usize) -> *mut u8 {
-    gc_alloc_inner(size, OBJ_CLASS)
+    let ptr = gc_alloc_inner(size, OBJ_CLASS);
+    // Conservative: treat every slot as a potential pointer.
+    let header = payload_header(ptr);
+    unsafe {
+        *header.add(6) = (size / 8) as u8;
+    }
+    ptr
+}
+
+/// Allocate a class instance with a precise pointer-field count.
+/// `ptr_count` is the number of leading fields that are GC-traceable pointers.
+/// The GC will only trace the first `ptr_count` slots, skipping value fields.
+pub extern "C" fn aster_class_alloc_typed(size: usize, ptr_count: i64) -> *mut u8 {
+    let ptr = gc_alloc_inner(size, OBJ_CLASS);
+    let header = payload_header(ptr);
+    unsafe {
+        *header.add(6) = ptr_count as u8;
+    }
+    ptr
+}
+
+/// Allocate a closure object. Size is in bytes.
+/// Stamps the header with OBJ_CLOSURE so the GC only traces
+/// the env pointer (slot 1), not the function pointer (slot 0).
+pub extern "C" fn aster_closure_alloc(size: usize) -> *mut u8 {
+    gc_alloc_inner(size, OBJ_CLOSURE)
 }
 
 // ---------------------------------------------------------------------------
@@ -533,6 +560,26 @@ pub extern "C" fn aster_map_get(handle: *const u8, key: i64) -> i64 {
     }
 }
 
+/// Check whether a key exists in the map. Returns 1 if found, 0 otherwise.
+pub extern "C" fn aster_map_has_key(handle: *const u8, key: i64) -> i64 {
+    if handle.is_null() {
+        eprintln!("aster_map_has_key: null map handle");
+        std::process::abort();
+    }
+    unsafe {
+        let block = map_block(handle);
+        let len = *(block as *const i64) as usize;
+        let entries = block.add(16) as *const i64;
+        for i in 0..len {
+            let entry_key = *entries.add(i * 2);
+            if string_eq(entry_key as *const u8, key as *const u8) {
+                return 1;
+            }
+        }
+        0
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Garbage collector — non-moving mark-and-sweep with shadow stack
 //
@@ -605,6 +652,13 @@ unsafe fn obj_type(header: *const u8) -> u8 {
 #[inline]
 unsafe fn obj_size(header: *const u8) -> u32 {
     unsafe { *(header.add(8) as *const u32) }
+}
+
+/// Get pointer field count from header (stored at offset 6).
+/// Only meaningful for OBJ_CLASS objects. Set by aster_class_alloc_typed.
+#[inline]
+unsafe fn obj_ptr_count(header: *const u8) -> u8 {
+    unsafe { *header.add(6) }
 }
 
 /// Read the next pointer from a header.
@@ -788,9 +842,13 @@ unsafe fn gc_mark(root: *const u8) {
                     }
                 }
                 OBJ_CLASS => {
-                    let num_fields = obj_size(header) as usize / 8;
+                    // Precise tracing: only trace the first ptr_count slots.
+                    // Pointer fields are sorted to the front of the object layout
+                    // by the FIR lowerer; ptr_count is stored at header offset 6
+                    // by aster_class_alloc_typed (or conservatively by aster_class_alloc).
+                    let ptr_count = obj_ptr_count(header) as usize;
                     let fields = payload as *const i64;
-                    for i in 0..num_fields {
+                    for i in 0..ptr_count {
                         let val = *fields.add(i);
                         if is_gc_payload(val) {
                             worklist.push(val as *const u8);
@@ -1735,6 +1793,11 @@ pub fn runtime_builtin_symbols() -> Vec<(&'static str, *const u8)> {
         ("aster_list_push", aster_list_push as *const u8),
         ("aster_list_len", aster_list_len as *const u8),
         ("aster_class_alloc", aster_class_alloc as *const u8),
+        (
+            "aster_class_alloc_typed",
+            aster_class_alloc_typed as *const u8,
+        ),
+        ("aster_closure_alloc", aster_closure_alloc as *const u8),
         ("aster_pow_int", aster_pow_int as *const u8),
         ("aster_pow_float", aster_pow_float as *const u8),
         ("aster_int_to_string", aster_int_to_string as *const u8),
@@ -1744,6 +1807,7 @@ pub fn runtime_builtin_symbols() -> Vec<(&'static str, *const u8)> {
         ("aster_map_new", aster_map_new as *const u8),
         ("aster_map_set", aster_map_set as *const u8),
         ("aster_map_get", aster_map_get as *const u8),
+        ("aster_map_has_key", aster_map_has_key as *const u8),
         ("aster_error_set", aster_error_set as *const u8),
         ("aster_error_set_typed", aster_error_set_typed as *const u8),
         ("aster_error_check", aster_error_check as *const u8),

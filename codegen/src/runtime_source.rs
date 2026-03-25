@@ -23,6 +23,9 @@ void* aster_alloc(int64_t size) {
 }
 
 void* aster_class_alloc(int64_t size) { return aster_alloc(size); }
+/* AOT: header-based ptr_count tracing is JIT-only; delegate to class_alloc. */
+void* aster_class_alloc_typed(int64_t size, int64_t ptr_count) { (void)ptr_count; return aster_alloc(size); }
+void* aster_closure_alloc(int64_t size) { return aster_alloc(size); }
 
 /* ===================================================================
  * Printing
@@ -307,6 +310,17 @@ int64_t aster_map_get(void* handle, int64_t key) {
         if (string_eq_inner((void*)entries[i * 2], (void*)key)) {
             return entries[i * 2 + 1];
         }
+    }
+    return 0;
+}
+
+int64_t aster_map_has_key(void* handle, int64_t key) {
+    if (!handle) { fprintf(stderr, "aster_map_has_key: null map\n"); abort(); }
+    void* block = *(void**)handle;
+    int64_t len = *(int64_t*)block;
+    int64_t* entries = ((int64_t*)block) + 2;
+    for (int64_t i = 0; i < len; i++) {
+        if (string_eq_inner((void*)entries[i * 2], (void*)key)) return 1;
     }
     return 0;
 }

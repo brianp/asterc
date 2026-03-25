@@ -81,11 +81,100 @@ impl Lowerer {
                 let fir_obj = self.lower_expr(object)?;
                 let fir_idx = self.lower_expr(index)?;
                 if is_map {
-                    Ok(FirExpr::RuntimeCall {
-                        name: "aster_map_get".to_string(),
-                        args: vec![fir_obj, fir_idx],
-                        ret_ty: FirType::I64,
-                    })
+                    // Determine value FIR type from AST type info
+                    let val_fir_ty = if let Expr::Ident(name, _) = object.as_ref() {
+                        if let Some(Type::Map(_, v)) = self.local_ast_types.get(name.as_str()) {
+                            self.lower_type(v)
+                        } else {
+                            FirType::I64
+                        }
+                    } else {
+                        FirType::I64
+                    };
+
+                    if matches!(val_fir_ty, FirType::Ptr) {
+                        // Pointer value types (String, List, Class, Map): aster_map_get
+                        // returning 0 naturally represents nil (null pointer = nil,
+                        // non-null = Some). The result type is TaggedUnion[Ptr, Void]
+                        // so that .or()/.or_throw() and nullable match work correctly.
+                        let nullable_ty = FirType::TaggedUnion {
+                            tag_bits: 1,
+                            variants: vec![FirType::Ptr, FirType::Void],
+                        };
+                        let uid = self.next_local;
+                        let result_id = self.alloc_local();
+                        self.locals.insert(format!("__map_get_{}", uid), result_id);
+                        self.local_types.insert(result_id, nullable_ty.clone());
+                        self.pending_stmts.push(FirStmt::Let {
+                            name: result_id,
+                            ty: nullable_ty.clone(),
+                            value: FirExpr::RuntimeCall {
+                                name: "aster_map_get".to_string(),
+                                args: vec![fir_obj, fir_idx],
+                                ret_ty: FirType::Ptr,
+                            },
+                        });
+                        Ok(FirExpr::LocalVar(result_id, nullable_ty))
+                    } else {
+                        // Value types (Int, Float, Bool): need has_key check + TagWrap boxing.
+                        // Result type is TaggedUnion[val_fir_ty, Void] so that
+                        // .or()/.or_throw() and nullable match work correctly.
+                        let nullable_ty = FirType::TaggedUnion {
+                            tag_bits: 1,
+                            variants: vec![val_fir_ty.clone(), FirType::Void],
+                        };
+                        let uid = self.next_local;
+                        let result_id = self.alloc_local();
+                        self.locals.insert(format!("__map_get_{}", uid), result_id);
+                        self.local_types.insert(result_id, nullable_ty.clone());
+
+                        // let __map_get = nil (default: key not found)
+                        self.pending_stmts.push(FirStmt::Let {
+                            name: result_id,
+                            ty: nullable_ty.clone(),
+                            value: FirExpr::TagWrap {
+                                tag: 1,
+                                value: Box::new(FirExpr::NilLit),
+                                ty: FirType::Ptr,
+                            },
+                        });
+
+                        // if aster_map_has_key(map, key) != 0
+                        let has_key = FirExpr::RuntimeCall {
+                            name: "aster_map_has_key".to_string(),
+                            args: vec![fir_obj.clone(), fir_idx.clone()],
+                            ret_ty: FirType::I64,
+                        };
+                        let cond = FirExpr::BinaryOp {
+                            left: Box::new(has_key),
+                            op: BinOp::Neq,
+                            right: Box::new(FirExpr::IntLit(0)),
+                            result_ty: FirType::Bool,
+                        };
+
+                        // then: __map_get = TagWrap(0, aster_map_get(map, key))
+                        let get_val = FirExpr::RuntimeCall {
+                            name: "aster_map_get".to_string(),
+                            args: vec![fir_obj, fir_idx],
+                            ret_ty: val_fir_ty.clone(),
+                        };
+                        let some_expr = FirExpr::TagWrap {
+                            tag: 0,
+                            value: Box::new(get_val),
+                            ty: val_fir_ty,
+                        };
+
+                        self.pending_stmts.push(FirStmt::If {
+                            cond,
+                            then_body: vec![FirStmt::Assign {
+                                target: FirPlace::Local(result_id),
+                                value: some_expr,
+                            }],
+                            else_body: vec![],
+                        });
+
+                        Ok(FirExpr::LocalVar(result_id, nullable_ty))
+                    }
                 } else {
                     // Resolve element type from AST type info when available
                     let elem_ty = if let Expr::Ident(name, _) = object.as_ref() {
@@ -536,6 +625,12 @@ impl Lowerer {
                 .get(&class_id)
                 .cloned()
                 .unwrap_or_default();
+            // Count how many pointer-typed fields are at the front of the layout.
+            // The layout has already been sorted pointer-first in the class lowering.
+            let ptr_field_count = field_layout
+                .iter()
+                .take_while(|(_, ty, _)| ty.needs_gc_root())
+                .count() as u8;
             let mut fir_fields = Vec::new();
             for (field_name, _, _) in &field_layout {
                 if let Some((_, _, expr)) =
@@ -556,6 +651,7 @@ impl Lowerer {
                 class: class_id,
                 fields: fir_fields,
                 ty: FirType::Ptr,
+                ptr_field_count,
             });
         }
 

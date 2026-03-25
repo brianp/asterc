@@ -57,6 +57,12 @@ pub static RUNTIME_SIGS: &[RuntimeSig] = &[
     ),
     ("aster_list_len", &[types::I64], Some(types::I64)),
     ("aster_class_alloc", &[types::I64], Some(types::I64)),
+    (
+        "aster_class_alloc_typed",
+        &[types::I64, types::I64],
+        Some(types::I64),
+    ),
+    ("aster_closure_alloc", &[types::I64], Some(types::I64)),
     ("aster_pow_int", &[types::I64, types::I64], Some(types::I64)),
     (
         "aster_pow_float",
@@ -74,6 +80,11 @@ pub static RUNTIME_SIGS: &[RuntimeSig] = &[
         Some(types::I64),
     ),
     ("aster_map_get", &[types::I64, types::I64], Some(types::I64)),
+    (
+        "aster_map_has_key",
+        &[types::I64, types::I64],
+        Some(types::I64),
+    ),
     ("aster_error_set", &[], None),
     ("aster_error_set_typed", &[types::I64, types::I64], None),
     ("aster_error_check", &[], Some(types::I8)),

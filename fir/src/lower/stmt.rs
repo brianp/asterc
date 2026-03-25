@@ -245,9 +245,9 @@ impl Lowerer {
         };
 
         // Build field layout including inherited fields from parent chain.
-        // Parent fields come first (so subclass instances are layout-compatible).
-        let mut fir_fields = Vec::new();
-        let mut offset = 0usize;
+        // Within each class segment (ancestor or own fields), pointer-typed
+        // fields are placed before value-typed fields so the GC can trace
+        // precisely using the ptr_field_count stored in the object header.
 
         // Collect inherited fields from ancestor chain (outermost parent first)
         let mut ancestor_chain: Vec<String> = Vec::new();
@@ -261,20 +261,35 @@ impl Lowerer {
         }
         // Reverse so outermost ancestor is processed first
         ancestor_chain.reverse();
+
+        // Collect all fields (ancestor + own) without offsets first, then
+        // assign offsets with pointer fields sorted to the front.
+        let mut unordered: Vec<(String, FirType)> = Vec::new();
         for ancestor_name in &ancestor_chain {
             if let Some(ancestor_info) = self.type_env.get_class(ancestor_name) {
                 for (field_name, field_type) in &ancestor_info.fields {
                     let fir_type = self.lower_type(field_type);
-                    fir_fields.push((field_name.clone(), fir_type, offset));
-                    offset += 8;
+                    unordered.push((field_name.clone(), fir_type));
                 }
             }
         }
-
-        // Then the class's own fields
         for (field_name, field_type) in fields {
             let fir_type = self.lower_type(field_type);
-            fir_fields.push((field_name.clone(), fir_type, offset));
+            unordered.push((field_name.clone(), fir_type));
+        }
+
+        // Stable partition: pointer fields first, then value fields.
+        // stable_partition preserves relative order within each group.
+        let (mut ptr_fields, val_fields): (Vec<_>, Vec<_>) = unordered
+            .into_iter()
+            .partition(|(_, ty)| ty.needs_gc_root());
+        ptr_fields.extend(val_fields);
+
+        // Now assign byte offsets in the new order.
+        let mut fir_fields = Vec::with_capacity(ptr_fields.len());
+        let mut offset = 0usize;
+        for (field_name, fir_type) in ptr_fields {
+            fir_fields.push((field_name, fir_type, offset));
             offset += 8;
         }
         let total_size = offset;

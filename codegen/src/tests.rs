@@ -1619,7 +1619,9 @@ fn map_get_value() {
     let src = "\
 def main() -> Int
   let m: Map[String, Int] = {\"x\": 10, \"y\": 32}
-  m[\"y\"]
+  match m[\"y\"]
+    nil => 0
+    v => v
 ";
     let fir = compile_and_run(src);
     let jit = jit_compile(&fir);
@@ -1632,7 +1634,9 @@ fn map_get_first_key() {
     let src = "\
 def main() -> Int
   let m: Map[String, Int] = {\"a\": 99, \"b\": 1}
-  m[\"a\"]
+  match m[\"a\"]
+    nil => 0
+    v => v
 ";
     let fir = compile_and_run(src);
     let jit = jit_compile(&fir);
@@ -3608,7 +3612,9 @@ fn e2e_map_literal_with_entries() {
     let src = r#"
 def main() -> Int
   let m: Map[String, Int] = {"a": 10, "b": 20}
-  m["a"]
+  match m["a"]
+    nil => 0
+    v => v
 "#;
     let fir = compile_and_run(src);
     let jit = jit_compile(&fir);
@@ -3621,7 +3627,9 @@ fn e2e_map_get_second_key() {
     let src = r#"
 def main() -> Int
   let m: Map[String, Int] = {"x": 5, "y": 42}
-  m["y"]
+  match m["y"]
+    nil => 0
+    v => v
 "#;
     let fir = compile_and_run(src);
     let jit = jit_compile(&fir);
@@ -3635,7 +3643,9 @@ fn e2e_map_set_via_index_assignment() {
 def main() -> Int
   let m: Map[String, Int] = {"a": 1}
   m["a"] = 42
-  m["a"]
+  match m["a"]
+    nil => 0
+    v => v
 "#;
     let fir = compile_and_run(src);
     let jit = jit_compile(&fir);
@@ -3649,7 +3659,9 @@ fn e2e_map_add_new_key() {
 def main() -> Int
   let m: Map[String, Int] = {}
   m["key"] = 99
-  m["key"]
+  match m["key"]
+    nil => 0
+    v => v
 "#;
     let fir = compile_and_run(src);
     let jit = jit_compile(&fir);
@@ -4162,7 +4174,9 @@ fn e2e_map_three_entries() {
     let src = r#"
 def main() -> Int
   let m: Map[String, Int] = {"a": 1, "b": 2, "c": 3}
-  m["b"]
+  match m["b"]
+    nil => 0
+    v => v
 "#;
     let fir = compile_and_run(src);
     let jit = jit_compile(&fir);
@@ -4429,7 +4443,9 @@ class Item
 
 def main() -> Int
   let m: Map[String, Item] = {"a": Item(value: 42)}
-  m["a"].value
+  match m["a"]
+    nil => 0
+    v => v.value
 "#;
     let fir = compile_and_run(src);
     let jit = jit_compile(&fir);
@@ -4684,6 +4700,42 @@ def make_const() -> Fn() -> Int
 
 def main() -> Int
   make_const()()
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+// ===========================================================================
+// Closure allocation uses OBJ_CLOSURE header (Issue 3 regression)
+// ===========================================================================
+
+#[test]
+fn closure_alloc_uses_obj_closure_header() {
+    // Verify aster_closure_alloc is present in the runtime symbol table.
+    // The JIT backend must resolve it so closures receive OBJ_CLOSURE headers
+    // rather than OBJ_CLASS, ensuring the GC only traces the env pointer.
+    let symbols = crate::runtime::runtime_builtin_symbols();
+    assert!(
+        symbols
+            .iter()
+            .any(|(name, _)| *name == "aster_closure_alloc"),
+        "aster_closure_alloc must be registered in the runtime symbol table"
+    );
+}
+
+#[test]
+fn closure_with_captures_gc_safe() {
+    // Regression test: closures allocated via aster_closure_alloc still
+    // capture variables correctly and return the right value after a GC
+    // safepoint (aster_safepoint is called implicitly by the runtime).
+    let src = "\
+def main() -> Int
+  let captured: Int = 21
+  def double_captured() -> Int
+    captured * 2
+  double_captured()
 ";
     let fir = compile_and_run(src);
     let jit = jit_compile(&fir);

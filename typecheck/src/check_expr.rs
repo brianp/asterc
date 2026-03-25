@@ -985,7 +985,7 @@ impl TypeChecker {
                     .with_code("E016")
                     .with_label(index.span(), format!("expected {}", key_ty)));
                 }
-                Ok(*val_ty.clone())
+                Ok(Type::Nullable(val_ty.clone()))
             }
             Type::List(inner) => {
                 if idx_ty != Type::Int {

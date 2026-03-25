@@ -602,11 +602,16 @@ fn translate_expr(
             val
         }
 
-        FirExpr::Construct { fields, .. } => {
-            if let Some(&alloc_ref) = state.runtime_refs.get("aster_class_alloc") {
+        FirExpr::Construct {
+            fields,
+            ptr_field_count,
+            ..
+        } => {
+            if let Some(&alloc_ref) = state.runtime_refs.get("aster_class_alloc_typed") {
                 let size = fields.len() * 8;
                 let size_val = builder.ins().iconst(types::I64, size as i64);
-                let call = builder.ins().call(alloc_ref, &[size_val]);
+                let ptr_count_val = builder.ins().iconst(types::I64, *ptr_field_count as i64);
+                let call = builder.ins().call(alloc_ref, &[size_val, ptr_count_val]);
                 let ptr = builder.inst_results(call)[0];
                 for (i, field_expr) in fields.iter().enumerate() {
                     let field_val = translate_expr(builder, state, field_expr);
@@ -728,7 +733,7 @@ fn translate_expr(
 
         FirExpr::ClosureCreate { func, env, .. } => {
             // Allocate closure struct: [func_ptr: i64][env_ptr: i64]
-            if let Some(&alloc_ref) = state.runtime_refs.get("aster_class_alloc") {
+            if let Some(&alloc_ref) = state.runtime_refs.get("aster_closure_alloc") {
                 let size = builder.ins().iconst(types::I64, 16);
                 let call = builder.ins().call(alloc_ref, &[size]);
                 let closure_ptr = builder.inst_results(call)[0];

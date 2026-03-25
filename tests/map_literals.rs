@@ -54,3 +54,47 @@ fn map_nullable_type_parses() {
 "#,
     );
 }
+
+// ─── Map index returns nullable ─────────────────────────────────────
+
+#[test]
+fn map_index_returns_nullable() {
+    // Map index should return V?, requiring nil check to use the value
+    let err = common::check_err(
+        r#"let m = {"a": 1, "b": 2}
+let x: Int = m["a"]
+"#,
+    );
+    assert!(
+        err.contains("mismatch") || err.contains("Nullable") || err.contains("Int?"),
+        "expected type mismatch (Int? vs Int), got: {}",
+        err
+    );
+}
+
+#[test]
+fn map_index_nullable_match_unwrap() {
+    // Should be able to match on the nullable result
+    common::check_ok(
+        r#"let m = {"a": 1, "b": 2}
+let x = match m["a"]
+  nil => 0
+  v => v
+"#,
+    );
+}
+
+#[test]
+fn map_index_nullable_string_values() {
+    // String map values: index returns String?
+    let err = common::check_err(
+        r#"let m = {"a": "hello"}
+let x: String = m["a"]
+"#,
+    );
+    assert!(
+        err.contains("mismatch") || err.contains("Nullable") || err.contains("String?"),
+        "expected type mismatch (String? vs String), got: {}",
+        err
+    );
+}

@@ -49,8 +49,41 @@ impl Lowerer {
             value: default_val,
         });
 
+        // For nullable scrutinees, determine the inner AST type so that ident arms
+        // can bind the unwrapped value with the correct local_ast_types entry.
+        // Try the type_table first (covers function call returns, etc.), then
+        // fall back to inspecting the scrutinee expression directly for map index.
+        let inner_ast_ty: Option<Type> = self
+            .type_table
+            .get(&scrutinee.span())
+            .and_then(|ast_ty| {
+                if let Type::Nullable(inner) = ast_ty {
+                    Some(*inner.clone())
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                // For map index expressions: look up the map's value type from local_ast_types
+                if let Expr::Index { object, .. } = scrutinee
+                    && let Expr::Ident(map_name, _) = object.as_ref()
+                    && let Some(Type::Map(_, val_ty)) = self.local_ast_types.get(map_name.as_str())
+                {
+                    Some(*val_ty.clone())
+                } else {
+                    None
+                }
+            });
+
         // Build nested if/else chain from arms
-        let if_chain = self.build_match_chain(scrutinee_id, &scrutinee_ty, arms, 0, result_id)?;
+        let if_chain = self.build_match_chain(
+            scrutinee_id,
+            &scrutinee_ty,
+            arms,
+            0,
+            result_id,
+            inner_ast_ty.as_ref(),
+        )?;
 
         self.pending_stmts.push(if_chain);
 
@@ -82,10 +115,16 @@ impl Lowerer {
         arms: &[(MatchPattern, Expr)],
         index: usize,
         result_id: LocalId,
+        inner_ast_ty: Option<&Type>,
     ) -> Result<FirStmt, LowerError> {
         if index >= arms.len() {
-            // No more arms — this shouldn't happen if patterns are exhaustive
-            return Ok(FirStmt::Expr(FirExpr::IntLit(0)));
+            // Defense-in-depth: the typechecker enforces exhaustiveness, but if
+            // control reaches here at runtime, trap instead of silently returning 0.
+            return Ok(FirStmt::Expr(FirExpr::RuntimeCall {
+                name: "aster_panic".to_string(),
+                args: vec![],
+                ret_ty: FirType::Void,
+            }));
         }
 
         let (pattern, _body_expr) = &arms[index];
@@ -95,14 +134,49 @@ impl Lowerer {
                 // Wildcard/ident always matches — bind if ident, then lower body
                 let mut then_body = Vec::new();
                 if let MatchPattern::Ident(name, _) = pattern {
-                    // Bind scrutinee to the name
+                    // For nullable scrutinee (TaggedUnion), check if there is a nil arm
+                    // earlier in the arms list. If so, this ident arm only matches the
+                    // non-nil case, so we unwrap the inner value with TagUnwrap.
+                    let has_nil_arm_before = arms[..index].iter().any(|(p, _)| {
+                        matches!(p, MatchPattern::Literal(e, _) if matches!(**e, Expr::Nil(_)))
+                    });
+
+                    let (bind_ty, bind_value, bind_ast_ty) =
+                        if let FirType::TaggedUnion { ref variants, .. } = *scrutinee_ty
+                            && has_nil_arm_before
+                            && !variants.is_empty()
+                        {
+                            // Unwrap the nullable inner value for binding
+                            let inner_ty = variants[0].clone();
+                            let unwrapped = FirExpr::TagUnwrap {
+                                value: Box::new(FirExpr::LocalVar(
+                                    scrutinee_id,
+                                    scrutinee_ty.clone(),
+                                )),
+                                expected_tag: 0,
+                                ty: inner_ty.clone(),
+                            };
+                            (inner_ty, unwrapped, inner_ast_ty.cloned())
+                        } else {
+                            (
+                                scrutinee_ty.clone(),
+                                FirExpr::LocalVar(scrutinee_id, scrutinee_ty.clone()),
+                                None,
+                            )
+                        };
+
+                    // Bind the (possibly unwrapped) value to the name
                     let bind_id = self.alloc_local();
                     self.locals.insert(name.clone(), bind_id);
-                    self.local_types.insert(bind_id, scrutinee_ty.clone());
+                    self.local_types.insert(bind_id, bind_ty.clone());
+                    // Propagate AST type info so field access works inside the arm body
+                    if let Some(ast_ty) = bind_ast_ty {
+                        self.local_ast_types.insert(name.clone(), ast_ty);
+                    }
                     then_body.push(FirStmt::Let {
                         name: bind_id,
-                        ty: scrutinee_ty.clone(),
-                        value: FirExpr::LocalVar(scrutinee_id, scrutinee_ty.clone()),
+                        ty: bind_ty,
+                        value: bind_value,
                     });
                 }
                 // Now lower the body (after binding)
@@ -126,17 +200,14 @@ impl Lowerer {
                     right: Box::new(fir_lit),
                     result_ty: FirType::Bool,
                 };
-                let else_body = if index + 1 < arms.len() {
-                    vec![self.build_match_chain(
-                        scrutinee_id,
-                        scrutinee_ty,
-                        arms,
-                        index + 1,
-                        result_id,
-                    )?]
-                } else {
-                    vec![]
-                };
+                let else_body = vec![self.build_match_chain(
+                    scrutinee_id,
+                    scrutinee_ty,
+                    arms,
+                    index + 1,
+                    result_id,
+                    inner_ast_ty,
+                )?];
                 Ok(FirStmt::If {
                     cond,
                     then_body: vec![body_assign],
@@ -172,17 +243,14 @@ impl Lowerer {
                     right: Box::new(FirExpr::IntLit(tag)),
                     result_ty: FirType::Bool,
                 };
-                let else_body = if index + 1 < arms.len() {
-                    vec![self.build_match_chain(
-                        scrutinee_id,
-                        scrutinee_ty,
-                        arms,
-                        index + 1,
-                        result_id,
-                    )?]
-                } else {
-                    vec![]
-                };
+                let else_body = vec![self.build_match_chain(
+                    scrutinee_id,
+                    scrutinee_ty,
+                    arms,
+                    index + 1,
+                    result_id,
+                    inner_ast_ty,
+                )?];
                 Ok(FirStmt::If {
                     cond,
                     then_body: vec![body_assign],

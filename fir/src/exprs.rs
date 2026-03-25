@@ -86,6 +86,10 @@ pub enum FirExpr {
         class: ClassId,
         fields: Vec<FirExpr>,
         ty: FirType,
+        /// Number of pointer-typed fields stored at the front of `fields`.
+        /// Pointer fields are sorted first so the GC can trace only the first
+        /// `ptr_field_count` slots precisely, without conservative scanning.
+        ptr_field_count: u8,
     },
     ListNew {
         elements: Vec<FirExpr>,
