@@ -422,6 +422,8 @@ fn translate_stmt(builder: &mut FunctionBuilder, state: &mut TranslationState, s
         FirStmt::Block(stmts) => {
             translate_body(builder, state, stmts);
         }
+
+        FirStmt::NoOp => {}
     }
 }
 

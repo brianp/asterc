@@ -431,7 +431,7 @@ pub(crate) fn collect_string_lits_stmts(
             FirStmt::Block(stmts) => {
                 collect_string_lits_stmts(stmts, strings);
             }
-            FirStmt::Break | FirStmt::Continue => {}
+            FirStmt::Break | FirStmt::Continue | FirStmt::NoOp => {}
         }
     }
 }

@@ -90,7 +90,7 @@ impl<'a> ValidationContext<'a> {
                 FirStmt::Block(stmts) => {
                     self.validate_stmts(stmts);
                 }
-                FirStmt::Break | FirStmt::Continue => {}
+                FirStmt::Break | FirStmt::Continue | FirStmt::NoOp => {}
             }
         }
     }

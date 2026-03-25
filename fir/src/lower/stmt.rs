@@ -688,8 +688,7 @@ impl Lowerer {
                     self.classes.insert(name.clone(), id);
                 }
                 self.lower_class(name, fields, methods, extends.as_deref())?;
-                // Return a no-op expression; the class is registered in the module
-                Ok(FirStmt::Expr(FirExpr::IntLit(0)))
+                Ok(FirStmt::NoOp)
             }
             Stmt::Enum {
                 name,
@@ -718,8 +717,7 @@ impl Lowerer {
                     }
                 }
                 self.lower_enum(name, variants, methods)?;
-                // Return a no-op expression; the enum constructors are registered in the module
-                Ok(FirStmt::Expr(FirExpr::IntLit(0)))
+                Ok(FirStmt::NoOp)
             }
             _ => Err(unsupported_stmt(stmt)),
         }

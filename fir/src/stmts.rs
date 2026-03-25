@@ -31,6 +31,9 @@ pub enum FirStmt {
     Continue,
     Expr(FirExpr),
     Block(Vec<FirStmt>),
+    /// Placeholder for statements that produce no runtime value (e.g. nested
+    /// type definitions). Codegen should skip these entirely.
+    NoOp,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
