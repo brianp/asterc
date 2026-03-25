@@ -81,7 +81,7 @@ def log(msg: String)
 fn inline_lambda_arrow_form_works() {
     check_ok(
         "\
-def apply(x: Int, f: (Int) -> Int) -> Int
+def apply(x: Int, f: Fn(Int) -> Int) -> Int
   f(_0: x)
 let result = apply(x: 5, f: -> x: x * 2)
 ",
@@ -92,7 +92,7 @@ let result = apply(x: 5, f: -> x: x * 2)
 fn inline_lambda_multi_param_works() {
     check_ok(
         "\
-def apply2(a: Int, b: Int, f: (Int, Int) -> Int) -> Int
+def apply2(a: Int, b: Int, f: Fn(Int, Int) -> Int) -> Int
   f(_0: a, _1: b)
 let result = apply2(a: 1, b: 2, f: -> a, b: a + b)
 ",
@@ -103,7 +103,7 @@ let result = apply2(a: 1, b: 2, f: -> a, b: a + b)
 fn inline_lambda_zero_param_works() {
     check_ok(
         "\
-def run(f: () -> Int) -> Int
+def run(f: Fn() -> Int) -> Int
   f()
 let result = run(f: -> : 42)
 ",

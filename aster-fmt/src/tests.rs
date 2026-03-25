@@ -692,7 +692,7 @@ fn sig_wrap_short_fits_one_line() {
 #[test]
 fn sig_wrap_long_params_wrap_at_paren() {
     // These params together exceed 58 chars (2/3 of 88)
-    let source = "def transform(input: String, count: Int, flag: Bool, callback: (Int) -> String) -> String\n  input\n";
+    let source = "def transform(input: String, count: Int, flag: Bool, callback: Fn(Int) -> String) -> String\n  input\n";
     let out = fmt(source);
     // Should wrap, with continuation aligned to after "("
     assert!(out.contains("def transform("));

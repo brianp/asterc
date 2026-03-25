@@ -2733,3 +2733,73 @@ fn needs_gc_root_value_types() {
     assert!(!FirType::Never.needs_gc_root());
     assert!(!FirType::FnPtr(FunctionId(0)).needs_gc_root());
 }
+
+// ===========================================================================
+// Indirect function calls (GH #10)
+// ===========================================================================
+
+#[test]
+fn lower_indirect_call_return_value_called() {
+    // get_handler() returns a closure; calling its result should produce a ClosureCall
+    let src = "\
+def make_doubler() -> Fn(Int) -> Int
+  def dbl(x: Int) -> Int
+    x * 2
+  dbl
+
+def main() -> Int
+  let f: Fn(Int) -> Int = make_doubler()
+  f(_0: 21)
+";
+    let fir = lower_ok(src);
+    let main = fir.get_function(fir.entry.unwrap());
+    let body = real_body(main);
+    // The body should contain a ClosureCall somewhere (the indirect call)
+    let has_closure_call = body.iter().any(|s| match s {
+        FirStmt::Return(FirExpr::ClosureCall { .. }) => true,
+        FirStmt::Expr(FirExpr::ClosureCall { .. }) => true,
+        FirStmt::Let {
+            value: FirExpr::ClosureCall { .. },
+            ..
+        } => true,
+        _ => false,
+    });
+    assert!(
+        has_closure_call,
+        "expected ClosureCall in main body, got: {:?}",
+        body
+    );
+}
+
+#[test]
+fn lower_indirect_call_variable_fn_type() {
+    // A function-type parameter is called dynamically via ClosureCall
+    let src = "\
+def apply(f: Fn(Int) -> Int, x: Int) -> Int
+  f(_0: x)
+
+def main() -> Int
+  def double(x: Int) -> Int
+    x * 2
+  apply(f: double, x: 21)
+";
+    let fir = lower_ok(src);
+    // The ClosureCall is inside `apply`, not `main`
+    let apply = &fir.functions[0];
+    assert_eq!(apply.name, "apply");
+    let body = real_body(apply);
+    let has_closure_call = body.iter().any(|s| match s {
+        FirStmt::Return(FirExpr::ClosureCall { .. }) => true,
+        FirStmt::Expr(FirExpr::ClosureCall { .. }) => true,
+        FirStmt::Let {
+            value: FirExpr::ClosureCall { .. },
+            ..
+        } => true,
+        _ => false,
+    });
+    assert!(
+        has_closure_call,
+        "expected ClosureCall in apply body, got: {:?}",
+        body
+    );
+}

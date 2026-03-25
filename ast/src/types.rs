@@ -211,7 +211,7 @@ impl fmt::Display for Type {
                 ..
             } => {
                 let ps: Vec<std::string::String> = params.iter().map(|p| p.to_string()).collect();
-                write!(f, "({}) -> {}", ps.join(", "), ret)?;
+                write!(f, "Fn({}) -> {}", ps.join(", "), ret)?;
                 if let Some(t) = throws {
                     write!(f, " throws {}", t)?;
                 }

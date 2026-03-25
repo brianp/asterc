@@ -134,7 +134,7 @@ let x = phantom()
 #[test]
 fn higher_order_generic_unification() {
     common::check_ok(
-        r#"def apply(f: (T) -> T, x: T) -> T
+        r#"def apply(f: Fn(T) -> T, x: T) -> T
   f(_0: x)
 
 def double(n: Int) -> Int

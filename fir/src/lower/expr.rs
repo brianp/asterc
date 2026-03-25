@@ -399,10 +399,33 @@ impl Lowerer {
         }
 
         let Expr::Ident(name, _) = func else {
-            return Err(LowerError::UnsupportedFeature(
-                UnsupportedFeatureKind::Other("non-ident function call target".into()),
-                call_expr.span(),
-            ));
+            // Indirect call: arbitrary expression as call target (e.g. get_handler()(x))
+            let callee = self.lower_expr(func)?;
+            let fir_args: Result<Vec<_>, _> = args
+                .iter()
+                .map(|(_, _, arg)| self.lower_expr(arg))
+                .collect();
+            // Resolve return type from the type table (populated by type checker).
+            // Fall back to the callee expression's function type if available.
+            let ret_ty = self
+                .type_table
+                .get(&call_expr.span())
+                .or_else(|| {
+                    self.type_table
+                        .get(&func.span())
+                        .filter(|ty| matches!(ty, Type::Function { .. }))
+                        .map(|ty| match ty {
+                            Type::Function { ret, .. } => ret.as_ref(),
+                            _ => ty,
+                        })
+                })
+                .map(|ty| self.lower_type(ty))
+                .unwrap_or(FirType::I64);
+            return Ok(FirExpr::ClosureCall {
+                closure: Box::new(callee),
+                args: fir_args?,
+                ret_ty,
+            });
         };
 
         if name == "to_string"

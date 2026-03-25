@@ -174,7 +174,7 @@ impl TypeChecker {
         }
 
         // Iterable: infer element type from each() and inject vocabulary methods.
-        // `includes Iterable` (no type args) — infer T from each(f: (T) -> Void).
+        // `includes Iterable` (no type args) — infer T from each(f: Fn(T) -> Void).
         // `includes Iterable[T]` — error, must use bare form.
         let mut iterable_element_type: Option<Type> = None;
         if includes_list.contains(&"Iterable".to_string()) {
@@ -191,7 +191,7 @@ impl TypeChecker {
             // Find each() in the class methods to infer element type
             let each_method = method_map.get("each");
             if let Some(Type::Function { params, .. }) = each_method {
-                // each(f: (T) -> Void) — extract T from the callback parameter
+                // each(f: Fn(T) -> Void) — extract T from the callback parameter
                 if let Some(Type::Function {
                     params: cb_params, ..
                 }) = params.first()
@@ -203,7 +203,7 @@ impl TypeChecker {
 
             if iterable_element_type.is_none() {
                 return Err(Diagnostic::error(format!(
-                    "Class '{}' includes Iterable but has no each(f: (T) -> Void) -> Void method",
+                    "Class '{}' includes Iterable but has no each(f: Fn(T) -> Void) -> Void method",
                     name
                 ))
                 .with_code("E025"));
@@ -735,7 +735,7 @@ impl TypeChecker {
     }
 
     /// Extract the Iterable element type from a class's each() method signature.
-    /// Validates the signature matches the Iterable protocol: each(f: (T) -> Void) -> Void
+    /// Validates the signature matches the Iterable protocol: each(f: Fn(T) -> Void) -> Void
     pub(crate) fn get_iterable_element_type_from_class(info: &ClassInfo) -> Option<Type> {
         if let Some(Type::Function { params, ret, .. }) = info.methods.get("each")
             && params.len() == 1
@@ -786,7 +786,7 @@ pub(crate) fn iterable_vocabulary_methods(elem_ty: &Type) -> Vec<(String, Type)>
     };
 
     vec![
-        // map: (f: (T) -> U) -> List[U]
+        // map: (f: Fn(T) -> U) -> List[U]
         (
             "map".into(),
             Type::Function {
@@ -803,7 +803,7 @@ pub(crate) fn iterable_vocabulary_methods(elem_ty: &Type) -> Vec<(String, Type)>
                 suspendable: false,
             },
         ),
-        // filter: (f: (T) -> Bool) -> List[T]
+        // filter: (f: Fn(T) -> Bool) -> List[T]
         (
             "filter".into(),
             Type::Function {
@@ -814,7 +814,7 @@ pub(crate) fn iterable_vocabulary_methods(elem_ty: &Type) -> Vec<(String, Type)>
                 suspendable: false,
             },
         ),
-        // reduce: (init: U, f: (U, T) -> U) -> U
+        // reduce: (init: U, f: Fn(U, T) -> U) -> U
         (
             "reduce".into(),
             Type::Function {
@@ -834,7 +834,7 @@ pub(crate) fn iterable_vocabulary_methods(elem_ty: &Type) -> Vec<(String, Type)>
                 suspendable: false,
             },
         ),
-        // find: (f: (T) -> Bool) -> T?
+        // find: (f: Fn(T) -> Bool) -> T?
         (
             "find".into(),
             Type::Function {
@@ -845,7 +845,7 @@ pub(crate) fn iterable_vocabulary_methods(elem_ty: &Type) -> Vec<(String, Type)>
                 suspendable: false,
             },
         ),
-        // any: (f: (T) -> Bool) -> Bool
+        // any: (f: Fn(T) -> Bool) -> Bool
         (
             "any".into(),
             Type::Function {
@@ -856,7 +856,7 @@ pub(crate) fn iterable_vocabulary_methods(elem_ty: &Type) -> Vec<(String, Type)>
                 suspendable: false,
             },
         ),
-        // all: (f: (T) -> Bool) -> Bool
+        // all: (f: Fn(T) -> Bool) -> Bool
         (
             "all".into(),
             Type::Function {

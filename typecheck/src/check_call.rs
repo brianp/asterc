@@ -41,6 +41,27 @@ impl TypeChecker {
         {
             return Self::is_subtype_of(an, en, env);
         }
+        // Function types are structurally compatible if params and return types match,
+        // regardless of param_names (Fn(Int) -> Int == (x: Int) -> Int).
+        if let (
+            Type::Function {
+                params: ap,
+                ret: ar,
+                throws: at,
+                suspendable: as_,
+                ..
+            },
+            Type::Function {
+                params: ep,
+                ret: er,
+                throws: et,
+                suspendable: es,
+                ..
+            },
+        ) = (actual, expected)
+        {
+            return ap == ep && ar == er && at == et && as_ == es;
+        }
         false
     }
 

@@ -18,7 +18,7 @@ fn includes_iterable_basic() {
         r#"class Numbers includes Iterable
   items: List[Int]
 
-  def each(f: (Int) -> Void) -> Void
+  def each(f: Fn(Int) -> Void) -> Void
     items.each(f: f)
 "#,
     );
@@ -33,7 +33,7 @@ fn includes_iterable_custom_element_type() {
 class Users includes Iterable
   items: List[User]
 
-  def each(f: (User) -> Void) -> Void
+  def each(f: Fn(User) -> Void) -> Void
     items.each(f: f)
 "#,
     );
@@ -62,7 +62,7 @@ fn iterable_map() {
         r#"class Numbers includes Iterable
   items: List[Int]
 
-  def each(f: (Int) -> Void) -> Void
+  def each(f: Fn(Int) -> Void) -> Void
     items.each(f: f)
 
 let nums = Numbers(items: [1, 2, 3])
@@ -77,7 +77,7 @@ fn iterable_map_transforms_type() {
         r#"class Numbers includes Iterable
   items: List[Int]
 
-  def each(f: (Int) -> Void) -> Void
+  def each(f: Fn(Int) -> Void) -> Void
     items.each(f: f)
 
 let nums = Numbers(items: [1, 2, 3])
@@ -94,7 +94,7 @@ fn iterable_filter() {
         r#"class Numbers includes Iterable
   items: List[Int]
 
-  def each(f: (Int) -> Void) -> Void
+  def each(f: Fn(Int) -> Void) -> Void
     items.each(f: f)
 
 let nums = Numbers(items: [1, 2, 3])
@@ -111,7 +111,7 @@ fn iterable_reduce() {
         r#"class Numbers includes Iterable
   items: List[Int]
 
-  def each(f: (Int) -> Void) -> Void
+  def each(f: Fn(Int) -> Void) -> Void
     items.each(f: f)
 
 let nums = Numbers(items: [1, 2, 3])
@@ -128,7 +128,7 @@ fn iterable_find() {
         r#"class Numbers includes Iterable
   items: List[Int]
 
-  def each(f: (Int) -> Void) -> Void
+  def each(f: Fn(Int) -> Void) -> Void
     items.each(f: f)
 
 let nums = Numbers(items: [1, 2, 3])
@@ -145,7 +145,7 @@ fn iterable_any() {
         r#"class Numbers includes Iterable
   items: List[Int]
 
-  def each(f: (Int) -> Void) -> Void
+  def each(f: Fn(Int) -> Void) -> Void
     items.each(f: f)
 
 let nums = Numbers(items: [1, 2, 3])
@@ -160,7 +160,7 @@ fn iterable_all() {
         r#"class Numbers includes Iterable
   items: List[Int]
 
-  def each(f: (Int) -> Void) -> Void
+  def each(f: Fn(Int) -> Void) -> Void
     items.each(f: f)
 
 let nums = Numbers(items: [1, 2, 3])
@@ -177,7 +177,7 @@ fn iterable_count() {
         r#"class Numbers includes Iterable
   items: List[Int]
 
-  def each(f: (Int) -> Void) -> Void
+  def each(f: Fn(Int) -> Void) -> Void
     items.each(f: f)
 
 let nums = Numbers(items: [1, 2, 3])
@@ -194,7 +194,7 @@ fn iterable_first() {
         r#"class Numbers includes Iterable
   items: List[Int]
 
-  def each(f: (Int) -> Void) -> Void
+  def each(f: Fn(Int) -> Void) -> Void
     items.each(f: f)
 
 let nums = Numbers(items: [1, 2, 3])
@@ -209,7 +209,7 @@ fn iterable_last() {
         r#"class Numbers includes Iterable
   items: List[Int]
 
-  def each(f: (Int) -> Void) -> Void
+  def each(f: Fn(Int) -> Void) -> Void
     items.each(f: f)
 
 let nums = Numbers(items: [1, 2, 3])
@@ -226,7 +226,7 @@ fn iterable_to_list() {
         r#"class Numbers includes Iterable
   items: List[Int]
 
-  def each(f: (Int) -> Void) -> Void
+  def each(f: Fn(Int) -> Void) -> Void
     items.each(f: f)
 
 let nums = Numbers(items: [1, 2, 3])
@@ -243,7 +243,7 @@ fn iterable_min_with_ord() {
         r#"class Numbers includes Iterable
   items: List[Int]
 
-  def each(f: (Int) -> Void) -> Void
+  def each(f: Fn(Int) -> Void) -> Void
     items.each(f: f)
 
 let nums = Numbers(items: [3, 1, 2])
@@ -258,7 +258,7 @@ fn iterable_max_with_ord() {
         r#"class Numbers includes Iterable
   items: List[Int]
 
-  def each(f: (Int) -> Void) -> Void
+  def each(f: Fn(Int) -> Void) -> Void
     items.each(f: f)
 
 let nums = Numbers(items: [3, 1, 2])
@@ -273,7 +273,7 @@ fn iterable_sort_with_ord() {
         r#"class Numbers includes Iterable
   items: List[Int]
 
-  def each(f: (Int) -> Void) -> Void
+  def each(f: Fn(Int) -> Void) -> Void
     items.each(f: f)
 
 let nums = Numbers(items: [3, 1, 2])
@@ -291,7 +291,7 @@ fn iterable_min_without_ord_error() {
 class Things includes Iterable
   items: List[Thing]
 
-  def each(f: (Thing) -> Void) -> Void
+  def each(f: Fn(Thing) -> Void) -> Void
     items.each(f: f)
 
 let things = Things(items: [])
@@ -314,7 +314,7 @@ fn iterable_max_without_ord_error() {
 class Things includes Iterable
   items: List[Thing]
 
-  def each(f: (Thing) -> Void) -> Void
+  def each(f: Fn(Thing) -> Void) -> Void
     items.each(f: f)
 
 let things = Things(items: [])
@@ -337,7 +337,7 @@ fn iterable_sort_without_ord_error() {
 class Things includes Iterable
   items: List[Thing]
 
-  def each(f: (Thing) -> Void) -> Void
+  def each(f: Fn(Thing) -> Void) -> Void
     items.each(f: f)
 
 let things = Things(items: [])
@@ -362,7 +362,7 @@ fn iterable_min_custom_ord_type() {
 class Scores includes Iterable
   items: List[Score]
 
-  def each(f: (Score) -> Void) -> Void
+  def each(f: Fn(Score) -> Void) -> Void
     items.each(f: f)
 
 let scores = Scores(items: [])
@@ -411,7 +411,7 @@ fn iterable_chain_filter_map() {
         r#"class Numbers includes Iterable
   items: List[Int]
 
-  def each(f: (Int) -> Void) -> Void
+  def each(f: Fn(Int) -> Void) -> Void
     items.each(f: f)
 
 let nums = Numbers(items: [1, 2, 3, 4])
@@ -497,7 +497,7 @@ fn override_vocabulary_method() {
         r#"class Numbers includes Iterable
   items: List[Int]
 
-  def each(f: (Int) -> Void) -> Void
+  def each(f: Fn(Int) -> Void) -> Void
     items.each(f: f)
 
   def count() -> Int
@@ -520,7 +520,7 @@ fn for_loop_over_custom_iterable() {
   start_val: Int
   end_val: Int
 
-  def each(f: (Int) -> Void) -> Void
+  def each(f: Fn(Int) -> Void) -> Void
     log(message: "iterating")
 
 for x in NumberRange(start_val: 0, end_val: 10)
@@ -552,7 +552,7 @@ fn iterable_explicit_type_arg_error() {
         r#"class Numbers includes Iterable[Int]
   items: List[Int]
 
-  def each(f: (Int) -> Void) -> Void
+  def each(f: Fn(Int) -> Void) -> Void
     items.each(f: f)
 "#,
     );

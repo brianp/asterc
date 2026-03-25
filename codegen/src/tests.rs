@@ -2653,7 +2653,7 @@ fn closure_stored_in_variable_then_called() {
 def main() -> Int
   def adder(x: Int) -> Int
     x + 10
-  let f: (Int) -> Int = adder
+  let f: Fn(Int) -> Int = adder
   f(x: 32)
 ";
     let fir = compile_and_run(src);
@@ -2669,7 +2669,7 @@ def main() -> Int
   let offset: Int = 10
   def add_offset(x: Int) -> Int
     x + offset
-  let f: (Int) -> Int = add_offset
+  let f: Fn(Int) -> Int = add_offset
   f(x: 32)
 ";
     let fir = compile_and_run(src);
@@ -3324,7 +3324,7 @@ fn closure_passed_to_function() {
     // Pass a closure to a function that calls it
     // Function type params use positional names (_0, _1, etc.)
     let src = "\
-def apply(f: (Int) -> Int, x: Int) -> Int
+def apply(f: Fn(Int) -> Int, x: Int) -> Int
   f(_0: x)
 
 def main() -> Int
@@ -3341,7 +3341,7 @@ def main() -> Int
 #[test]
 fn closure_with_captures_passed() {
     let src = "\
-def apply(f: (Int) -> Int, x: Int) -> Int
+def apply(f: Fn(Int) -> Int, x: Int) -> Int
   f(_0: x)
 
 def main() -> Int
@@ -3359,7 +3359,7 @@ def main() -> Int
 #[test]
 fn inline_lambda_passed() {
     let src = "\
-def apply(f: (Int) -> Int, x: Int) -> Int
+def apply(f: Fn(Int) -> Int, x: Int) -> Int
   f(_0: x)
 
 def main() -> Int
@@ -4005,10 +4005,9 @@ fn unsupported_feature_audit() {
     // UnsupportedFeature path, you MUST document it in the STATUS.md parity
     // matrix. If you close a gap, decrement the count here.
     //
-    // Current breakdown (17 sites in lower.rs, 0 in translate.rs):
+    // Current breakdown (16 sites in lower.rs, 0 in translate.rs):
     //   2 — generic catch-alls (unsupported_top_level_stmt, unsupported_stmt)
     //   2 — assignment/place edge cases (complex target, complex place expr)
-    //   1 — non-ident call target
     //   1 — .or_throw() on non-nullable FIR type
     //   1 — unresolved method call
     //   1 — missing argument with no default
@@ -4036,8 +4035,8 @@ fn unsupported_feature_audit() {
     let actual_call_sites = lower_count - 2;
 
     assert_eq!(
-        actual_call_sites, 18,
-        "UnsupportedFeature call site count changed in lower.rs (expected 18, got {}). \
+        actual_call_sites, 17,
+        "UnsupportedFeature call site count changed in lower.rs (expected 17, got {}). \
          If you added a new UnsupportedFeature, document it in STATUS.md parity matrix. \
          If you closed a gap, update this count and STATUS.md.",
         actual_call_sites
@@ -4616,4 +4615,78 @@ def main() -> Bool
     let jit = jit_compile(&fir);
     let result = jit.call_i64(fir.entry.unwrap());
     assert_eq!(result, 1);
+}
+
+// ===========================================================================
+// Indirect function calls (GH #10)
+// ===========================================================================
+
+#[test]
+fn indirect_call_return_value() {
+    // Calling the return value of a function: get_handler()(21)
+    let src = "\
+def get_doubler() -> Fn(Int) -> Int
+  def double(x: Int) -> Int
+    x * 2
+  double
+
+def main() -> Int
+  get_doubler()(_0: 21)
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn indirect_call_fn_typed_variable() {
+    // Calling a variable with Fn type annotation
+    let src = "\
+def main() -> Int
+  def adder(x: Int) -> Int
+    x + 10
+  let f: Fn(Int) -> Int = adder
+  f(x: 32)
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn indirect_call_passed_as_fn_param() {
+    // Fn type syntax in parameter position
+    let src = "\
+def apply(f: Fn(Int) -> Int, x: Int) -> Int
+  f(_0: x)
+
+def main() -> Int
+  def double(x: Int) -> Int
+    x * 2
+  apply(f: double, x: 21)
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn indirect_call_chained() {
+    // Double indirection: get_handler()() where handler takes no args
+    let src = "\
+def make_const() -> Fn() -> Int
+  def forty_two() -> Int
+    42
+  forty_two
+
+def main() -> Int
+  make_const()()
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
 }

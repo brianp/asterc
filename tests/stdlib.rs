@@ -87,7 +87,7 @@ fn std_collections_import_iterable() {
 class Numbers includes Iterable
   items: List[Int]
 
-  def each(f: (Int) -> Void) -> Void
+  def each(f: Fn(Int) -> Void) -> Void
     items.each(f: f)
 
 let nums = Numbers(items: [1, 2, 3])
@@ -272,7 +272,7 @@ fn cross_module_iterable_vocabulary() {
 pub class Numbers includes Iterable
   items: List[Int]
 
-  def each(f: (Int) -> Void) -> Void
+  def each(f: Fn(Int) -> Void) -> Void
     items.each(f: f)
 "#
         .into(),
@@ -361,7 +361,7 @@ fn error_includes_iterable_without_import() {
         r#"class Numbers includes Iterable
   items: List[Int]
 
-  def each(f: (Int) -> Void) -> Void
+  def each(f: Fn(Int) -> Void) -> Void
     items.each(f: f)
 "#,
         HashMap::new(),

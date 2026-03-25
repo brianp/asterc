@@ -5,27 +5,20 @@ use crate::Parser;
 
 impl Parser {
     pub(crate) fn parse_type(&mut self) -> Result<Type, Diagnostic> {
-        // Function type: (T, U) -> R
-        if self.at(&TokenKind::LParen) {
-            self.advance();
-            let mut params = Vec::new();
-            if !self.at(&TokenKind::RParen) {
-                params.push(self.parse_type()?);
-                while self.at(&TokenKind::Comma) {
-                    self.advance();
-                    params.push(self.parse_type()?);
-                }
-            }
-            self.expect(TokenKind::RParen)?;
-            self.expect(TokenKind::Arrow)?;
-            let ret = self.parse_type()?;
-            return Ok(Type::Function {
-                param_names: (0..params.len()).map(|i| format!("_{}", i)).collect(),
-                params,
-                ret: Box::new(ret),
-                throws: None,
-                suspendable: false,
-            });
+        // Reject bare-paren function type syntax: (T, ...) -> R
+        // Guide users to the Fn(T) -> R form instead. Only reject when
+        // the parens are followed by ->, so future tuple types can use ( freely.
+        if self.at(&TokenKind::LParen) && self.looks_like_bare_fn_type() {
+            let tok = self.peek();
+            let span = Span {
+                start: tok.start,
+                end: tok.end,
+            };
+            return Err(Diagnostic::error(
+                "Bare parenthesized function types are not supported. Use Fn(T) -> R instead",
+            )
+            .with_code("P001")
+            .with_label(span, "use Fn(...) -> R for function types"));
         }
 
         let name_tok = self.advance();
@@ -68,6 +61,29 @@ impl Parser {
                 self.span_from(self.pos - 1),
                 format!("use '{}' instead", correct),
             ));
+        }
+
+        // Function type: Fn(T, U) -> R
+        if name == "Fn" && self.at(&TokenKind::LParen) {
+            self.advance(); // consume (
+            let mut params = Vec::new();
+            if !self.at(&TokenKind::RParen) {
+                params.push(self.parse_type()?);
+                while self.at(&TokenKind::Comma) {
+                    self.advance();
+                    params.push(self.parse_type()?);
+                }
+            }
+            self.expect(TokenKind::RParen)?;
+            self.expect(TokenKind::Arrow)?;
+            let ret = self.parse_type()?;
+            return Ok(Type::Function {
+                param_names: (0..params.len()).map(|i| format!("_{}", i)).collect(),
+                params,
+                ret: Box::new(ret),
+                throws: None,
+                suspendable: false,
+            });
         }
 
         if name == "List" && self.at(&TokenKind::LBracket) {
@@ -147,5 +163,33 @@ impl Parser {
         } else {
             Ok(base)
         }
+    }
+
+    /// Lookahead check: does `(` ... `)` `->` follow at the current position?
+    /// Scans forward without consuming tokens to detect the old bare-paren
+    /// function type syntax. Returns false if the balanced `)` isn't found
+    /// or if `->` doesn't follow it, leaving room for future tuple types.
+    fn looks_like_bare_fn_type(&self) -> bool {
+        let mut i = self.pos + 1; // skip the `(`
+        let mut depth = 1u32;
+        while let Some(tok) = self.tokens.get(i) {
+            match tok.kind {
+                TokenKind::LParen => depth += 1,
+                TokenKind::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        // Check if `->` follows the closing paren
+                        return self
+                            .tokens
+                            .get(i + 1)
+                            .is_some_and(|t| t.kind == TokenKind::Arrow);
+                    }
+                }
+                TokenKind::EOF => return false,
+                _ => {}
+            }
+            i += 1;
+        }
+        false
     }
 }

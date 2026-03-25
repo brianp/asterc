@@ -82,7 +82,7 @@ fn inline_lambda_single_param() {
     // -> x: expr creates a lambda with one inferred-type param
     check_ok(
         "\
-def apply(x: Int, f: (Int) -> Int) -> Int
+def apply(x: Int, f: Fn(Int) -> Int) -> Int
   f(_0: x)
 let result = apply(x: 5, f: -> x: x * 2)
 ",
@@ -94,7 +94,7 @@ fn inline_lambda_two_params() {
     // -> a, b: expr creates a lambda with two inferred-type params
     check_ok(
         "\
-def combine(a: Int, b: Int, f: (Int, Int) -> Int) -> Int
+def combine(a: Int, b: Int, f: Fn(Int, Int) -> Int) -> Int
   f(_0: a, _1: b)
 let result = combine(a: 3, b: 4, f: -> a, b: a + b)
 ",
@@ -106,7 +106,7 @@ fn inline_lambda_zero_params() {
     // -> : expr creates a zero-param lambda
     check_ok(
         "\
-def run(f: () -> Int) -> Int
+def run(f: Fn() -> Int) -> Int
   f()
 let result = run(f: -> : 42)
 ",
@@ -119,7 +119,7 @@ fn inline_lambda_captures_outer_var() {
     check_ok(
         "\
 let scale = 10
-def apply(x: Int, f: (Int) -> Int) -> Int
+def apply(x: Int, f: Fn(Int) -> Int) -> Int
   f(_0: x)
 let result = apply(x: 5, f: -> x: x * scale)
 ",
@@ -132,10 +132,10 @@ let result = apply(x: 5, f: -> x: x * scale)
 
 #[test]
 fn lambda_param_type_inferred_from_function_param() {
-    // When passed to a function expecting (Int) -> Int, lambda param types are inferred
+    // When passed to a function expecting Fn(Int) -> Int, lambda param types are inferred
     check_ok(
         "\
-def apply(x: Int, f: (Int) -> Int) -> Int
+def apply(x: Int, f: Fn(Int) -> Int) -> Int
   f(_0: x)
 let result = apply(x: 5, f: -> x: x + 1)
 ",
@@ -147,7 +147,7 @@ fn lambda_param_type_inferred_returns_correct_type() {
     // The lambda body type must match the expected return type
     let err = check_err(
         "\
-def apply(x: Int, f: (Int) -> Int) -> Int
+def apply(x: Int, f: Fn(Int) -> Int) -> Int
   f(_0: x)
 let result = apply(x: 5, f: -> x: \"hello\")
 ",
@@ -164,7 +164,7 @@ fn lambda_param_type_inferred_wrong_arity() {
     // Inline lambda with wrong number of params should fail
     let err = check_err(
         "\
-def apply(x: Int, f: (Int) -> Int) -> Int
+def apply(x: Int, f: Fn(Int) -> Int) -> Int
   f(_0: x)
 let result = apply(x: 5, f: -> a, b: a + b)
 ",
@@ -186,7 +186,7 @@ fn closure_assigned_to_function_typed_var() {
     check_ok(
         "\
 let scale = 2
-let f: (Int) -> Int = -> x: x * scale
+let f: Fn(Int) -> Int = -> x: x * scale
 ",
     );
 }
@@ -196,7 +196,7 @@ fn nested_def_passed_as_function_arg() {
     // A nested def can be passed where a function type is expected
     check_ok(
         "\
-def apply(x: Int, f: (Int) -> Int) -> Int
+def apply(x: Int, f: Fn(Int) -> Int) -> Int
   f(_0: x)
 def process(n: Int) -> Int
   def doubler(x: Int) -> Int
@@ -248,7 +248,7 @@ fn inline_lambda_body_type_error() {
     // Type error inside inline lambda body is reported
     let err = check_err(
         "\
-def apply(x: Int, f: (Int) -> Int) -> Int
+def apply(x: Int, f: Fn(Int) -> Int) -> Int
   f(_0: x)
 let result = apply(x: 5, f: -> x: x + \"bad\")
 ",
@@ -269,7 +269,7 @@ fn inline_lambda_with_type_annotation() {
     // When type annotation is provided on let, lambda types are inferred
     check_ok(
         "\
-let f: (Int) -> Int = -> x: x * 2
+let f: Fn(Int) -> Int = -> x: x * 2
 let result = f(x: 5)
 ",
     );
@@ -281,7 +281,7 @@ fn lambda_assigned_to_typed_let() {
     check_ok(
         "\
 def main() -> Int
-  let f: (Int) -> Int = -> x: x + 1
+  let f: Fn(Int) -> Int = -> x: x + 1
   f(x: 5)
 ",
     );

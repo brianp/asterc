@@ -432,8 +432,8 @@ impl Lowerer {
         }
     }
 
-    /// Lower reduce: (init: U, f: (U, T) -> U) -> U
-    /// Lower reduce: (init: U, f: (U, T) -> U) -> U
+    /// Lower reduce: (init: U, f: Fn(U, T) -> U) -> U
+    /// Lower reduce: (init: U, f: Fn(U, T) -> U) -> U
     pub(crate) fn lower_iterable_reduce(
         &mut self,
         fir_list: FirExpr,

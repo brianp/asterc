@@ -1400,3 +1400,90 @@ fn parses_generic_class_with_includes() {
         other => panic!("expected Class, got {other:?}"),
     }
 }
+
+// ─── Fn type syntax ─────────────────────────────────────────────────
+
+#[test]
+fn parses_fn_type_single_param() {
+    let src = "def apply(f: Fn(Int) -> Int, x: Int) -> Int\n  f(_0: x)\n";
+    let m = parse_ok(src);
+    match &m.body[0] {
+        Stmt::Let {
+            value: Expr::Lambda { params, .. },
+            ..
+        } => match &params[0].1 {
+            Type::Function { params, ret, .. } => {
+                assert_eq!(params, &[Type::Int]);
+                assert_eq!(ret.as_ref(), &Type::Int);
+            }
+            other => panic!("expected Function type, got {other:?}"),
+        },
+        other => panic!("expected Let/Lambda, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_fn_type_multi_param() {
+    let src = "def combine(f: Fn(Int, Int) -> Int) -> Int\n  f(_0: 1, _1: 2)\n";
+    let m = parse_ok(src);
+    match &m.body[0] {
+        Stmt::Let {
+            value: Expr::Lambda { params, .. },
+            ..
+        } => match &params[0].1 {
+            Type::Function { params, ret, .. } => {
+                assert_eq!(params, &[Type::Int, Type::Int]);
+                assert_eq!(ret.as_ref(), &Type::Int);
+            }
+            other => panic!("expected Function type, got {other:?}"),
+        },
+        other => panic!("expected Let/Lambda, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_fn_type_no_params() {
+    let src = "def run(f: Fn() -> Int) -> Int\n  f()\n";
+    let m = parse_ok(src);
+    match &m.body[0] {
+        Stmt::Let {
+            value: Expr::Lambda { params, .. },
+            ..
+        } => match &params[0].1 {
+            Type::Function { params, ret, .. } => {
+                assert!(params.is_empty());
+                assert_eq!(ret.as_ref(), &Type::Int);
+            }
+            other => panic!("expected Function type, got {other:?}"),
+        },
+        other => panic!("expected Let/Lambda, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_fn_type_return_position() {
+    let src = "def get_handler() -> Fn(Int) -> String\n  -> x: to_string(value: x)\n";
+    let m = parse_ok(src);
+    match &m.body[0] {
+        Stmt::Let {
+            value: Expr::Lambda { ret_type, .. },
+            ..
+        } => match ret_type {
+            Type::Function { params, ret, .. } => {
+                assert_eq!(params, &[Type::Int]);
+                assert_eq!(ret.as_ref(), &Type::String);
+            }
+            other => panic!("expected Function type, got {other:?}"),
+        },
+        other => panic!("expected Let/Lambda, got {other:?}"),
+    }
+}
+
+#[test]
+fn bare_paren_fn_type_is_parse_error() {
+    let err = parse_err("def apply(f: (Int) -> Int) -> Int\n  f(_0: 1)\n");
+    assert!(
+        err.contains("Fn") || err.contains("function type"),
+        "expected Fn hint in error, got: {err}"
+    );
+}

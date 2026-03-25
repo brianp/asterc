@@ -216,7 +216,7 @@ fn typevar_unification_symmetric() {
         r#"def identity(x: T) -> T
   x
 
-def apply(f: (Int) -> Int, val: Int) -> Int
+def apply(f: Fn(Int) -> Int, val: Int) -> Int
   f(_0: val)
 
 let result = apply(f: identity, val: 5)
