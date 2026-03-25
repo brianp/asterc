@@ -298,238 +298,116 @@ fn f64_bitwise_eq(a: &f64, b: &f64) -> bool {
 
 impl PartialEq for Expr {
     fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Expr::Int(a, sa), Expr::Int(b, sb)) => a == b && sa == sb,
-            (Expr::Float(a, sa), Expr::Float(b, sb)) => f64_bitwise_eq(a, b) && sa == sb,
-            (Expr::Str(a, sa), Expr::Str(b, sb)) => a == b && sa == sb,
-            (Expr::Bool(a, sa), Expr::Bool(b, sb)) => a == b && sa == sb,
-            (Expr::Nil(sa), Expr::Nil(sb)) => sa == sb,
-            (Expr::Ident(a, sa), Expr::Ident(b, sb)) => a == b && sa == sb,
-            (
-                Expr::Member {
-                    object: o1,
-                    field: f1,
-                    span: s1,
-                },
-                Expr::Member {
-                    object: o2,
-                    field: f2,
-                    span: s2,
-                },
-            ) => o1 == o2 && f1 == f2 && s1 == s2,
-            (
-                Expr::Lambda {
-                    params: p1,
-                    ret_type: r1,
-                    body: b1,
-                    generic_params: g1,
-                    throws: t1,
-                    type_constraints: tc1,
-                    defaults: d1,
-                    span: s1,
-                },
-                Expr::Lambda {
-                    params: p2,
-                    ret_type: r2,
-                    body: b2,
-                    generic_params: g2,
-                    throws: t2,
-                    type_constraints: tc2,
-                    defaults: d2,
-                    span: s2,
-                },
-            ) => {
-                p1 == p2
-                    && r1 == r2
-                    && b1 == b2
-                    && g1 == g2
-                    && t1 == t2
-                    && tc1 == tc2
-                    && d1 == d2
-                    && s1 == s2
+        // Match on `self` exhaustively so adding a new Expr variant
+        // produces a compile error until its equality is defined.
+        match self {
+            Expr::Int(a, sa) => matches!(other, Expr::Int(b, sb) if a == b && sa == sb),
+            Expr::Float(a, sa) => {
+                matches!(other, Expr::Float(b, sb) if f64_bitwise_eq(a, b) && sa == sb)
             }
-            (
-                Expr::Call {
-                    func: f1,
-                    args: a1,
-                    span: s1,
-                },
-                Expr::Call {
-                    func: f2,
-                    args: a2,
-                    span: s2,
-                },
-            ) => f1 == f2 && a1 == a2 && s1 == s2,
-            (
-                Expr::BinaryOp {
-                    left: l1,
-                    op: o1,
-                    right: r1,
-                    span: s1,
-                },
-                Expr::BinaryOp {
-                    left: l2,
-                    op: o2,
-                    right: r2,
-                    span: s2,
-                },
-            ) => l1 == l2 && o1 == o2 && r1 == r2 && s1 == s2,
-            (
-                Expr::UnaryOp {
-                    op: o1,
-                    operand: a1,
-                    span: s1,
-                },
-                Expr::UnaryOp {
-                    op: o2,
-                    operand: a2,
-                    span: s2,
-                },
-            ) => o1 == o2 && a1 == a2 && s1 == s2,
-            (Expr::ListLiteral(a, sa), Expr::ListLiteral(b, sb)) => a == b && sa == sb,
-            (
-                Expr::Index {
-                    object: o1,
-                    index: i1,
-                    span: s1,
-                },
-                Expr::Index {
-                    object: o2,
-                    index: i2,
-                    span: s2,
-                },
-            ) => o1 == o2 && i1 == i2 && s1 == s2,
-            (
-                Expr::Match {
-                    scrutinee: sc1,
-                    arms: a1,
-                    span: s1,
-                },
-                Expr::Match {
-                    scrutinee: sc2,
-                    arms: a2,
-                    span: s2,
-                },
-            ) => sc1 == sc2 && a1 == a2 && s1 == s2,
-            (
-                Expr::AsyncCall {
-                    func: f1,
-                    args: a1,
-                    span: s1,
-                },
-                Expr::AsyncCall {
-                    func: f2,
-                    args: a2,
-                    span: s2,
-                },
-            ) => f1 == f2 && a1 == a2 && s1 == s2,
-            (
-                Expr::BlockingCall {
-                    func: f1,
-                    args: a1,
-                    span: s1,
-                },
-                Expr::BlockingCall {
-                    func: f2,
-                    args: a2,
-                    span: s2,
-                },
-            ) => f1 == f2 && a1 == a2 && s1 == s2,
-            (
-                Expr::Resolve {
-                    expr: e1,
-                    span: s1,
-                },
-                Expr::Resolve {
-                    expr: e2,
-                    span: s2,
-                },
-            ) => e1 == e2 && s1 == s2,
-            (
-                Expr::DetachedCall {
-                    func: f1,
-                    args: a1,
-                    span: s1,
-                },
-                Expr::DetachedCall {
-                    func: f2,
-                    args: a2,
-                    span: s2,
-                },
-            ) => f1 == f2 && a1 == a2 && s1 == s2,
-            (Expr::Propagate(e1, s1), Expr::Propagate(e2, s2)) => e1 == e2 && s1 == s2,
-            (Expr::Throw(e1, s1), Expr::Throw(e2, s2)) => e1 == e2 && s1 == s2,
-            (
-                Expr::ErrorOr {
-                    expr: e1,
-                    default: d1,
-                    span: s1,
-                },
-                Expr::ErrorOr {
-                    expr: e2,
-                    default: d2,
-                    span: s2,
-                },
-            ) => e1 == e2 && d1 == d2 && s1 == s2,
-            (
-                Expr::ErrorOrElse {
-                    expr: e1,
-                    handler: h1,
-                    span: s1,
-                },
-                Expr::ErrorOrElse {
-                    expr: e2,
-                    handler: h2,
-                    span: s2,
-                },
-            ) => e1 == e2 && h1 == h2 && s1 == s2,
-            (
-                Expr::ErrorCatch {
-                    expr: e1,
-                    arms: a1,
-                    span: s1,
-                },
-                Expr::ErrorCatch {
-                    expr: e2,
-                    arms: a2,
-                    span: s2,
-                },
-            ) => e1 == e2 && a1 == a2 && s1 == s2,
-            (
-                Expr::StringInterpolation {
-                    parts: p1,
-                    span: s1,
-                },
-                Expr::StringInterpolation {
-                    parts: p2,
-                    span: s2,
-                },
-            ) => p1 == p2 && s1 == s2,
-            (
-                Expr::Map {
-                    entries: e1,
-                    span: s1,
-                },
-                Expr::Map {
-                    entries: e2,
-                    span: s2,
-                },
-            ) => e1 == e2 && s1 == s2,
-            (
-                Expr::Range {
-                    start: st1,
-                    end: en1,
-                    inclusive: i1,
-                    span: s1,
-                },
-                Expr::Range {
-                    start: st2,
-                    end: en2,
-                    inclusive: i2,
-                    span: s2,
-                },
-            ) => st1 == st2 && en1 == en2 && i1 == i2 && s1 == s2,
-            _ => false,
+            Expr::Str(a, sa) => matches!(other, Expr::Str(b, sb) if a == b && sa == sb),
+            Expr::Bool(a, sa) => matches!(other, Expr::Bool(b, sb) if a == b && sa == sb),
+            Expr::Nil(sa) => matches!(other, Expr::Nil(sb) if sa == sb),
+            Expr::Ident(a, sa) => matches!(other, Expr::Ident(b, sb) if a == b && sa == sb),
+            Expr::Member {
+                object: o1,
+                field: f1,
+                span: s1,
+            } => matches!(other, Expr::Member { object: o2, field: f2, span: s2 } if o1 == o2 && f1 == f2 && s1 == s2),
+            Expr::Lambda {
+                params: p1,
+                ret_type: r1,
+                body: b1,
+                generic_params: g1,
+                throws: t1,
+                type_constraints: tc1,
+                defaults: d1,
+                span: s1,
+            } => matches!(other, Expr::Lambda {
+                params: p2, ret_type: r2, body: b2, generic_params: g2,
+                throws: t2, type_constraints: tc2, defaults: d2, span: s2,
+            } if p1 == p2 && r1 == r2 && b1 == b2 && g1 == g2 && t1 == t2 && tc1 == tc2 && d1 == d2 && s1 == s2),
+            Expr::Call {
+                func: f1,
+                args: a1,
+                span: s1,
+            } => matches!(other, Expr::Call { func: f2, args: a2, span: s2 } if f1 == f2 && a1 == a2 && s1 == s2),
+            Expr::BinaryOp {
+                left: l1,
+                op: o1,
+                right: r1,
+                span: s1,
+            } => matches!(other, Expr::BinaryOp { left: l2, op: o2, right: r2, span: s2 } if l1 == l2 && o1 == o2 && r1 == r2 && s1 == s2),
+            Expr::UnaryOp {
+                op: o1,
+                operand: a1,
+                span: s1,
+            } => matches!(other, Expr::UnaryOp { op: o2, operand: a2, span: s2 } if o1 == o2 && a1 == a2 && s1 == s2),
+            Expr::ListLiteral(a, sa) => {
+                matches!(other, Expr::ListLiteral(b, sb) if a == b && sa == sb)
+            }
+            Expr::Index {
+                object: o1,
+                index: i1,
+                span: s1,
+            } => matches!(other, Expr::Index { object: o2, index: i2, span: s2 } if o1 == o2 && i1 == i2 && s1 == s2),
+            Expr::Match {
+                scrutinee: sc1,
+                arms: a1,
+                span: s1,
+            } => matches!(other, Expr::Match { scrutinee: sc2, arms: a2, span: s2 } if sc1 == sc2 && a1 == a2 && s1 == s2),
+            Expr::AsyncCall {
+                func: f1,
+                args: a1,
+                span: s1,
+            } => matches!(other, Expr::AsyncCall { func: f2, args: a2, span: s2 } if f1 == f2 && a1 == a2 && s1 == s2),
+            Expr::BlockingCall {
+                func: f1,
+                args: a1,
+                span: s1,
+            } => matches!(other, Expr::BlockingCall { func: f2, args: a2, span: s2 } if f1 == f2 && a1 == a2 && s1 == s2),
+            Expr::Resolve {
+                expr: e1,
+                span: s1,
+            } => matches!(other, Expr::Resolve { expr: e2, span: s2 } if e1 == e2 && s1 == s2),
+            Expr::DetachedCall {
+                func: f1,
+                args: a1,
+                span: s1,
+            } => matches!(other, Expr::DetachedCall { func: f2, args: a2, span: s2 } if f1 == f2 && a1 == a2 && s1 == s2),
+            Expr::Propagate(e1, s1) => {
+                matches!(other, Expr::Propagate(e2, s2) if e1 == e2 && s1 == s2)
+            }
+            Expr::Throw(e1, s1) => matches!(other, Expr::Throw(e2, s2) if e1 == e2 && s1 == s2),
+            Expr::ErrorOr {
+                expr: e1,
+                default: d1,
+                span: s1,
+            } => matches!(other, Expr::ErrorOr { expr: e2, default: d2, span: s2 } if e1 == e2 && d1 == d2 && s1 == s2),
+            Expr::ErrorOrElse {
+                expr: e1,
+                handler: h1,
+                span: s1,
+            } => matches!(other, Expr::ErrorOrElse { expr: e2, handler: h2, span: s2 } if e1 == e2 && h1 == h2 && s1 == s2),
+            Expr::ErrorCatch {
+                expr: e1,
+                arms: a1,
+                span: s1,
+            } => matches!(other, Expr::ErrorCatch { expr: e2, arms: a2, span: s2 } if e1 == e2 && a1 == a2 && s1 == s2),
+            Expr::StringInterpolation {
+                parts: p1,
+                span: s1,
+            } => matches!(other, Expr::StringInterpolation { parts: p2, span: s2 } if p1 == p2 && s1 == s2),
+            Expr::Map {
+                entries: e1,
+                span: s1,
+            } => matches!(other, Expr::Map { entries: e2, span: s2 } if e1 == e2 && s1 == s2),
+            Expr::Range {
+                start: st1,
+                end: en1,
+                inclusive: i1,
+                span: s1,
+            } => matches!(other, Expr::Range { start: st2, end: en2, inclusive: i2, span: s2 } if st1 == st2 && en1 == en2 && i1 == i2 && s1 == s2),
         }
     }
 }
@@ -694,7 +572,7 @@ mod tests {
     }
 
     #[test]
-    fn float_neg_zero_equals_pos_zero() {
+    fn float_neg_zero_not_equal_pos_zero() {
         let s = Span::dummy();
         // -0.0 and 0.0 have different bits but same IEEE value;
         // for AST structural comparison we compare bits, so they differ.
@@ -704,5 +582,118 @@ mod tests {
             Expr::Float(0.0, s),
             "-0.0 and 0.0 are distinct float literals"
         );
+    }
+
+    #[test]
+    fn clone_equals_self_for_all_variants() {
+        let s = Span::dummy();
+        let int_lit = Box::new(Expr::Int(1, s));
+        let variants: Vec<Expr> = vec![
+            Expr::Int(42, s),
+            Expr::Float(3.14, s),
+            Expr::Str("hello".into(), s),
+            Expr::Bool(true, s),
+            Expr::Nil(s),
+            Expr::Ident("x".into(), s),
+            Expr::Member {
+                object: int_lit.clone(),
+                field: "f".into(),
+                span: s,
+            },
+            Expr::Lambda {
+                params: vec![],
+                ret_type: Type::Int,
+                body: vec![],
+                generic_params: None,
+                throws: None,
+                type_constraints: vec![],
+                defaults: Box::new(vec![]),
+                span: s,
+            },
+            Expr::Call {
+                func: int_lit.clone(),
+                args: vec![],
+                span: s,
+            },
+            Expr::BinaryOp {
+                left: int_lit.clone(),
+                op: BinOp::Add,
+                right: int_lit.clone(),
+                span: s,
+            },
+            Expr::UnaryOp {
+                op: UnaryOp::Neg,
+                operand: int_lit.clone(),
+                span: s,
+            },
+            Expr::ListLiteral(vec![], s),
+            Expr::Index {
+                object: int_lit.clone(),
+                index: int_lit.clone(),
+                span: s,
+            },
+            Expr::Match {
+                scrutinee: int_lit.clone(),
+                arms: vec![],
+                span: s,
+            },
+            Expr::AsyncCall {
+                func: int_lit.clone(),
+                args: vec![],
+                span: s,
+            },
+            Expr::BlockingCall {
+                func: int_lit.clone(),
+                args: vec![],
+                span: s,
+            },
+            Expr::Resolve {
+                expr: int_lit.clone(),
+                span: s,
+            },
+            Expr::DetachedCall {
+                func: int_lit.clone(),
+                args: vec![],
+                span: s,
+            },
+            Expr::Propagate(int_lit.clone(), s),
+            Expr::Throw(int_lit.clone(), s),
+            Expr::ErrorOr {
+                expr: int_lit.clone(),
+                default: int_lit.clone(),
+                span: s,
+            },
+            Expr::ErrorOrElse {
+                expr: int_lit.clone(),
+                handler: int_lit.clone(),
+                span: s,
+            },
+            Expr::ErrorCatch {
+                expr: int_lit.clone(),
+                arms: vec![],
+                span: s,
+            },
+            Expr::StringInterpolation {
+                parts: vec![],
+                span: s,
+            },
+            Expr::Map {
+                entries: vec![],
+                span: s,
+            },
+            Expr::Range {
+                start: int_lit.clone(),
+                end: int_lit.clone(),
+                inclusive: false,
+                span: s,
+            },
+        ];
+        for (i, expr) in variants.iter().enumerate() {
+            assert_eq!(
+                expr,
+                &expr.clone(),
+                "clone equality failed for variant index {i}"
+            );
+        }
     }
 }
