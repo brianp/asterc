@@ -313,7 +313,9 @@ impl PartialEq for Expr {
                 object: o1,
                 field: f1,
                 span: s1,
-            } => matches!(other, Expr::Member { object: o2, field: f2, span: s2 } if o1 == o2 && f1 == f2 && s1 == s2),
+            } => {
+                matches!(other, Expr::Member { object: o2, field: f2, span: s2 } if o1 == o2 && f1 == f2 && s1 == s2)
+            }
             Expr::Lambda {
                 params: p1,
                 ret_type: r1,
@@ -331,18 +333,24 @@ impl PartialEq for Expr {
                 func: f1,
                 args: a1,
                 span: s1,
-            } => matches!(other, Expr::Call { func: f2, args: a2, span: s2 } if f1 == f2 && a1 == a2 && s1 == s2),
+            } => {
+                matches!(other, Expr::Call { func: f2, args: a2, span: s2 } if f1 == f2 && a1 == a2 && s1 == s2)
+            }
             Expr::BinaryOp {
                 left: l1,
                 op: o1,
                 right: r1,
                 span: s1,
-            } => matches!(other, Expr::BinaryOp { left: l2, op: o2, right: r2, span: s2 } if l1 == l2 && o1 == o2 && r1 == r2 && s1 == s2),
+            } => {
+                matches!(other, Expr::BinaryOp { left: l2, op: o2, right: r2, span: s2 } if l1 == l2 && o1 == o2 && r1 == r2 && s1 == s2)
+            }
             Expr::UnaryOp {
                 op: o1,
                 operand: a1,
                 span: s1,
-            } => matches!(other, Expr::UnaryOp { op: o2, operand: a2, span: s2 } if o1 == o2 && a1 == a2 && s1 == s2),
+            } => {
+                matches!(other, Expr::UnaryOp { op: o2, operand: a2, span: s2 } if o1 == o2 && a1 == a2 && s1 == s2)
+            }
             Expr::ListLiteral(a, sa) => {
                 matches!(other, Expr::ListLiteral(b, sb) if a == b && sa == sb)
             }
@@ -350,31 +358,40 @@ impl PartialEq for Expr {
                 object: o1,
                 index: i1,
                 span: s1,
-            } => matches!(other, Expr::Index { object: o2, index: i2, span: s2 } if o1 == o2 && i1 == i2 && s1 == s2),
+            } => {
+                matches!(other, Expr::Index { object: o2, index: i2, span: s2 } if o1 == o2 && i1 == i2 && s1 == s2)
+            }
             Expr::Match {
                 scrutinee: sc1,
                 arms: a1,
                 span: s1,
-            } => matches!(other, Expr::Match { scrutinee: sc2, arms: a2, span: s2 } if sc1 == sc2 && a1 == a2 && s1 == s2),
+            } => {
+                matches!(other, Expr::Match { scrutinee: sc2, arms: a2, span: s2 } if sc1 == sc2 && a1 == a2 && s1 == s2)
+            }
             Expr::AsyncCall {
                 func: f1,
                 args: a1,
                 span: s1,
-            } => matches!(other, Expr::AsyncCall { func: f2, args: a2, span: s2 } if f1 == f2 && a1 == a2 && s1 == s2),
+            } => {
+                matches!(other, Expr::AsyncCall { func: f2, args: a2, span: s2 } if f1 == f2 && a1 == a2 && s1 == s2)
+            }
             Expr::BlockingCall {
                 func: f1,
                 args: a1,
                 span: s1,
-            } => matches!(other, Expr::BlockingCall { func: f2, args: a2, span: s2 } if f1 == f2 && a1 == a2 && s1 == s2),
-            Expr::Resolve {
-                expr: e1,
-                span: s1,
-            } => matches!(other, Expr::Resolve { expr: e2, span: s2 } if e1 == e2 && s1 == s2),
+            } => {
+                matches!(other, Expr::BlockingCall { func: f2, args: a2, span: s2 } if f1 == f2 && a1 == a2 && s1 == s2)
+            }
+            Expr::Resolve { expr: e1, span: s1 } => {
+                matches!(other, Expr::Resolve { expr: e2, span: s2 } if e1 == e2 && s1 == s2)
+            }
             Expr::DetachedCall {
                 func: f1,
                 args: a1,
                 span: s1,
-            } => matches!(other, Expr::DetachedCall { func: f2, args: a2, span: s2 } if f1 == f2 && a1 == a2 && s1 == s2),
+            } => {
+                matches!(other, Expr::DetachedCall { func: f2, args: a2, span: s2 } if f1 == f2 && a1 == a2 && s1 == s2)
+            }
             Expr::Propagate(e1, s1) => {
                 matches!(other, Expr::Propagate(e2, s2) if e1 == e2 && s1 == s2)
             }
@@ -383,21 +400,29 @@ impl PartialEq for Expr {
                 expr: e1,
                 default: d1,
                 span: s1,
-            } => matches!(other, Expr::ErrorOr { expr: e2, default: d2, span: s2 } if e1 == e2 && d1 == d2 && s1 == s2),
+            } => {
+                matches!(other, Expr::ErrorOr { expr: e2, default: d2, span: s2 } if e1 == e2 && d1 == d2 && s1 == s2)
+            }
             Expr::ErrorOrElse {
                 expr: e1,
                 handler: h1,
                 span: s1,
-            } => matches!(other, Expr::ErrorOrElse { expr: e2, handler: h2, span: s2 } if e1 == e2 && h1 == h2 && s1 == s2),
+            } => {
+                matches!(other, Expr::ErrorOrElse { expr: e2, handler: h2, span: s2 } if e1 == e2 && h1 == h2 && s1 == s2)
+            }
             Expr::ErrorCatch {
                 expr: e1,
                 arms: a1,
                 span: s1,
-            } => matches!(other, Expr::ErrorCatch { expr: e2, arms: a2, span: s2 } if e1 == e2 && a1 == a2 && s1 == s2),
+            } => {
+                matches!(other, Expr::ErrorCatch { expr: e2, arms: a2, span: s2 } if e1 == e2 && a1 == a2 && s1 == s2)
+            }
             Expr::StringInterpolation {
                 parts: p1,
                 span: s1,
-            } => matches!(other, Expr::StringInterpolation { parts: p2, span: s2 } if p1 == p2 && s1 == s2),
+            } => {
+                matches!(other, Expr::StringInterpolation { parts: p2, span: s2 } if p1 == p2 && s1 == s2)
+            }
             Expr::Map {
                 entries: e1,
                 span: s1,
@@ -407,7 +432,9 @@ impl PartialEq for Expr {
                 end: en1,
                 inclusive: i1,
                 span: s1,
-            } => matches!(other, Expr::Range { start: st2, end: en2, inclusive: i2, span: s2 } if st1 == st2 && en1 == en2 && i1 == i2 && s1 == s2),
+            } => {
+                matches!(other, Expr::Range { start: st2, end: en2, inclusive: i2, span: s2 } if st1 == st2 && en1 == en2 && i1 == i2 && s1 == s2)
+            }
         }
     }
 }
