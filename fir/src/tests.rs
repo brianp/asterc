@@ -1911,7 +1911,7 @@ fn lower_mixed_int_float_pow() {
 
 #[test]
 fn lower_throw_to_error_set() {
-    // throw err should produce RuntimeCall to aster_error_set (error flag approach)
+    // throw err should produce RuntimeCall to aster_error_set_typed (with type tag and value)
     let src = "\
 class AppError
   message: String
@@ -1922,14 +1922,224 @@ def f() throws AppError -> Int
     let fir = lower_ok(src);
     let f_func = fir.functions.iter().find(|f| f.name == "f").unwrap();
     let has_error_set = f_func.body.iter().any(|s| match s {
-        FirStmt::Expr(FirExpr::RuntimeCall { name, .. }) => name == "aster_error_set",
+        FirStmt::Expr(FirExpr::RuntimeCall { name, .. }) => {
+            name == "aster_error_set_typed" || name == "aster_error_set"
+        }
         _ => false,
     });
     assert!(
         has_error_set,
-        "expected RuntimeCall(aster_error_set) in body: {:?}",
+        "expected RuntimeCall(aster_error_set_typed) in body: {:?}",
         f_func.body
     );
+}
+
+// ===========================================================================
+// Catch multi-arm dispatch (GH #3)
+// ===========================================================================
+
+/// throw should pass the error type tag and error value to the runtime.
+#[test]
+fn lower_throw_passes_type_tag_and_value() {
+    let src = "\
+class AppError
+  message: String
+
+def f() throws AppError -> Int
+  throw AppError(message: \"boom\")
+";
+    let fir = lower_ok(src);
+    let f_func = fir.functions.iter().find(|f| f.name == "f").unwrap();
+    // aster_error_set_typed should receive 2 args: type tag (i64) and error value (ptr)
+    let has_typed_error_set = f_func.body.iter().any(|s| match s {
+        FirStmt::Expr(FirExpr::RuntimeCall { name, args, .. }) => {
+            name == "aster_error_set_typed" && args.len() == 2
+        }
+        _ => false,
+    });
+    assert!(
+        has_typed_error_set,
+        "expected RuntimeCall(aster_error_set_typed) with 2 args in body: {:?}",
+        f_func.body
+    );
+}
+
+/// catch with multiple typed arms should generate per-arm type-tag checks,
+/// not a single catch-all.
+#[test]
+fn lower_catch_multi_arm_generates_type_checks() {
+    let src = "\
+class NetworkError extends Error
+  code: Int
+
+class ParseError extends Error
+  line: Int
+
+def risky() throws Error -> Int
+  throw NetworkError(message: \"fail\", code: 500)
+
+def main() -> Int
+  risky()!.catch
+    NetworkError e -> 0
+    ParseError e -> 1
+    _ -> 2
+";
+    let fir = lower_ok(src);
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+
+    // Should have aster_error_get_tag call to retrieve the error type
+    let has_get_tag = stmt_tree_contains(&main_func.body, &|s| match s {
+        FirStmt::Let {
+            value: FirExpr::RuntimeCall { name, .. },
+            ..
+        }
+        | FirStmt::Expr(FirExpr::RuntimeCall { name, .. }) => name == "aster_error_get_tag",
+        _ => false,
+    });
+    assert!(
+        has_get_tag,
+        "expected aster_error_get_tag call in main body: {:#?}",
+        main_func.body
+    );
+
+    // Should have at least 2 If nodes inside the error-handling branch
+    // (one per typed arm: NetworkError and ParseError)
+    let type_check_ifs = count_nested_ifs(&main_func.body);
+    assert!(
+        type_check_ifs >= 2,
+        "expected at least 2 nested If stmts for typed catch arms, found {}: {:#?}",
+        type_check_ifs,
+        main_func.body
+    );
+}
+
+/// Error variable binding: `AppError e -> e.message` should bind `e` as a
+/// local variable containing the error value from the runtime.
+#[test]
+fn lower_catch_binds_error_variable() {
+    let src = "\
+class AppError extends Error
+  code: Int
+
+def risky() throws AppError -> Int
+  throw AppError(message: \"fail\", code: 42)
+
+def main() -> Int
+  risky()!.catch
+    AppError e -> e.code
+    _ -> -1
+";
+    let fir = lower_ok(src);
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+
+    // Should have aster_error_get_value call to retrieve the error object
+    let has_get_value = stmt_tree_contains(&main_func.body, &|s| match s {
+        FirStmt::Let {
+            value: FirExpr::RuntimeCall { name, .. },
+            ..
+        }
+        | FirStmt::Expr(FirExpr::RuntimeCall { name, .. }) => name == "aster_error_get_value",
+        _ => false,
+    });
+    assert!(
+        has_get_value,
+        "expected aster_error_get_value call in main body: {:#?}",
+        main_func.body
+    );
+}
+
+/// Wildcard-only catch should still work (no type dispatch needed).
+#[test]
+fn lower_catch_wildcard_only_still_works() {
+    let src = "\
+class AppError extends Error
+  code: Int
+
+def risky() throws AppError -> Int
+  42
+
+def main() -> Int
+  risky()!.catch
+    _ -> 0
+";
+    let fir = lower_ok(src);
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    // Should still have error_check for the catch (appears as the cond of an If)
+    let has_error_check = stmt_tree_contains(&main_func.body, &|s| match s {
+        FirStmt::If { cond, .. } => matches!(
+            cond,
+            FirExpr::RuntimeCall { name, .. } if name == "aster_error_check"
+        ),
+        _ => false,
+    });
+    assert!(
+        has_error_check,
+        "expected aster_error_check as If cond in wildcard catch: {:#?}",
+        main_func.body
+    );
+}
+
+// --- helpers for walking the FIR statement tree ---
+
+fn stmt_tree_contains(stmts: &[FirStmt], pred: &dyn Fn(&FirStmt) -> bool) -> bool {
+    for s in stmts {
+        if pred(s) {
+            return true;
+        }
+        match s {
+            FirStmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                if stmt_tree_contains(then_body, pred) || stmt_tree_contains(else_body, pred) {
+                    return true;
+                }
+            }
+            FirStmt::While {
+                body, increment, ..
+            } => {
+                if stmt_tree_contains(body, pred) || stmt_tree_contains(increment, pred) {
+                    return true;
+                }
+            }
+            FirStmt::Block(body) => {
+                if stmt_tree_contains(body, pred) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn count_nested_ifs(stmts: &[FirStmt]) -> usize {
+    let mut count = 0;
+    for s in stmts {
+        match s {
+            FirStmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                count += 1;
+                count += count_nested_ifs(then_body);
+                count += count_nested_ifs(else_body);
+            }
+            FirStmt::While {
+                body, increment, ..
+            } => {
+                count += count_nested_ifs(body);
+                count += count_nested_ifs(increment);
+            }
+            FirStmt::Block(body) => {
+                count += count_nested_ifs(body);
+            }
+            _ => {}
+        }
+    }
+    count
 }
 
 // ===========================================================================

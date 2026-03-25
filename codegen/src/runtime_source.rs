@@ -316,14 +316,26 @@ int64_t aster_map_get(void* handle, int64_t key) {
  * =================================================================== */
 
 static _Thread_local int aster_error_flag = 0;
+static _Thread_local int64_t aster_error_type_tag = 0;
+static _Thread_local int64_t aster_error_value = 0;
 
 void aster_error_set(void) { aster_error_flag = 1; }
+
+void aster_error_set_typed(int64_t type_tag, int64_t value) {
+    aster_error_flag = 1;
+    aster_error_type_tag = type_tag;
+    aster_error_value = value;
+}
 
 int8_t aster_error_check(void) {
     int8_t was_set = aster_error_flag ? 1 : 0;
     aster_error_flag = 0;
     return was_set;
 }
+
+int64_t aster_error_get_tag(void) { return aster_error_type_tag; }
+
+int64_t aster_error_get_value(void) { return aster_error_value; }
 
 void aster_panic(void) {
     fprintf(stderr, "aster: uncaught error\n");
@@ -454,6 +466,8 @@ struct GreenThread {
     MachineContext context;
     GreenStack *stack;          /* NULL for terminal-allocated threads */
     int error_flag;
+    int64_t error_type_tag;
+    int64_t error_value_saved;
     void *shadow_stack_top;     /* unused in AOT (GC is no-op) */
 
     pthread_mutex_t mu;
@@ -885,12 +899,16 @@ static void* worker_main(void *arg) {
 
         /* Restore per-green-thread state */
         aster_error_flag = t->error_flag;
+        aster_error_type_tag = t->error_type_tag;
+        aster_error_value = t->error_value_saved;
 
         /* Context switch to green thread */
         aster_context_switch(&worker_scheduler_ctx, &t->context);
 
         /* Green thread yielded back — save state */
         t->error_flag = aster_error_flag;
+        t->error_type_tag = aster_error_type_tag;
+        t->error_value_saved = aster_error_value;
         worker_current_thread = NULL;
 
         switch (worker_yield_reason) {

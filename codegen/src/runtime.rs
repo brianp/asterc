@@ -964,16 +964,35 @@ const TASK_FAILED: i64 = 2;
 
 thread_local! {
     static ERROR_FLAG: Cell<bool> = const { Cell::new(false) };
+    static ERROR_TYPE_TAG: Cell<i64> = const { Cell::new(0) };
+    static ERROR_VALUE: Cell<i64> = const { Cell::new(0) };
 }
 
 pub extern "C" fn aster_error_set() {
     ERROR_FLAG.set(true);
 }
 
+/// Set error flag with a type tag and the error object pointer.
+pub extern "C" fn aster_error_set_typed(type_tag: i64, value: i64) {
+    ERROR_FLAG.set(true);
+    ERROR_TYPE_TAG.set(type_tag);
+    ERROR_VALUE.set(value);
+}
+
 pub extern "C" fn aster_error_check() -> i8 {
     let was = ERROR_FLAG.get();
     ERROR_FLAG.set(false);
     was as i8
+}
+
+/// Return the type tag of the current error (valid after error_check returns true).
+pub extern "C" fn aster_error_get_tag() -> i64 {
+    ERROR_TYPE_TAG.get()
+}
+
+/// Return the error object pointer (valid after error_check returns true).
+pub extern "C" fn aster_error_get_value() -> i64 {
+    ERROR_VALUE.get()
 }
 
 pub(crate) fn error_flag_get() -> bool {
@@ -1726,7 +1745,10 @@ pub fn runtime_builtin_symbols() -> Vec<(&'static str, *const u8)> {
         ("aster_map_set", aster_map_set as *const u8),
         ("aster_map_get", aster_map_get as *const u8),
         ("aster_error_set", aster_error_set as *const u8),
+        ("aster_error_set_typed", aster_error_set_typed as *const u8),
         ("aster_error_check", aster_error_check as *const u8),
+        ("aster_error_get_tag", aster_error_get_tag as *const u8),
+        ("aster_error_get_value", aster_error_get_value as *const u8),
         ("aster_safepoint", aster_safepoint as *const u8),
         ("aster_panic", aster_panic as *const u8),
         (

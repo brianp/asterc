@@ -770,7 +770,7 @@ impl Lowerer {
         Ok(FirExpr::LocalVar(result_id, result_ty))
     }
 
-    /// Evaluate expr, on error use first catch arm as fallback.
+    /// Evaluate expr, on error dispatch to the matching catch arm by error type.
     fn lower_error_catch_expr(
         &mut self,
         expr: &Expr,
@@ -792,35 +792,233 @@ impl Lowerer {
             value: fir_inner,
         });
 
-        let fallback = if let Some((_, body)) = arms.first() {
-            self.lower_expr(body)?
-        } else {
-            FirExpr::IntLit(0)
-        };
-
         let check = FirExpr::RuntimeCall {
             name: "aster_error_check".to_string(),
             args: vec![],
             ret_ty: FirType::Bool,
         };
+
+        // Build the dispatch body for inside the error-check if-block
+        let error_body = self.lower_catch_arms_dispatch(arms, result_id)?;
+
         self.pending_stmts.push(FirStmt::If {
             cond: check,
-            then_body: vec![FirStmt::Assign {
-                target: FirPlace::Local(result_id),
-                value: fallback,
-            }],
+            then_body: error_body,
             else_body: vec![],
         });
 
         Ok(FirExpr::LocalVar(result_id, result_ty))
     }
 
-    /// Set error flag and return a type-correct dummy value.
+    /// Generate a nested if/else chain dispatching on error type tag for catch arms.
+    fn lower_catch_arms_dispatch(
+        &mut self,
+        arms: &[(ast::ErrorCatchPattern, Expr)],
+        result_id: LocalId,
+    ) -> Result<Vec<FirStmt>, LowerError> {
+        // Collect the typed arms and the optional wildcard
+        let mut typed_arms: Vec<(&str, &str, &Expr)> = Vec::new();
+        let mut wildcard_body: Option<&Expr> = None;
+
+        for (pat, body) in arms {
+            match pat {
+                ast::ErrorCatchPattern::Typed {
+                    error_type, var, ..
+                } => {
+                    typed_arms.push((error_type.as_str(), var.as_str(), body));
+                }
+                ast::ErrorCatchPattern::Wildcard(_) => {
+                    wildcard_body = Some(body);
+                }
+            }
+        }
+
+        // If there are no typed arms, just use the wildcard (or default 0)
+        if typed_arms.is_empty() {
+            let fallback = if let Some(body) = wildcard_body {
+                self.lower_expr(body)?
+            } else {
+                FirExpr::IntLit(0)
+            };
+            return Ok(vec![FirStmt::Assign {
+                target: FirPlace::Local(result_id),
+                value: fallback,
+            }]);
+        }
+
+        // Get the error tag into a local
+        let tag_id = self.alloc_local();
+        self.local_types.insert(tag_id, FirType::I64);
+        let tag_let = FirStmt::Let {
+            name: tag_id,
+            ty: FirType::I64,
+            value: FirExpr::RuntimeCall {
+                name: "aster_error_get_tag".to_string(),
+                args: vec![],
+                ret_ty: FirType::I64,
+            },
+        };
+
+        // Get the error value into a local
+        let err_val_id = self.alloc_local();
+        self.local_types.insert(err_val_id, FirType::Ptr);
+        let err_val_let = FirStmt::Let {
+            name: err_val_id,
+            ty: FirType::Ptr,
+            value: FirExpr::RuntimeCall {
+                name: "aster_error_get_value".to_string(),
+                args: vec![],
+                ret_ty: FirType::Ptr,
+            },
+        };
+
+        let mut stmts = vec![tag_let, err_val_let];
+
+        // Build a nested if/else chain: if tag == T1 then arm1 else if tag == T2 then arm2 ...
+        // We build from the inside out (last arm first) to nest properly.
+        // Collect all class IDs (including parent classes for subtype matching).
+        let mut arm_data: Vec<(Vec<i64>, &str, &str, &Expr)> = Vec::new();
+        for (error_type, var, body) in &typed_arms {
+            let mut matching_tags = Vec::new();
+            // The arm matches the exact type AND all subtypes (classes that extend it).
+            // First, get the exact class ID for this error type.
+            if let Some(&class_id) = self.classes.get(*error_type) {
+                matching_tags.push(class_id.0 as i64);
+                // Also find all classes that transitively extend this type
+                self.collect_subclass_tags(error_type, &mut matching_tags);
+            }
+            arm_data.push((matching_tags, var, error_type, body));
+        }
+
+        // Build the innermost else (wildcard fallback)
+        let wildcard_fallback = if let Some(body) = wildcard_body {
+            let val = self.lower_expr(body)?;
+            vec![FirStmt::Assign {
+                target: FirPlace::Local(result_id),
+                value: val,
+            }]
+        } else {
+            vec![]
+        };
+
+        // Build from last typed arm to first, nesting each into the else of the next
+        let mut else_body = wildcard_fallback;
+        for (matching_tags, var, error_type, body) in arm_data.into_iter().rev() {
+            // Bind the error variable in locals and register its AST type
+            // so that field accesses like e.code can resolve the class.
+            let var_id = self.alloc_local();
+            self.local_types.insert(var_id, FirType::Ptr);
+            let old_binding = self.locals.insert(var.to_string(), var_id);
+            let old_ast_type = self.local_ast_types.insert(
+                var.to_string(),
+                ast::Type::Custom(error_type.to_string(), vec![]),
+            );
+
+            let body_val = self.lower_expr(body)?;
+
+            // Restore previous bindings
+            if let Some(old) = old_binding {
+                self.locals.insert(var.to_string(), old);
+            } else {
+                self.locals.remove(var);
+            }
+            if let Some(old) = old_ast_type {
+                self.local_ast_types.insert(var.to_string(), old);
+            } else {
+                self.local_ast_types.remove(var);
+            }
+
+            // Build the condition: tag == t1 || tag == t2 || ...
+            let cond = self.build_tag_match_cond(tag_id, &matching_tags);
+
+            let then_body = vec![
+                FirStmt::Let {
+                    name: var_id,
+                    ty: FirType::Ptr,
+                    value: FirExpr::LocalVar(err_val_id, FirType::Ptr),
+                },
+                FirStmt::Assign {
+                    target: FirPlace::Local(result_id),
+                    value: body_val,
+                },
+            ];
+
+            let if_stmt = FirStmt::If {
+                cond,
+                then_body,
+                else_body,
+            };
+            else_body = vec![if_stmt];
+        }
+
+        stmts.extend(else_body);
+        Ok(stmts)
+    }
+
+    /// Build a condition expression: tag == t1 || tag == t2 || ...
+    fn build_tag_match_cond(&self, tag_id: LocalId, tags: &[i64]) -> FirExpr {
+        if tags.is_empty() {
+            return FirExpr::BoolLit(false);
+        }
+        let mut cond = FirExpr::BinaryOp {
+            left: Box::new(FirExpr::LocalVar(tag_id, FirType::I64)),
+            op: crate::exprs::BinOp::Eq,
+            right: Box::new(FirExpr::IntLit(tags[0])),
+            result_ty: FirType::Bool,
+        };
+        for &tag in &tags[1..] {
+            let next = FirExpr::BinaryOp {
+                left: Box::new(FirExpr::LocalVar(tag_id, FirType::I64)),
+                op: crate::exprs::BinOp::Eq,
+                right: Box::new(FirExpr::IntLit(tag)),
+                result_ty: FirType::Bool,
+            };
+            cond = FirExpr::BinaryOp {
+                left: Box::new(cond),
+                op: crate::exprs::BinOp::Or,
+                right: Box::new(next),
+                result_ty: FirType::Bool,
+            };
+        }
+        cond
+    }
+
+    /// Collect ClassId tags for all classes that (transitively) extend the given type.
+    fn collect_subclass_tags(&self, parent_name: &str, tags: &mut Vec<i64>) {
+        for (name, &class_id) in &self.classes {
+            if let Some(class_info) = self.type_env.get_class(name)
+                && class_info.extends.as_deref() == Some(parent_name)
+            {
+                let tag = class_id.0 as i64;
+                if !tags.contains(&tag) {
+                    tags.push(tag);
+                    self.collect_subclass_tags(name, tags);
+                }
+            }
+        }
+    }
+
+    /// Set error flag with type tag and error value, return a type-correct dummy.
     fn lower_throw_expr(&mut self, inner: &Expr) -> Result<FirExpr, LowerError> {
-        let _fir_inner = self.lower_expr(inner)?;
+        let fir_inner = self.lower_expr(inner)?;
+
+        // Extract the class name from the constructor call to get its type tag
+        let class_name = match inner {
+            Expr::Call { func, .. } => match func.as_ref() {
+                Expr::Ident(name, _) => Some(name.clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+        let type_tag = class_name
+            .as_deref()
+            .and_then(|name| self.classes.get(name))
+            .map(|cid| cid.0 as i64)
+            .unwrap_or(0);
+
         self.pending_stmts.push(FirStmt::Expr(FirExpr::RuntimeCall {
-            name: "aster_error_set".to_string(),
-            args: vec![],
+            name: "aster_error_set_typed".to_string(),
+            args: vec![FirExpr::IntLit(type_tag), fir_inner],
             ret_ty: FirType::Void,
         }));
         let dummy = match self

@@ -129,9 +129,7 @@ impl Lowerer {
 
     /// Resolve the callback argument `f` from a method call's args list.
     /// Looks for a named arg `f`, falling back to the first positional arg.
-    pub(crate) fn resolve_callback_arg(
-        args: &[(String, ast::Span, Expr)],
-    ) -> Option<&Expr> {
+    pub(crate) fn resolve_callback_arg(args: &[(String, ast::Span, Expr)]) -> Option<&Expr> {
         args.iter()
             .find(|(n, _, _)| n == "f")
             .map(|(_, _, e)| e)
