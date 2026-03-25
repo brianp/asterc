@@ -159,6 +159,73 @@ def main() -> Int
     );
 }
 
+/// GH #3: .catch dispatches on the second arm (not just the first).
+/// Throws ParseError, which should match the second arm and return exit code 2.
+#[test]
+fn run_catch_dispatches_second_arm() {
+    let dir = common::make_temp_dir("catch-dispatch-run");
+    let src = dir.join("catch_dispatch.aster");
+    std::fs::write(
+        &src,
+        "\
+class NetworkError extends Error
+  code: Int
+
+class ParseError extends Error
+  line: Int
+
+def risky() throws Error -> Int
+  throw ParseError(message: \"bad\", line: 42)
+
+def main() -> Int
+  risky()!.catch
+    NetworkError e -> 1
+    ParseError e -> 2
+    _ -> 3
+",
+    )
+    .unwrap();
+
+    let output = common::cli(&["run", src.to_str().unwrap()]);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "Expected ParseError arm (exit 2), got: {}",
+        common::output_text(&output)
+    );
+}
+
+/// GH #3: .catch binds error variable and accesses its field.
+#[test]
+fn run_catch_binds_error_variable_field() {
+    let dir = common::make_temp_dir("catch-bind-run");
+    let src = dir.join("catch_bind.aster");
+    std::fs::write(
+        &src,
+        "\
+class AppError extends Error
+  code: Int
+
+def risky() throws AppError -> Int
+  throw AppError(message: \"fail\", code: 77)
+
+def main() -> Int
+  risky()!.catch
+    AppError e -> e.code
+    _ -> 0
+",
+    )
+    .unwrap();
+
+    let output = common::cli(&["run", src.to_str().unwrap()]);
+    assert_eq!(
+        output.status.code(),
+        Some(77),
+        "Expected AppError.code (77), got: {}",
+        common::output_text(&output)
+    );
+}
+
 #[test]
 fn run_resolve_first_returns_fastest_value() {
     let dir = common::make_temp_dir("resolve-first-run");

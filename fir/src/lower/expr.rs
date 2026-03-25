@@ -890,7 +890,7 @@ impl Lowerer {
             arm_data.push((matching_tags, var, error_type, body));
         }
 
-        // Build the innermost else (wildcard fallback)
+        // Build the innermost else (wildcard fallback or re-raise)
         let wildcard_fallback = if let Some(body) = wildcard_body {
             let val = self.lower_expr(body)?;
             vec![FirStmt::Assign {
@@ -898,7 +898,15 @@ impl Lowerer {
                 value: val,
             }]
         } else {
-            vec![]
+            // No wildcard: no arm matched, re-set the error flag so it propagates
+            vec![FirStmt::Expr(FirExpr::RuntimeCall {
+                name: "aster_error_set_typed".to_string(),
+                args: vec![
+                    FirExpr::LocalVar(tag_id, FirType::I64),
+                    FirExpr::LocalVar(err_val_id, FirType::Ptr),
+                ],
+                ret_ty: FirType::Void,
+            })]
         };
 
         // Build from last typed arm to first, nesting each into the else of the next
