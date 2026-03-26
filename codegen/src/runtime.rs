@@ -609,7 +609,7 @@ fn check_float_valid(val: f64, op: &str) {
 
 fn check_float_fits_i64(val: f64, op: &str) {
     check_float_valid(val, op);
-    if val > i64::MAX as f64 || val < i64::MIN as f64 {
+    if val >= i64::MAX as f64 || val < i64::MIN as f64 {
         eprintln!(
             "float out of Int range: {}({}) exceeds 64-bit integer range",
             op, val

@@ -364,7 +364,7 @@ static void check_float_valid(double val, const char* op) {
 
 static void check_float_fits_i64(double val, const char* op) {
     check_float_valid(val, op);
-    if (val > (double)INT64_MAX || val < (double)INT64_MIN) {
+    if (val >= (double)INT64_MAX || val < (double)INT64_MIN) {
         fprintf(stderr, "float out of Int range: %s(%g) exceeds 64-bit integer range\n", op, val);
         abort();
     }
