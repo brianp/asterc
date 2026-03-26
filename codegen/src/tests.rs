@@ -2240,22 +2240,25 @@ def main() -> Int
 
 #[test]
 fn async_task_cancel_keeps_terminal_task_ready() {
+    // Resolve the task first to guarantee it reaches terminal state,
+    // then verify that cancel() on an already-terminal task preserves Ready.
     let src = "\
 def compute() -> Int
   42
 
 def main() -> Int
   let t: Task[Int] = async compute()
+  let val = resolve t!
   t.cancel()
   if t.is_ready()
-    return 1
+    return val
   else
     return 0
 ";
     let fir = compile_and_run(src);
     let jit = jit_compile(&fir);
     let result = jit.call_i64(fir.entry.unwrap());
-    assert_eq!(result, 1);
+    assert_eq!(result, 42);
 }
 
 #[test]

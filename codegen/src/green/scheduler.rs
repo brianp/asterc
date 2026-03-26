@@ -446,27 +446,32 @@ pub(crate) fn consume_thread_result(thread_ptr: *mut GreenThread) -> i64 {
             0
         }
     };
-    let scoped = st.scoped;
     drop(st);
 
     // Recycle the stack (64KB) now that the result is consumed.
     recycle_stack(unsafe { &mut *thread_ptr });
 
-    // Free unscoped tasks immediately. Scoped tasks are freed by scope exit.
-    if !scoped {
-        unsafe { drop(Box::from_raw(thread_ptr)) };
-    }
+    // Note: we intentionally do NOT free the GreenThread struct here.
+    // The ThreadPtr may still be in a worker's local deque or the global
+    // injector. If a worker pops it after we free, it dereferences freed
+    // memory (use-after-free → SIGSEGV). The worker loop handles terminal
+    // threads by skipping them, so leaving the struct alive is safe.
+    // The ~200 byte struct is effectively leaked; the 64KB stack was
+    // already recycled above. Scoped tasks are freed by scope exit.
+    // See also: is_ready() callers that reference the pointer after consume.
 
     result
 }
 
-/// Free a scoped GreenThread struct. Called by async scope cleanup.
+/// Clean up a scoped GreenThread. Called by async scope cleanup.
 /// Scoped tasks are never freed by consume_thread_result (they defer to scope exit).
 /// The stack may already be recycled if the task was consumed.
 pub(crate) fn free_scoped_thread(thread_ptr: *mut GreenThread) {
     // Recycle the stack if it hasn't been recycled already (unconsumed tasks).
     recycle_stack(unsafe { &mut *thread_ptr });
-    unsafe { drop(Box::from_raw(thread_ptr)) };
+    // Do not free the GreenThread struct: its ThreadPtr may still be in a
+    // worker's local deque or the global injector. The worker loop handles
+    // terminal threads by skipping them. See consume_thread_result.
 }
 
 fn wait_for_terminal(thread_ptr: *mut GreenThread) {
