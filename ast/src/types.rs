@@ -25,6 +25,8 @@ pub enum Type {
     /// Placeholder for lambda parameters whose types will be inferred from call context.
     Inferred,
     List(Box<Type>),
+    /// Set type — unique collection requiring element type to include Eq.
+    Set(Box<Type>),
     /// Map type scaffolding — parser support exists but no literal syntax or runtime yet.
     Map(Box<Type>, Box<Type>),
     Custom(std::string::String, Vec<Type>),
@@ -84,6 +86,7 @@ impl Type {
         // Otherwise, recurse into children
         match self {
             Type::List(inner) => Type::List(Box::new(inner.map_type(f))),
+            Type::Set(inner) => Type::Set(Box::new(inner.map_type(f))),
             Type::Map(k, v) => Type::Map(Box::new(k.map_type(f)), Box::new(v.map_type(f))),
             Type::Nullable(inner) => Type::Nullable(Box::new(inner.map_type(f))),
             Type::Task(inner) => Type::Task(Box::new(inner.map_type(f))),
@@ -130,7 +133,9 @@ impl Type {
             return true;
         }
         match self {
-            Type::List(inner) | Type::Nullable(inner) | Type::Task(inner) => inner.any_type(f),
+            Type::List(inner) | Type::Set(inner) | Type::Nullable(inner) | Type::Task(inner) => {
+                inner.any_type(f)
+            }
             Type::Map(k, v) => k.any_type(f) || v.any_type(f),
             Type::Function {
                 params,
@@ -167,7 +172,7 @@ impl Type {
             results.push(self.clone());
         }
         match self {
-            Type::List(inner) | Type::Nullable(inner) | Type::Task(inner) => {
+            Type::List(inner) | Type::Set(inner) | Type::Nullable(inner) | Type::Task(inner) => {
                 inner.collect_types(f, results)
             }
             Type::Map(k, v) => {
@@ -306,6 +311,7 @@ impl fmt::Display for Type {
             Type::Error => write!(f, "Error"),
             Type::Inferred => write!(f, "Inferred"),
             Type::List(inner) => write!(f, "List[{}]", inner),
+            Type::Set(inner) => write!(f, "Set[{}]", inner),
             Type::Nullable(inner) => write!(f, "{}?", inner),
             Type::Custom(name, params) if params.is_empty() => write!(f, "{}", name),
             Type::Custom(name, params) => {

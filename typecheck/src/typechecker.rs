@@ -895,6 +895,7 @@ impl TypeChecker {
                 // Also set expected_type for parametric trait resolution (e.g., .into())
                 let prev_expected = self.expected_type.take();
                 if let Some(ann) = type_ann {
+                    self.validate_collection_eq_constraint(ann, stmt_span)?;
                     self.expected_type = Some(ann.clone());
                 }
                 let mut ty = if matches!(value, Expr::Lambda { .. }) {
@@ -1168,7 +1169,7 @@ impl TypeChecker {
                     });
                 }
                 let elem_ty = match iter_ty {
-                    Type::List(inner) => *inner,
+                    Type::List(inner) | Type::Set(inner) => *inner,
                     Type::Custom(ref class_name, _) => {
                         if let Some(class_info) = self.env.get_class(class_name) {
                             if class_info.includes.contains(&"Iterable".to_string()) {
@@ -1532,6 +1533,57 @@ impl TypeChecker {
             }
         }
         false
+    }
+
+    /// Check if a type is hashable (can be used as Set element or Map key).
+    /// Primitives and custom types with Eq are hashable.
+    /// Containers (List, Set, Map) are NOT hashable because there is no runtime
+    /// hash implementation for them. This is distinct from Eq protocol inclusion,
+    /// which allows auto-derive through container fields.
+    pub(crate) fn type_is_hashable(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Int | Type::Float | Type::String | Type::Bool => true,
+            Type::Nil => true,
+            Type::Custom(..) => self.type_includes_eq(ty),
+            Type::List(_) | Type::Set(_) | Type::Map(_, _) => false,
+            Type::Task(_) | Type::Nullable(_) | Type::Function { .. } => false,
+            Type::Error => true,
+            _ => false,
+        }
+    }
+
+    /// Validate that Set[T] and Map[K, V] element/key types are hashable.
+    fn validate_collection_eq_constraint(
+        &self,
+        ty: &Type,
+        span: Span,
+    ) -> Result<(), Diagnostic> {
+        match ty {
+            Type::Set(inner) => {
+                if !self.type_is_hashable(inner) {
+                    return Err(Diagnostic::error(format!(
+                        "Set element type {} does not include Eq. \
+                         Add 'includes Eq' to use as a Set element",
+                        inner
+                    ))
+                    .with_code("E021")
+                    .with_label(span, "Set requires Eq on element type"));
+                }
+            }
+            Type::Map(key, _) => {
+                if !self.type_is_hashable(key) {
+                    return Err(Diagnostic::error(format!(
+                        "Map key type {} does not include Eq. \
+                         Add 'includes Eq' to use as a Map key",
+                        key
+                    ))
+                    .with_code("E021")
+                    .with_label(span, "Map requires Eq on key type"));
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     /// Compare types for compatibility, ignoring param_names on Function types.

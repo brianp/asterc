@@ -467,6 +467,7 @@ impl Lowerer {
             },
             Type::String
             | Type::List(_)
+            | Type::Set(_)
             | Type::Custom(_, _)
             | Type::Function { .. }
             | Type::Task(_)

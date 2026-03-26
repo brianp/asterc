@@ -1540,6 +1540,7 @@ pub fn format_type(ty: &Type) -> Doc {
         Type::Error => text("<error>"),
         Type::Inferred => text("_"),
         Type::List(inner) => concat(vec![text("List["), format_type(inner), text("]")]),
+        Type::Set(inner) => concat(vec![text("Set["), format_type(inner), text("]")]),
         Type::Map(k, v) => concat(vec![
             text("Map["),
             format_type(k),

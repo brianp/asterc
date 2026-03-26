@@ -736,7 +736,7 @@ impl TypeChecker {
                 }
                 false
             }
-            Type::List(inner) => self.type_includes_protocol(inner, protocol),
+            Type::List(inner) | Type::Set(inner) => self.type_includes_protocol(inner, protocol),
             Type::Error => true,
             _ => false,
         }

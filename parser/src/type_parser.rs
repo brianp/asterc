@@ -48,6 +48,7 @@ impl Parser {
             "never" => Some("Never"),
             "list" => Some("List"),
             "map" => Some("Map"),
+            "set" => Some("Set"),
             "task" => Some("Task"),
             _ => None,
         };
@@ -91,6 +92,13 @@ impl Parser {
             let inner = self.parse_type()?;
             self.expect(TokenKind::RBracket)?;
             return self.maybe_nullable(Type::List(Box::new(inner)));
+        }
+
+        if name == "Set" && self.at(&TokenKind::LBracket) {
+            self.advance();
+            let inner = self.parse_type()?;
+            self.expect(TokenKind::RBracket)?;
+            return self.maybe_nullable(Type::Set(Box::new(inner)));
         }
 
         if name == "Map" && self.at(&TokenKind::LBracket) {

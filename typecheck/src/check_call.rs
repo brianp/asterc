@@ -144,10 +144,14 @@ impl TypeChecker {
                 }
             }
 
-            // List.contains overload: contains(f: (T) -> Bool) -> Bool
+            // List/Set.contains overload: contains(f: (T) -> Bool) -> Bool
             // When the arg is named "f", treat as predicate form instead of item form
+            let contains_inner = match &obj_ty {
+                Type::List(inner) | Type::Set(inner) => Some(inner),
+                _ => None,
+            };
             if field == "contains"
-                && let Type::List(inner) = &obj_ty
+                && let Some(inner) = contains_inner
                 && args.len() == 1
                 && args[0].0 == "f"
             {
@@ -203,6 +207,39 @@ impl TypeChecker {
         args: &[(String, Span, Expr)],
         bypass_throws_check: bool,
     ) -> Result<Type, Diagnostic> {
+        // Handle Set[T]() constructor: parsed as Call(Index(Ident("Set"), type_expr), [])
+        if let Expr::Index {
+            object,
+            index,
+            span,
+        } = func
+        {
+            if let Expr::Ident(name, _) = object.as_ref() {
+                if name == "Set" {
+                    if !args.is_empty() {
+                        return Err(Diagnostic::error(
+                            "Set constructor takes no arguments. Use .push() to add elements"
+                                .to_string(),
+                        )
+                        .with_code("E006")
+                        .with_label(*span, "expected no arguments"));
+                    }
+                    // Resolve the element type from the index expression
+                    let elem_ty = self.resolve_type_from_expr(index)?;
+                    if !self.type_is_hashable(&elem_ty) {
+                        return Err(Diagnostic::error(format!(
+                            "Set element type {} does not include Eq. \
+                             Add 'includes Eq' to use as a Set element",
+                            elem_ty
+                        ))
+                        .with_code("E021")
+                        .with_label(*span, "Set requires Eq on element type"));
+                    }
+                    return Ok(Type::Set(Box::new(elem_ty)));
+                }
+            }
+        }
+
         // Handle polymorphic builtins that can't be expressed in the type system yet
         if let Expr::Ident(name, _) = func {
             match name.as_str() {
@@ -220,14 +257,14 @@ impl TypeChecker {
                         return Ok(Type::Error);
                     }
                     match aty {
-                        Type::String | Type::List(_) => return Ok(Type::Int),
+                        Type::String | Type::List(_) | Type::Set(_) => return Ok(Type::Int),
                         _ => {
                             return Err(Diagnostic::error(format!(
-                                "len() expects String or List, got {}",
+                                "len() expects String, List, or Set, got {}",
                                 aty
                             ))
                             .with_code("E005")
-                            .with_label(args[0].2.span(), "expected String or List"));
+                            .with_label(args[0].2.span(), "expected String, List, or Set"));
                         }
                     }
                 }
@@ -902,6 +939,10 @@ impl TypeChecker {
                 // Lists are invariant: List[Dog] ≠ List[Animal]
                 Self::unify_inner(e_inner, a_inner, bindings, env, true)
             }
+            (Type::Set(e_inner), Type::Set(a_inner)) => {
+                // Sets are invariant
+                Self::unify_inner(e_inner, a_inner, bindings, env, true)
+            }
             (Type::Map(ek, ev), Type::Map(ak, av)) => {
                 // Maps are invariant in both key and value types
                 Self::unify_inner(ek, ak, bindings, env, true)?;
@@ -1052,7 +1093,7 @@ impl TypeChecker {
                 }
                 Ok(())
             }
-            Type::List(inner) | Type::Task(inner) | Type::Nullable(inner) => {
+            Type::List(inner) | Type::Set(inner) | Type::Task(inner) | Type::Nullable(inner) => {
                 self.collect_typevar_constraints(inner, bindings, checked)
             }
             Type::Map(k, v) => {
@@ -1301,5 +1342,51 @@ impl TypeChecker {
             );
         }
         Ok(Type::Float)
+    }
+
+    /// Resolve a type from an expression used in a type position (e.g., the `Int` in `Set[Int]()`).
+    /// Handles identifiers for primitives/custom types and index expressions for compound types
+    /// like `List[Int]` (parsed as `Index(Ident("List"), Ident("Int"))`).
+    fn resolve_type_from_expr(&self, expr: &Expr) -> Result<Type, Diagnostic> {
+        match expr {
+            Expr::Ident(name, _) => {
+                let ty = Type::from_ident(name);
+                // If from_ident returned Custom, verify the class exists
+                if let Type::Custom(ref class_name, _) = ty {
+                    if self.env.get_class(class_name).is_none()
+                        && self.env.get_enum(class_name).is_none()
+                    {
+                        return Err(Diagnostic::error(format!(
+                            "Unknown type '{}' in Set constructor",
+                            name
+                        ))
+                        .with_code("E002")
+                        .with_label(expr.span(), "not a known type"));
+                    }
+                }
+                Ok(ty)
+            }
+            // Handle compound types: List[T], Set[T], Map[K, V] parsed as Index expressions
+            Expr::Index { object, index, .. } => {
+                if let Expr::Ident(name, _) = object.as_ref() {
+                    let inner = self.resolve_type_from_expr(index)?;
+                    match name.as_str() {
+                        "List" => return Ok(Type::List(Box::new(inner))),
+                        "Set" => return Ok(Type::Set(Box::new(inner))),
+                        _ => {}
+                    }
+                }
+                Err(Diagnostic::error(
+                    "Expected a type name in Set constructor (e.g., Set[Int]())".to_string(),
+                )
+                .with_code("E002")
+                .with_label(expr.span(), "expected type name"))
+            }
+            _ => Err(Diagnostic::error(
+                "Expected a type name in Set constructor (e.g., Set[Int]())".to_string(),
+            )
+            .with_code("E002")
+            .with_label(expr.span(), "expected type name")),
+        }
     }
 }

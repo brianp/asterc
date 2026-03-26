@@ -523,7 +523,9 @@ get_name(a: Dog(name: "Rex", breed: "Lab"))
 
 #[test]
 fn list_type_satisfies_eq_constraint() {
-    // List[Int] should satisfy T includes Eq constraint since Int includes Eq
+    // List[Int] satisfies T includes Eq constraint since Int includes Eq.
+    // Lists include Eq protocol (for auto-derive and generic constraints),
+    // but cannot be used as Set elements or Map keys (not hashable).
     common::check_ok(
         r#"def needs_eq(a: T includes Eq, b: T) -> Bool
   a == b

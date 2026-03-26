@@ -835,6 +835,7 @@ impl TypeChecker {
                     // Reject container/wrapper types that lack runtime equality support
                     let type_name = match &lt {
                         Type::List(_) => Some("List"),
+                        Type::Set(_) => Some("Set"),
                         Type::Map(_, _) => Some("Map"),
                         Type::Task(_) => Some("Task"),
                         Type::Nullable(_) => Some("Nullable"),
@@ -1124,6 +1125,10 @@ impl TypeChecker {
         // Handle List built-in methods (List implicitly includes Iterable)
         if let Type::List(ref inner) = obj_ty {
             return self.check_list_member(field, inner, object);
+        }
+        // Handle Set built-in methods (Set has same interface as List)
+        if let Type::Set(ref inner) = obj_ty {
+            return self.check_set_member(field, inner, object);
         }
         if let Type::Custom(class_name, type_args) = obj_ty {
             let mut current_class = Some(class_name.clone());
@@ -1703,6 +1708,93 @@ impl TypeChecker {
         Err(Diagnostic::error(format!("List has no method '{}'", field))
             .with_code("E010")
             .with_label(object.span(), format!("no member '{}' on List", field)))
+    }
+
+    fn check_set_member(
+        &self,
+        field: &str,
+        inner: &Type,
+        object: &Expr,
+    ) -> Result<Type, Diagnostic> {
+        // Set methods mirror List but with set semantics:
+        // - push: silent no-op on duplicate
+        // - remove takes item (not index)
+        // - no insert (no ordering) or indexing
+        match field {
+            "len" => {
+                return Ok(Type::func(vec![], vec![], Type::Int));
+            }
+            "each" => {
+                return Ok(Type::func(
+                    vec!["f".into()],
+                    vec![Type::func(
+                        vec!["_0".into()],
+                        vec![inner.clone()],
+                        Type::Void,
+                    )],
+                    Type::Void,
+                ));
+            }
+            "push" => {
+                return Ok(Type::func(
+                    vec!["item".into()],
+                    vec![inner.clone()],
+                    Type::Void,
+                ));
+            }
+            "remove" => {
+                return Ok(Type::func(
+                    vec!["item".into()],
+                    vec![inner.clone()],
+                    Type::Void,
+                ));
+            }
+            "pop" => {
+                return Ok(Type::func(vec![], vec![], inner.clone()));
+            }
+            "remove_first" => {
+                return Ok(Type::func(
+                    vec!["f".into()],
+                    vec![Type::func(
+                        vec!["_0".into()],
+                        vec![inner.clone()],
+                        Type::Bool,
+                    )],
+                    Type::Nullable(Box::new(inner.clone())),
+                ));
+            }
+            "contains" => {
+                return Ok(Type::func(
+                    vec!["item".into()],
+                    vec![inner.clone()],
+                    Type::Bool,
+                ));
+            }
+            _ => {}
+        }
+
+        // Ord-gated methods
+        if matches!(field, "min" | "max" | "sort") && !self.type_includes_ord(inner) {
+            return Err(Diagnostic::error(format!(
+                "Cannot call '{}()': element type {} does not include Ord. \
+                 Add 'includes Ord' to the element type to enable {}",
+                field, inner, field
+            ))
+            .with_code("E025")
+            .with_label(object.span(), format!("{} requires Ord", field)));
+        }
+
+        // Iterable vocabulary methods
+        let vocab = crate::check_class::iterable_vocabulary_methods(inner);
+        for (name, ty) in &vocab {
+            if name == field {
+                return Ok(ty.clone());
+            }
+        }
+
+        Err(Diagnostic::error(format!("Set has no method '{}'", field))
+            .with_code("E010")
+            .with_label(object.span(), format!("no member '{}' on Set", field)))
     }
 
     fn check_match_expr(
