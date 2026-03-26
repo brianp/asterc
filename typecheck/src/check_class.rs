@@ -61,7 +61,7 @@ impl TypeChecker {
         }
         // Also inject inherited fields from parent classes
         if extends.is_some() {
-            for ancestor in self.walk_ancestors(name) {
+            for ancestor in method_checker.walk_ancestors(name) {
                 for (fname, fty) in ancestor.fields.iter() {
                     method_checker.env.set_var(fname.clone(), fty.clone());
                 }
@@ -82,79 +82,89 @@ impl TypeChecker {
 
         let mut method_map = HashMap::new();
         let mut overloaded_methods: HashMap<String, Vec<Type>> = HashMap::new();
-        for m in methods {
-            if let Stmt::Let {
-                name: mname, value, ..
-            } = m
-            {
-                // Substitute Self -> class type in method lambda types before checking
-                let resolved_value = Self::substitute_self_in_lambda(value, &class_type);
-                let mty = method_checker.check_expr(&resolved_value)?;
 
-                // Register method defaults for call-site resolution
-                if let ast::Expr::Lambda {
-                    params: lp,
-                    defaults: ld,
-                    ..
-                } = value
+        // Run the methods loop, capturing errors so we can always restore env
+        let methods_result: Result<(), Diagnostic> = (|| {
+            for m in methods {
+                if let Stmt::Let {
+                    name: mname, value, ..
+                } = m
                 {
-                    let mut default_set = std::collections::HashSet::new();
-                    for (i, d) in ld.iter().enumerate() {
-                        if d.is_some()
-                            && let Some((pname, _)) = lp.get(i)
-                        {
-                            default_set.insert(pname.clone());
-                        }
-                    }
-                    if !default_set.is_empty() {
-                        // Use the qualified name (e.g., "Calc.add")
-                        self.default_params.insert(mname.clone(), default_set);
-                    }
-                }
+                    // Substitute Self -> class type in method lambda types before checking
+                    let resolved_value = Self::substitute_self_in_lambda(value, &class_type);
+                    let mty = method_checker.check_expr(&resolved_value)?;
 
-                let short_name = mname
-                    .strip_prefix(&format!("{}.", name))
-                    .unwrap_or(mname)
-                    .to_string();
-                #[allow(clippy::map_entry)]
-                if method_map.contains_key(&short_name) {
-                    // Allow duplicate if class has multiple parametric trait inclusions
-                    // (e.g., Into[Fahrenheit], Into[Kelvin] both produce into())
-                    if has_parametric_overloads {
-                        let existing = method_map
-                            .remove(&short_name)
-                            .expect("invariant: contains_key checked above");
-                        let overloads = overloaded_methods.entry(short_name.clone()).or_default();
-                        if overloads.is_empty() {
-                            overloads.push(existing);
+                    // Register method defaults for call-site resolution
+                    if let ast::Expr::Lambda {
+                        params: lp,
+                        defaults: ld,
+                        ..
+                    } = value
+                    {
+                        let mut default_set = std::collections::HashSet::new();
+                        for (i, d) in ld.iter().enumerate() {
+                            if d.is_some()
+                                && let Some((pname, _)) = lp.get(i)
+                            {
+                                default_set.insert(pname.clone());
+                            }
                         }
-                        overloads.push(mty);
-                    } else {
-                        return Err(Diagnostic::error(format!(
-                            "Duplicate method '{}' in class '{}'",
-                            short_name, name
-                        ))
-                        .with_code("E014")
-                        .with_label(m.span(), "duplicate method"));
+                        if !default_set.is_empty() {
+                            // Use the qualified name (e.g., "Calc.add")
+                            self.default_params.insert(mname.clone(), default_set);
+                        }
                     }
-                } else if overloaded_methods.contains_key(&short_name) {
-                    // Already moved to overloaded — add another
-                    overloaded_methods
-                        .get_mut(&short_name)
-                        .expect("invariant: contains_key checked above")
-                        .push(mty);
+
+                    let short_name = mname
+                        .strip_prefix(&format!("{}.", name))
+                        .unwrap_or(mname)
+                        .to_string();
+                    #[allow(clippy::map_entry)]
+                    if method_map.contains_key(&short_name) {
+                        // Allow duplicate if class has multiple parametric trait inclusions
+                        // (e.g., Into[Fahrenheit], Into[Kelvin] both produce into())
+                        if has_parametric_overloads {
+                            let existing = method_map
+                                .remove(&short_name)
+                                .expect("invariant: contains_key checked above");
+                            let overloads =
+                                overloaded_methods.entry(short_name.clone()).or_default();
+                            if overloads.is_empty() {
+                                overloads.push(existing);
+                            }
+                            overloads.push(mty);
+                        } else {
+                            return Err(Diagnostic::error(format!(
+                                "Duplicate method '{}' in class '{}'",
+                                short_name, name
+                            ))
+                            .with_code("E014")
+                            .with_label(m.span(), "duplicate method"));
+                        }
+                    } else if overloaded_methods.contains_key(&short_name) {
+                        // Already moved to overloaded — add another
+                        overloaded_methods
+                            .get_mut(&short_name)
+                            .expect("invariant: contains_key checked above")
+                            .push(mty);
+                    } else {
+                        method_map.insert(short_name, mty);
+                    }
                 } else {
-                    method_map.insert(short_name, mty);
+                    return Err(Diagnostic::error(format!(
+                        "Unexpected stmt in class methods: {:?}",
+                        m
+                    ))
+                    .with_code("E014")
+                    .with_label(m.span(), "expected method definition"));
                 }
-            } else {
-                return Err(Diagnostic::error(format!(
-                    "Unexpected stmt in class methods: {:?}",
-                    m
-                ))
-                .with_code("E014")
-                .with_label(m.span(), "expected method definition"));
             }
-        }
+            Ok(())
+        })();
+
+        // Always restore parent env, then propagate any error
+        self.restore_from_child(method_checker);
+        methods_result?;
 
         let includes_refs = includes.clone().unwrap_or_default();
 

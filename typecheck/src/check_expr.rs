@@ -388,7 +388,7 @@ impl TypeChecker {
                     ast::TypeConstraint::Extends(class_name) => {
                         extends = Some(class_name.clone());
                         // Inherit methods and includes from parent class
-                        if let Some(parent_info) = self.env.get_class(class_name) {
+                        if let Some(parent_info) = sub.env.get_class(class_name) {
                             for (mname, mty) in &parent_info.methods {
                                 methods.insert(mname.clone(), mty.clone());
                             }
@@ -404,7 +404,7 @@ impl TypeChecker {
                             includes.push(trait_name.clone());
                         }
                         // Add trait methods to the virtual class
-                        if let Some(trait_info) = self.env.get_trait(trait_name) {
+                        if let Some(trait_info) = sub.env.get_trait(trait_name) {
                             for (mname, mty) in &trait_info.methods {
                                 methods.insert(mname.clone(), mty.clone());
                             }
@@ -437,13 +437,12 @@ impl TypeChecker {
 
         let is_abstract = body.is_empty();
 
-        let (mut sub, last) = Self::check_lambda_body(sub, body, ret_type, params, is_abstract)?;
+        let body_result = Self::check_lambda_body(&mut sub, body, ret_type);
 
         // If ret_type is Inferred, use the actual body result type
-        let effective_ret = if *ret_type == Type::Inferred {
-            last.clone()
-        } else {
-            ret_type.clone()
+        let effective_ret = match &body_result {
+            Ok(last) if *ret_type == Type::Inferred => last.clone(),
+            _ => ret_type.clone(),
         };
 
         // Must-consume check: emit E027 for any Task[T] binding not consumed
@@ -461,11 +460,11 @@ impl TypeChecker {
                     );
                 }
             }
-            // Propagate diagnostics and type_table entries to parent
-            self.diagnostics
-                .extend(std::mem::take(&mut sub.diagnostics));
-            self.type_table.extend(std::mem::take(&mut sub.type_table));
         }
+
+        // Always restore parent env, then propagate any error
+        self.restore_from_child(sub);
+        body_result?;
 
         // Build the Function type. Convert inferred type params from Custom to TypeVar.
         let (final_params, final_ret) = if inferred_type_params.is_empty() {
@@ -499,17 +498,14 @@ impl TypeChecker {
     /// Pre-scans for empty list variables that get .push() calls and pre-promotes them,
     /// so all usages (including those before the .push()) see the correct element type.
     fn check_lambda_body(
-        mut sub: TypeChecker,
+        sub: &mut TypeChecker,
         body: &[ast::Stmt],
         ret_type: &Type,
-        _params: &[(String, Type)],
-        _is_abstract: bool,
-    ) -> Result<(TypeChecker, Type), Diagnostic> {
+    ) -> Result<Type, Diagnostic> {
         // Pre-scan: find `let x = []` and look for x.push() calls to infer element types.
-        Self::prescan_nil_list_promotions(&mut sub, body);
+        Self::prescan_nil_list_promotions(sub, body);
 
-        let last = Self::check_lambda_body_inner(&mut sub, body, ret_type)?;
-        Ok((sub, last))
+        Self::check_lambda_body_inner(sub, body, ret_type)
     }
 
     /// Pre-scan body for empty list variables that receive .push() calls.
@@ -1647,9 +1643,9 @@ impl TypeChecker {
                 };
                 sub.warn_if_shadowed(name, *pat_span);
                 sub.env.set_var(name.clone(), bind_ty);
-                let result = sub.check_expr(value)?;
-                self.diagnostics.extend(sub.diagnostics);
-                result
+                let result = sub.check_expr(value);
+                self.restore_from_child(sub);
+                result?
             } else {
                 self.check_expr(value)?
             };

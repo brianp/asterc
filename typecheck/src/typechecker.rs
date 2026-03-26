@@ -441,10 +441,12 @@ impl TypeChecker {
     }
 
     /// Create a child TypeChecker that inherits context flags and a child scope.
-    /// Uses clone — prefer `with_child_scope` for better performance.
-    pub(crate) fn child_checker(&self) -> TypeChecker {
+    /// Moves the parent env into the child (zero-copy). The caller MUST call
+    /// `restore_from_child` when the child checker is no longer needed to
+    /// move the env back.
+    pub(crate) fn child_checker(&mut self) -> TypeChecker {
         TypeChecker {
-            env: self.env.child(),
+            env: std::mem::take(&mut self.env).into_child(),
             loop_depth: self.loop_depth,
             expected_return_type: self.expected_return_type.clone(),
             current_function: self.current_function.clone(),
@@ -463,6 +465,17 @@ impl TypeChecker {
             last_call_suspendable: false,
             nil_promotions: HashMap::new(),
         }
+    }
+
+    /// Restore the parent env from a child checker after it is done.
+    /// Merges diagnostics and type_table, then recovers the parent env.
+    pub(crate) fn restore_from_child(&mut self, mut child: TypeChecker) {
+        self.diagnostics
+            .extend(std::mem::take(&mut child.diagnostics));
+        self.type_table
+            .extend(std::mem::take(&mut child.type_table));
+        child.env.exit_scope();
+        self.env = child.env;
     }
 
     /// Emit a W003 warning if `name` already exists in a parent scope.

@@ -190,9 +190,9 @@ impl TypeChecker {
                     sub.warn_if_shadowed(var, *span);
                     sub.env
                         .set_var(var.clone(), Type::Custom(error_type.clone(), Vec::new()));
-                    let result = sub.check_expr(value)?;
-                    self.diagnostics.extend(sub.diagnostics);
-                    result
+                    let result = sub.check_expr(value);
+                    self.restore_from_child(sub);
+                    result?
                 }
                 ast::ErrorCatchPattern::Wildcard(_) => self.check_expr(value)?,
             };

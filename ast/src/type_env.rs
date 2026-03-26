@@ -90,15 +90,17 @@ impl TypeEnv {
         }
     }
 
-    /// Create a child scope. O(1) — Rc clone, no HashMap cloning.
-    pub fn child(&self) -> TypeEnv {
+    /// Create a child scope by consuming this environment. O(1), no HashMap cloning.
+    /// The parent data is moved (not cloned) into the child's parent chain,
+    /// so no Rc refcounts are bumped and subsequent mutations avoid deep copies.
+    pub fn into_child(self) -> TypeEnv {
         TypeEnv {
             variables: Rc::new(HashMap::new()),
             classes: Rc::new(HashMap::new()),
             traits: Rc::new(HashMap::new()),
             enums: Rc::new(HashMap::new()),
             namespaces: Rc::new(HashMap::new()),
-            parent: Some(Rc::new(self.clone())),
+            parent: Some(Rc::new(self)),
         }
     }
 
@@ -232,7 +234,7 @@ mod tests {
     fn child_inherits_parent_var() {
         let mut parent = TypeEnv::new();
         parent.set_var("x".into(), Type::Int);
-        let child = parent.child();
+        let child = parent.into_child();
         assert_eq!(child.get_var("x"), Some(&Type::Int));
     }
 
@@ -240,7 +242,7 @@ mod tests {
     fn child_can_shadow_var() {
         let mut parent = TypeEnv::new();
         parent.set_var("x".into(), Type::Int);
-        let mut child = parent.child();
+        let mut child = parent.into_child();
         child.set_var("x".into(), Type::Float);
         assert_eq!(child.get_var("x"), Some(&Type::Float));
     }
@@ -259,7 +261,7 @@ mod tests {
         let mut parent = TypeEnv::new();
         let info = dummy_class("Foo");
         parent.set_class("Foo".into(), info.clone());
-        let child = parent.child();
+        let child = parent.into_child();
         assert_eq!(child.get_class("Foo"), Some(&info));
     }
 
@@ -268,7 +270,7 @@ mod tests {
         let mut parent = TypeEnv::new();
         let info_parent = dummy_class("Foo");
         parent.set_class("Foo".into(), info_parent);
-        let mut child = parent.child();
+        let mut child = parent.into_child();
         let info_child = dummy_class("FooChild");
         child.set_class("Foo".into(), info_child.clone());
         assert_eq!(child.get_class("Foo"), Some(&info_child));
@@ -297,7 +299,7 @@ mod tests {
         let mut parent = TypeEnv::new();
         parent.set_var("x".into(), Type::Int);
         parent.set_var("y".into(), Type::Float);
-        let child = parent.child();
+        let child = parent.into_child();
         // Parent is shared via Rc, not cloned deeply
         assert!(child.parent.is_some());
         assert_eq!(child.get_var("x"), Some(&Type::Int));
@@ -315,5 +317,113 @@ mod tests {
         env.exit_scope();
         assert_eq!(env.get_var("x"), Some(&Type::Int));
         assert_eq!(env.get_var("y"), None); // gone after exit
+    }
+
+    #[test]
+    fn into_child_does_not_bump_refcount() {
+        let mut parent = TypeEnv::new();
+        parent.set_var("x".into(), Type::Int);
+        parent.set_var("y".into(), Type::Float);
+
+        // Parent's variables Rc has strong count 1
+        assert_eq!(Rc::strong_count(&parent.variables), 1);
+
+        let child = parent.into_child();
+
+        // The moved parent inside child.parent should still have refcount 1
+        // (moved, not cloned — no Rc refcount bump)
+        let parent_in_child = child.parent.as_ref().unwrap();
+        assert_eq!(Rc::strong_count(&parent_in_child.variables), 1);
+
+        // Child can look up parent's vars through the chain
+        assert_eq!(child.get_var("x"), Some(&Type::Int));
+        assert_eq!(child.get_var("y"), Some(&Type::Float));
+    }
+
+    #[test]
+    fn into_child_roundtrip_via_exit_scope() {
+        let mut parent = TypeEnv::new();
+        parent.set_var("x".into(), Type::Int);
+        parent.set_class("Foo".into(), dummy_class("Foo"));
+
+        let mut child = parent.into_child();
+        child.set_var("y".into(), Type::Float);
+
+        // Child sees both parent and local bindings
+        assert_eq!(child.get_var("x"), Some(&Type::Int));
+        assert_eq!(child.get_var("y"), Some(&Type::Float));
+        assert_eq!(child.get_class("Foo"), Some(&dummy_class("Foo")));
+
+        // exit_scope restores parent state
+        child.exit_scope();
+        assert_eq!(child.get_var("x"), Some(&Type::Int));
+        assert_eq!(child.get_var("y"), None); // child local gone
+        assert_eq!(child.get_class("Foo"), Some(&dummy_class("Foo")));
+    }
+
+    #[test]
+    fn into_child_parent_mutation_no_deep_clone() {
+        let mut env = TypeEnv::new();
+        env.set_var("a".into(), Type::Int);
+        env.set_var("b".into(), Type::Float);
+
+        // Move into child then immediately restore parent
+        let mut child = env.into_child();
+        child.exit_scope();
+
+        // After roundtrip, Rc should have refcount 1 (no lingering clones)
+        assert_eq!(Rc::strong_count(&child.variables), 1);
+
+        // Mutation should NOT trigger deep clone (refcount is 1)
+        child.set_var("c".into(), Type::String);
+        assert_eq!(child.get_var("a"), Some(&Type::Int));
+        assert_eq!(child.get_var("c"), Some(&Type::String));
+    }
+
+    #[test]
+    fn into_child_shadowing_works() {
+        let mut parent = TypeEnv::new();
+        parent.set_var("x".into(), Type::Int);
+
+        let mut child = parent.into_child();
+        child.set_var("x".into(), Type::Float);
+
+        // Child sees shadowed value
+        assert_eq!(child.get_var("x"), Some(&Type::Float));
+
+        // After exit, original value is restored
+        child.exit_scope();
+        assert_eq!(child.get_var("x"), Some(&Type::Int));
+    }
+
+    #[test]
+    fn into_child_multi_level_nesting() {
+        let mut root = TypeEnv::new();
+        root.set_var("a".into(), Type::Int);
+
+        let mut child1 = root.into_child();
+        child1.set_var("b".into(), Type::Float);
+
+        let mut child2 = child1.into_child();
+        child2.set_var("c".into(), Type::String);
+
+        // child2 sees all three levels
+        assert_eq!(child2.get_var("a"), Some(&Type::Int));
+        assert_eq!(child2.get_var("b"), Some(&Type::Float));
+        assert_eq!(child2.get_var("c"), Some(&Type::String));
+
+        // No refcount bumps at any level
+        let p1 = child2.parent.as_ref().unwrap();
+        assert_eq!(Rc::strong_count(&p1.variables), 1);
+        let p0 = p1.parent.as_ref().unwrap();
+        assert_eq!(Rc::strong_count(&p0.variables), 1);
+
+        // Unwind back to root
+        child2.exit_scope();
+        assert_eq!(child2.get_var("b"), Some(&Type::Float));
+        assert_eq!(child2.get_var("c"), None);
+        child2.exit_scope();
+        assert_eq!(child2.get_var("a"), Some(&Type::Int));
+        assert_eq!(child2.get_var("b"), None);
     }
 }
