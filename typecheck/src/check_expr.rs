@@ -1193,6 +1193,23 @@ impl TypeChecker {
                                 format!("{} requires element type to include Ord", field),
                             ));
                         }
+                        // Check Eq constraint for unique
+                        if field == "unique"
+                            && info.includes.contains(&"Iterable".to_string())
+                            && let Some(elem_ty) = Self::get_iterable_element_type_from_class(info)
+                            && !self.type_includes_eq(&elem_ty)
+                        {
+                            return Err(Diagnostic::error(format!(
+                                "Cannot call 'unique()' on '{}': element type {} does not include Eq. \
+                                         Add 'includes Eq' to the element type to enable unique",
+                                class_name, elem_ty
+                            ))
+                            .with_code("E025")
+                            .with_label(
+                                object.span(),
+                                "unique requires element type to include Eq".to_string(),
+                            ));
+                        }
                         let resolved = Self::substitute_typevars(t, &bindings);
                         return Ok(resolved);
                     }
@@ -1697,6 +1714,17 @@ impl TypeChecker {
             .with_label(object.span(), format!("{} requires Ord", field)));
         }
 
+        // Eq-gated methods: check constraint before returning type
+        if field == "unique" && !self.type_includes_eq(inner) {
+            return Err(Diagnostic::error(format!(
+                "Cannot call 'unique()': element type {} does not include Eq. \
+                 Add 'includes Eq' to the element type to enable unique",
+                inner
+            ))
+            .with_code("E025")
+            .with_label(object.span(), "unique requires Eq".to_string()));
+        }
+
         // Look up from shared Iterable vocabulary definitions
         let vocab = crate::check_class::iterable_vocabulary_methods(inner);
         for (name, ty) in &vocab {
@@ -1782,6 +1810,17 @@ impl TypeChecker {
             ))
             .with_code("E025")
             .with_label(object.span(), format!("{} requires Ord", field)));
+        }
+
+        // Eq-gated methods
+        if field == "unique" && !self.type_includes_eq(inner) {
+            return Err(Diagnostic::error(format!(
+                "Cannot call 'unique()': element type {} does not include Eq. \
+                 Add 'includes Eq' to the element type to enable unique",
+                inner
+            ))
+            .with_code("E025")
+            .with_label(object.span(), "unique requires Eq".to_string()));
         }
 
         // Iterable vocabulary methods

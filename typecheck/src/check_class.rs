@@ -806,7 +806,7 @@ impl TypeChecker {
     }
 }
 
-/// Returns the 13 Iterable vocabulary method signatures for a given element type.
+/// Returns the 14 Iterable vocabulary method signatures for a given element type.
 /// Used by both List[T] builtins and classes that include Iterable.
 pub(crate) fn iterable_vocabulary_methods(elem_ty: &Type) -> Vec<(String, Type)> {
     let u_var = || Type::TypeVar("U".into(), vec![]);
@@ -969,6 +969,17 @@ pub(crate) fn iterable_vocabulary_methods(elem_ty: &Type) -> Vec<(String, Type)>
         // sort: () -> List[T] (requires T includes Ord -- checked at call site)
         (
             "sort".into(),
+            Type::Function {
+                param_names: vec![],
+                params: vec![],
+                ret: Box::new(Type::List(Box::new(elem_ty.clone()))),
+                throws: None,
+                suspendable: false,
+            },
+        ),
+        // unique: () -> List[T] (requires T includes Eq -- checked at call site)
+        (
+            "unique".into(),
             Type::Function {
                 param_names: vec![],
                 params: vec![],

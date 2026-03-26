@@ -235,6 +235,117 @@ let list = nums.to_list()
     );
 }
 
+// ─── Conditional: unique requires Eq ─────────────────────────────
+
+#[test]
+fn iterable_unique_with_eq() {
+    common::check_ok(
+        r#"class Numbers includes Iterable
+  items: List[Int]
+
+  def each(f: Fn(Int) -> Void) -> Void
+    items.each(f: f)
+
+let nums = Numbers(items: [1, 2, 2, 3])
+let deduped = nums.unique()
+"#,
+    );
+}
+
+#[test]
+fn iterable_unique_without_eq_error() {
+    let err = common::check_err(
+        r#"class Thing
+  label: String
+
+class Things includes Iterable
+  items: List[Thing]
+
+  def each(f: Fn(Thing) -> Void) -> Void
+    items.each(f: f)
+
+let things = Things(items: [])
+let deduped = things.unique()
+"#,
+    );
+    assert!(
+        err.contains("Eq") || err.contains("unique"),
+        "Expected Eq requirement error, got: {}",
+        err
+    );
+}
+
+#[test]
+fn iterable_unique_custom_eq_type() {
+    common::check_ok(
+        r#"class Score includes Eq
+  value: Int
+
+class Scores includes Iterable
+  items: List[Score]
+
+  def each(f: Fn(Score) -> Void) -> Void
+    items.each(f: f)
+
+let scores = Scores(items: [])
+let deduped = scores.unique()
+"#,
+    );
+}
+
+#[test]
+fn list_unique() {
+    common::check_ok(
+        r#"let nums = [1, 2, 2, 3]
+let deduped = nums.unique()
+"#,
+    );
+}
+
+#[test]
+fn list_unique_strings() {
+    common::check_ok(
+        r#"let words = ["hello", "world", "hello"]
+let deduped = words.unique()
+"#,
+    );
+}
+
+#[test]
+fn iterable_unique_returns_list() {
+    // unique() should return List[T], verifiable by chaining list methods
+    common::check_ok(
+        r#"class Numbers includes Iterable
+  items: List[Int]
+
+  def each(f: Fn(Int) -> Void) -> Void
+    items.each(f: f)
+
+let nums = Numbers(items: [1, 2, 2, 3])
+let result = nums.unique().map(f: -> x: x * 2)
+"#,
+    );
+}
+
+#[test]
+fn iterable_unique_with_ord_type() {
+    // Ord implies Eq, so unique should work on Ord types too
+    common::check_ok(
+        r#"class Score includes Ord
+  value: Int
+
+class Scores includes Iterable
+  items: List[Score]
+
+  def each(f: Fn(Score) -> Void) -> Void
+    items.each(f: f)
+
+let scores = Scores(items: [])
+let deduped = scores.unique()
+"#,
+    );
+}
+
 // ─── Conditional: min / max / sort require Ord ───────────────────────
 
 #[test]
