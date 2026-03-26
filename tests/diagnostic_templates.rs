@@ -419,6 +419,7 @@ fn all_parse_error_codes_have_variants() {
             found: "".into(),
         }),
         DiagnosticTemplate::ExpectedIndentedBlock(ExpectedIndentedBlock),
+        DiagnosticTemplate::NestingTooDeep(NestingTooDeep),
     ];
 }
 
@@ -519,6 +520,7 @@ fn all_template_codes_are_unique() {
             found: "".into(),
         }),
         DiagnosticTemplate::ExpectedIndentedBlock(ExpectedIndentedBlock),
+        DiagnosticTemplate::NestingTooDeep(NestingTooDeep),
         DiagnosticTemplate::ModuleNotFound(ModuleNotFound { name: "".into() }),
         DiagnosticTemplate::SymbolNotExported(SymbolNotExported {
             symbol: "".into(),

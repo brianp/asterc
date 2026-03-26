@@ -92,6 +92,22 @@ impl Parser {
         }
     }
 
+    /// Advance one token and expect it to be an identifier.
+    /// Returns `(name, span)` on success, or a diagnostic on failure.
+    pub(crate) fn expect_ident(&mut self, context: &str) -> Result<(String, Span), Diagnostic> {
+        let tok = self.advance();
+        match tok.kind {
+            TokenKind::Ident(ref n) => Ok((n.clone(), tok.span())),
+            ref t => Err(
+                Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                    expected: context.to_string(),
+                    found: format!("`{}`", t),
+                }))
+                .with_label(tok.span(), "expected identifier"),
+            ),
+        }
+    }
+
     /// Byte offset of the current token's start — use to begin a span.
     pub(crate) fn start_span(&self) -> usize {
         self.peek().start
@@ -115,7 +131,7 @@ impl Parser {
         if self.depth > MAX_NESTING_DEPTH {
             self.depth -= 1;
             return Err(Diagnostic::from_template(
-                DiagnosticTemplate::ExpectedIndentedBlock(ExpectedIndentedBlock),
+                DiagnosticTemplate::NestingTooDeep(NestingTooDeep),
             ));
         }
         let result = self.parse_block_inner();
@@ -229,40 +245,13 @@ impl Parser {
         let mut path = Vec::new();
 
         // First segment
-        let name_tok = self.advance();
-        let name = match &name_tok.kind {
-            TokenKind::Ident(n) => n.clone(),
-            t => {
-                return Err(
-                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
-                        UnexpectedToken {
-                            expected: "module name after 'use'".to_string(),
-                            found: format!("`{}`", t),
-                        },
-                    ))
-                    .with_label(name_tok.span(), "expected module name"),
-                );
-            }
-        };
+        let (name, _) = self.expect_ident("module name after 'use'")?;
         path.push(name);
 
         // Additional path segments: use std/http/thing
         while self.at(&TokenKind::Slash) {
             self.advance();
-            let seg_tok = self.advance();
-            let seg =
-                match &seg_tok.kind {
-                    TokenKind::Ident(n) => n.clone(),
-                    t => {
-                        return Err(Diagnostic::from_template(
-                            DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                                expected: "module name after '/'".to_string(),
-                                found: format!("`{}`", t),
-                            }),
-                        )
-                        .with_label(seg_tok.span(), "expected module name"));
-                    }
-                };
+            let (seg, _) = self.expect_ident("module name after '/'")?;
             path.push(seg);
         }
 
@@ -272,19 +261,7 @@ impl Parser {
             let mut names = Vec::new();
             if !self.at(&TokenKind::RBrace) {
                 loop {
-                    let n_tok = self.advance();
-                    let n = match &n_tok.kind {
-                        TokenKind::Ident(n) => n.clone(),
-                        t => {
-                            return Err(Diagnostic::from_template(
-                                DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                                    expected: "identifier in use list".to_string(),
-                                    found: format!("`{}`", t),
-                                }),
-                            )
-                            .with_label(n_tok.span(), "expected identifier"));
-                        }
-                    };
+                    let (n, _) = self.expect_ident("identifier in use list")?;
                     names.push(n);
                     if self.at(&TokenKind::Comma) {
                         self.advance();
@@ -302,20 +279,7 @@ impl Parser {
         // Optional alias: as hs
         let alias = if self.at(&TokenKind::As) {
             self.advance();
-            let a_tok = self.advance();
-            let a =
-                match &a_tok.kind {
-                    TokenKind::Ident(n) => n.clone(),
-                    t => {
-                        return Err(Diagnostic::from_template(
-                            DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                                expected: "alias name after 'as'".to_string(),
-                                found: format!("`{}`", t),
-                            }),
-                        )
-                        .with_label(a_tok.span(), "expected identifier"));
-                    }
-                };
+            let (a, _) = self.expect_ident("alias name after 'as'")?;
             Some(a)
         } else {
             None
@@ -402,21 +366,7 @@ impl Parser {
         use TokenKind::*;
         let start = self.start_span();
         self.expect(For)?;
-        let var_tok = self.advance();
-        let var = match &var_tok.kind {
-            Ident(n) => n.clone(),
-            t => {
-                return Err(
-                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
-                        UnexpectedToken {
-                            expected: "variable name after 'for'".to_string(),
-                            found: format!("`{}`", t),
-                        },
-                    ))
-                    .with_label(var_tok.span(), "expected loop variable name"),
-                );
-            }
-        };
+        let (var, _) = self.expect_ident("variable name after 'for'")?;
         self.expect(In)?;
         let iter = self.parse_expr()?;
         let body = self.parse_block()?;
@@ -432,18 +382,7 @@ impl Parser {
         let start = self.start_span();
         self.expect(TokenKind::Const)?;
 
-        let name_tok = self.advance();
-        let name = if let TokenKind::Ident(s) = name_tok.kind {
-            s
-        } else {
-            return Err(
-                Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                    expected: format!("identifier after const at line {}", name_tok.line),
-                    found: format!("`{}`", name_tok.kind),
-                }))
-                .with_label(name_tok.span(), "expected constant name"),
-            );
-        };
+        let (name, _) = self.expect_ident("constant name")?;
 
         let type_ann = if self.at(&TokenKind::Colon) {
             self.advance();
@@ -468,18 +407,7 @@ impl Parser {
         let start = self.start_span();
         self.expect(TokenKind::Let)?;
 
-        let name_tok = self.advance();
-        let name = if let TokenKind::Ident(s) = name_tok.kind {
-            s
-        } else {
-            return Err(
-                Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                    expected: format!("identifier after let at line {}", name_tok.line),
-                    found: format!("`{}`", name_tok.kind),
-                }))
-                .with_label(name_tok.span(), "expected variable name"),
-            );
-        };
+        let (name, _) = self.expect_ident("variable name")?;
 
         let type_ann = if self.at(&TokenKind::Colon) {
             self.advance();

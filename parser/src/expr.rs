@@ -82,7 +82,7 @@ impl Parser {
         if self.depth > MAX_NESTING_DEPTH {
             self.depth -= 1;
             return Err(Diagnostic::from_template(
-                DiagnosticTemplate::ExpectedIndentedBlock(ExpectedIndentedBlock),
+                DiagnosticTemplate::NestingTooDeep(NestingTooDeep),
             ));
         }
         while self.at(&TokenKind::Newline) {
@@ -187,7 +187,7 @@ impl Parser {
         if self.depth > MAX_NESTING_DEPTH {
             self.depth -= 1;
             return Err(Diagnostic::from_template(
-                DiagnosticTemplate::ExpectedIndentedBlock(ExpectedIndentedBlock),
+                DiagnosticTemplate::NestingTooDeep(NestingTooDeep),
             ));
         }
         let result = self.parse_unary_inner();
@@ -335,46 +335,34 @@ impl Parser {
                 break;
             }
             let arm_start = self.start_span();
-            let pattern = match &self.peek().kind {
-                Ident(name) if name == "_" => {
-                    self.advance();
-                    ErrorCatchPattern::Wildcard(self.span_from(arm_start))
-                }
-                Ident(type_name) => {
-                    let tname = type_name.clone();
-                    self.advance();
-                    let var_tok = self.advance();
-                    let var = match &var_tok.kind {
-                        Ident(v) => v.clone(),
-                        t => {
-                            return Err(Diagnostic::from_template(
-                                DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                                    expected: format!("variable name after error type '{}'", tname),
-                                    found: format!("`{}`", t),
-                                }),
-                            )
-                            .with_label(var_tok.span(), "expected variable name"));
-                        }
-                    };
-                    ErrorCatchPattern::Typed {
-                        error_type: tname,
-                        var,
-                        span: self.span_from(arm_start),
+            let pattern =
+                match &self.peek().kind {
+                    Ident(name) if name == "_" => {
+                        self.advance();
+                        ErrorCatchPattern::Wildcard(self.span_from(arm_start))
                     }
-                }
-                t => {
-                    let tok = self.peek();
-                    return Err(
-                        Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
-                            UnexpectedToken {
+                    Ident(type_name) => {
+                        let tname = type_name.clone();
+                        self.advance();
+                        let (var, _) = self
+                            .expect_ident(&format!("variable name after error type '{}'", tname))?;
+                        ErrorCatchPattern::Typed {
+                            error_type: tname,
+                            var,
+                            span: self.span_from(arm_start),
+                        }
+                    }
+                    t => {
+                        let tok = self.peek();
+                        return Err(Diagnostic::from_template(
+                            DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
                                 expected: "error type or '_' in catch arm".to_string(),
                                 found: format!("`{}`", t),
-                            },
-                        ))
-                        .with_label(tok.span(), "unexpected token"),
-                    );
-                }
-            };
+                            }),
+                        )
+                        .with_label(tok.span(), "unexpected token"));
+                    }
+                };
             self.expect(Arrow)?;
             let value = self.parse_expr()?;
             arms.push((pattern, value));
@@ -560,7 +548,7 @@ impl Parser {
             LParen => {
                 if self.depth >= MAX_NESTING_DEPTH {
                     return Err(Diagnostic::from_template(
-                        DiagnosticTemplate::ExpectedIndentedBlock(ExpectedIndentedBlock),
+                        DiagnosticTemplate::NestingTooDeep(NestingTooDeep),
                     ));
                 }
                 self.advance();
@@ -676,43 +664,27 @@ impl Parser {
             }
             Async => {
                 self.advance();
-                let func_expr = self.parse_postfix()?;
-                match func_expr {
-                    Expr::Call { func, args, .. } => Ok(Expr::AsyncCall {
-                        func,
-                        args,
-                        span: self.span_from(start),
-                    }),
-                    _ => Err(
-                        Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
-                            UnexpectedToken {
-                                expected: "function call after 'async'".to_string(),
-                                found: "non-call expression".to_string(),
-                            },
-                        ))
-                        .with_label(self.span_from(start), "expected a call expression"),
-                    ),
-                }
+                let Expr::Call { func, args, .. } = self.parse_keyword_call("async", start)?
+                else {
+                    unreachable!()
+                };
+                Ok(Expr::AsyncCall {
+                    func,
+                    args,
+                    span: self.span_from(start),
+                })
             }
             Blocking => {
                 self.advance();
-                let func_expr = self.parse_postfix()?;
-                match func_expr {
-                    Expr::Call { func, args, .. } => Ok(Expr::BlockingCall {
-                        func,
-                        args,
-                        span: self.span_from(start),
-                    }),
-                    _ => Err(
-                        Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
-                            UnexpectedToken {
-                                expected: "function call after 'blocking'".to_string(),
-                                found: "non-call expression".to_string(),
-                            },
-                        ))
-                        .with_label(self.span_from(start), "expected a call expression"),
-                    ),
-                }
+                let Expr::Call { func, args, .. } = self.parse_keyword_call("blocking", start)?
+                else {
+                    unreachable!()
+                };
+                Ok(Expr::BlockingCall {
+                    func,
+                    args,
+                    span: self.span_from(start),
+                })
             }
             Detached => {
                 self.advance();
@@ -729,23 +701,16 @@ impl Parser {
                     );
                 }
                 self.advance();
-                let func_expr = self.parse_postfix()?;
-                match func_expr {
-                    Expr::Call { func, args, .. } => Ok(Expr::DetachedCall {
-                        func,
-                        args,
-                        span: self.span_from(start),
-                    }),
-                    _ => Err(
-                        Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
-                            UnexpectedToken {
-                                expected: "function call after 'detached async'".to_string(),
-                                found: "non-call expression".to_string(),
-                            },
-                        ))
-                        .with_label(self.span_from(start), "expected a call expression"),
-                    ),
-                }
+                let Expr::Call { func, args, .. } =
+                    self.parse_keyword_call("detached async", start)?
+                else {
+                    unreachable!()
+                };
+                Ok(Expr::DetachedCall {
+                    func,
+                    args,
+                    span: self.span_from(start),
+                })
             }
             Throw => {
                 self.advance();
@@ -764,6 +729,24 @@ impl Parser {
                     .with_label(tok.span(), "not expected here"),
                 )
             }
+        }
+    }
+
+    /// Parse a postfix expression and require it to be a function call.
+    /// Used for `async`, `blocking`, and `detached async` keyword calls.
+    /// Returns the `Expr::Call` on success (callers destructure it).
+    fn parse_keyword_call(&mut self, keyword: &str, start: usize) -> Result<Expr, Diagnostic> {
+        let func_expr = self.parse_postfix()?;
+        if matches!(func_expr, Expr::Call { .. }) {
+            Ok(func_expr)
+        } else {
+            Err(
+                Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                    expected: format!("function call after '{}'", keyword),
+                    found: "non-call expression".to_string(),
+                }))
+                .with_label(self.span_from(start), "expected a call expression"),
+            )
         }
     }
 
@@ -860,20 +843,7 @@ impl Parser {
         // Parse parameter names
         let mut params = Vec::new();
         loop {
-            let ptok = self.advance();
-            let pname =
-                match &ptok.kind {
-                    Ident(n) => n.clone(),
-                    t => {
-                        return Err(Diagnostic::from_template(
-                            DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                                expected: "parameter name".to_string(),
-                                found: format!("`{}`", t),
-                            }),
-                        )
-                        .with_label(ptok.span(), "expected identifier"));
-                    }
-                };
+            let (pname, _) = self.expect_ident("parameter name")?;
             params.push((pname, ast::Type::Inferred));
             if self.at(&Comma) {
                 self.advance();

@@ -15,20 +15,7 @@ impl Parser {
     ) -> Result<Vec<String>, Diagnostic> {
         let mut names = Vec::new();
         loop {
-            let tok = self.advance();
-            let name =
-                match &tok.kind {
-                    TokenKind::Ident(n) => n.clone(),
-                    t => {
-                        return Err(Diagnostic::from_template(
-                            DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                                expected: format!("{} name", context),
-                                found: format!("`{}`", t),
-                            }),
-                        )
-                        .with_label(tok.span(), "expected identifier"));
-                    }
-                };
+            let (name, _) = self.expect_ident(&format!("{} name", context))?;
             names.push(name);
             if self.at(&TokenKind::Comma) {
                 self.advance();
@@ -47,20 +34,7 @@ impl Parser {
     ) -> Result<Vec<(String, Vec<ast::Type>)>, Diagnostic> {
         let mut refs = Vec::new();
         loop {
-            let tok = self.advance();
-            let name =
-                match &tok.kind {
-                    TokenKind::Ident(n) => n.clone(),
-                    t => {
-                        return Err(Diagnostic::from_template(
-                            DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                                expected: "trait name".to_string(),
-                                found: format!("`{}`", t),
-                            }),
-                        )
-                        .with_label(tok.span(), "expected trait name"));
-                    }
-                };
+            let (name, _) = self.expect_ident("trait name")?;
             // Optional type arguments: From[Int] or Convert[A, B]
             let type_args = if self.at(&TokenKind::LBracket) {
                 self.advance();
@@ -110,21 +84,7 @@ impl Parser {
         use TokenKind::*;
         let start = self.start_span();
         self.expect(Enum)?;
-        let name_tok = self.advance();
-        let name = match &name_tok.kind {
-            Ident(n) => n.clone(),
-            t => {
-                return Err(
-                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
-                        UnexpectedToken {
-                            expected: "enum name".to_string(),
-                            found: format!("`{}`", t),
-                        },
-                    ))
-                    .with_label(name_tok.span(), "expected enum name"),
-                );
-            }
-        };
+        let (name, _) = self.expect_ident("enum name")?;
 
         // Optional includes: enum Color includes Eq
         let includes = if self.at(&Includes) {
@@ -170,19 +130,7 @@ impl Parser {
                         let mut fs = Vec::new();
                         if !self.at(&RParen) {
                             loop {
-                                let fname_tok = self.advance();
-                                let fname = match &fname_tok.kind {
-                                    Ident(n) => n.clone(),
-                                    t => {
-                                        return Err(Diagnostic::from_template(
-                                            DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                                                expected: "field name in enum variant".to_string(),
-                                                found: format!("`{}`", t),
-                                            }),
-                                        )
-                                        .with_label(fname_tok.span(), "expected field name"));
-                                    }
-                                };
+                                let (fname, _) = self.expect_ident("field name in enum variant")?;
                                 self.expect(Colon)?;
                                 let ftype = self.parse_type()?;
                                 fs.push((fname, ftype));
@@ -236,21 +184,7 @@ impl Parser {
         use TokenKind::*;
         let start = self.start_span();
         self.expect(Class)?;
-        let name_tok = self.advance();
-        let name = match &name_tok.kind {
-            Ident(n) => n.clone(),
-            t => {
-                return Err(
-                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
-                        UnexpectedToken {
-                            expected: "class name".to_string(),
-                            found: format!("`{}`", t),
-                        },
-                    ))
-                    .with_label(name_tok.span(), "expected class name"),
-                );
-            }
-        };
+        let (name, _) = self.expect_ident("class name")?;
 
         // Optional generic parameters: class Stack[T] or class Pair[A, B]
         let generic_params = if self.at(&LBracket) {
@@ -263,20 +197,7 @@ impl Parser {
         // Optional extends: class NetworkError extends Error
         let extends = if self.at(&TokenKind::Extends) {
             self.advance();
-            let parent_tok = self.advance();
-            let parent =
-                match &parent_tok.kind {
-                    Ident(n) => n.clone(),
-                    t => {
-                        return Err(Diagnostic::from_template(
-                            DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                                expected: "class name after 'extends'".to_string(),
-                                found: format!("`{}`", t),
-                            }),
-                        )
-                        .with_label(parent_tok.span(), "expected class name"));
-                    }
-                };
+            let (parent, _) = self.expect_ident("class name after 'extends'")?;
             Some(parent)
         } else {
             None
@@ -334,19 +255,7 @@ impl Parser {
                     methods.push(self.parse_class(false)?);
                 }
                 _ => {
-                    let fname_tok = self.advance();
-                    let fname = match &fname_tok.kind {
-                        Ident(n) => n.clone(),
-                        t => {
-                            return Err(Diagnostic::from_template(
-                                DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                                    expected: "field name".to_string(),
-                                    found: format!("`{}`", t),
-                                }),
-                            )
-                            .with_label(fname_tok.span(), "expected field name"));
-                        }
-                    };
+                    let (fname, _) = self.expect_ident("field name")?;
                     self.expect(Colon)?;
                     let ftype = self.parse_type()?;
                     fields.push((fname, ftype, false));
@@ -378,21 +287,7 @@ impl Parser {
         use TokenKind::*;
         let start = self.start_span();
         self.expect(Trait)?;
-        let name_tok = self.advance();
-        let name = match &name_tok.kind {
-            Ident(n) => n.clone(),
-            t => {
-                return Err(
-                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
-                        UnexpectedToken {
-                            expected: "trait name".to_string(),
-                            found: format!("`{}`", t),
-                        },
-                    ))
-                    .with_label(name_tok.span(), "expected trait name"),
-                );
-            }
-        };
+        let (name, _) = self.expect_ident("trait name")?;
 
         // Optional generic parameters: trait From[T] or trait Convert[A, B]
         let generic_params = if self.at(&LBracket) {
@@ -471,32 +366,8 @@ impl Parser {
     ) -> Result<Stmt, Diagnostic> {
         use TokenKind::*;
         let start = self.start_span();
-        if self.at(&Async) {
-            return Err(
-                Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                    expected: "def".to_string(),
-                    found: "async def".to_string(),
-                }))
-                .with_label(self.span_from(start), "remove 'async' keyword"),
-            );
-        }
-
         self.expect(Def)?;
-        let name_tok = self.advance();
-        let name = match &name_tok.kind {
-            Ident(n) => n.clone(),
-            t => {
-                return Err(
-                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
-                        UnexpectedToken {
-                            expected: "function name".to_string(),
-                            found: format!("`{}`", t),
-                        },
-                    ))
-                    .with_label(name_tok.span(), "expected function name"),
-                );
-            }
-        };
+        let (name, _) = self.expect_ident("function name")?;
 
         // Generic type parameters are inferred inline from param types (BC-5).
         // Bracket syntax [T] on functions is no longer supported (use class Box[T] for classes).
@@ -516,19 +387,7 @@ impl Parser {
             self.advance();
             if !self.at(&RParen) {
                 loop {
-                    let pname_tok = self.advance();
-                    let pname = match &pname_tok.kind {
-                        Ident(n) => n.clone(),
-                        t => {
-                            return Err(Diagnostic::from_template(
-                                DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                                    expected: "parameter name".to_string(),
-                                    found: format!("`{}`", t),
-                                }),
-                            )
-                            .with_label(pname_tok.span(), "expected parameter name"));
-                        }
-                    };
+                    let (pname, _) = self.expect_ident("parameter name")?;
                     self.expect(Colon)?;
                     let ptype = self.parse_type()?;
 
@@ -536,36 +395,12 @@ impl Parser {
                     let mut constraints = Vec::new();
                     if self.at(&Extends) {
                         self.advance();
-                        let class_tok = self.advance();
-                        let class_name = match &class_tok.kind {
-                            Ident(n) => n.clone(),
-                            t => {
-                                return Err(Diagnostic::from_template(
-                                    DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                                        expected: "class name after 'extends'".to_string(),
-                                        found: format!("`{}`", t),
-                                    }),
-                                )
-                                .with_label(class_tok.span(), "expected class name"));
-                            }
-                        };
+                        let (class_name, _) = self.expect_ident("class name after 'extends'")?;
                         constraints.push(TypeConstraint::Extends(class_name));
                     }
                     if self.at(&Includes) {
                         self.advance();
-                        let trait_tok = self.advance();
-                        let trait_name = match &trait_tok.kind {
-                            Ident(n) => n.clone(),
-                            t => {
-                                return Err(Diagnostic::from_template(
-                                    DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                                        expected: "trait name after 'includes'".to_string(),
-                                        found: format!("`{}`", t),
-                                    }),
-                                )
-                                .with_label(trait_tok.span(), "expected trait name"));
-                            }
-                        };
+                        let (trait_name, _) = self.expect_ident("trait name after 'includes'")?;
                         // Optional type args: includes From[Float]
                         let trait_args = if self.at(&LBracket) {
                             self.advance();

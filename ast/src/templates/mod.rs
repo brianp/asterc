@@ -63,9 +63,10 @@ diagnostic_template_enum! {
     TaskNotResolved(type_errors::TaskNotResolved),
     NotCompilable(type_errors::NotCompilable),
 
-    // Parse errors (P001-P002)
+    // Parse errors (P001-P003)
     UnexpectedToken(parse_errors::UnexpectedToken),
     ExpectedIndentedBlock(parse_errors::ExpectedIndentedBlock),
+    NestingTooDeep(parse_errors::NestingTooDeep),
 
     // Module errors (M001-M004)
     ModuleNotFound(module_errors::ModuleNotFound),

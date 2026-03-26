@@ -22,21 +22,7 @@ impl Parser {
             );
         }
 
-        let name_tok = self.advance();
-        let name = match &name_tok.kind {
-            TokenKind::Ident(n) => n.clone(),
-            t => {
-                return Err(
-                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
-                        UnexpectedToken {
-                            expected: "type name".to_string(),
-                            found: format!("`{}`", t),
-                        },
-                    ))
-                    .with_label(name_tok.span(), "not a valid type name"),
-                );
-            }
-        };
+        let (name, _) = self.expect_ident("type name")?;
 
         // Catch lowercase built-in type names early with a clear error
         let correct = match name.as_str() {

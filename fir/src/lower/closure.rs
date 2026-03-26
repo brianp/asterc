@@ -379,7 +379,9 @@ impl Lowerer {
                     self.find_captures_expr(e, param_names, captures);
                 }
             }
-            Expr::Match { scrutinee, arms, .. } => {
+            Expr::Match {
+                scrutinee, arms, ..
+            } => {
                 self.find_captures_expr(scrutinee, param_names, captures);
                 for (pattern, body) in arms {
                     if let ast::MatchPattern::Literal(lit, _) = pattern {
@@ -421,13 +423,15 @@ impl Lowerer {
                     self.find_captures_expr(arg, param_names, captures);
                 }
             }
-            Expr::Resolve { expr, .. }
-            | Expr::Propagate(expr, _)
-            | Expr::Throw(expr, _) => {
+            Expr::Resolve { expr, .. } | Expr::Propagate(expr, _) | Expr::Throw(expr, _) => {
                 self.find_captures_expr(expr, param_names, captures);
             }
             Expr::ErrorOr { expr, default, .. }
-            | Expr::ErrorOrElse { expr, handler: default, .. } => {
+            | Expr::ErrorOrElse {
+                expr,
+                handler: default,
+                ..
+            } => {
                 self.find_captures_expr(expr, param_names, captures);
                 self.find_captures_expr(default, param_names, captures);
             }
