@@ -1,4 +1,7 @@
-use ast::{Diagnostic, EnumVariant, Expr, Span, Stmt, Type, TypeConstraint};
+use ast::{
+    Diagnostic, EnumVariant, Expr, Span, Stmt, Type, TypeConstraint,
+    templates::{DiagnosticTemplate, parse_errors::*},
+};
 use lexer::TokenKind;
 
 use crate::Parser;
@@ -20,12 +23,13 @@ impl Parser {
                         start: tok.start,
                         end: tok.end,
                     };
-                    return Err(Diagnostic::error(format!(
-                        "Expected {} name, got `{}`",
-                        context, t
-                    ))
-                    .with_code("P001")
-                    .with_label(span, "expected identifier"));
+                    return Err(
+                        Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                            expected: format!("{} name", context),
+                            found: format!("`{}`", t),
+                        }))
+                        .with_label(span, "expected identifier"),
+                    );
                 }
             };
             names.push(name);
@@ -55,9 +59,11 @@ impl Parser {
                         end: tok.end,
                     };
                     return Err(
-                        Diagnostic::error(format!("Expected trait name, got `{}`", t))
-                            .with_code("P001")
-                            .with_label(span, "expected trait name"),
+                        Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                            expected: "trait name".to_string(),
+                            found: format!("`{}`", t),
+                        }))
+                        .with_label(span, "expected trait name"),
                     );
                 }
             };
@@ -119,9 +125,11 @@ impl Parser {
                     end: name_tok.end,
                 };
                 return Err(
-                    Diagnostic::error(format!("Expected enum name, got `{}`", t))
-                        .with_code("P001")
-                        .with_label(span, "expected enum name"),
+                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                        expected: "enum name".to_string(),
+                        found: format!("`{}`", t),
+                    }))
+                    .with_label(span, "expected enum name"),
                 );
             }
         };
@@ -152,9 +160,13 @@ impl Parser {
                                 start: pub_next.start,
                                 end: pub_next.end,
                             };
-                            return Err(Diagnostic::error("Expected def after 'pub' in enum")
-                                .with_code("P001")
-                                .with_label(span, "expected 'def'"));
+                            return Err(
+                                Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                                    expected: "def after 'pub' in enum".to_string(),
+                                    found: format!("`{}`", pub_next.kind),
+                                }))
+                                .with_label(span, "expected 'def'"),
+                            );
                         }
                     }
                 }
@@ -178,12 +190,13 @@ impl Parser {
                                             start: fname_tok.start,
                                             end: fname_tok.end,
                                         };
-                                        return Err(Diagnostic::error(format!(
-                                            "Expected field name in enum variant, got `{}`",
-                                            t
-                                        ))
-                                        .with_code("P001")
-                                        .with_label(span, "expected field name"));
+                                        return Err(
+                                            Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                                                expected: "field name in enum variant".to_string(),
+                                                found: format!("`{}`", t),
+                                            }))
+                                            .with_label(span, "expected field name"),
+                                        );
                                     }
                                 };
                                 self.expect(Colon)?;
@@ -213,12 +226,13 @@ impl Parser {
                         start: tok.start,
                         end: tok.end,
                     };
-                    return Err(Diagnostic::error(format!(
-                        "Expected variant name or method in enum, got `{}`",
-                        tok.kind
-                    ))
-                    .with_code("P001")
-                    .with_label(span, "unexpected token in enum body"));
+                    return Err(
+                        Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                            expected: "variant name or method in enum".to_string(),
+                            found: format!("`{}`", tok.kind),
+                        }))
+                        .with_label(span, "unexpected token in enum body"),
+                    );
                 }
             }
             self.consume_newlines();
@@ -249,9 +263,11 @@ impl Parser {
                     end: name_tok.end,
                 };
                 return Err(
-                    Diagnostic::error(format!("Expected class name, got `{}`", t))
-                        .with_code("P001")
-                        .with_label(span, "expected class name"),
+                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                        expected: "class name".to_string(),
+                        found: format!("`{}`", t),
+                    }))
+                    .with_label(span, "expected class name"),
                 );
             }
         };
@@ -275,12 +291,13 @@ impl Parser {
                         start: parent_tok.start,
                         end: parent_tok.end,
                     };
-                    return Err(Diagnostic::error(format!(
-                        "Expected class name after 'extends', got `{}`",
-                        t
-                    ))
-                    .with_code("P001")
-                    .with_label(span, "expected class name"));
+                    return Err(
+                        Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                            expected: "class name after 'extends'".to_string(),
+                            found: format!("`{}`", t),
+                        }))
+                        .with_label(span, "expected class name"),
+                    );
                 }
             };
             Some(parent)
@@ -330,11 +347,13 @@ impl Parser {
                                 start: pub_next.start,
                                 end: pub_next.end,
                             };
-                            return Err(Diagnostic::error(
-                                "Expected def or field name after 'pub' in class",
-                            )
-                            .with_code("P001")
-                            .with_label(span, "expected 'def' or field name"));
+                            return Err(
+                                Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                                    expected: "def or field name after 'pub' in class".to_string(),
+                                    found: format!("`{}`", pub_next.kind),
+                                }))
+                                .with_label(span, "expected 'def' or field name"),
+                            );
                         }
                     }
                 }
@@ -350,12 +369,13 @@ impl Parser {
                                 start: fname_tok.start,
                                 end: fname_tok.end,
                             };
-                            return Err(Diagnostic::error(format!(
-                                "Expected field name, got `{}`",
-                                t
-                            ))
-                            .with_code("P001")
-                            .with_label(span, "expected field name"));
+                            return Err(
+                                Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                                    expected: "field name".to_string(),
+                                    found: format!("`{}`", t),
+                                }))
+                                .with_label(span, "expected field name"),
+                            );
                         }
                     };
                     self.expect(Colon)?;
@@ -398,9 +418,11 @@ impl Parser {
                     end: name_tok.end,
                 };
                 return Err(
-                    Diagnostic::error(format!("Expected trait name, got `{}`", t))
-                        .with_code("P001")
-                        .with_label(span, "expected trait name"),
+                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                        expected: "trait name".to_string(),
+                        found: format!("`{}`", t),
+                    }))
+                    .with_label(span, "expected trait name"),
                 );
             }
         };
@@ -437,9 +459,13 @@ impl Parser {
                                 start: pub_next.start,
                                 end: pub_next.end,
                             };
-                            return Err(Diagnostic::error("Expected def after 'pub' in trait")
-                                .with_code("P001")
-                                .with_label(span, "expected 'def'"));
+                            return Err(
+                                Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                                    expected: "def after 'pub' in trait".to_string(),
+                                    found: format!("`{}`", pub_next.kind),
+                                }))
+                                .with_label(span, "expected 'def'"),
+                            );
                         }
                     }
                 }
@@ -449,12 +475,13 @@ impl Parser {
                         start: tok.start,
                         end: tok.end,
                     };
-                    return Err(Diagnostic::error(format!(
-                        "Expected method definition in trait, got `{}`",
-                        tok.kind
-                    ))
-                    .with_code("P001")
-                    .with_label(span, "unexpected token in trait body"));
+                    return Err(
+                        Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                            expected: "method definition in trait".to_string(),
+                            found: format!("`{}`", tok.kind),
+                        }))
+                        .with_label(span, "unexpected token in trait body"),
+                    );
                 }
             }
             self.consume_newlines();
@@ -484,10 +511,13 @@ impl Parser {
         use TokenKind::*;
         let start = self.start_span();
         if self.at(&Async) {
-            return Err(Diagnostic::error(
-                "async def is not supported. Functions are plain def — use async f() at the call site"
-            ).with_code("P001")
-            .with_label(self.span_from(start), "remove 'async' keyword"));
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                    expected: "def".to_string(),
+                    found: "async def".to_string(),
+                }))
+                .with_label(self.span_from(start), "remove 'async' keyword"),
+            );
         }
 
         self.expect(Def)?;
@@ -500,9 +530,11 @@ impl Parser {
                     end: name_tok.end,
                 };
                 return Err(
-                    Diagnostic::error(format!("Expected function name, got `{}`", t))
-                        .with_code("P001")
-                        .with_label(span, "expected function name"),
+                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                        expected: "function name".to_string(),
+                        found: format!("`{}`", t),
+                    }))
+                    .with_label(span, "expected function name"),
                 );
             }
         };
@@ -510,9 +542,10 @@ impl Parser {
         // Generic type parameters are inferred inline from param types (BC-5).
         // Bracket syntax [T] on functions is no longer supported (use class Box[T] for classes).
         if self.at(&LBracket) {
-            return Err(Diagnostic::error(
-                "Bracket generic syntax [T] is not supported on functions. Type parameters are inferred inline from parameter types: def f(x: T) -> T"
-            ).with_code("P001"));
+            return Err(Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                expected: "function parameter list or body".to_string(),
+                found: "'[' (bracket generic syntax is not supported on functions)".to_string(),
+            })));
         }
         let generic_params: Option<Vec<String>> = None;
 
@@ -532,12 +565,13 @@ impl Parser {
                                 start: pname_tok.start,
                                 end: pname_tok.end,
                             };
-                            return Err(Diagnostic::error(format!(
-                                "Expected parameter name, got `{}`",
-                                t
-                            ))
-                            .with_code("P001")
-                            .with_label(span, "expected parameter name"));
+                            return Err(
+                                Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                                    expected: "parameter name".to_string(),
+                                    found: format!("`{}`", t),
+                                }))
+                                .with_label(span, "expected parameter name"),
+                            );
                         }
                     };
                     self.expect(Colon)?;
@@ -555,12 +589,13 @@ impl Parser {
                                     start: class_tok.start,
                                     end: class_tok.end,
                                 };
-                                return Err(Diagnostic::error(format!(
-                                    "Expected class name after 'extends', got `{}`",
-                                    t
-                                ))
-                                .with_code("P001")
-                                .with_label(span, "expected class name"));
+                                return Err(
+                                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                                        expected: "class name after 'extends'".to_string(),
+                                        found: format!("`{}`", t),
+                                    }))
+                                    .with_label(span, "expected class name"),
+                                );
                             }
                         };
                         constraints.push(TypeConstraint::Extends(class_name));
@@ -575,12 +610,13 @@ impl Parser {
                                     start: trait_tok.start,
                                     end: trait_tok.end,
                                 };
-                                return Err(Diagnostic::error(format!(
-                                    "Expected trait name after 'includes', got `{}`",
-                                    t
-                                ))
-                                .with_code("P001")
-                                .with_label(span, "expected trait name"));
+                                return Err(
+                                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                                        expected: "trait name after 'includes'".to_string(),
+                                        found: format!("`{}`", t),
+                                    }))
+                                    .with_label(span, "expected trait name"),
+                                );
                             }
                         };
                         // Optional type args: includes From[Float]
@@ -604,10 +640,10 @@ impl Parser {
                         let type_param_name = match &ptype {
                             Type::Custom(name, args) if args.is_empty() => name.clone(),
                             _ => {
-                                return Err(Diagnostic::error(
-                                    "Generic constraints can only be applied to type parameters (e.g. T extends Foo)",
-                                )
-                                .with_code("P001"));
+                                return Err(Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                                    expected: "type parameter (e.g. T) for generic constraint".to_string(),
+                                    found: "non-type-parameter type".to_string(),
+                                })));
                             }
                         };
                         type_constraints.push((type_param_name, constraints));
@@ -620,11 +656,10 @@ impl Parser {
                         Some(self.parse_expr()?)
                     } else {
                         if seen_default {
-                            return Err(Diagnostic::error(format!(
-                                "Parameter '{}' without default follows parameter with default",
-                                pname
-                            ))
-                            .with_code("P001"));
+                            return Err(Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                                expected: format!("default value for parameter '{}'", pname),
+                                found: "parameter without default after parameter with default".to_string(),
+                            })));
                         }
                         None
                     };

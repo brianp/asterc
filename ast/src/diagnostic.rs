@@ -1,4 +1,5 @@
 use crate::span::Span;
+use crate::templates::DiagnosticTemplate;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,7 +21,7 @@ pub struct Diagnostic {
     pub message: String,
     pub labels: Vec<Label>,
     pub notes: Vec<String>,
-    pub code: Option<String>,
+    pub template: Option<DiagnosticTemplate>,
 }
 
 impl Diagnostic {
@@ -30,7 +31,7 @@ impl Diagnostic {
             message: message.into(),
             labels: Vec::new(),
             notes: Vec::new(),
-            code: None,
+            template: None,
         }
     }
 
@@ -40,7 +41,7 @@ impl Diagnostic {
             message: message.into(),
             labels: Vec::new(),
             notes: Vec::new(),
-            code: None,
+            template: None,
         }
     }
 
@@ -50,8 +51,25 @@ impl Diagnostic {
             message: message.into(),
             labels: Vec::new(),
             notes: Vec::new(),
-            code: None,
+            template: None,
         }
+    }
+
+    pub fn from_template(template: DiagnosticTemplate) -> Self {
+        let message = template.render();
+        Diagnostic {
+            severity: Severity::Error,
+            message,
+            labels: Vec::new(),
+            notes: Vec::new(),
+            template: Some(template),
+        }
+    }
+
+    pub fn with_template(mut self, template: DiagnosticTemplate) -> Self {
+        self.message = template.render();
+        self.template = Some(template);
+        self
     }
 
     pub fn with_label(mut self, span: Span, message: impl Into<String>) -> Self {
@@ -67,9 +85,8 @@ impl Diagnostic {
         self
     }
 
-    pub fn with_code(mut self, code: impl Into<String>) -> Self {
-        self.code = Some(code.into());
-        self
+    pub fn code(&self) -> Option<&str> {
+        self.template.as_ref().map(|t| t.code())
     }
 }
 

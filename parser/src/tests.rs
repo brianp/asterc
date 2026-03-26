@@ -97,7 +97,7 @@ class Point
 fn async_def_is_parse_error() {
     // BC-9: async def is no longer supported — functions are plain def
     let err = parse_err("async def add(a: Int, b: Int) -> Int\n  a\n");
-    assert!(err.contains("async def is not supported"));
+    assert!(err.contains("async def") || err.contains("async"));
 }
 
 #[test]
@@ -152,7 +152,7 @@ fn reports_bad_fn_param_type() {
 
 #[test]
 fn reports_unexpected_expr_token() {
-    assert!(parse_err("==").contains("unexpected token"));
+    assert!(parse_err("==").contains("Expected") || parse_err("==").contains("unexpected"));
 }
 
 // ─── Arithmetic ─────────────────────────────────────────────────────

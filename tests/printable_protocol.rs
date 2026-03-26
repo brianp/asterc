@@ -156,7 +156,7 @@ class Wrapper includes Printable
   inner: NoPrint
 ",
     );
-    assert_eq!(diag.code.as_deref(), Some("E023"));
+    assert_eq!(diag.code(), Some("E023"));
 }
 
 #[test]

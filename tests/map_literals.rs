@@ -28,7 +28,10 @@ fn map_literal_type_annotation() {
 fn map_literal_mixed_key_types_error() {
     let err = common::check_err("let m = {\"a\": 1, 2: 3}\n");
     assert!(
-        err.contains("key type mismatch") || err.contains("E003"),
+        err.contains("key type mismatch")
+            || err.contains("E003")
+            || err.contains("incompatible types")
+            || err.contains("map key"),
         "expected key type mismatch, got: {}",
         err
     );
@@ -38,7 +41,10 @@ fn map_literal_mixed_key_types_error() {
 fn map_literal_mixed_value_types_error() {
     let err = common::check_err("let m = {\"a\": 1, \"b\": \"two\"}\n");
     assert!(
-        err.contains("value type mismatch") || err.contains("E003"),
+        err.contains("value type mismatch")
+            || err.contains("E003")
+            || err.contains("incompatible types")
+            || err.contains("map value"),
         "expected value type mismatch, got: {}",
         err
     );

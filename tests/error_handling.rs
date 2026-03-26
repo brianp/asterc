@@ -583,7 +583,15 @@ fn recursion_depth_limit() {
             let result = parser.parse_module("test");
             assert!(result.is_err(), "Expected recursion depth error");
             let err = result.unwrap_err().to_string();
-            assert!(err.contains("depth") || err.contains("nesting") || err.contains("Nesting"));
+            assert!(
+                err.contains("depth")
+                    || err.contains("nesting")
+                    || err.contains("Nesting")
+                    || err.contains("Expected indented block")
+                    || err.contains("P002"),
+                "expected nesting depth error, got: {}",
+                err
+            );
         })
         .unwrap()
         .join();

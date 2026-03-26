@@ -9,7 +9,10 @@ mod tests;
 
 use std::collections::HashMap;
 
-use ast::{Diagnostic, Span, Stmt};
+use ast::{
+    Diagnostic, Span, Stmt,
+    templates::{DiagnosticTemplate, parse_errors::*},
+};
 use lexer::{Token, TokenKind};
 
 pub struct Parser {
@@ -74,9 +77,11 @@ impl Parser {
             Ok(())
         } else {
             Err(
-                Diagnostic::error(format!("Expected `{}`, found `{}`", kind, token.kind))
-                    .with_code("P001")
-                    .with_label(Span::new(token.start, token.end), "unexpected token"),
+                Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                    expected: format!("`{}`", kind),
+                    found: format!("`{}`", token.kind),
+                }))
+                .with_label(Span::new(token.start, token.end), "unexpected token"),
             )
         }
     }
@@ -109,11 +114,9 @@ impl Parser {
         self.depth += 1;
         if self.depth > MAX_NESTING_DEPTH {
             self.depth -= 1;
-            return Err(Diagnostic::error(format!(
-                "Nesting depth exceeds maximum of {}",
-                MAX_NESTING_DEPTH
-            ))
-            .with_code("P002"));
+            return Err(Diagnostic::from_template(DiagnosticTemplate::ExpectedIndentedBlock(
+                ExpectedIndentedBlock,
+            )));
         }
         let result = self.parse_block_inner();
         self.depth -= 1;
@@ -161,10 +164,13 @@ impl Parser {
             TokenKind::Async => {
                 // async def is no longer valid — give a clear error
                 if self.tokens.get(self.pos + 1).map(|t| &t.kind) == Some(&TokenKind::Def) {
-                    return Err(Diagnostic::error(
-                        "async def is not supported. Functions are plain def — use async f() at the call site"
-                    ).with_code("P001")
-                    .with_label(self.span_from(start), "remove 'async' keyword"));
+                    return Err(
+                        Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                            expected: "def".to_string(),
+                            found: "async def".to_string(),
+                        }))
+                        .with_label(self.span_from(start), "remove 'async' keyword"),
+                    );
                 }
                 // async as call-site modifier -- parse as expression
                 let e = self.parse_expr()?;
@@ -229,12 +235,13 @@ impl Parser {
                     start: name_tok.start,
                     end: name_tok.end,
                 };
-                return Err(Diagnostic::error(format!(
-                    "Expected module name after 'use', got `{}`",
-                    t
-                ))
-                .with_code("P001")
-                .with_label(span, "expected module name"));
+                return Err(
+                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                        expected: "module name after 'use'".to_string(),
+                        found: format!("`{}`", t),
+                    }))
+                    .with_label(span, "expected module name"),
+                );
             }
         };
         path.push(name);
@@ -250,12 +257,13 @@ impl Parser {
                         start: seg_tok.start,
                         end: seg_tok.end,
                     };
-                    return Err(Diagnostic::error(format!(
-                        "Expected module name after '/', got `{}`",
-                        t
-                    ))
-                    .with_code("P001")
-                    .with_label(span, "expected module name"));
+                    return Err(
+                        Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                            expected: "module name after '/'".to_string(),
+                            found: format!("`{}`", t),
+                        }))
+                        .with_label(span, "expected module name"),
+                    );
                 }
             };
             path.push(seg);
@@ -275,12 +283,13 @@ impl Parser {
                                 start: n_tok.start,
                                 end: n_tok.end,
                             };
-                            return Err(Diagnostic::error(format!(
-                                "Expected identifier in use list, got `{}`",
-                                t
-                            ))
-                            .with_code("P001")
-                            .with_label(span, "expected identifier"));
+                            return Err(
+                                Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                                    expected: "identifier in use list".to_string(),
+                                    found: format!("`{}`", t),
+                                }))
+                                .with_label(span, "expected identifier"),
+                            );
                         }
                     };
                     names.push(n);
@@ -308,12 +317,13 @@ impl Parser {
                         start: a_tok.start,
                         end: a_tok.end,
                     };
-                    return Err(Diagnostic::error(format!(
-                        "Expected alias name after 'as', got `{}`",
-                        t
-                    ))
-                    .with_code("P001")
-                    .with_label(span, "expected identifier"));
+                    return Err(
+                        Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                            expected: "alias name after 'as'".to_string(),
+                            found: format!("`{}`", t),
+                        }))
+                        .with_label(span, "expected identifier"),
+                    );
                 }
             };
             Some(a)
@@ -346,12 +356,13 @@ impl Parser {
                     start: tok.start,
                     end: tok.end,
                 };
-                Err(Diagnostic::error(format!(
-                    "Expected def, class, trait, enum, let, or use after 'pub', got `{}`",
-                    t
-                ))
-                .with_code("P001")
-                .with_label(span, "unexpected token after 'pub'"))
+                Err(
+                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                        expected: "def, class, trait, enum, let, or use after 'pub'".to_string(),
+                        found: format!("`{}`", t),
+                    }))
+                    .with_label(span, "unexpected token after 'pub'"),
+                )
             }
         }
     }
@@ -410,12 +421,13 @@ impl Parser {
                     start: var_tok.start,
                     end: var_tok.end,
                 };
-                return Err(Diagnostic::error(format!(
-                    "Expected variable name after 'for', got `{}`",
-                    t
-                ))
-                .with_code("P001")
-                .with_label(span, "expected loop variable name"));
+                return Err(
+                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                        expected: "variable name after 'for'".to_string(),
+                        found: format!("`{}`", t),
+                    }))
+                    .with_label(span, "expected loop variable name"),
+                );
             }
         };
         self.expect(In)?;
@@ -441,12 +453,13 @@ impl Parser {
                 start: name_tok.start,
                 end: name_tok.end,
             };
-            return Err(Diagnostic::error(format!(
-                "Expected identifier after const at line {}",
-                name_tok.line
-            ))
-            .with_code("P001")
-            .with_label(span, "expected constant name"));
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                    expected: format!("identifier after const at line {}", name_tok.line),
+                    found: format!("`{}`", name_tok.kind),
+                }))
+                .with_label(span, "expected constant name"),
+            );
         };
 
         let type_ann = if self.at(&TokenKind::Colon) {
@@ -480,12 +493,13 @@ impl Parser {
                 start: name_tok.start,
                 end: name_tok.end,
             };
-            return Err(Diagnostic::error(format!(
-                "Expected identifier after let at line {}",
-                name_tok.line
-            ))
-            .with_code("P001")
-            .with_label(span, "expected variable name"));
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                    expected: format!("identifier after let at line {}", name_tok.line),
+                    found: format!("`{}`", name_tok.kind),
+                }))
+                .with_label(span, "expected variable name"),
+            );
         };
 
         let type_ann = if self.at(&TokenKind::Colon) {

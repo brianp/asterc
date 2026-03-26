@@ -46,7 +46,7 @@ def main() -> Int
 ",
     );
     assert!(
-        warnings.iter().any(|w| w.code.as_deref() == Some("W002")),
+        warnings.iter().any(|w| w.code() == Some("W002")),
         "expected W002 warning, got: {:?}",
         warnings
     );
@@ -73,7 +73,7 @@ def main() -> Int
     );
     let data_sharing = warnings
         .iter()
-        .filter(|w| w.code.as_deref() == Some("W002"))
+        .filter(|w| w.code() == Some("W002"))
         .count();
     assert_eq!(
         data_sharing, 0,
@@ -101,7 +101,7 @@ def main() -> Int
     );
     let data_sharing = warnings
         .iter()
-        .filter(|w| w.code.as_deref() == Some("W002"))
+        .filter(|w| w.code() == Some("W002"))
         .count();
     assert_eq!(
         data_sharing, 0,
@@ -131,7 +131,7 @@ def main() -> Int
     );
     let data_sharing = warnings
         .iter()
-        .filter(|w| w.code.as_deref() == Some("W002"))
+        .filter(|w| w.code() == Some("W002"))
         .count();
     assert!(
         data_sharing >= 1,
@@ -159,7 +159,7 @@ def main() -> Int
     );
     let data_sharing = warnings
         .iter()
-        .filter(|w| w.code.as_deref() == Some("W002"))
+        .filter(|w| w.code() == Some("W002"))
         .count();
     assert!(
         data_sharing >= 1,

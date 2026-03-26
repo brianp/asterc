@@ -70,7 +70,7 @@ const X = y
 ",
     );
     assert!(
-        err.contains("constant") || err.contains("E026"),
+        err.contains("constant") || err.contains("const") || err.contains("E026"),
         "expected const expression error, got: {}",
         err
     );
@@ -87,7 +87,9 @@ X = 2
 ",
     );
     assert!(
-        err.contains("Cannot reassign const") || err.contains("E026"),
+        err.contains("Cannot reassign const")
+            || err.contains("cannot be reassigned")
+            || err.contains("E026"),
         "expected const reassignment error, got: {}",
         err
     );

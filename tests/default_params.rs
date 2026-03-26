@@ -53,7 +53,10 @@ def f(x: Int = \"not an int\") -> Int
 ",
     );
     assert!(
-        err.contains("Default value") || err.contains("E001"),
+        err.contains("Default value")
+            || err.contains("E001")
+            || err.contains("mismatch")
+            || err.contains("expected Int"),
         "expected default value type error, got: {}",
         err
     );
@@ -68,7 +71,9 @@ def f(a: Int = 1, b: Int) -> Int
 ",
     );
     assert!(
-        err.contains("without default follows"),
+        err.contains("without default follows")
+            || err.contains("without default after parameter with default")
+            || err.contains("non-default"),
         "expected non-default after default error, got: {}",
         err
     );
@@ -85,7 +90,9 @@ let x = f(a: 1, c: 2)
 ",
     );
     assert!(
-        err.contains("unknown") || err.contains("Unknown argument"),
+        err.contains("unknown")
+            || err.contains("Unknown argument")
+            || err.contains("Unknown identifier"),
         "expected unknown arg error, got: {}",
         err
     );

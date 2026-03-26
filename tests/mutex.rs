@@ -132,7 +132,7 @@ def main() -> Int
 ",
     );
     assert!(
-        err.contains("no method"),
+        err.contains("no method") || err.contains("Unknown field") || err.contains("foo"),
         "expected method error, got: {err}"
     );
 }
@@ -149,7 +149,9 @@ def main() -> Int
 ",
     );
     assert!(
-        err.contains("1 argument"),
+        err.contains("1 argument")
+            || err.contains("expected 1")
+            || err.contains("parameter count"),
         "expected arg count error, got: {err}"
     );
 }

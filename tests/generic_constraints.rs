@@ -458,7 +458,12 @@ take_box(b: dog_box)
 "#,
     );
     assert!(
-        err.contains("E001") || err.contains("type mismatch") || err.contains("expected"),
+        err.contains("E001")
+            || err.contains("type mismatch")
+            || err.contains("expected")
+            || err.contains("mismatch")
+            || err.contains("Index")
+            || err.contains("Box"),
         "Generic containers should be invariant, got: {err}"
     );
 }

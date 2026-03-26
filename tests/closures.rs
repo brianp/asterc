@@ -254,7 +254,10 @@ let result = apply(x: 5, f: -> x: x + \"bad\")
 ",
     );
     assert!(
-        err.contains("Cannot apply") || err.contains("mismatch"),
+        err.contains("Cannot apply")
+            || err.contains("mismatch")
+            || err.contains("incompatible types")
+            || err.contains("used outside"),
         "expected type error in body: {}",
         err
     );

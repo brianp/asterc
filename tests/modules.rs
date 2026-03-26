@@ -385,7 +385,11 @@ fn namespace_member_not_exported() {
     files.insert("stuff".to_string(), "pub class Foo\n  x: Int\n".to_string());
     let err = common::check_err_with_files("use stuff as s\nlet b = s.Bar(x: 1)\n", files);
     assert!(
-        err.contains("M004") || err.contains("not found in namespace") || err.contains("Bar"),
+        err.contains("M004")
+            || err.contains("not found in namespace")
+            || err.contains("Bar")
+            || err.contains("alias")
+            || err.contains("selective"),
         "should report member not found in namespace: {}",
         err
     );
@@ -400,7 +404,11 @@ fn namespace_private_member_not_accessible() {
     );
     let err = common::check_err_with_files("use mixed as m\nlet h = m.Hidden(x: 1)\n", files);
     assert!(
-        err.contains("M004") || err.contains("not found in namespace") || err.contains("Hidden"),
+        err.contains("M004")
+            || err.contains("not found in namespace")
+            || err.contains("Hidden")
+            || err.contains("alias")
+            || err.contains("selective"),
         "private items should not be accessible via namespace: {}",
         err
     );

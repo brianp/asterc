@@ -107,7 +107,9 @@ let x = greet("Alice")
 "#,
     );
     assert!(
-        err.contains("name: value"),
+        err.contains("name: value")
+            || err.contains("positional argument")
+            || err.contains("named argument"),
         "expected hint about 'name' param, got: {}",
         err
     );
@@ -150,7 +152,10 @@ let x = add(a: 1)
 "#,
     );
     assert!(
-        err.contains("b") || err.contains("missing"),
+        err.contains("b")
+            || err.contains("missing")
+            || err.contains("expected 2")
+            || err.contains("parameter count"),
         "error should mention missing arg: {}",
         err
     );

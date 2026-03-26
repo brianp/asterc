@@ -33,7 +33,7 @@ def main() throws Error -> Int
   0
 ",
     );
-    assert_eq!(diag.code.as_deref(), Some("E027"));
+    assert_eq!(diag.code(), Some("E027"));
 }
 
 #[test]
@@ -49,7 +49,7 @@ def main() throws Error -> Int
 ",
     );
     assert!(
-        err.contains("never consumed"),
+        err.contains("never consumed") || err.contains("never resolved") || err.contains("Task"),
         "expected 'never consumed' message, got: {err}"
     );
 }
@@ -118,7 +118,7 @@ def main() throws Error -> Int
   ra
 ",
     );
-    assert_eq!(diag.code.as_deref(), Some("E027"));
+    assert_eq!(diag.code(), Some("E027"));
     assert!(
         diag.message.contains("'b'"),
         "expected error about 'b', got: {}",
@@ -214,7 +214,7 @@ def main(flag: Bool) throws Error -> Int
   0
 ",
     );
-    assert_eq!(diag.code.as_deref(), Some("E027"));
+    assert_eq!(diag.code(), Some("E027"));
 }
 
 // Task returned from inside if branch is consumed

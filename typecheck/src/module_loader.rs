@@ -1,3 +1,5 @@
+use ast::templates::module_errors::{CircularImport, ModuleNotFound};
+use ast::templates::DiagnosticTemplate;
 use ast::{ClassInfo, Diagnostic, EnumInfo, Stmt, TraitInfo, Type};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -92,11 +94,9 @@ impl ModuleLoader {
             }
             // Check circular
             if loader.in_progress.contains(&key) {
-                return Err(Diagnostic::error(format!(
-                    "Circular import detected: module '{}' is already being compiled",
-                    key
-                ))
-                .with_code("M003")
+                return Err(Diagnostic::from_template(DiagnosticTemplate::CircularImport(CircularImport {
+                    module: key.clone(),
+                }))
                 .with_label(use_span, "circular import here"));
             }
         }
@@ -105,9 +105,10 @@ impl ModuleLoader {
         let (source, filename) = {
             let loader = loader_rc.borrow();
             loader.resolver.resolve(path).ok_or_else(|| {
-                Diagnostic::error(format!("Module '{}' not found", key))
-                    .with_code("M001")
-                    .with_label(use_span, "module not found")
+                Diagnostic::from_template(DiagnosticTemplate::ModuleNotFound(ModuleNotFound {
+                    name: key.clone(),
+                }))
+                .with_label(use_span, "module not found")
             })?
         };
 

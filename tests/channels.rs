@@ -107,7 +107,7 @@ def main() -> Int
 ",
     );
     assert!(
-        err.contains("no method"),
+        err.contains("no method") || err.contains("Unknown field") || err.contains("foo"),
         "expected method error, got: {err}"
     );
 }

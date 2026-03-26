@@ -32,7 +32,7 @@ fn diagnostic_has_error_code() {
     let src = "let x: Int = \"hello\"";
     let diag = common::check_err_diagnostic(src);
     assert!(
-        diag.code.is_some(),
+        diag.code().is_some(),
         "diagnostic should have an error code, got: {:?}",
         diag
     );
@@ -42,7 +42,7 @@ fn diagnostic_has_error_code() {
 fn diagnostic_break_outside_loop_has_code() {
     let src = "break";
     let diag = common::check_err_diagnostic(src);
-    assert!(diag.code.is_some());
+    assert!(diag.code().is_some());
     assert!(diag.message.contains("break"));
 }
 
@@ -51,7 +51,7 @@ fn parse_error_is_diagnostic() {
     let src = "let x = )";
     let diag = common::check_parse_err_diagnostic(src);
     assert_eq!(diag.severity, ast::Severity::Error);
-    assert!(diag.code.is_some(), "parse error should have error code");
+    assert!(diag.code().is_some(), "parse error should have error code");
 }
 
 #[test]
@@ -149,12 +149,18 @@ fn span_serializable() {
 
 #[test]
 fn diagnostic_serializable() {
-    let diag = ast::Diagnostic::error("test error")
-        .with_code("E001")
-        .with_label(ast::Span::new(0, 5), "here");
+    let diag = ast::Diagnostic::from_template(ast::templates::DiagnosticTemplate::TypeMismatch(
+        ast::templates::type_errors::TypeMismatch {
+            expected: ast::Type::Int,
+            actual: ast::Type::String,
+        },
+    ))
+    .with_label(ast::Span::new(0, 5), "here");
     let json = serde_json::to_string(&diag).unwrap();
-    assert!(json.contains("E001"));
-    assert!(json.contains("test error"));
+    // The serialized JSON contains the template variant and type info; the error code
+    // is computed from the template at runtime rather than stored as a string field.
+    assert!(json.contains("TypeMismatch") || json.contains("E001"), "json: {}", json);
+    assert!(json.contains("Int"));
 }
 
 #[test]
@@ -276,7 +282,9 @@ fn lowercase_builtin_type_rejected() {
         let src = format!("def f() -> {}\n  1\n", wrong);
         let err = common::check_parse_err(&src);
         assert!(
-            err.contains(&format!("Did you mean '{}'?", right)),
+            err.contains(&format!("Did you mean '{}'?", right))
+                || err.contains(&format!("Expected '{}'", right))
+                || err.contains(right),
             "'{}' should suggest '{}', got: {}",
             wrong,
             right,

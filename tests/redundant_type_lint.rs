@@ -6,7 +6,7 @@ use parser::Parser;
 use typecheck::typechecker::TypeChecker;
 
 /// Run the typechecker and return only Warning-severity diagnostics whose code
-/// matches "W001" (redundant type annotation).
+/// matches "W004" (redundant type annotation).
 fn check_warnings(src: &str) -> Vec<Diagnostic> {
     let tokens = lex(src).expect("lex ok");
     let mut parser = Parser::new(tokens);
@@ -16,7 +16,7 @@ fn check_warnings(src: &str) -> Vec<Diagnostic> {
     tc.check_module(&module).expect("typecheck ok");
     tc.diagnostics
         .into_iter()
-        .filter(|d| d.severity == Severity::Warning && d.code.as_deref() == Some("W001"))
+        .filter(|d| d.severity == Severity::Warning && d.code() == Some("W004"))
         .collect()
 }
 
@@ -232,7 +232,7 @@ fn warning_has_correct_code() {
     let src = "let x: Int = 42";
     let warnings = check_warnings(src);
     assert!(!warnings.is_empty(), "expected a warning");
-    assert_eq!(warnings[0].code.as_deref(), Some("W001"));
+    assert_eq!(warnings[0].code(), Some("W004"));
 }
 
 #[test]

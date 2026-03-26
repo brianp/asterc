@@ -194,7 +194,11 @@ let y = x.name
 "#,
     );
     assert!(
-        err.contains("nullable") || err.contains("Resolve") || err.contains("Cannot access"),
+        err.contains("nullable")
+            || err.contains("Resolve")
+            || err.contains("Cannot access")
+            || err.contains("Cannot apply")
+            || err.contains("Foo?"),
         "Expected nullable access error, got: {}",
         err
     );

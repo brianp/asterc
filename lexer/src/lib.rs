@@ -7,7 +7,16 @@ mod tests;
 
 pub use token::{Token, TokenKind};
 
-use ast::{Diagnostic, Span};
+use ast::{
+    templates::{
+        lex_errors::{
+            BadFloatLiteral, IntegerOverflow, InterpolationError, InvalidEscape, MissingNewline,
+            StringTooLong, TabIndentation, UnterminatedString,
+        },
+        DiagnosticTemplate,
+    },
+    Diagnostic, Span,
+};
 
 const MAX_INPUT_SIZE: usize = 10 * 1024 * 1024; // 10 MB
 const MAX_STRING_LENGTH: usize = 1_000_000;
@@ -155,22 +164,21 @@ fn lex_string_full(
                         col += 1;
                     }
                     Some(c) => {
-                        return Err(Diagnostic::error(format!(
-                            "Unknown escape sequence '\\{}' at line {}",
-                            c, line_no
+                        return Err(Diagnostic::from_template(DiagnosticTemplate::InvalidEscape(
+                            InvalidEscape {
+                                sequence: c.to_string(),
+                            },
                         ))
-                        .with_code("L004")
                         .with_label(
                             Span::new(byte_offset + col - 1, byte_offset + col + 1),
                             format!("invalid escape '\\{}'", c),
                         ));
                     }
                     None => {
-                        return Err(Diagnostic::error(format!(
-                            "Unterminated escape sequence at line {}",
-                            line_no
-                        ))
-                        .with_code("L002"));
+                        return Err(Diagnostic::from_template(
+                            DiagnosticTemplate::UnterminatedString(UnterminatedString),
+                        )
+                        .with_note(format!("unterminated escape sequence at line {}", line_no)));
                     }
                 }
             }
@@ -201,11 +209,13 @@ fn lex_string_full(
                         col += 1;
                     } else if ch == '"' {
                         // Don't allow unescaped quotes inside interpolation
-                        return Err(Diagnostic::error(format!(
-                            "Unexpected '\"' inside string interpolation at line {}",
+                        return Err(Diagnostic::from_template(
+                            DiagnosticTemplate::UnterminatedString(UnterminatedString),
+                        )
+                        .with_note(format!(
+                            "unexpected '\"' inside string interpolation at line {}",
                             line_no
                         ))
-                        .with_code("L002")
                         .with_label(
                             Span::new(ls + col, ls + col + 1),
                             "unexpected quote in interpolation",
@@ -217,11 +227,13 @@ fn lex_string_full(
                     }
                 }
                 if brace_depth != 0 {
-                    return Err(Diagnostic::error(format!(
-                        "Unterminated string interpolation at line {}",
+                    return Err(Diagnostic::from_template(
+                        DiagnosticTemplate::UnterminatedString(UnterminatedString),
+                    )
+                    .with_note(format!(
+                        "unterminated string interpolation at line {}",
                         line_no
-                    ))
-                    .with_code("L002"));
+                    )));
                 }
                 // Lex the expression text into tokens
                 // We need to produce tokens with correct positions
@@ -268,11 +280,13 @@ fn lex_string_full(
                             end: ls + expr_col,
                         });
                     } else {
-                        return Err(Diagnostic::error(format!(
-                            "Unexpected character '{}' in string interpolation at line {}",
+                        return Err(Diagnostic::from_template(
+                            DiagnosticTemplate::InterpolationError(InterpolationError),
+                        )
+                        .with_note(format!(
+                            "unexpected character '{}' in string interpolation at line {}",
                             ech, line_no
                         ))
-                        .with_code("L001")
                         .with_label(
                             Span::new(tok_start, tok_start + 1),
                             "unexpected character in interpolation",
@@ -286,22 +300,24 @@ fn lex_string_full(
                 s.push(c);
                 col += c.len_utf8();
                 if s.len() > MAX_STRING_LENGTH {
-                    return Err(Diagnostic::error(format!(
-                        "String literal exceeds maximum length of {} at line {}",
-                        MAX_STRING_LENGTH, line_no
+                    return Err(Diagnostic::from_template(DiagnosticTemplate::StringTooLong(
+                        StringTooLong,
                     ))
-                    .with_code("L005"));
+                    .with_note(format!(
+                        "string literal exceeds maximum length of {} at line {}",
+                        MAX_STRING_LENGTH, line_no
+                    )));
                 }
             }
             None => {
-                return Err(
-                    Diagnostic::error(format!("Unterminated string at line {}", line_no))
-                        .with_code("L002")
-                        .with_label(
-                            Span::new(byte_offset, byte_offset + col),
-                            "string starts here but is never closed",
-                        ),
-                );
+                return Err(Diagnostic::from_template(DiagnosticTemplate::UnterminatedString(
+                    UnterminatedString,
+                ))
+                .with_note(format!("unterminated string at line {}", line_no))
+                .with_label(
+                    Span::new(byte_offset, byte_offset + col),
+                    "string starts here but is never closed",
+                ));
             }
         }
     }
@@ -382,33 +398,33 @@ fn lex_number(
     }
     if is_float {
         let v = num.parse::<f64>().map_err(|_| {
-            Diagnostic::error(format!("bad float at line {}", line_no))
-                .with_code("L006")
-                .with_label(
-                    Span::new(byte_offset, byte_offset + num.len()),
-                    "invalid float literal",
-                )
+            Diagnostic::from_template(DiagnosticTemplate::BadFloatLiteral(BadFloatLiteral {
+                line: line_no,
+            }))
+            .with_label(
+                Span::new(byte_offset, byte_offset + num.len()),
+                "invalid float literal",
+            )
         })?;
         Ok((Float(v), col))
     } else {
         let v = num.parse::<i64>().map_err(|e| {
             let msg = e.to_string();
             if msg.contains("too large") || msg.contains("too small") || msg.contains("overflow") {
-                Diagnostic::error(format!(
-                    "Integer literal '{}' overflows i64 range at line {}",
-                    num, line_no
-                ))
-                .with_code("L007")
-                .with_label(
-                    Span::new(byte_offset, byte_offset + num.len()),
-                    "overflows i64",
-                )
+                Diagnostic::from_template(DiagnosticTemplate::IntegerOverflow(IntegerOverflow))
+                    .with_note(format!(
+                        "integer literal '{}' overflows i64 range at line {}",
+                        num, line_no
+                    ))
+                    .with_label(
+                        Span::new(byte_offset, byte_offset + num.len()),
+                        "overflows i64",
+                    )
             } else {
-                Diagnostic::error(format!(
-                    "Invalid integer literal '{}' at line {}",
-                    num, line_no
-                ))
-                .with_code("L006")
+                Diagnostic::from_template(DiagnosticTemplate::BadFloatLiteral(BadFloatLiteral {
+                    line: line_no,
+                }))
+                .with_note(format!("invalid integer literal '{}' at line {}", num, line_no))
                 .with_label(
                     Span::new(byte_offset, byte_offset + num.len()),
                     "invalid integer",
@@ -500,12 +516,12 @@ pub fn lex(input: &str) -> Result<Vec<Token>, Diagnostic> {
     use TokenKind::*;
 
     if input.len() > MAX_INPUT_SIZE {
-        return Err(Diagnostic::error(format!(
-            "Input too large: {} bytes exceeds maximum of {} bytes",
-            input.len(),
-            MAX_INPUT_SIZE
-        ))
-        .with_code("L008"));
+        return Err(Diagnostic::from_template(DiagnosticTemplate::MissingNewline(MissingNewline))
+            .with_note(format!(
+                "input too large: {} bytes exceeds maximum of {} bytes",
+                input.len(),
+                MAX_INPUT_SIZE
+            )));
     }
 
     let line_starts = compute_line_starts(input);
@@ -529,12 +545,10 @@ pub fn lex(input: &str) -> Result<Vec<Token>, Diagnostic> {
                 leading.contains('\t')
             })
         {
-            return Err(Diagnostic::error(format!(
-                "Tab indentation is not allowed at line {}",
-                line_no
-            ))
-            .with_code("L003")
-            .with_label(Span::new(ls, ls + 1), "tab character found here"));
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::TabIndentation(TabIndentation))
+                    .with_label(Span::new(ls, ls + 1), "tab character found here"),
+            );
         }
 
         let indent_width = raw.chars().take_while(|c| *c == ' ').count();
@@ -582,11 +596,10 @@ pub fn lex(input: &str) -> Result<Vec<Token>, Diagnostic> {
                     }
                 }
                 if indent_stack.last().copied().unwrap_or(0) != indent_width {
-                    return Err(Diagnostic::error(format!(
-                        "Indentation error at line {}",
-                        line_no
+                    return Err(Diagnostic::from_template(DiagnosticTemplate::TabIndentation(
+                        TabIndentation,
                     ))
-                    .with_code("L003")
+                    .with_note(format!("indentation error at line {}", line_no))
                     .with_label(Span::new(ls, ls + indent_width), "unexpected indent level"));
                 }
             }
@@ -770,11 +783,10 @@ pub fn lex(input: &str) -> Result<Vec<Token>, Diagnostic> {
                 }
 
                 _ => {
-                    return Err(Diagnostic::error(format!(
-                        "Unexpected character '{}' at line {}",
-                        ch, line_no
+                    return Err(Diagnostic::from_template(DiagnosticTemplate::InterpolationError(
+                        InterpolationError,
                     ))
-                    .with_code("L001")
+                    .with_note(format!("unexpected character '{}' at line {}", ch, line_no))
                     .with_label(
                         Span::new(tok_start, tok_start + ch.len_utf8()),
                         "unexpected character",

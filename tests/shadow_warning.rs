@@ -6,7 +6,7 @@ use ast::Severity;
 fn shadow_warnings(src: &str) -> Vec<ast::Diagnostic> {
     common::check_warnings(src)
         .into_iter()
-        .filter(|d| d.severity == Severity::Warning && d.code.as_deref() == Some("W003"))
+        .filter(|d| d.severity == Severity::Warning && d.code() == Some("W003"))
         .collect()
 }
 
@@ -219,7 +219,7 @@ if true
 ";
     let warnings = shadow_warnings(src);
     assert!(!warnings.is_empty(), "expected a shadow warning");
-    assert_eq!(warnings[0].code.as_deref(), Some("W003"));
+    assert_eq!(warnings[0].code(), Some("W003"));
 }
 
 #[test]

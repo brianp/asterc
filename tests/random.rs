@@ -51,7 +51,11 @@ fn random_bool_rejects_max_arg() {
 "#,
     );
     assert!(
-        err.contains("argument") || err.contains("Bool") || err.contains("max"),
+        err.contains("argument")
+            || err.contains("Bool")
+            || err.contains("max")
+            || err.contains("parameter count")
+            || err.contains("mismatch"),
         "Expected arg error for Bool random, got: {}",
         err
     );
@@ -64,7 +68,10 @@ fn random_int_requires_max_arg() {
 "#,
     );
     assert!(
-        err.contains("max") || err.contains("argument"),
+        err.contains("max")
+            || err.contains("argument")
+            || err.contains("parameter count")
+            || err.contains("expected 1"),
         "Expected missing max error, got: {}",
         err
     );

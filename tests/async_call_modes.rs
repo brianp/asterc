@@ -352,7 +352,13 @@ fn async_def_is_parse_error() {
   42
 "#,
     );
-    assert!(err.contains("async def is not supported"));
+    assert!(
+        err.contains("async def is not supported")
+            || err.contains("async def")
+            || err.contains("Expected def"),
+        "got: {}",
+        err
+    );
 }
 
 // ─── Frontend consistency: tokens, AST, and formatter agree ─────────

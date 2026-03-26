@@ -9,6 +9,8 @@ use std::rc::Rc;
 
 use ariadne::{Color, Label, Report, ReportKind, Source};
 
+use ast::templates::DiagnosticTemplate;
+use ast::templates::type_errors::NotCompilable;
 use ast::{Diagnostic, Severity};
 use codegen::config::{BuildConfig, OptLevel, Profile};
 use fir::lower::LowerError;
@@ -35,7 +37,7 @@ fn render_diagnostic(source: &str, filename: &str, diag: &Diagnostic) {
 
     let mut report = Report::build(kind, filename, offset);
 
-    if let Some(ref code) = diag.code {
+    if let Some(code) = diag.code() {
         report = report.with_code(code);
     }
 
@@ -176,9 +178,12 @@ fn frontend_and_lower(source: &str, filename: &str) -> fir::FirModule {
         render_diagnostic(
             source,
             filename,
-            &Diagnostic::error("no main() function found")
-                .with_code("E026")
-                .with_note("add a `def main() -> Int` function as the program entry point"),
+            &Diagnostic::from_template(DiagnosticTemplate::NotCompilable(
+                NotCompilable {
+                    message: "no main() function found".to_string(),
+                },
+            ))
+            .with_note("add a `def main() -> Int` function as the program entry point"),
         );
         std::process::exit(1);
     }
@@ -427,21 +432,25 @@ fn render_execution_error(source: &str, filename: &str, err: &LowerError) {
     match err {
         LowerError::UnsupportedFeature(kind, _) => {
             let detail = kind.detail();
-            let diag = Diagnostic::error(format!(
-                "execution support for {detail} is not executable yet"
+            let diag = Diagnostic::from_template(DiagnosticTemplate::NotCompilable(
+                NotCompilable {
+                    message: format!("execution support for {detail} is not executable yet"),
+                },
             ))
-            .with_code("E028")
             .with_label(span, format!("{detail} cannot be compiled yet"))
             .with_note("this file can still pass `asterc check` while `run` and `build` reject it");
             render_diagnostic(source, filename, &diag);
         }
         LowerError::UnboundVariable(name, _) => {
-            let diag = Diagnostic::error(format!("unbound variable '{name}' during lowering"))
-                .with_code("E028")
-                .with_label(span, "not found in lowered scope")
-                .with_note(
-                    "this file can still pass `asterc check` while `run` and `build` reject it",
-                );
+            let diag = Diagnostic::from_template(DiagnosticTemplate::NotCompilable(
+                NotCompilable {
+                    message: format!("unbound variable '{name}' during lowering"),
+                },
+            ))
+            .with_label(span, "not found in lowered scope")
+            .with_note(
+                "this file can still pass `asterc check` while `run` and `build` reject it",
+            );
             render_diagnostic(source, filename, &diag);
         }
     }

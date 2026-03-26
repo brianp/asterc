@@ -1,4 +1,7 @@
-use ast::{Diagnostic, Span, Type};
+use ast::{
+    Diagnostic, Span, Type,
+    templates::{DiagnosticTemplate, parse_errors::*},
+};
 use lexer::TokenKind;
 
 use crate::Parser;
@@ -14,11 +17,13 @@ impl Parser {
                 start: tok.start,
                 end: tok.end,
             };
-            return Err(Diagnostic::error(
-                "Bare parenthesized function types are not supported. Use Fn(T) -> R instead",
-            )
-            .with_code("P001")
-            .with_label(span, "use Fn(...) -> R for function types"));
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                    expected: "Fn(T) -> R function type".to_string(),
+                    found: "bare parenthesized function type".to_string(),
+                }))
+                .with_label(span, "use Fn(...) -> R for function types"),
+            );
         }
 
         let name_tok = self.advance();
@@ -30,9 +35,11 @@ impl Parser {
                     end: name_tok.end,
                 };
                 return Err(
-                    Diagnostic::error(format!("Expected type name, got `{}`", t))
-                        .with_code("P001")
-                        .with_label(span, "not a valid type name"),
+                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                        expected: "type name".to_string(),
+                        found: format!("`{}`", t),
+                    }))
+                    .with_label(span, "not a valid type name"),
                 );
             }
         };
@@ -53,15 +60,16 @@ impl Parser {
             _ => None,
         };
         if let Some(correct) = correct {
-            return Err(Diagnostic::error(format!(
-                "Unknown type '{}'. Did you mean '{}'?",
-                name, correct
-            ))
-            .with_code("P001")
-            .with_label(
-                self.span_from(self.pos - 1),
-                format!("use '{}' instead", correct),
-            ));
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                    expected: format!("'{}'", correct),
+                    found: format!("'{}'", name),
+                }))
+                .with_label(
+                    self.span_from(self.pos - 1),
+                    format!("use '{}' instead", correct),
+                ),
+            );
         }
 
         // Function type: Fn(T, U) -> R
@@ -151,9 +159,11 @@ impl Parser {
                     end: tok.end,
                 };
                 return Err(
-                    Diagnostic::error("Nested nullable types (T??) are not allowed")
-                        .with_code("P001")
-                        .with_label(span, "remove this second '?'"),
+                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                        expected: "type annotation".to_string(),
+                        found: "'?' (nested nullable types T?? are not allowed)".to_string(),
+                    }))
+                    .with_label(span, "remove this second '?'"),
                 );
             }
             // Don't allow Nullable(Nullable(...))
@@ -163,9 +173,13 @@ impl Parser {
                     start: tok.start,
                     end: tok.end,
                 };
-                return Err(Diagnostic::error("Nested nullable types are not allowed")
-                    .with_code("P001")
-                    .with_label(span, "type is already nullable"));
+                return Err(
+                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                        expected: "type annotation".to_string(),
+                        found: "'?' (type is already nullable)".to_string(),
+                    }))
+                    .with_label(span, "type is already nullable"),
+                );
             }
             Ok(Type::Nullable(Box::new(base)))
         } else {

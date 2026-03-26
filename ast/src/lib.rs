@@ -3,6 +3,7 @@
 pub mod diagnostic;
 pub mod expr;
 pub mod span;
+pub mod templates;
 pub mod type_env;
 pub mod type_table;
 pub mod types;

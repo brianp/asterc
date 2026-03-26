@@ -244,10 +244,11 @@ fn lexes_strings_including_empty_and_reports_unterminated() {
 
     let bad = "\"unterminated\nnext";
     let err = lex(bad).unwrap_err();
-    let msg = err.to_string();
-    assert!(
-        msg.contains("Unterminated string at line 1"),
-        "unexpected error: {msg}"
+    assert_eq!(
+        err.code(),
+        Some("L002"),
+        "expected L002 (UnterminatedString), got: {}",
+        err
     );
 }
 
@@ -450,10 +451,11 @@ def x
   two
 ";
     let err = lex(src).unwrap_err();
-    let msg = err.to_string();
-    assert!(
-        msg.contains("Indentation error at line 3"),
-        "unexpected error: {msg}"
+    assert_eq!(
+        err.code(),
+        Some("L003"),
+        "expected L003 (TabIndentation), got: {}",
+        err
     );
 }
 
