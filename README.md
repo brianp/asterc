@@ -1,6 +1,6 @@
 # Aster
 
-![aster](aster.png)
+<p align="center"><img src="aster.png" width="120" alt="aster"></p>
 
 Writing code should feel good. Not wrestling-with-the-type-system good. Not finally-got-the-semicolons-right good. Actually good, where you think the thing, write the thing, and the thing works.
 
@@ -155,25 +155,25 @@ File issues using the templates. Pick Bug, Feature Request, or Gap depending on 
 
 ### Issue labels
 
-| Label | What it's for |
-|-------|---------------|
-| `bug` | Something that's broken |
-| `feature` | New language feature or capability |
-| `gap` | Specced or planned but not yet implemented |
-| `soundness` | Type system or runtime correctness |
-| `security` | Security concern or hardening |
-| `critical` | Must fix before next milestone |
-| `high` | Important, address soon |
-| `medium` | Should get done, not urgent |
-| `low` | Nice to have, no rush |
-| `type-system` | Type checker, inference, generics, traits |
-| `codegen` | JIT, AOT, FIR lowering, runtime |
-| `tooling` | CLI, formatter, LSP, REPL |
-| `async` | Concurrency, channels, tasks |
-| `error-handling` | throws, catch, propagation, Error types |
-| `stdlib` | Standard library modules and builtins |
-| `parser` | Parsing, syntax, lexer |
-| `rfc` | Tied to a specific RFC or design doc |
+| Label            | What it's for                              |
+| ---------------- | ------------------------------------------ |
+| `bug`            | Something that's broken                    |
+| `feature`        | New language feature or capability         |
+| `gap`            | Specced or planned but not yet implemented |
+| `soundness`      | Type system or runtime correctness         |
+| `security`       | Security concern or hardening              |
+| `critical`       | Must fix before next milestone             |
+| `high`           | Important, address soon                    |
+| `medium`         | Should get done, not urgent                |
+| `low`            | Nice to have, no rush                      |
+| `type-system`    | Type checker, inference, generics, traits  |
+| `codegen`        | JIT, AOT, FIR lowering, runtime            |
+| `tooling`        | CLI, formatter, LSP, REPL                  |
+| `async`          | Concurrency, channels, tasks               |
+| `error-handling` | throws, catch, propagation, Error types    |
+| `stdlib`         | Standard library modules and builtins      |
+| `parser`         | Parsing, syntax, lexer                     |
+| `rfc`            | Tied to a specific RFC or design doc       |
 
 ## License
 
