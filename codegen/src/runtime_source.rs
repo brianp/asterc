@@ -79,6 +79,201 @@ int64_t aster_string_len(void* ptr) {
     return len < 0 ? 0 : len;
 }
 
+/* Helper: extract UTF-8 data pointer and byte length from heap string */
+static void string_data(void *ptr, const char **out_data, int64_t *out_len) {
+    if (!ptr) { *out_data = ""; *out_len = 0; return; }
+    int64_t len = *(int64_t*)ptr;
+    if (len < 0) len = 0;
+    *out_data = (const char*)ptr + 8;
+    *out_len = len;
+}
+
+/* Count Unicode scalar values (codepoints) in a UTF-8 string */
+int64_t aster_string_char_len(void* ptr) {
+    const char *data; int64_t byte_len;
+    string_data(ptr, &data, &byte_len);
+    int64_t count = 0;
+    for (int64_t i = 0; i < byte_len; ) {
+        unsigned char c = (unsigned char)data[i];
+        if (c < 0x80) i += 1;
+        else if (c < 0xE0) i += 2;
+        else if (c < 0xF0) i += 3;
+        else i += 4;
+        count++;
+    }
+    return count;
+}
+
+int8_t aster_string_contains(void* haystack, void* needle) {
+    const char *h, *n; int64_t hlen, nlen;
+    string_data(haystack, &h, &hlen);
+    string_data(needle, &n, &nlen);
+    if (nlen == 0) return 1;
+    if (nlen > hlen) return 0;
+    for (int64_t i = 0; i <= hlen - nlen; i++) {
+        if (memcmp(h + i, n, (size_t)nlen) == 0) return 1;
+    }
+    return 0;
+}
+
+int8_t aster_string_starts_with(void* s, void* prefix) {
+    const char *sd, *pd; int64_t slen, plen;
+    string_data(s, &sd, &slen);
+    string_data(prefix, &pd, &plen);
+    if (plen > slen) return 0;
+    return memcmp(sd, pd, (size_t)plen) == 0 ? 1 : 0;
+}
+
+int8_t aster_string_ends_with(void* s, void* suffix) {
+    const char *sd, *sf; int64_t slen, sflen;
+    string_data(s, &sd, &slen);
+    string_data(suffix, &sf, &sflen);
+    if (sflen > slen) return 0;
+    return memcmp(sd + slen - sflen, sf, (size_t)sflen) == 0 ? 1 : 0;
+}
+
+void* aster_string_trim(void* ptr) {
+    const char *data; int64_t len;
+    string_data(ptr, &data, &len);
+    int64_t start = 0, end = len;
+    while (start < end && (data[start] == ' ' || data[start] == '\t' || data[start] == '\n' || data[start] == '\r')) start++;
+    while (end > start && (data[end-1] == ' ' || data[end-1] == '\t' || data[end-1] == '\n' || data[end-1] == '\r')) end--;
+    return aster_string_new((void*)(data + start), end - start);
+}
+
+void* aster_string_to_upper(void* ptr) {
+    const char *data; int64_t len;
+    string_data(ptr, &data, &len);
+    /* Allocate worst case (UTF-8 uppercase can expand) */
+    int64_t buf_cap = len * 4 + 8;
+    char *buf = (char*)malloc(buf_cap);
+    int64_t out = 0;
+    for (int64_t i = 0; i < len; ) {
+        unsigned char c = (unsigned char)data[i];
+        if (c < 0x80) {
+            buf[out++] = (c >= 'a' && c <= 'z') ? c - 32 : c;
+            i++;
+        } else {
+            /* Pass non-ASCII bytes through unchanged */
+            buf[out++] = data[i++];
+        }
+    }
+    void *result = aster_string_new(buf, out);
+    free(buf);
+    return result;
+}
+
+void* aster_string_to_lower(void* ptr) {
+    const char *data; int64_t len;
+    string_data(ptr, &data, &len);
+    int64_t buf_cap = len * 4 + 8;
+    char *buf = (char*)malloc(buf_cap);
+    int64_t out = 0;
+    for (int64_t i = 0; i < len; ) {
+        unsigned char c = (unsigned char)data[i];
+        if (c < 0x80) {
+            buf[out++] = (c >= 'A' && c <= 'Z') ? c + 32 : c;
+            i++;
+        } else {
+            buf[out++] = data[i++];
+        }
+    }
+    void *result = aster_string_new(buf, out);
+    free(buf);
+    return result;
+}
+
+/* Map a character index to a byte offset in UTF-8 */
+static int64_t char_to_byte_offset(const char *data, int64_t byte_len, int64_t char_idx) {
+    int64_t chars = 0, i = 0;
+    while (i < byte_len && chars < char_idx) {
+        unsigned char c = (unsigned char)data[i];
+        if (c < 0x80) i += 1;
+        else if (c < 0xE0) i += 2;
+        else if (c < 0xF0) i += 3;
+        else i += 4;
+        chars++;
+    }
+    return i;
+}
+
+void* aster_string_slice(void* ptr, int64_t from, int64_t to) {
+    const char *data; int64_t byte_len;
+    string_data(ptr, &data, &byte_len);
+    int64_t char_count = aster_string_char_len(ptr);
+    if (from < 0) from = 0;
+    if (to < 0) to = 0;
+    if (from > char_count) from = char_count;
+    if (to > char_count) to = char_count;
+    if (from >= to) return aster_string_new(NULL, 0);
+    int64_t byte_start = char_to_byte_offset(data, byte_len, from);
+    int64_t byte_end = char_to_byte_offset(data, byte_len, to);
+    return aster_string_new((void*)(data + byte_start), byte_end - byte_start);
+}
+
+void* aster_string_replace(void* ptr, void* old_ptr, void* new_ptr) {
+    const char *s, *old_s, *new_s;
+    int64_t slen, olen, nlen;
+    string_data(ptr, &s, &slen);
+    string_data(old_ptr, &old_s, &olen);
+    string_data(new_ptr, &new_s, &nlen);
+    if (olen == 0) return aster_string_new((void*)s, slen);
+    /* Count occurrences */
+    int64_t count = 0;
+    for (int64_t i = 0; i <= slen - olen; i++) {
+        if (memcmp(s + i, old_s, (size_t)olen) == 0) { count++; i += olen - 1; }
+    }
+    if (count == 0) return aster_string_new((void*)s, slen);
+    int64_t result_len = slen + count * (nlen - olen);
+    char *buf = (char*)malloc(result_len);
+    int64_t out = 0;
+    for (int64_t i = 0; i < slen; ) {
+        if (i <= slen - olen && memcmp(s + i, old_s, (size_t)olen) == 0) {
+            memcpy(buf + out, new_s, (size_t)nlen);
+            out += nlen;
+            i += olen;
+        } else {
+            buf[out++] = s[i++];
+        }
+    }
+    void *result = aster_string_new(buf, result_len);
+    free(buf);
+    return result;
+}
+
+void* aster_string_split(void* ptr, void* sep_ptr) {
+    const char *s, *sep;
+    int64_t slen, seplen;
+    string_data(ptr, &s, &slen);
+    string_data(sep_ptr, &sep, &seplen);
+    /* Count parts */
+    int64_t count = 1;
+    if (seplen > 0) {
+        for (int64_t i = 0; i <= slen - seplen; i++) {
+            if (memcmp(s + i, sep, (size_t)seplen) == 0) { count++; i += seplen - 1; }
+        }
+    }
+    /* Allocate list: handle -> block [len][cap][elems...] */
+    void *block = aster_alloc(8 + 8 + count * 8);
+    *(int64_t*)block = count;
+    *((int64_t*)block + 1) = count;
+    int64_t *elems = (int64_t*)block + 2;
+    int64_t idx = 0, start = 0;
+    if (seplen > 0) {
+        for (int64_t i = 0; i <= slen - seplen; i++) {
+            if (memcmp(s + i, sep, (size_t)seplen) == 0) {
+                elems[idx++] = (int64_t)aster_string_new((void*)(s + start), i - start);
+                i += seplen - 1;
+                start = i + 1;
+            }
+        }
+    }
+    elems[idx++] = (int64_t)aster_string_new((void*)(s + start), slen - start);
+    void *handle = aster_alloc(8);
+    *(void**)handle = block;
+    return handle;
+}
+
 /* Overflow-checked integer arithmetic (interim until BigInt, see bigint-rfc.md). */
 int64_t aster_int_add(int64_t a, int64_t b) {
     int64_t result;

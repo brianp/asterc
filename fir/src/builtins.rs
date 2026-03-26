@@ -17,6 +17,17 @@ pub mod method {
     pub const PUSH: &str = "push";
     pub const RANDOM: &str = "random";
 
+    // String methods
+    pub const CONTAINS: &str = "contains";
+    pub const STARTS_WITH: &str = "starts_with";
+    pub const ENDS_WITH: &str = "ends_with";
+    pub const TRIM: &str = "trim";
+    pub const TO_UPPER: &str = "to_upper";
+    pub const TO_LOWER: &str = "to_lower";
+    pub const SLICE: &str = "slice";
+    pub const REPLACE: &str = "replace";
+    pub const SPLIT: &str = "split";
+
     // Iterable vocabulary
     pub const MAP: &str = "map";
     pub const FILTER: &str = "filter";

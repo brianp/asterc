@@ -24,6 +24,40 @@ pub static RUNTIME_SIGS: &[RuntimeSig] = &[
         Some(types::I64),
     ),
     ("aster_string_len", &[types::I64], Some(types::I64)),
+    ("aster_string_char_len", &[types::I64], Some(types::I64)),
+    (
+        "aster_string_contains",
+        &[types::I64, types::I64],
+        Some(types::I8),
+    ),
+    (
+        "aster_string_starts_with",
+        &[types::I64, types::I64],
+        Some(types::I8),
+    ),
+    (
+        "aster_string_ends_with",
+        &[types::I64, types::I64],
+        Some(types::I8),
+    ),
+    ("aster_string_trim", &[types::I64], Some(types::I64)),
+    ("aster_string_to_upper", &[types::I64], Some(types::I64)),
+    ("aster_string_to_lower", &[types::I64], Some(types::I64)),
+    (
+        "aster_string_slice",
+        &[types::I64, types::I64, types::I64],
+        Some(types::I64),
+    ),
+    (
+        "aster_string_replace",
+        &[types::I64, types::I64, types::I64],
+        Some(types::I64),
+    ),
+    (
+        "aster_string_split",
+        &[types::I64, types::I64],
+        Some(types::I64),
+    ),
     (
         "aster_string_eq",
         &[types::I64, types::I64],

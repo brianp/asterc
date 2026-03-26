@@ -1116,6 +1116,11 @@ impl TypeChecker {
             }
         }
 
+        // Handle String built-in methods
+        if obj_ty == Type::String {
+            return Self::check_string_member(field, object);
+        }
+
         // Handle List built-in methods (List implicitly includes Iterable)
         if let Type::List(ref inner) = obj_ty {
             return self.check_list_member(field, inner, object);
@@ -1567,6 +1572,38 @@ impl TypeChecker {
                 Diagnostic::error(format!("TcpStream has no method '{}'", field))
                     .with_code("E010")
                     .with_label(object.span(), format!("no member '{}' on TcpStream", field)),
+            ),
+        }
+    }
+
+    fn check_string_member(field: &str, object: &Expr) -> Result<Type, Diagnostic> {
+        match field {
+            "len" => Ok(Type::func(vec![], vec![], Type::Int)),
+            "contains" => Ok(Type::func(vec!["str".into()], vec![Type::String], Type::Bool)),
+            "starts_with" => Ok(Type::func(vec!["pre".into()], vec![Type::String], Type::Bool)),
+            "ends_with" => Ok(Type::func(vec!["suf".into()], vec![Type::String], Type::Bool)),
+            "trim" => Ok(Type::func(vec![], vec![], Type::String)),
+            "to_upper" => Ok(Type::func(vec![], vec![], Type::String)),
+            "to_lower" => Ok(Type::func(vec![], vec![], Type::String)),
+            "slice" => Ok(Type::func(
+                vec!["from".into(), "to".into()],
+                vec![Type::Int, Type::Int],
+                Type::String,
+            )),
+            "replace" => Ok(Type::func(
+                vec!["old".into(), "new".into()],
+                vec![Type::String, Type::String],
+                Type::String,
+            )),
+            "split" => Ok(Type::func(
+                vec!["sep".into()],
+                vec![Type::String],
+                Type::List(Box::new(Type::String)),
+            )),
+            _ => Err(
+                Diagnostic::error(format!("String has no method '{}'", field))
+                    .with_code("E010")
+                    .with_label(object.span(), format!("no member '{}' on String", field)),
             ),
         }
     }

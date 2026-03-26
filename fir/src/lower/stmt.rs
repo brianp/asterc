@@ -534,6 +534,8 @@ impl Lowerer {
                 // Track AST type for class resolution in field access
                 if let Some(ann) = type_ann {
                     self.local_ast_types.insert(name.clone(), ann.clone());
+                } else if matches!(value, Expr::Str(..)) {
+                    self.local_ast_types.insert(name.clone(), Type::String);
                 } else if matches!(value, Expr::Range { .. }) {
                     // Range expressions always produce Type::Custom("Range", [])
                     self.local_ast_types.insert(

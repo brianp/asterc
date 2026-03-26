@@ -115,13 +115,120 @@ pub extern "C" fn aster_string_concat(a: *const u8, b: *const u8) -> *mut u8 {
     }
 }
 
-/// Get the length of a heap string.
+/// Get the byte length of a heap string.
 pub extern "C" fn aster_string_len(ptr: *const u8) -> i64 {
     if ptr.is_null() {
         return 0;
     }
     let raw = unsafe { *(ptr as *const i64) };
     if raw < 0 { 0 } else { raw }
+}
+
+/// Get the character (Unicode scalar) length of a heap string.
+pub extern "C" fn aster_string_char_len(ptr: *const u8) -> i64 {
+    let s = unsafe { aster_string_to_rust(ptr) };
+    s.chars().count() as i64
+}
+
+/// Check if a heap string contains a substring.
+pub extern "C" fn aster_string_contains(haystack: *const u8, needle: *const u8) -> i8 {
+    let h = unsafe { aster_string_to_rust(haystack) };
+    let n = unsafe { aster_string_to_rust(needle) };
+    if h.contains(&n) { 1 } else { 0 }
+}
+
+/// Check if a heap string starts with a prefix.
+pub extern "C" fn aster_string_starts_with(s: *const u8, prefix: *const u8) -> i8 {
+    let s = unsafe { aster_string_to_rust(s) };
+    let p = unsafe { aster_string_to_rust(prefix) };
+    if s.starts_with(&p) { 1 } else { 0 }
+}
+
+/// Check if a heap string ends with a suffix.
+pub extern "C" fn aster_string_ends_with(s: *const u8, suffix: *const u8) -> i8 {
+    let s = unsafe { aster_string_to_rust(s) };
+    let sf = unsafe { aster_string_to_rust(suffix) };
+    if s.ends_with(&sf) { 1 } else { 0 }
+}
+
+/// Trim leading and trailing whitespace from a heap string.
+pub extern "C" fn aster_string_trim(ptr: *const u8) -> *mut u8 {
+    let s = unsafe { aster_string_to_rust(ptr) };
+    let trimmed = s.trim();
+    aster_string_new(trimmed.as_ptr(), trimmed.len())
+}
+
+/// Convert a heap string to uppercase.
+pub extern "C" fn aster_string_to_upper(ptr: *const u8) -> *mut u8 {
+    let s = unsafe { aster_string_to_rust(ptr) };
+    let upper = s.to_uppercase();
+    aster_string_new(upper.as_ptr(), upper.len())
+}
+
+/// Convert a heap string to lowercase.
+pub extern "C" fn aster_string_to_lower(ptr: *const u8) -> *mut u8 {
+    let s = unsafe { aster_string_to_rust(ptr) };
+    let lower = s.to_lowercase();
+    aster_string_new(lower.as_ptr(), lower.len())
+}
+
+/// Slice a heap string by character indices [from, to), clamped to bounds.
+pub extern "C" fn aster_string_slice(ptr: *const u8, from: i64, to: i64) -> *mut u8 {
+    let s = unsafe { aster_string_to_rust(ptr) };
+    let char_count = s.chars().count();
+    let from = (from.max(0) as usize).min(char_count);
+    let to = (to.max(0) as usize).min(char_count);
+    if from >= to {
+        return aster_string_new(std::ptr::null(), 0);
+    }
+    // Map character indices to byte offsets
+    let byte_start = s.char_indices().nth(from).map(|(i, _)| i).unwrap_or(s.len());
+    let byte_end = if to == char_count {
+        s.len()
+    } else {
+        s.char_indices().nth(to).map(|(i, _)| i).unwrap_or(s.len())
+    };
+    let slice = &s[byte_start..byte_end];
+    aster_string_new(slice.as_ptr(), slice.len())
+}
+
+/// Replace all occurrences of `old` with `new` in a heap string.
+pub extern "C" fn aster_string_replace(
+    ptr: *const u8,
+    old: *const u8,
+    new: *const u8,
+) -> *mut u8 {
+    let s = unsafe { aster_string_to_rust(ptr) };
+    let old_s = unsafe { aster_string_to_rust(old) };
+    let new_s = unsafe { aster_string_to_rust(new) };
+    let result = s.replace(&old_s, &new_s);
+    aster_string_new(result.as_ptr(), result.len())
+}
+
+/// Split a heap string by a separator, returning a list of heap strings.
+pub extern "C" fn aster_string_split(ptr: *const u8, sep: *const u8) -> *mut u8 {
+    let s = unsafe { aster_string_to_rust(ptr) };
+    let sep_s = unsafe { aster_string_to_rust(sep) };
+    let parts: Vec<&str> = s.split(&sep_s).collect();
+    let count = parts.len();
+
+    // Create a list handle -> block: [len: i64][cap: i64][elems: i64...]
+    let block_size = 8 + 8 + count * 8; // len + cap + elements
+    let block = aster_alloc(block_size) as *mut i64;
+    unsafe {
+        *block = count as i64;         // len
+        *block.add(1) = count as i64;  // cap
+        for (i, part) in parts.iter().enumerate() {
+            let heap_str = aster_string_new(part.as_ptr(), part.len());
+            *block.add(2 + i) = heap_str as i64;
+        }
+    }
+    // Wrap in a handle (pointer to block pointer)
+    let handle = aster_alloc(8) as *mut *mut i64;
+    unsafe {
+        *handle = block;
+    }
+    handle as *mut u8
 }
 
 // ---------------------------------------------------------------------------
@@ -1834,6 +1941,34 @@ pub fn runtime_builtin_symbols() -> Vec<(&'static str, *const u8)> {
         ("aster_string_len", aster_string_len as *const u8),
         ("aster_string_eq", aster_string_eq as *const u8),
         ("aster_string_compare", aster_string_compare as *const u8),
+        (
+            "aster_string_char_len",
+            aster_string_char_len as *const u8,
+        ),
+        (
+            "aster_string_contains",
+            aster_string_contains as *const u8,
+        ),
+        (
+            "aster_string_starts_with",
+            aster_string_starts_with as *const u8,
+        ),
+        (
+            "aster_string_ends_with",
+            aster_string_ends_with as *const u8,
+        ),
+        ("aster_string_trim", aster_string_trim as *const u8),
+        (
+            "aster_string_to_upper",
+            aster_string_to_upper as *const u8,
+        ),
+        (
+            "aster_string_to_lower",
+            aster_string_to_lower as *const u8,
+        ),
+        ("aster_string_slice", aster_string_slice as *const u8),
+        ("aster_string_replace", aster_string_replace as *const u8),
+        ("aster_string_split", aster_string_split as *const u8),
         ("aster_list_new", aster_list_new as *const u8),
         ("aster_list_get", aster_list_get as *const u8),
         ("aster_list_random", aster_list_random as *const u8),

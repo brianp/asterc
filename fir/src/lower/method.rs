@@ -115,6 +115,7 @@ impl Lowerer {
             .cloned()
             .or_else(|| match object {
                 Expr::Ident(name, _) => self.local_ast_types.get(name).cloned(),
+                Expr::Str(..) => Some(Type::String),
                 _ => None,
             });
 
@@ -502,6 +503,91 @@ impl Lowerer {
             });
         }
 
+        // Check for String built-in methods
+        if matches!(object_ast_ty, Some(Type::String)) {
+            match method {
+                builtin_method::LEN => {
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_string_char_len".to_string(),
+                        args: vec![fir_object],
+                        ret_ty: FirType::I64,
+                    });
+                }
+                builtin_method::CONTAINS => {
+                    let substr = self.lower_first_arg(args)?;
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_string_contains".to_string(),
+                        args: vec![fir_object, substr],
+                        ret_ty: FirType::Bool,
+                    });
+                }
+                builtin_method::STARTS_WITH => {
+                    let prefix = self.lower_first_arg(args)?;
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_string_starts_with".to_string(),
+                        args: vec![fir_object, prefix],
+                        ret_ty: FirType::Bool,
+                    });
+                }
+                builtin_method::ENDS_WITH => {
+                    let suffix = self.lower_first_arg(args)?;
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_string_ends_with".to_string(),
+                        args: vec![fir_object, suffix],
+                        ret_ty: FirType::Bool,
+                    });
+                }
+                builtin_method::TRIM => {
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_string_trim".to_string(),
+                        args: vec![fir_object],
+                        ret_ty: FirType::Ptr,
+                    });
+                }
+                builtin_method::TO_UPPER => {
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_string_to_upper".to_string(),
+                        args: vec![fir_object],
+                        ret_ty: FirType::Ptr,
+                    });
+                }
+                builtin_method::TO_LOWER => {
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_string_to_lower".to_string(),
+                        args: vec![fir_object],
+                        ret_ty: FirType::Ptr,
+                    });
+                }
+                builtin_method::SLICE => {
+                    let from_arg = self.lower_named_or_positional_arg(args, "from", 0)?;
+                    let to_arg = self.lower_named_or_positional_arg(args, "to", 1)?;
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_string_slice".to_string(),
+                        args: vec![fir_object, from_arg, to_arg],
+                        ret_ty: FirType::Ptr,
+                    });
+                }
+                builtin_method::REPLACE => {
+                    let old_arg = self.lower_named_or_positional_arg(args, "old", 0)?;
+                    let new_arg = self.lower_named_or_positional_arg(args, "new", 1)?;
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_string_replace".to_string(),
+                        args: vec![fir_object, old_arg, new_arg],
+                        ret_ty: FirType::Ptr,
+                    });
+                }
+                builtin_method::SPLIT => {
+                    let sep = self.lower_first_arg(args)?;
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_string_split".to_string(),
+                        args: vec![fir_object, sep],
+                        ret_ty: FirType::Ptr,
+                    });
+                }
+                _ => {}
+            }
+        }
+
         // Check for list built-in methods
         match method {
             builtin_method::LEN => {
@@ -613,5 +699,33 @@ impl Lowerer {
             UnsupportedFeatureKind::Other(format!("method call: .{}()", method)),
             object.span(),
         ))
+    }
+
+    /// Lower the first argument of a method call (by name or position).
+    fn lower_first_arg(&mut self, args: &[(String, ast::Span, Expr)]) -> Result<FirExpr, LowerError> {
+        if let Some((_, _, arg)) = args.first() {
+            self.lower_expr(arg)
+        } else {
+            Ok(FirExpr::IntLit(0))
+        }
+    }
+
+    /// Lower a named argument, falling back to positional index.
+    fn lower_named_or_positional_arg(
+        &mut self,
+        args: &[(String, ast::Span, Expr)],
+        name: &str,
+        position: usize,
+    ) -> Result<FirExpr, LowerError> {
+        let arg_expr = args
+            .iter()
+            .find(|(n, _, _)| n == name)
+            .map(|(_, _, e)| e)
+            .or_else(|| args.get(position).map(|(_, _, e)| e));
+        if let Some(expr) = arg_expr {
+            self.lower_expr(expr)
+        } else {
+            Ok(FirExpr::IntLit(0))
+        }
     }
 }
