@@ -785,8 +785,8 @@ impl Lowerer {
     }
 
     fn resolve_function_ret_type_by_id(&self, id: FunctionId) -> FirType {
-        if let Some(func) = self.module.functions.iter().find(|f| f.id == id) {
-            func.ret_type.clone()
+        if (id.0 as usize) < self.module.functions.len() {
+            self.module.get_function(id).ret_type.clone()
         } else {
             FirType::Void
         }

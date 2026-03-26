@@ -176,3 +176,9 @@ pub struct Token {
     /// Byte offset one past the last character of this token in the source.
     pub end: usize,
 }
+
+impl Token {
+    pub fn span(&self) -> ast::Span {
+        ast::Span::new(self.start, self.end)
+    }
+}

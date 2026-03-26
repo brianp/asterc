@@ -78,8 +78,11 @@ impl BuildManifest {
 }
 
 fn chrono_now() -> String {
-    // Simple timestamp without external crate
-    format!("{:?}", std::time::SystemTime::now())
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .to_string()
 }
 
 /// Compute SHA-256 hash of a byte slice, returned as hex string.

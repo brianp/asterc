@@ -1,5 +1,5 @@
 use ast::{
-    Diagnostic, Span, Type,
+    Diagnostic, Type,
     templates::{DiagnosticTemplate, parse_errors::*},
 };
 use lexer::TokenKind;
@@ -13,16 +13,12 @@ impl Parser {
         // the parens are followed by ->, so future tuple types can use ( freely.
         if self.at(&TokenKind::LParen) && self.looks_like_bare_fn_type() {
             let tok = self.peek();
-            let span = Span {
-                start: tok.start,
-                end: tok.end,
-            };
             return Err(
                 Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
                     expected: "Fn(T) -> R function type".to_string(),
                     found: "bare parenthesized function type".to_string(),
                 }))
-                .with_label(span, "use Fn(...) -> R for function types"),
+                .with_label(tok.span(), "use Fn(...) -> R for function types"),
             );
         }
 
@@ -30,10 +26,6 @@ impl Parser {
         let name = match &name_tok.kind {
             TokenKind::Ident(n) => n.clone(),
             t => {
-                let span = Span {
-                    start: name_tok.start,
-                    end: name_tok.end,
-                };
                 return Err(
                     Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
                         UnexpectedToken {
@@ -41,7 +33,7 @@ impl Parser {
                             found: format!("`{}`", t),
                         },
                     ))
-                    .with_label(span, "not a valid type name"),
+                    .with_label(name_tok.span(), "not a valid type name"),
                 );
             }
         };
@@ -156,10 +148,6 @@ impl Parser {
             // No nested nullability: T?? is a compile error
             if self.at(&TokenKind::Question) {
                 let tok = self.peek();
-                let span = Span {
-                    start: tok.start,
-                    end: tok.end,
-                };
                 return Err(
                     Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
                         UnexpectedToken {
@@ -167,16 +155,12 @@ impl Parser {
                             found: "'?' (nested nullable types T?? are not allowed)".to_string(),
                         },
                     ))
-                    .with_label(span, "remove this second '?'"),
+                    .with_label(tok.span(), "remove this second '?'"),
                 );
             }
             // Don't allow Nullable(Nullable(...))
             if matches!(&base, Type::Nullable(_)) {
                 let tok = self.peek();
-                let span = Span {
-                    start: tok.start,
-                    end: tok.end,
-                };
                 return Err(
                     Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
                         UnexpectedToken {
@@ -184,7 +168,7 @@ impl Parser {
                             found: "'?' (type is already nullable)".to_string(),
                         },
                     ))
-                    .with_label(span, "type is already nullable"),
+                    .with_label(tok.span(), "type is already nullable"),
                 );
             }
             Ok(Type::Nullable(Box::new(base)))
@@ -202,7 +186,12 @@ impl Parser {
         let mut depth = 1u32;
         while let Some(tok) = self.tokens.get(i) {
             match tok.kind {
-                TokenKind::LParen => depth += 1,
+                TokenKind::LParen => {
+                    depth = depth.saturating_add(1);
+                    if depth > 100 {
+                        return false;
+                    }
+                }
                 TokenKind::RParen => {
                     depth -= 1;
                     if depth == 0 {

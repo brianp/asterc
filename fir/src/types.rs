@@ -9,7 +9,7 @@ pub struct ClassId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct LocalId(pub u32);
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FirType {
     I64,
     F64,
@@ -39,4 +39,3 @@ impl FirType {
     }
 }
 
-impl Eq for FirType {}

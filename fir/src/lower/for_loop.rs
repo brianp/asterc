@@ -58,15 +58,7 @@ impl Lowerer {
         self.local_types.insert(idx_id, FirType::I64);
 
         // Resolve element type from AST type info when available
-        let elem_ty = if let Expr::Ident(name, _) = iter {
-            if let Some(Type::List(inner)) = self.local_ast_types.get(name.as_str()) {
-                self.lower_type(inner)
-            } else {
-                FirType::I64
-            }
-        } else {
-            FirType::I64
-        };
+        let elem_ty = self.resolve_list_elem_type(iter).unwrap_or(FirType::I64);
 
         // let var = aster_list_get(__iter, __idx)
         let var_id = self.alloc_local();

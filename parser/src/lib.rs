@@ -81,7 +81,7 @@ impl Parser {
                     expected: format!("`{}`", kind),
                     found: format!("`{}`", token.kind),
                 }))
-                .with_label(Span::new(token.start, token.end), "unexpected token"),
+                .with_label(token.span(), "unexpected token"),
             )
         }
     }
@@ -233,10 +233,6 @@ impl Parser {
         let name = match &name_tok.kind {
             TokenKind::Ident(n) => n.clone(),
             t => {
-                let span = Span {
-                    start: name_tok.start,
-                    end: name_tok.end,
-                };
                 return Err(
                     Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
                         UnexpectedToken {
@@ -244,7 +240,7 @@ impl Parser {
                             found: format!("`{}`", t),
                         },
                     ))
-                    .with_label(span, "expected module name"),
+                    .with_label(name_tok.span(), "expected module name"),
                 );
             }
         };
@@ -258,17 +254,13 @@ impl Parser {
                 match &seg_tok.kind {
                     TokenKind::Ident(n) => n.clone(),
                     t => {
-                        let span = Span {
-                            start: seg_tok.start,
-                            end: seg_tok.end,
-                        };
                         return Err(Diagnostic::from_template(
                             DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
                                 expected: "module name after '/'".to_string(),
                                 found: format!("`{}`", t),
                             }),
                         )
-                        .with_label(span, "expected module name"));
+                        .with_label(seg_tok.span(), "expected module name"));
                     }
                 };
             path.push(seg);
@@ -284,17 +276,13 @@ impl Parser {
                     let n = match &n_tok.kind {
                         TokenKind::Ident(n) => n.clone(),
                         t => {
-                            let span = Span {
-                                start: n_tok.start,
-                                end: n_tok.end,
-                            };
                             return Err(Diagnostic::from_template(
                                 DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
                                     expected: "identifier in use list".to_string(),
                                     found: format!("`{}`", t),
                                 }),
                             )
-                            .with_label(span, "expected identifier"));
+                            .with_label(n_tok.span(), "expected identifier"));
                         }
                     };
                     names.push(n);
@@ -319,17 +307,13 @@ impl Parser {
                 match &a_tok.kind {
                     TokenKind::Ident(n) => n.clone(),
                     t => {
-                        let span = Span {
-                            start: a_tok.start,
-                            end: a_tok.end,
-                        };
                         return Err(Diagnostic::from_template(
                             DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
                                 expected: "alias name after 'as'".to_string(),
                                 found: format!("`{}`", t),
                             }),
                         )
-                        .with_label(span, "expected identifier"));
+                        .with_label(a_tok.span(), "expected identifier"));
                     }
                 };
             Some(a)
@@ -358,10 +342,6 @@ impl Parser {
             TokenKind::Use => self.parse_use(true),
             t => {
                 let tok = self.peek();
-                let span = Span {
-                    start: tok.start,
-                    end: tok.end,
-                };
                 Err(
                     Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
                         UnexpectedToken {
@@ -370,7 +350,7 @@ impl Parser {
                             found: format!("`{}`", t),
                         },
                     ))
-                    .with_label(span, "unexpected token after 'pub'"),
+                    .with_label(tok.span(), "unexpected token after 'pub'"),
                 )
             }
         }
@@ -426,10 +406,6 @@ impl Parser {
         let var = match &var_tok.kind {
             Ident(n) => n.clone(),
             t => {
-                let span = Span {
-                    start: var_tok.start,
-                    end: var_tok.end,
-                };
                 return Err(
                     Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
                         UnexpectedToken {
@@ -437,7 +413,7 @@ impl Parser {
                             found: format!("`{}`", t),
                         },
                     ))
-                    .with_label(span, "expected loop variable name"),
+                    .with_label(var_tok.span(), "expected loop variable name"),
                 );
             }
         };
@@ -460,16 +436,12 @@ impl Parser {
         let name = if let TokenKind::Ident(s) = name_tok.kind {
             s
         } else {
-            let span = Span {
-                start: name_tok.start,
-                end: name_tok.end,
-            };
             return Err(
                 Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
                     expected: format!("identifier after const at line {}", name_tok.line),
                     found: format!("`{}`", name_tok.kind),
                 }))
-                .with_label(span, "expected constant name"),
+                .with_label(name_tok.span(), "expected constant name"),
             );
         };
 
@@ -500,16 +472,12 @@ impl Parser {
         let name = if let TokenKind::Ident(s) = name_tok.kind {
             s
         } else {
-            let span = Span {
-                start: name_tok.start,
-                end: name_tok.end,
-            };
             return Err(
                 Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
                     expected: format!("identifier after let at line {}", name_tok.line),
                     found: format!("`{}`", name_tok.kind),
                 }))
-                .with_label(span, "expected variable name"),
+                .with_label(name_tok.span(), "expected variable name"),
             );
         };
 

@@ -28,7 +28,7 @@ impl Parser {
                     && self.peek_second_kind() == Some(&TokenKind::Colon);
                 if is_named {
                     let name_tok = self.advance();
-                    let name_span = Span::new(name_tok.start, name_tok.end);
+                    let name_span = name_tok.span();
                     let name = match name_tok.kind {
                         TokenKind::Ident(n) => n,
                         _ => unreachable!(),
@@ -302,17 +302,13 @@ impl Parser {
                     TokenKind::Or => "or".to_string(),
                     TokenKind::Catch => "catch".to_string(),
                     t => {
-                        let span = Span {
-                            start: next.start,
-                            end: next.end,
-                        };
                         return Err(Diagnostic::from_template(
                             DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
                                 expected: "field name after '.'".to_string(),
                                 found: format!("`{}`", t),
                             }),
                         )
-                        .with_label(span, "unexpected token"));
+                        .with_label(next.span(), "unexpected token"));
                     }
                 };
                 expr = Expr::Member {
@@ -351,17 +347,13 @@ impl Parser {
                     let var = match &var_tok.kind {
                         Ident(v) => v.clone(),
                         t => {
-                            let span = Span {
-                                start: var_tok.start,
-                                end: var_tok.end,
-                            };
                             return Err(Diagnostic::from_template(
                                 DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
                                     expected: format!("variable name after error type '{}'", tname),
                                     found: format!("`{}`", t),
                                 }),
                             )
-                            .with_label(span, "expected variable name"));
+                            .with_label(var_tok.span(), "expected variable name"));
                         }
                     };
                     ErrorCatchPattern::Typed {
@@ -372,10 +364,6 @@ impl Parser {
                 }
                 t => {
                     let tok = self.peek();
-                    let span = Span {
-                        start: tok.start,
-                        end: tok.end,
-                    };
                     return Err(
                         Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
                             UnexpectedToken {
@@ -383,7 +371,7 @@ impl Parser {
                                 found: format!("`{}`", t),
                             },
                         ))
-                        .with_label(span, "unexpected token"),
+                        .with_label(tok.span(), "unexpected token"),
                     );
                 }
             };
@@ -425,10 +413,6 @@ impl Parser {
                     }
                     t => {
                         let tok = self.peek();
-                        let span = Span {
-                            start: tok.start,
-                            end: tok.end,
-                        };
                         Err(
                             Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
                                 UnexpectedToken {
@@ -436,7 +420,7 @@ impl Parser {
                                     found: format!("`{}`", t),
                                 },
                             ))
-                            .with_label(span, "expected numeric literal"),
+                            .with_label(tok.span(), "expected numeric literal"),
                         )
                     }
                 }
@@ -500,17 +484,13 @@ impl Parser {
                         });
                     } else {
                         let tok = self.peek();
-                        let span = Span {
-                            start: tok.start,
-                            end: tok.end,
-                        };
                         return Err(Diagnostic::from_template(
                             DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
                                 expected: "variant name after '.' in enum pattern".to_string(),
                                 found: format!("`{}`", self.peek().kind),
                             }),
                         )
-                        .with_label(span, "expected variant name"));
+                        .with_label(tok.span(), "expected variant name"));
                     }
                 }
                 let span = self.span_from(start);
@@ -522,10 +502,6 @@ impl Parser {
             }
             t => {
                 let tok = self.peek();
-                let span = Span {
-                    start: tok.start,
-                    end: tok.end,
-                };
                 Err(
                     Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
                         UnexpectedToken {
@@ -533,7 +509,7 @@ impl Parser {
                             found: format!("`{}`", t),
                         },
                     ))
-                    .with_label(span, "not a valid pattern"),
+                    .with_label(tok.span(), "not a valid pattern"),
                 )
             }
         }
@@ -742,10 +718,6 @@ impl Parser {
                 self.advance();
                 if !self.at(&Async) {
                     let tok = self.peek();
-                    let span = Span {
-                        start: tok.start,
-                        end: tok.end,
-                    };
                     return Err(
                         Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
                             UnexpectedToken {
@@ -753,7 +725,7 @@ impl Parser {
                                 found: format!("`{}`", self.peek().kind),
                             },
                         ))
-                        .with_label(span, "expected 'async' here"),
+                        .with_label(tok.span(), "expected 'async' here"),
                     );
                 }
                 self.advance();
@@ -782,7 +754,6 @@ impl Parser {
             }
             t => {
                 let tok = self.peek();
-                let span = Span::new(tok.start, tok.end);
                 Err(
                     Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
                         UnexpectedToken {
@@ -790,7 +761,7 @@ impl Parser {
                             found: format!("`{}`", t),
                         },
                     ))
-                    .with_label(span, "not expected here"),
+                    .with_label(tok.span(), "not expected here"),
                 )
             }
         }
@@ -841,10 +812,6 @@ impl Parser {
                 }
                 t => {
                     let tok = self.peek();
-                    let span = Span {
-                        start: tok.start,
-                        end: tok.end,
-                    };
                     return Err(
                         Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
                             UnexpectedToken {
@@ -852,7 +819,7 @@ impl Parser {
                                 found: format!("`{}`", t),
                             },
                         ))
-                        .with_label(span, "unexpected token in string interpolation"),
+                        .with_label(tok.span(), "unexpected token in string interpolation"),
                     );
                 }
             }
@@ -898,17 +865,13 @@ impl Parser {
                 match &ptok.kind {
                     Ident(n) => n.clone(),
                     t => {
-                        let span = Span {
-                            start: ptok.start,
-                            end: ptok.end,
-                        };
                         return Err(Diagnostic::from_template(
                             DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
                                 expected: "parameter name".to_string(),
                                 found: format!("`{}`", t),
                             }),
                         )
-                        .with_label(span, "expected identifier"));
+                        .with_label(ptok.span(), "expected identifier"));
                     }
                 };
             params.push((pname, ast::Type::Inferred));

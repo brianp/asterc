@@ -1580,14 +1580,7 @@ impl TypeChecker {
             Type::Custom(n, _) => n,
             _ => return false,
         };
-        for ancestor in self.walk_ancestors(child_name) {
-            if let Type::Custom(ref n, _) = ancestor.ty
-                && n == parent_name
-            {
-                return true;
-            }
-        }
-        false
+        Self::is_subtype_of(child_name, parent_name, &self.env)
     }
 
     /// Check if a type is hashable (can be used as Set element or Map key).
