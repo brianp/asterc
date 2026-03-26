@@ -1014,7 +1014,7 @@ impl TypeChecker {
         if first_ty.is_error() {
             return Ok(Type::Error);
         }
-        for (_i, elem) in elems.iter().enumerate().skip(1) {
+        for elem in elems.iter().skip(1) {
             let ty = self.check_expr(elem)?;
             if ty.is_error() {
                 return Ok(Type::Error);
@@ -1077,8 +1077,6 @@ impl TypeChecker {
     }
 
     pub(crate) fn check_member(&mut self, object: &Expr, field: &str) -> Result<Type, Diagnostic> {
-        use std::collections::HashMap;
-
         // Check for namespace member access: ns.ExportedName
         if let Expr::Ident(name, _) = object
             && let Some(ns) = self.env.get_namespace(name).cloned()

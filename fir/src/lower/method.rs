@@ -3,8 +3,6 @@ use super::*;
 impl Lowerer {
     /// Lower a method call: `obj.method(args)`.
     /// Handles list built-in methods and class method dispatch.
-    /// Lower a method call: `obj.method(args)`.
-    /// Handles list built-in methods and class method dispatch.
     pub(crate) fn lower_method_call(
         &mut self,
         object: &Expr,

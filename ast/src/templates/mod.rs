@@ -73,7 +73,7 @@ diagnostic_template_enum! {
     CircularImport(module_errors::CircularImport),
     InvalidImportAlias(module_errors::InvalidImportAlias),
 
-    // Warnings (W001-W003)
+    // Warnings (W001-W004)
     RedundantTypeAnnotation(warnings::RedundantTypeAnnotation),
     UnusedDefaultParam(warnings::UnusedDefaultParam),
     UseAfterMove(warnings::UseAfterMove),

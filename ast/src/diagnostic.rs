@@ -45,16 +45,6 @@ impl Diagnostic {
         }
     }
 
-    pub fn hint(message: impl Into<String>) -> Self {
-        Diagnostic {
-            severity: Severity::Hint,
-            message: message.into(),
-            labels: Vec::new(),
-            notes: Vec::new(),
-            template: None,
-        }
-    }
-
     pub fn from_template(template: DiagnosticTemplate) -> Self {
         let message = template.render();
         Diagnostic {

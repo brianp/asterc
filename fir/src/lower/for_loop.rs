@@ -158,8 +158,6 @@ impl Lowerer {
         Ok(FirStmt::Block(setup_and_loop))
     }
 
-    /// Check if lowering a value expression would produce pending stmts
-    /// (e.g. iterable method calls, nullable ops, chained method calls).
     /// Lower `for var in start..end` or `for var in start..=end` to a counting loop.
     pub(crate) fn lower_range_for_loop(
         &mut self,
@@ -388,14 +386,6 @@ impl Lowerer {
         None
     }
 
-    /// Lower `for var in iter: body` for Iterator classes.
-    /// Desugars to:
-    ///   let __iter = iter
-    ///   while true:
-    ///     let __next = __iter.next()   // returns nullable (Ptr: 0=nil, non-zero=boxed value)
-    ///     if __next == 0: break        // nil → done
-    ///     let var = *__next            // unwrap boxed value
-    ///     body...
     /// Lower `for var in iter: body` for Iterator classes.
     /// Desugars to:
     ///   let __iter = iter

@@ -89,11 +89,11 @@ impl Parser {
             self.advance();
         }
         let start = self.start_span();
-        let left = self.parse_or()?;
+        let left = self.parse_binop(0)?;
         // Check for range operators `..` and `..=` (lowest precedence)
         let result = if self.at(&TokenKind::DotDot) {
             self.advance();
-            let right = self.parse_or()?;
+            let right = self.parse_binop(0)?;
             Ok(Expr::Range {
                 start: Box::new(left),
                 end: Box::new(right),
@@ -102,7 +102,7 @@ impl Parser {
             })
         } else if self.at(&TokenKind::DotDotEq) {
             self.advance();
-            let right = self.parse_or()?;
+            let right = self.parse_binop(0)?;
             Ok(Expr::Range {
                 start: Box::new(left),
                 end: Box::new(right),
@@ -114,10 +114,6 @@ impl Parser {
         };
         self.depth -= 1;
         result
-    }
-
-    fn parse_or(&mut self) -> Result<Expr, Diagnostic> {
-        self.parse_binop(0)
     }
 
     /// Table-driven precedence parser for left-associative binary operators.

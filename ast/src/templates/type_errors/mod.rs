@@ -1,3 +1,4 @@
+// Note: error code E022 is unassigned (gap between E021 ConstraintError and E023 PrintableError).
 pub mod argument_count_mismatch;
 pub mod argument_type_mismatch;
 pub mod binary_op_error;

@@ -156,8 +156,6 @@ impl Lowerer {
 
     /// Synthesize an auto-derived `eq` method for a class.
     /// Compares all fields pairwise: self.f1 == other.f1 and self.f2 == other.f2 ...
-    /// Synthesize an auto-derived `eq` method for a class.
-    /// Compares all fields pairwise: self.f1 == other.f1 and self.f2 == other.f2 ...
     pub(crate) fn synthesize_eq(
         &mut self,
         class_name: &str,
@@ -224,8 +222,6 @@ impl Lowerer {
         Ok(())
     }
 
-    /// Synthesize an auto-derived `cmp` method for a class.
-    /// Compares fields in order, returning an Ordering enum variant.
     /// Synthesize an auto-derived `cmp` method for a class.
     /// Compares fields in order, returning an Ordering enum variant.
     pub(crate) fn synthesize_cmp(
@@ -321,11 +317,6 @@ impl Lowerer {
         Ok(())
     }
 
-    /// Lower a lambda/closure expression.
-    /// All lambdas are lifted to top-level functions with `__env: Ptr` as first param.
-    /// Captures are stored in a heap-allocated env struct.
-    /// Returns a dummy value; the important side effect is registering closure_info
-    /// so that call sites can resolve the closure statically.
     /// Inject the built-in `Ordering` enum (Less/Equal/Greater) into the FIR.
     /// This must run before any user code is lowered so that synthesize_cmp can
     /// reference `Ordering.Less`, `Ordering.Equal`, and `Ordering.Greater`.

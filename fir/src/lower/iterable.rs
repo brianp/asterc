@@ -81,7 +81,6 @@ impl Lowerer {
     }
 
     /// Standard increment stmt for iteration loops.
-    /// Standard increment stmt for iteration loops.
     pub(crate) fn iter_increment(idx_id: LocalId) -> Vec<FirStmt> {
         vec![FirStmt::Assign {
             target: FirPlace::Local(idx_id),
@@ -95,7 +94,6 @@ impl Lowerer {
     }
 
     /// Standard loop condition: idx < len.
-    /// Standard loop condition: idx < len.
     pub(crate) fn iter_cond(idx_id: LocalId, len_id: LocalId) -> FirExpr {
         FirExpr::BinaryOp {
             left: Box::new(FirExpr::LocalVar(idx_id, FirType::I64)),
@@ -105,7 +103,6 @@ impl Lowerer {
         }
     }
 
-    /// Get element at current index.
     /// Get element at current index.
     pub(crate) fn iter_get_elem(
         list_id: LocalId,
@@ -404,7 +401,6 @@ impl Lowerer {
     }
 
     /// Apply a two-arg inline lambda (for reduce: (acc, elem) -> result).
-    /// Apply a two-arg inline lambda (for reduce: (acc, elem) -> result).
     pub(crate) fn apply_inline_lambda2(
         &mut self,
         callback: Option<&Expr>,
@@ -432,7 +428,6 @@ impl Lowerer {
         }
     }
 
-    /// Lower reduce: (init: U, f: Fn(U, T) -> U) -> U
     /// Lower reduce: (init: U, f: Fn(U, T) -> U) -> U
     pub(crate) fn lower_iterable_reduce(
         &mut self,
@@ -488,7 +483,6 @@ impl Lowerer {
         Ok(FirExpr::LocalVar(acc_id, acc_ty))
     }
 
-    /// Lower first() -> T?
     /// Lower first() -> T?
     pub(crate) fn lower_iterable_first(
         &mut self,
@@ -553,7 +547,6 @@ impl Lowerer {
         Ok(FirExpr::LocalVar(result_id, nullable_ty))
     }
 
-    /// Lower last() -> T?
     /// Lower last() -> T?
     pub(crate) fn lower_iterable_last(
         &mut self,
@@ -632,7 +625,6 @@ impl Lowerer {
     }
 
     /// Lower to_list() -> List[T] (copy the list)
-    /// Lower to_list() -> List[T] (copy the list)
     pub(crate) fn lower_iterable_to_list(
         &mut self,
         fir_list: FirExpr,
@@ -675,7 +667,6 @@ impl Lowerer {
         Ok(FirExpr::LocalVar(result_id, FirType::Ptr))
     }
 
-    /// Lower min() / max() -> T?  (integer comparison for now)
     /// Lower min() / max() -> T?  (integer comparison for now)
     pub(crate) fn lower_iterable_min_max(
         &mut self,
@@ -780,7 +771,6 @@ impl Lowerer {
         Ok(FirExpr::LocalVar(result_id, nullable_ty))
     }
 
-    /// Lower sort() -> List[T] (insertion sort for now, integer comparison)
     /// Lower sort() -> List[T] (insertion sort for now, integer comparison)
     pub(crate) fn lower_iterable_sort(
         &mut self,
@@ -1032,8 +1022,6 @@ impl Lowerer {
         Ok(FirExpr::LocalVar(result_id, nullable_ty))
     }
 
-    /// Check if the iterable expression refers to a class that includes Iterator.
-    /// Returns the class name if so.
     /// Check if the iterable expression refers to a class that includes Iterator.
     /// Returns the class name if so.
     pub(crate) fn resolve_iter_type(&self, iter: &Expr) -> Option<Type> {

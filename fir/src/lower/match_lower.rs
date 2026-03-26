@@ -92,8 +92,6 @@ impl Lowerer {
 
     /// Try to infer the result type of a match from its arm bodies.
     /// Look at literal arms first (they don't need variable bindings).
-    /// Try to infer the result type of a match from its arm bodies.
-    /// Look at literal arms first (they don't need variable bindings).
     pub(crate) fn infer_match_result_type(&self, arms: &[(MatchPattern, Expr)]) -> Option<FirType> {
         for (_, body) in arms {
             match body {
@@ -260,9 +258,6 @@ impl Lowerer {
         }
     }
 
-    /// Lower an enum definition.
-    /// Enum layout: [tag: i64][field0: i64][field1: i64]...
-    /// Each variant gets a constructor function.
     /// Lower an enum definition.
     /// Enum layout: [tag: i64][field0: i64][field1: i64]...
     /// Each variant gets a constructor function.

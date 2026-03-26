@@ -390,8 +390,6 @@ impl Lowerer {
 
     /// Emit a scope_exit call for the given scope local. This cancels any
     /// unresolved tasks owned by the scope. Pushed to `self.pending_stmts`.
-    /// Emit a scope_exit call for the given scope local. This cancels any
-    /// unresolved tasks owned by the scope. Pushed to `self.pending_stmts`.
     pub(crate) fn emit_scope_exit(&mut self, scope_id: LocalId) {
         self.pending_stmts.push(FirStmt::Expr(FirExpr::RuntimeCall {
             name: "aster_async_scope_exit".to_string(),
@@ -403,15 +401,10 @@ impl Lowerer {
     /// Emit cleanup calls for all locals that implement Close or Drop,
     /// in reverse declaration order. Close is called before Drop.
     /// Cleanup calls are pushed to `self.pending_stmts`.
-    /// Emit cleanup calls for all locals that implement Close or Drop,
-    /// in reverse declaration order. Close is called before Drop.
-    /// Cleanup calls are pushed to `self.pending_stmts`.
     pub(crate) fn emit_cleanup_calls(&mut self) {
         self.emit_cleanup_calls_since(0);
     }
 
-    /// Emit cleanup calls for locals declared since `scope_start` index
-    /// in cleanup_locals. Emits in reverse declaration order.
     /// Emit cleanup calls for locals declared since `scope_start` index
     /// in cleanup_locals. Emits in reverse declaration order.
     pub(crate) fn emit_cleanup_calls_since(&mut self, scope_start: usize) {

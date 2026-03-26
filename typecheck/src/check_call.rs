@@ -744,14 +744,6 @@ impl TypeChecker {
                         && !param_names.contains(arg_name)
                         && let Ok(pos) = arg_name[1..].parse::<usize>()
                     {
-                        let _hint = if pos < param_names.len() {
-                            format!(
-                                "All arguments must be named (e.g. `{}: value`)",
-                                param_names[pos]
-                            )
-                        } else {
-                            "All arguments must be named (e.g. `name: value`)".to_string()
-                        };
                         let label = if pos < param_names.len() {
                             format!("add `{}: ` before this", param_names[pos])
                         } else {
@@ -880,11 +872,6 @@ impl TypeChecker {
                     } else {
                         "unknown argument name".to_string()
                     };
-                    let _expected_list = param_names
-                        .iter()
-                        .map(|n| format!("'{}'", n))
-                        .collect::<Vec<_>>()
-                        .join(", ");
                     let diag = Diagnostic::from_template(DiagnosticTemplate::UndefinedVariable(
                         UndefinedVariable {
                             name: arg_name.clone(),

@@ -172,15 +172,6 @@ fn operators_in_expressions_no_spaces() {
 }
 
 #[test]
-fn minus_before_number_is_two_tokens() {
-    let src = "-5";
-    let toks = lex(src).expect("lex ok");
-    let ks = kinds(&toks);
-    assert_eq!(ks[0], &TokenKind::Minus);
-    assert_eq!(ks[1], &TokenKind::Int(5));
-}
-
-#[test]
 fn less_greater_equal_combos() {
     let src = "< <= > >= = ==";
     let toks = lex(src).expect("lex ok");

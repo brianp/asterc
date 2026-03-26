@@ -211,7 +211,6 @@ impl Lowerer {
     }
 
     /// Lower a string interpolation to a chain of to_string + concat calls.
-    /// Lower a string interpolation to a chain of to_string + concat calls.
     pub(crate) fn lower_string_interpolation(
         &mut self,
         parts: &[ast::StringPart],
@@ -299,8 +298,6 @@ impl Lowerer {
         Ok(result)
     }
 
-    /// Find variables referenced in a body that are not in the given param set
-    /// but exist in the current local scope.
     /// Find variables referenced in a body that are not in the given param set
     /// but exist in the current local scope.
     pub(crate) fn find_captures(

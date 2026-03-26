@@ -564,8 +564,6 @@ impl Parser {
                 }),
             ));
         }
-        let generic_params: Option<Vec<String>> = None;
-
         let mut params: Vec<(String, Type)> = Vec::new();
         let mut defaults: Vec<Option<Expr>> = Vec::new();
         let mut type_constraints: Vec<(String, Vec<TypeConstraint>)> = Vec::new();
@@ -726,7 +724,7 @@ impl Parser {
             params,
             ret_type: ret,
             body,
-            generic_params,
+            generic_params: None,
             throws: throws.map(Box::new),
             type_constraints,
             defaults: Box::new(defaults),
