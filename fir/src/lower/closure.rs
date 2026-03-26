@@ -379,7 +379,66 @@ impl Lowerer {
                     self.find_captures_expr(e, param_names, captures);
                 }
             }
-            _ => {}
+            Expr::Match { scrutinee, arms, .. } => {
+                self.find_captures_expr(scrutinee, param_names, captures);
+                for (pattern, body) in arms {
+                    if let ast::MatchPattern::Literal(lit, _) = pattern {
+                        self.find_captures_expr(lit, param_names, captures);
+                    }
+                    self.find_captures_expr(body, param_names, captures);
+                }
+            }
+            Expr::StringInterpolation { parts, .. } => {
+                for part in parts {
+                    if let ast::StringPart::Expr(e) = part {
+                        self.find_captures_expr(e, param_names, captures);
+                    }
+                }
+            }
+            Expr::Range { start, end, .. } => {
+                self.find_captures_expr(start, param_names, captures);
+                self.find_captures_expr(end, param_names, captures);
+            }
+            Expr::Map { entries, .. } => {
+                for (k, v) in entries {
+                    self.find_captures_expr(k, param_names, captures);
+                    self.find_captures_expr(v, param_names, captures);
+                }
+            }
+            Expr::Lambda { body, params, .. } => {
+                // Walk the lambda body but exclude the lambda's own params from captures
+                let mut inner_params = param_names.clone();
+                for (name, _) in params {
+                    inner_params.insert(name.as_str());
+                }
+                self.find_captures(body, &inner_params, captures);
+            }
+            Expr::AsyncCall { func, args, .. }
+            | Expr::BlockingCall { func, args, .. }
+            | Expr::DetachedCall { func, args, .. } => {
+                self.find_captures_expr(func, param_names, captures);
+                for (_, _, arg) in args {
+                    self.find_captures_expr(arg, param_names, captures);
+                }
+            }
+            Expr::Resolve { expr, .. }
+            | Expr::Propagate(expr, _)
+            | Expr::Throw(expr, _) => {
+                self.find_captures_expr(expr, param_names, captures);
+            }
+            Expr::ErrorOr { expr, default, .. }
+            | Expr::ErrorOrElse { expr, handler: default, .. } => {
+                self.find_captures_expr(expr, param_names, captures);
+                self.find_captures_expr(default, param_names, captures);
+            }
+            Expr::ErrorCatch { expr, arms, .. } => {
+                self.find_captures_expr(expr, param_names, captures);
+                for (_, body) in arms {
+                    self.find_captures_expr(body, param_names, captures);
+                }
+            }
+            // Terminal expressions with no sub-expressions
+            Expr::Int(..) | Expr::Float(..) | Expr::Bool(..) | Expr::Nil(..) | Expr::Str(..) => {}
         }
     }
 }

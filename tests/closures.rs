@@ -289,3 +289,102 @@ def main() -> Int
 ",
     );
 }
+
+// =============================================================================
+// 9. Closure Capture — Previously Missing Expression Variants
+// =============================================================================
+
+#[test]
+fn closure_captures_inside_match() {
+    // Closure references outer variable inside a match arm body
+    check_ok(
+        "\
+let x = 42
+def f(flag: Bool) -> Int
+  match flag
+    true => x
+    false => 0
+",
+    );
+}
+
+#[test]
+fn closure_captures_inside_string_interpolation() {
+    // Closure references outer variable inside string interpolation
+    check_ok(
+        r#"let name = "world"
+def greet() -> String
+  "hello {name}"
+"#,
+    );
+}
+
+#[test]
+fn closure_captures_inside_range() {
+    // Closure references outer variable as range bound
+    check_ok(
+        "\
+let n = 10
+def count_to() -> Int
+  let total = 0
+  for i in 0..n
+    total = total + i
+  total
+",
+    );
+}
+
+#[test]
+fn closure_captures_inside_map_literal() {
+    // Closure references outer variable inside a map literal value
+    check_ok(
+        r#"let val = 1
+def make_map() -> Map[String, Int]
+  {"a": val}
+"#,
+    );
+}
+
+#[test]
+fn closure_captures_inside_nested_lambda() {
+    // Outer variable captured through nested lambda
+    check_ok(
+        "\
+let base = 100
+def outer(x: Int) -> Int
+  let inner: Fn(Int) -> Int = -> y: y + base
+  inner(y: x)
+",
+    );
+}
+
+#[test]
+fn closure_captures_inside_error_or() {
+    // Closure references outer variable inside error_or default
+    check_ok(
+        r#"class AppError
+  message: String
+
+let fallback = 0
+def risky() throws AppError -> Int
+  42
+
+def safe() -> Int
+  risky()!.or(fallback)
+"#,
+    );
+}
+
+#[test]
+fn closure_captures_inside_throw() {
+    // Closure references outer variable inside throw expression
+    check_ok(
+        r#"class AppError
+  message: String
+
+let msg = "oops"
+def fail() throws AppError -> Int
+  throw AppError(message: msg)
+"#,
+    );
+}

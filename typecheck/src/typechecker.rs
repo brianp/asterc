@@ -668,18 +668,22 @@ impl TypeChecker {
                 .collect();
 
             if !inferred_fns.is_empty() {
+                // Save diagnostics accumulated before the fixpoint loop so they
+                // are not lost when we clear intermediate fixpoint results.
+                let saved_diagnostics = std::mem::take(&mut self.diagnostics);
+                let saved_nil_promotions = std::mem::take(&mut self.nil_promotions);
+
                 // Fixpoint: keep checking until no return types change
                 for _ in 0..inferred_fns.len() + 1 {
                     let mut changed = false;
+                    self.diagnostics.clear();
+                    self.nil_promotions.clear();
                     for &idx in &inferred_fns {
                         let s = &m.body[idx];
                         let name = match s {
                             Stmt::Let { name, .. } => name,
                             _ => continue,
                         };
-                        // Clear diagnostics from previous iterations for this function
-                        self.diagnostics.clear();
-                        self.nil_promotions.clear();
                         match self.check_stmt(s) {
                             Ok(_) => {}
                             Err(diag) => {
@@ -698,9 +702,10 @@ impl TypeChecker {
                         break;
                     }
                 }
-                // Clear intermediate diagnostics — the final pass will re-check
-                self.diagnostics.clear();
-                self.nil_promotions.clear();
+                // Restore pre-fixpoint diagnostics; discard intermediate fixpoint
+                // diagnostics since the final pass will re-check everything.
+                self.diagnostics = saved_diagnostics;
+                self.nil_promotions = saved_nil_promotions;
             }
         }
 

@@ -249,3 +249,36 @@ if true
         warnings[0].message
     );
 }
+
+// =============================================================================
+// Warnings survive fixpoint iteration for inferred return types
+// =============================================================================
+
+#[test]
+fn warning_survives_fixpoint_iteration() {
+    // Function A has a shadow warning.
+    // Function B has an inferred return type that requires fixpoint iteration.
+    // The shadow warning from A must not be lost.
+    let src = "\
+let x = 1
+def has_warning(n: Int) -> Int
+    let x = n + 1
+    x
+
+def inferred_ret(n: Int)
+    n + 1
+
+let a = has_warning(n: 5)
+let b = inferred_ret(n: 3)
+";
+    let warnings = shadow_warnings(src);
+    assert!(
+        !warnings.is_empty(),
+        "shadow warning from has_warning() should survive fixpoint iteration"
+    );
+    assert!(
+        warnings.iter().any(|w| w.message.contains("x")),
+        "expected shadow warning for 'x', got: {:?}",
+        warnings
+    );
+}
