@@ -1,5 +1,5 @@
-use ast::templates::module_errors::{CircularImport, ModuleNotFound};
 use ast::templates::DiagnosticTemplate;
+use ast::templates::module_errors::{CircularImport, ModuleNotFound};
 use ast::{ClassInfo, Diagnostic, EnumInfo, Stmt, TraitInfo, Type};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -94,10 +94,12 @@ impl ModuleLoader {
             }
             // Check circular
             if loader.in_progress.contains(&key) {
-                return Err(Diagnostic::from_template(DiagnosticTemplate::CircularImport(CircularImport {
-                    module: key.clone(),
-                }))
-                .with_label(use_span, "circular import here"));
+                return Err(
+                    Diagnostic::from_template(DiagnosticTemplate::CircularImport(CircularImport {
+                        module: key.clone(),
+                    }))
+                    .with_label(use_span, "circular import here"),
+                );
             }
         }
 

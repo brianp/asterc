@@ -2,22 +2,17 @@ use std::os::fd::RawFd;
 use std::time::Duration;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // ReadWrite will be used when I/O primitives are added
 pub(crate) enum Interest {
     Read,
     Write,
-    ReadWrite,
 }
 
 /// Token maps back to a task/green-thread identity.
 #[derive(Clone, Copy)]
 pub(crate) struct Token(pub usize);
 
-#[allow(dead_code)] // readable/writable used by future I/O primitives
 pub(crate) struct Event {
     pub token: Token,
-    pub readable: bool,
-    pub writable: bool,
 }
 
 pub(crate) trait Poller: Send {
@@ -56,7 +51,7 @@ mod kqueue_impl {
         fn register(&mut self, fd: RawFd, interest: Interest, token: Token) {
             let mut changes = Vec::with_capacity(2);
 
-            if matches!(interest, Interest::Read | Interest::ReadWrite) {
+            if matches!(interest, Interest::Read) {
                 let mut ev: libc::kevent = unsafe { std::mem::zeroed() };
                 ev.ident = fd as usize;
                 ev.filter = libc::EVFILT_READ;
@@ -64,7 +59,7 @@ mod kqueue_impl {
                 ev.udata = token.0 as *mut _;
                 changes.push(ev);
             }
-            if matches!(interest, Interest::Write | Interest::ReadWrite) {
+            if matches!(interest, Interest::Write) {
                 let mut ev: libc::kevent = unsafe { std::mem::zeroed() };
                 ev.ident = fd as usize;
                 ev.filter = libc::EVFILT_WRITE;
@@ -130,8 +125,6 @@ mod kqueue_impl {
             for kev in &kevents[..count] {
                 events.push(Event {
                     token: Token(kev.udata as usize),
-                    readable: kev.filter == libc::EVFILT_READ,
-                    writable: kev.filter == libc::EVFILT_WRITE,
                 });
             }
             count
@@ -168,10 +161,10 @@ mod epoll_impl {
     impl Poller for EpollPoller {
         fn register(&mut self, fd: RawFd, interest: Interest, token: Token) {
             let mut events = 0u32;
-            if matches!(interest, Interest::Read | Interest::ReadWrite) {
+            if matches!(interest, Interest::Read) {
                 events |= libc::EPOLLIN as u32;
             }
-            if matches!(interest, Interest::Write | Interest::ReadWrite) {
+            if matches!(interest, Interest::Write) {
                 events |= libc::EPOLLOUT as u32;
             }
             events |= libc::EPOLLONESHOT as u32;
@@ -217,8 +210,6 @@ mod epoll_impl {
             for ep in epevents.iter().take(count) {
                 events.push(Event {
                     token: Token(ep.u64 as usize),
-                    readable: (ep.events & libc::EPOLLIN as u32) != 0,
-                    writable: (ep.events & libc::EPOLLOUT as u32) != 0,
                 });
             }
             count

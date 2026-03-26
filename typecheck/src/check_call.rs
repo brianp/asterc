@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
+use ast::templates::DiagnosticTemplate;
 use ast::templates::parse_errors::UnexpectedToken;
 use ast::templates::type_errors::{
     ArgumentCountMismatch, ArgumentTypeMismatch, ConstraintError, ErrorPropagation,
-    TaskAlreadyConsumed, TraitError, TypeConstraintError, TypeMismatch, UndefinedVariable,
-    UnaryOpError,
+    TaskAlreadyConsumed, TraitError, TypeConstraintError, TypeMismatch, UnaryOpError,
+    UndefinedVariable,
 };
-use ast::templates::DiagnosticTemplate;
 use ast::{Diagnostic, Expr, Span, Type, TypeEnv};
 
 use crate::typechecker::TypeChecker;
@@ -92,10 +92,12 @@ impl TypeChecker {
                 match field.as_str() {
                     "or" | "or_else" => {
                         if args.len() != 1 {
-                            return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
-                                expected: 1,
-                                actual: args.len(),
-                            }))
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
+                                    expected: 1,
+                                    actual: args.len(),
+                                }),
+                            )
                             .with_label(func.span(), "expected 1 argument"));
                         }
                         let arg_ty = self.check_expr(&args[0].2)?;
@@ -103,20 +105,24 @@ impl TypeChecker {
                             return Ok(Type::Error);
                         }
                         if arg_ty != **inner {
-                            return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(TypeMismatch {
-                                expected: *inner.clone(),
-                                actual: arg_ty.clone(),
-                            }))
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::TypeMismatch(TypeMismatch {
+                                    expected: *inner.clone(),
+                                    actual: arg_ty.clone(),
+                                }),
+                            )
                             .with_label(args[0].2.span(), format!("expected {}", inner)));
                         }
                         return Ok(*inner.clone());
                     }
                     "or_throw" => {
                         if args.len() != 1 {
-                            return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
-                                expected: 1,
-                                actual: args.len(),
-                            }))
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
+                                    expected: 1,
+                                    actual: args.len(),
+                                }),
+                            )
                             .with_label(func.span(), "expected 1 argument"));
                         }
                         let arg_ty = self.check_expr(&args[0].2)?;
@@ -127,21 +133,25 @@ impl TypeChecker {
                             .with_label(func.span(), "requires 'throws' declaration")
                         })?;
                         if !self.is_error_subtype(&arg_ty, throws_ty) {
-                            return Err(Diagnostic::from_template(DiagnosticTemplate::ErrorPropagation(ErrorPropagation {
-                                message: format!(
-                                    ".or_throw() error type {} not compatible with throws {}",
-                                    arg_ty, throws_ty
-                                ),
-                            }))
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::ErrorPropagation(ErrorPropagation {
+                                    message: format!(
+                                        ".or_throw() error type {} not compatible with throws {}",
+                                        arg_ty, throws_ty
+                                    ),
+                                }),
+                            )
                             .with_label(args[0].2.span(), "incompatible error type"));
                         }
                         return Ok(*inner.clone());
                     }
                     _ => {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::UnaryOpError(UnaryOpError {
-                            op: format!(".{}", field),
-                            actual: obj_ty.clone(),
-                        }))
+                        return Err(Diagnostic::from_template(DiagnosticTemplate::UnaryOpError(
+                            UnaryOpError {
+                                op: format!(".{}", field),
+                                actual: obj_ty.clone(),
+                            },
+                        ))
                         .with_label(object.span(), "nullable type"));
                     }
                 }
@@ -158,11 +168,7 @@ impl TypeChecker {
                 && args.len() == 1
                 && args[0].0 == "f"
             {
-                let expected_fn = Type::func(
-                    vec!["_0".into()],
-                    vec![*inner.clone()],
-                    Type::Bool,
-                );
+                let expected_fn = Type::func(vec!["_0".into()], vec![*inner.clone()], Type::Bool);
                 let arg_ty = if let Expr::Lambda { .. } = &args[0].2 {
                     self.check_lambda_with_expected(&args[0].2, Some(&expected_fn))?
                 } else {
@@ -180,10 +186,12 @@ impl TypeChecker {
                 && **inner == Type::Nil
             {
                 if args.len() != 1 {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
-                        expected: 1,
-                        actual: args.len(),
-                    }))
+                    return Err(Diagnostic::from_template(
+                        DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
+                            expected: 1,
+                            actual: args.len(),
+                        }),
+                    )
                     .with_label(func.span(), "expected 1 argument"));
                 }
                 let arg_ty = self.check_expr(&args[0].2)?;
@@ -215,31 +223,37 @@ impl TypeChecker {
             index,
             span,
         } = func
+            && let Expr::Ident(name, _) = object.as_ref()
+            && name == "Set"
         {
-            if let Expr::Ident(name, _) = object.as_ref() {
-                if name == "Set" {
-                    if !args.is_empty() {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
+            if !args.is_empty() {
+                return Err(
+                    Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(
+                        ArgumentCountMismatch {
                             expected: 0,
                             actual: args.len(),
-                        }))
-                        .with_label(*span, "expected no arguments"));
-                    }
-                    // Resolve the element type from the index expression
-                    let elem_ty = self.resolve_type_from_expr(index)?;
-                    if !self.type_is_hashable(&elem_ty) {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::ConstraintError(ConstraintError {
+                        },
+                    ))
+                    .with_label(*span, "expected no arguments"),
+                );
+            }
+            // Resolve the element type from the index expression
+            let elem_ty = self.resolve_type_from_expr(index)?;
+            if !self.type_is_hashable(&elem_ty) {
+                return Err(
+                    Diagnostic::from_template(DiagnosticTemplate::ConstraintError(
+                        ConstraintError {
                             message: format!(
                                 "Set element type {} does not include Eq. \
                                  Add 'includes Eq' to use as a Set element",
                                 elem_ty
                             ),
-                        }))
-                        .with_label(*span, "Set requires Eq on element type"));
-                    }
-                    return Ok(Type::Set(Box::new(elem_ty)));
-                }
+                        },
+                    ))
+                    .with_label(*span, "Set requires Eq on element type"),
+                );
             }
+            return Ok(Type::Set(Box::new(elem_ty)));
         }
 
         // Handle polymorphic builtins that can't be expressed in the type system yet
@@ -247,10 +261,12 @@ impl TypeChecker {
             match name.as_str() {
                 "len" => {
                     if args.len() != 1 {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
-                            expected: 1,
-                            actual: args.len(),
-                        }))
+                        return Err(Diagnostic::from_template(
+                            DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
+                                expected: 1,
+                                actual: args.len(),
+                            }),
+                        )
                         .with_label(func.span(), "expected 1 argument"));
                     }
                     let aty = self.check_expr(&args[0].2)?;
@@ -260,21 +276,25 @@ impl TypeChecker {
                     match aty {
                         Type::String | Type::List(_) | Type::Set(_) => return Ok(Type::Int),
                         _ => {
-                            return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
-                                param: "_0".to_string(),
-                                expected: Type::String,
-                                actual: aty.clone(),
-                            }))
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
+                                    param: "_0".to_string(),
+                                    expected: Type::String,
+                                    actual: aty.clone(),
+                                }),
+                            )
                             .with_label(args[0].2.span(), "expected String, List, or Set"));
                         }
                     }
                 }
                 "to_string" => {
                     if args.len() != 1 {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
-                            expected: 1,
-                            actual: args.len(),
-                        }))
+                        return Err(Diagnostic::from_template(
+                            DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
+                                expected: 1,
+                                actual: args.len(),
+                            }),
+                        )
                         .with_label(func.span(), "expected 1 argument"));
                     }
                     let aty = self.check_expr(&args[0].2)?;
@@ -286,21 +306,25 @@ impl TypeChecker {
                             return Ok(Type::String);
                         }
                         _ => {
-                            return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
-                                param: "_0".to_string(),
-                                expected: Type::String,
-                                actual: aty.clone(),
-                            }))
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
+                                    param: "_0".to_string(),
+                                    expected: Type::String,
+                                    actual: aty.clone(),
+                                }),
+                            )
                             .with_label(args[0].2.span(), "unsupported type"));
                         }
                     }
                 }
                 "log" | "say" => {
                     if args.len() != 1 {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
-                            expected: 1,
-                            actual: args.len(),
-                        }))
+                        return Err(Diagnostic::from_template(
+                            DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
+                                expected: 1,
+                                actual: args.len(),
+                            }),
+                        )
                         .with_label(func.span(), "expected 1 argument"));
                     }
                     let aty = self.check_expr(&args[0].2)?;
@@ -312,11 +336,13 @@ impl TypeChecker {
                             return Ok(Type::Void);
                         }
                         _ => {
-                            return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
-                                param: "_0".to_string(),
-                                expected: Type::String,
-                                actual: aty.clone(),
-                            }))
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
+                                    param: "_0".to_string(),
+                                    expected: Type::String,
+                                    actual: aty.clone(),
+                                }),
+                            )
                             .with_label(args[0].2.span(), "unsupported type"));
                         }
                     }
@@ -326,10 +352,12 @@ impl TypeChecker {
                 }
                 "resolve_all" => {
                     if args.len() != 1 {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
-                            expected: 1,
-                            actual: args.len(),
-                        }))
+                        return Err(Diagnostic::from_template(
+                            DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
+                                expected: 1,
+                                actual: args.len(),
+                            }),
+                        )
                         .with_label(func.span(), "expected 1 argument"));
                     }
                     let aty = self.check_expr(&args[0].2)?;
@@ -342,30 +370,40 @@ impl TypeChecker {
                                 return Ok(Type::List(result));
                             }
                             other => {
-                                return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
-                                    param: "_0".to_string(),
-                                    expected: Type::List(Box::new(Type::Task(Box::new(Type::Int)))),
-                                    actual: Type::List(Box::new(other)),
-                                }))
+                                return Err(Diagnostic::from_template(
+                                    DiagnosticTemplate::ArgumentTypeMismatch(
+                                        ArgumentTypeMismatch {
+                                            param: "_0".to_string(),
+                                            expected: Type::List(Box::new(Type::Task(Box::new(
+                                                Type::Int,
+                                            )))),
+                                            actual: Type::List(Box::new(other)),
+                                        },
+                                    ),
+                                )
                                 .with_label(args[0].2.span(), "expected List[Task[T]]"));
                             }
                         },
                         other => {
-                            return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
-                                param: "_0".to_string(),
-                                expected: Type::List(Box::new(Type::Task(Box::new(Type::Int)))),
-                                actual: other,
-                            }))
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
+                                    param: "_0".to_string(),
+                                    expected: Type::List(Box::new(Type::Task(Box::new(Type::Int)))),
+                                    actual: other,
+                                }),
+                            )
                             .with_label(args[0].2.span(), "expected List[Task[T]]"));
                         }
                     }
                 }
                 "resolve_first" => {
                     if args.len() != 1 {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
-                            expected: 1,
-                            actual: args.len(),
-                        }))
+                        return Err(Diagnostic::from_template(
+                            DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
+                                expected: 1,
+                                actual: args.len(),
+                            }),
+                        )
                         .with_label(func.span(), "expected 1 argument"));
                     }
                     let aty = self.check_expr(&args[0].2)?;
@@ -376,20 +414,28 @@ impl TypeChecker {
                         Type::List(inner) => match *inner {
                             Type::Task(result) => return Ok(*result),
                             other => {
-                                return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
-                                    param: "_0".to_string(),
-                                    expected: Type::List(Box::new(Type::Task(Box::new(Type::Int)))),
-                                    actual: Type::List(Box::new(other)),
-                                }))
+                                return Err(Diagnostic::from_template(
+                                    DiagnosticTemplate::ArgumentTypeMismatch(
+                                        ArgumentTypeMismatch {
+                                            param: "_0".to_string(),
+                                            expected: Type::List(Box::new(Type::Task(Box::new(
+                                                Type::Int,
+                                            )))),
+                                            actual: Type::List(Box::new(other)),
+                                        },
+                                    ),
+                                )
                                 .with_label(args[0].2.span(), "expected List[Task[T]]"));
                             }
                         },
                         other => {
-                            return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
-                                param: "_0".to_string(),
-                                expected: Type::List(Box::new(Type::Task(Box::new(Type::Int)))),
-                                actual: other,
-                            }))
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
+                                    param: "_0".to_string(),
+                                    expected: Type::List(Box::new(Type::Task(Box::new(Type::Int)))),
+                                    actual: other,
+                                }),
+                            )
                             .with_label(args[0].2.span(), "expected List[Task[T]]"));
                         }
                     }
@@ -397,10 +443,12 @@ impl TypeChecker {
                 // Mutex(value) → Mutex[T]
                 "Mutex" => {
                     if args.len() != 1 {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
-                            expected: 1,
-                            actual: args.len(),
-                        }))
+                        return Err(Diagnostic::from_template(
+                            DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
+                                expected: 1,
+                                actual: args.len(),
+                            }),
+                        )
                         .with_label(func.span(), "expected 1 argument"));
                     }
                     let val_ty = self.check_expr(&args[0].2)?;
@@ -412,20 +460,24 @@ impl TypeChecker {
                 // Channel(capacity: N) → Channel[T] (T inferred later from send/receive)
                 "Channel" => {
                     if args.len() > 1 {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
-                            expected: 1,
-                            actual: args.len(),
-                        }))
+                        return Err(Diagnostic::from_template(
+                            DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
+                                expected: 1,
+                                actual: args.len(),
+                            }),
+                        )
                         .with_label(func.span(), "expected 0-1 arguments"));
                     }
                     if args.len() == 1 {
                         let cap_ty = self.check_expr(&args[0].2)?;
                         if cap_ty != Type::Int && !cap_ty.is_error() {
-                            return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
-                                param: "capacity".to_string(),
-                                expected: Type::Int,
-                                actual: cap_ty.clone(),
-                            }))
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
+                                    param: "capacity".to_string(),
+                                    expected: Type::Int,
+                                    actual: cap_ty.clone(),
+                                }),
+                            )
                             .with_label(args[0].2.span(), "expected Int"));
                         }
                     }
@@ -435,31 +487,37 @@ impl TypeChecker {
                     {
                         type_args[0].clone()
                     } else {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
-                            param: "element type".to_string(),
-                            expected: Type::String,
-                            actual: Type::Void,
-                        }))
+                        return Err(Diagnostic::from_template(
+                            DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
+                                param: "element type".to_string(),
+                                expected: Type::String,
+                                actual: Type::Void,
+                            }),
+                        )
                         .with_label(func.span(), "element type unknown"));
                     };
                     return Ok(Type::Custom("Channel".into(), vec![elem_ty]));
                 }
                 "MultiSend" | "MultiReceive" => {
                     if args.len() > 1 {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
-                            expected: 1,
-                            actual: args.len(),
-                        }))
+                        return Err(Diagnostic::from_template(
+                            DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
+                                expected: 1,
+                                actual: args.len(),
+                            }),
+                        )
                         .with_label(func.span(), "expected 0-1 arguments"));
                     }
                     if args.len() == 1 {
                         let cap_ty = self.check_expr(&args[0].2)?;
                         if cap_ty != Type::Int && !cap_ty.is_error() {
-                            return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
-                                param: "capacity".to_string(),
-                                expected: Type::Int,
-                                actual: cap_ty.clone(),
-                            }))
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
+                                    param: "capacity".to_string(),
+                                    expected: Type::Int,
+                                    actual: cap_ty.clone(),
+                                }),
+                            )
                             .with_label(args[0].2.span(), "expected Int"));
                         }
                     }
@@ -468,11 +526,13 @@ impl TypeChecker {
                     {
                         type_args[0].clone()
                     } else {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
-                            param: "element type".to_string(),
-                            expected: Type::String,
-                            actual: Type::Void,
-                        }))
+                        return Err(Diagnostic::from_template(
+                            DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
+                                param: "element type".to_string(),
+                                expected: Type::String,
+                                actual: Type::Void,
+                            }),
+                        )
                         .with_label(func.span(), "element type unknown"));
                     };
                     return Ok(Type::Custom(name.clone(), vec![elem_ty]));
@@ -499,12 +559,14 @@ impl TypeChecker {
                 };
 
             if from_methods.is_empty() {
-                return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(TraitError {
-                    message: format!(
-                        "Class '{}' includes From but has no from() method",
-                        type_name
-                    ),
-                }))
+                return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
+                    TraitError {
+                        message: format!(
+                            "Class '{}' includes From but has no from() method",
+                            type_name
+                        ),
+                    },
+                ))
                 .with_label(func.span(), "missing from method"));
             }
 
@@ -562,12 +624,14 @@ impl TypeChecker {
             } else if from_methods.len() == 1 {
                 &from_methods[0]
             } else {
-                return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(TraitError {
-                    message: format!(
-                        "Ambiguous {}.from() call: multiple From inclusions match",
-                        type_name
-                    ),
-                }))
+                return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
+                    TraitError {
+                        message: format!(
+                            "Ambiguous {}.from() call: multiple From inclusions match",
+                            type_name
+                        ),
+                    },
+                ))
                 .with_label(func.span(), "ambiguous from call"));
             };
 
@@ -585,10 +649,12 @@ impl TypeChecker {
                     .with_label(func.span(), "throwing function requires error handling"));
                 }
                 if params.len() != args.len() {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
-                        expected: params.len(),
-                        actual: args.len(),
-                    }))
+                    return Err(Diagnostic::from_template(
+                        DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
+                            expected: params.len(),
+                            actual: args.len(),
+                        }),
+                    )
                     .with_label(func.span(), "wrong number of arguments"));
                 }
                 for (arg_name, arg_name_span, arg_expr) in args {
@@ -602,10 +668,12 @@ impl TypeChecker {
                         let mut bindings = HashMap::new();
                         Self::unify_type_with_env(pty, &aty, &mut bindings, Some(&self.env))
                             .map_err(|_| {
-                                Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(TypeMismatch {
-                                    expected: pty.clone(),
-                                    actual: aty.clone(),
-                                }))
+                                Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(
+                                    TypeMismatch {
+                                        expected: pty.clone(),
+                                        actual: aty.clone(),
+                                    },
+                                ))
                                 .with_label(arg_expr.span(), format!("expected {pty}, got {aty}"))
                             })?;
                     } else {
@@ -615,9 +683,11 @@ impl TypeChecker {
                         } else {
                             "unknown argument name".to_string()
                         };
-                        let diag = Diagnostic::from_template(DiagnosticTemplate::UndefinedVariable(UndefinedVariable {
-                            name: arg_name.clone(),
-                        }))
+                        let diag = Diagnostic::from_template(
+                            DiagnosticTemplate::UndefinedVariable(UndefinedVariable {
+                                name: arg_name.clone(),
+                            }),
+                        )
                         .with_label(*arg_name_span, label_msg);
                         return Err(diag);
                     }
@@ -640,16 +710,20 @@ impl TypeChecker {
         {
             self.last_call_suspendable = suspendable;
             if suspendable && !bypass_throws_check {
-                return Err(Diagnostic::from_template(DiagnosticTemplate::TaskAlreadyConsumed(TaskAlreadyConsumed {
-                    name: format!(
-                        "Plain call crosses a suspension boundary. {}",
-                        Self::suspendable_call_fix(func)
+                return Err(
+                    Diagnostic::from_template(DiagnosticTemplate::TaskAlreadyConsumed(
+                        TaskAlreadyConsumed {
+                            name: format!(
+                                "Plain call crosses a suspension boundary. {}",
+                                Self::suspendable_call_fix(func)
+                            ),
+                        },
+                    ))
+                    .with_label(
+                        func.span(),
+                        "suspendable callee requires an explicit call site",
                     ),
-                }))
-                .with_label(
-                    func.span(),
-                    "suspendable callee requires an explicit call site",
-                ));
+                );
             }
             if fn_throws.is_some() && !bypass_throws_check {
                 return Err(Diagnostic::from_template(DiagnosticTemplate::ErrorPropagation(ErrorPropagation {
@@ -683,10 +757,12 @@ impl TypeChecker {
                         } else {
                             "expected argument name".to_string()
                         };
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                            expected: "named argument".to_string(),
-                            found: "positional argument".to_string(),
-                        }))
+                        return Err(Diagnostic::from_template(
+                            DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                                expected: "named argument".to_string(),
+                                found: "positional argument".to_string(),
+                            }),
+                        )
                         .with_label(arg_expr.span(), label));
                     }
                 }
@@ -764,10 +840,12 @@ impl TypeChecker {
                                 .join(", ")
                         ));
                     }
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
-                        expected: params.len(),
-                        actual: args.len(),
-                    }))
+                    return Err(Diagnostic::from_template(
+                        DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
+                            expected: params.len(),
+                            actual: args.len(),
+                        }),
+                    )
                     .with_label(func.span(), format!("expected {} arguments", params.len())));
                 }
             }
@@ -807,9 +885,11 @@ impl TypeChecker {
                         .map(|n| format!("'{}'", n))
                         .collect::<Vec<_>>()
                         .join(", ");
-                    let diag = Diagnostic::from_template(DiagnosticTemplate::UndefinedVariable(UndefinedVariable {
-                        name: arg_name.clone(),
-                    }))
+                    let diag = Diagnostic::from_template(DiagnosticTemplate::UndefinedVariable(
+                        UndefinedVariable {
+                            name: arg_name.clone(),
+                        },
+                    ))
                     .with_label(*arg_name_span, label_msg);
                     return Err(diag);
                 };
@@ -847,17 +927,19 @@ impl TypeChecker {
             Ok(resolved_ret)
         } else {
             Err(
-                Diagnostic::from_template(DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
-                    param: "_callee".to_string(),
-                    expected: Type::Function {
-                        param_names: vec![],
-                        params: vec![],
-                        ret: Box::new(Type::Void),
-                        throws: None,
-                        suspendable: false,
+                Diagnostic::from_template(DiagnosticTemplate::ArgumentTypeMismatch(
+                    ArgumentTypeMismatch {
+                        param: "_callee".to_string(),
+                        expected: Type::Function {
+                            param_names: vec![],
+                            params: vec![],
+                            ret: Box::new(Type::Void),
+                            throws: None,
+                            suspendable: false,
+                        },
+                        actual: fty.clone(),
                     },
-                    actual: fty.clone(),
-                }))
+                ))
                 .with_label(func.span(), "not a function"),
             )
         }
@@ -893,18 +975,22 @@ impl TypeChecker {
             (Type::TypeVar(tv, _constraints), _) => {
                 if let Some(bound) = bindings.get(tv) {
                     if *bound != *actual {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(TypeMismatch {
-                            expected: bound.clone(),
-                            actual: actual.clone(),
-                        })));
+                        return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(
+                            TypeMismatch {
+                                expected: bound.clone(),
+                                actual: actual.clone(),
+                            },
+                        )));
                     }
                 } else {
                     // Occurs check: prevent infinite types like T = List[T]
                     if Self::type_contains_var(actual, tv) {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(TypeMismatch {
-                            expected: Type::TypeVar(tv.clone(), vec![]),
-                            actual: actual.clone(),
-                        })));
+                        return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(
+                            TypeMismatch {
+                                expected: Type::TypeVar(tv.clone(), vec![]),
+                                actual: actual.clone(),
+                            },
+                        )));
                     }
                     bindings.insert(tv.clone(), actual.clone());
                 }
@@ -914,18 +1000,22 @@ impl TypeChecker {
             (_, Type::TypeVar(tv, _constraints)) => {
                 if let Some(bound) = bindings.get(tv) {
                     if *bound != *expected {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(TypeMismatch {
-                            expected: expected.clone(),
-                            actual: bound.clone(),
-                        })));
+                        return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(
+                            TypeMismatch {
+                                expected: expected.clone(),
+                                actual: bound.clone(),
+                            },
+                        )));
                     }
                 } else {
                     // Occurs check: prevent infinite types
                     if Self::type_contains_var(expected, tv) {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(TypeMismatch {
-                            expected: expected.clone(),
-                            actual: Type::TypeVar(tv.clone(), vec![]),
-                        })));
+                        return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(
+                            TypeMismatch {
+                                expected: expected.clone(),
+                                actual: Type::TypeVar(tv.clone(), vec![]),
+                            },
+                        )));
                     }
                     bindings.insert(tv.clone(), expected.clone());
                 }
@@ -965,16 +1055,20 @@ impl TypeChecker {
                     {
                         return Ok(());
                     }
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(TypeMismatch {
-                        expected: expected.clone(),
-                        actual: actual.clone(),
-                    })));
+                    return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(
+                        TypeMismatch {
+                            expected: expected.clone(),
+                            actual: actual.clone(),
+                        },
+                    )));
                 }
                 if eargs.len() != aargs.len() {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(TypeMismatch {
-                        expected: expected.clone(),
-                        actual: actual.clone(),
-                    })));
+                    return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(
+                        TypeMismatch {
+                            expected: expected.clone(),
+                            actual: actual.clone(),
+                        },
+                    )));
                 }
                 for (e, a) in eargs.iter().zip(aargs.iter()) {
                     Self::unify_inner(e, a, bindings, env, invariant)?;
@@ -994,10 +1088,12 @@ impl TypeChecker {
                 },
             ) => {
                 if ep.len() != ap.len() {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
-                        expected: ep.len(),
-                        actual: ap.len(),
-                    })));
+                    return Err(Diagnostic::from_template(
+                        DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
+                            expected: ep.len(),
+                            actual: ap.len(),
+                        }),
+                    ));
                 }
                 for (e, a) in ep.iter().zip(ap.iter()) {
                     Self::unify_inner(e, a, bindings, env, invariant)?;
@@ -1006,10 +1102,12 @@ impl TypeChecker {
             }
             _ => {
                 if expected != actual {
-                    Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(TypeMismatch {
-                        expected: expected.clone(),
-                        actual: actual.clone(),
-                    })))
+                    Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(
+                        TypeMismatch {
+                            expected: expected.clone(),
+                            actual: actual.clone(),
+                        },
+                    )))
                 } else {
                     Ok(())
                 }
@@ -1120,24 +1218,28 @@ impl TypeChecker {
                     _ => false,
                 };
                 if !is_same && !self.is_error_subtype(actual, &expected_ty) {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::TypeConstraintError(TypeConstraintError {
-                        message: format!(
-                            "Type {} does not satisfy constraint '{} extends {}': \
+                    return Err(Diagnostic::from_template(
+                        DiagnosticTemplate::TypeConstraintError(TypeConstraintError {
+                            message: format!(
+                                "Type {} does not satisfy constraint '{} extends {}': \
                              {} is not a subclass of {}",
-                            actual, type_param, class_name, actual, class_name
-                        ),
-                    })));
+                                actual, type_param, class_name, actual, class_name
+                            ),
+                        }),
+                    ));
                 }
             }
             ast::TypeConstraint::Includes(trait_name, trait_args) => {
                 if !self.type_includes_trait(actual, trait_name) {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::TypeConstraintError(TypeConstraintError {
-                        message: format!(
-                            "Type {} does not satisfy constraint '{} includes {}': \
+                    return Err(Diagnostic::from_template(
+                        DiagnosticTemplate::TypeConstraintError(TypeConstraintError {
+                            message: format!(
+                                "Type {} does not satisfy constraint '{} includes {}': \
                              {} does not include {}",
-                            actual, type_param, trait_name, actual, trait_name
-                        ),
-                    })));
+                                actual, type_param, trait_name, actual, trait_name
+                            ),
+                        }),
+                    ));
                 }
                 // Validate parametric trait type args if present
                 if !trait_args.is_empty()
@@ -1145,19 +1247,21 @@ impl TypeChecker {
                 {
                     let args_str: Vec<String> =
                         trait_args.iter().map(|t| format!("{}", t)).collect();
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::TypeConstraintError(TypeConstraintError {
-                        message: format!(
-                            "Type {} does not satisfy constraint '{} includes {}[{}]': \
+                    return Err(Diagnostic::from_template(
+                        DiagnosticTemplate::TypeConstraintError(TypeConstraintError {
+                            message: format!(
+                                "Type {} does not satisfy constraint '{} includes {}[{}]': \
                              {} does not include {}[{}]",
-                            actual,
-                            type_param,
-                            trait_name,
-                            args_str.join(", "),
-                            actual,
-                            trait_name,
-                            args_str.join(", "),
-                        ),
-                    })));
+                                actual,
+                                type_param,
+                                trait_name,
+                                args_str.join(", "),
+                                actual,
+                                trait_name,
+                                args_str.join(", "),
+                            ),
+                        }),
+                    ));
                 }
             }
         }
@@ -1214,10 +1318,11 @@ impl TypeChecker {
                         suspendable: true,
                     }),
                     _ => self.env.get_var(name).cloned().ok_or_else(|| {
-                        let mut diag = Diagnostic::from_template(DiagnosticTemplate::UndefinedVariable(UndefinedVariable {
-                            name: name.clone(),
-                        }))
-                        .with_label(*span, "not found in this scope");
+                        let mut diag =
+                            Diagnostic::from_template(DiagnosticTemplate::UndefinedVariable(
+                                UndefinedVariable { name: name.clone() },
+                            ))
+                            .with_label(*span, "not found in this scope");
                         if let Some(suggestion) = self.suggest_similar_name(name) {
                             diag = diag.with_note(format!("did you mean '{}'?", suggestion));
                         }
@@ -1248,10 +1353,12 @@ impl TypeChecker {
                 }
                 Type::Bool => {
                     if !args.is_empty() {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
-                            expected: 0,
-                            actual: args.len(),
-                        }))
+                        return Err(Diagnostic::from_template(
+                            DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
+                                expected: 0,
+                                actual: args.len(),
+                            }),
+                        )
                         .with_label(func.span(), "remove arguments"));
                     }
                     return Ok(Type::Bool);
@@ -1274,22 +1381,28 @@ impl TypeChecker {
                 Type::Int => return self.check_random_int(func, args),
                 Type::Float => return self.check_random_float(func, args),
                 _ => {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
-                        param: "max".to_string(),
-                        expected: Type::Int,
-                        actual: aty.clone(),
-                    }))
+                    return Err(Diagnostic::from_template(
+                        DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
+                            param: "max".to_string(),
+                            expected: Type::Int,
+                            actual: aty.clone(),
+                        }),
+                    )
                     .with_label(expr.span(), "expected Int or Float"));
                 }
             }
         }
 
-        Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
-            param: "max".to_string(),
-            expected: Type::Int,
-            actual: Type::Void,
-        }))
-        .with_label(func.span(), "needs type context"))
+        Err(
+            Diagnostic::from_template(DiagnosticTemplate::ArgumentTypeMismatch(
+                ArgumentTypeMismatch {
+                    param: "max".to_string(),
+                    expected: Type::Int,
+                    actual: Type::Void,
+                },
+            ))
+            .with_label(func.span(), "needs type context"),
+        )
     }
 
     fn check_random_int(
@@ -1301,21 +1414,27 @@ impl TypeChecker {
             if name == "max" || name == "min" {
                 let aty = self.check_expr(expr)?;
                 if aty != Type::Int {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
-                        param: name.clone(),
-                        expected: Type::Int,
-                        actual: aty.clone(),
-                    }))
+                    return Err(Diagnostic::from_template(
+                        DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
+                            param: name.clone(),
+                            expected: Type::Int,
+                            actual: aty.clone(),
+                        }),
+                    )
                     .with_label(expr.span(), "expected Int"));
                 }
             }
         }
         if !args.iter().any(|(n, _, _)| n == "max") {
-            return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
-                expected: 1,
-                actual: 0,
-            }))
-            .with_label(func.span(), "add max: argument"));
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(
+                    ArgumentCountMismatch {
+                        expected: 1,
+                        actual: 0,
+                    },
+                ))
+                .with_label(func.span(), "add max: argument"),
+            );
         }
         Ok(Type::Int)
     }
@@ -1329,21 +1448,27 @@ impl TypeChecker {
             if name == "max" || name == "min" {
                 let aty = self.check_expr(expr)?;
                 if aty != Type::Float {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
-                        param: name.clone(),
-                        expected: Type::Float,
-                        actual: aty.clone(),
-                    }))
+                    return Err(Diagnostic::from_template(
+                        DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
+                            param: name.clone(),
+                            expected: Type::Float,
+                            actual: aty.clone(),
+                        }),
+                    )
                     .with_label(expr.span(), "expected Float"));
                 }
             }
         }
         if !args.iter().any(|(n, _, _)| n == "max") {
-            return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
-                expected: 1,
-                actual: 0,
-            }))
-            .with_label(func.span(), "add max: argument"));
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(
+                    ArgumentCountMismatch {
+                        expected: 1,
+                        actual: 0,
+                    },
+                ))
+                .with_label(func.span(), "add max: argument"),
+            );
         }
         Ok(Type::Float)
     }
@@ -1356,15 +1481,16 @@ impl TypeChecker {
             Expr::Ident(name, _) => {
                 let ty = Type::from_ident(name);
                 // If from_ident returned Custom, verify the class exists
-                if let Type::Custom(ref class_name, _) = ty {
-                    if self.env.get_class(class_name).is_none()
-                        && self.env.get_enum(class_name).is_none()
-                    {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::UndefinedVariable(UndefinedVariable {
-                            name: name.clone(),
-                        }))
-                        .with_label(expr.span(), "not a known type"));
-                    }
+                if let Type::Custom(ref class_name, _) = ty
+                    && self.env.get_class(class_name).is_none()
+                    && self.env.get_enum(class_name).is_none()
+                {
+                    return Err(
+                        Diagnostic::from_template(DiagnosticTemplate::UndefinedVariable(
+                            UndefinedVariable { name: name.clone() },
+                        ))
+                        .with_label(expr.span(), "not a known type"),
+                    );
                 }
                 Ok(ty)
             }
@@ -1378,15 +1504,23 @@ impl TypeChecker {
                         _ => {}
                     }
                 }
-                Err(Diagnostic::from_template(DiagnosticTemplate::UndefinedVariable(UndefinedVariable {
-                    name: "Set constructor type".to_string(),
-                }))
-                .with_label(expr.span(), "expected type name"))
+                Err(
+                    Diagnostic::from_template(DiagnosticTemplate::UndefinedVariable(
+                        UndefinedVariable {
+                            name: "Set constructor type".to_string(),
+                        },
+                    ))
+                    .with_label(expr.span(), "expected type name"),
+                )
             }
-            _ => Err(Diagnostic::from_template(DiagnosticTemplate::UndefinedVariable(UndefinedVariable {
-                name: "Set constructor type".to_string(),
-            }))
-            .with_label(expr.span(), "expected type name")),
+            _ => Err(
+                Diagnostic::from_template(DiagnosticTemplate::UndefinedVariable(
+                    UndefinedVariable {
+                        name: "Set constructor type".to_string(),
+                    },
+                ))
+                .with_label(expr.span(), "expected type name"),
+            ),
         }
     }
 }

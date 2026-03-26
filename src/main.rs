@@ -178,11 +178,9 @@ fn frontend_and_lower(source: &str, filename: &str) -> fir::FirModule {
         render_diagnostic(
             source,
             filename,
-            &Diagnostic::from_template(DiagnosticTemplate::NotCompilable(
-                NotCompilable {
-                    message: "no main() function found".to_string(),
-                },
-            ))
+            &Diagnostic::from_template(DiagnosticTemplate::NotCompilable(NotCompilable {
+                message: "no main() function found".to_string(),
+            }))
             .with_note("add a `def main() -> Int` function as the program entry point"),
         );
         std::process::exit(1);
@@ -432,25 +430,25 @@ fn render_execution_error(source: &str, filename: &str, err: &LowerError) {
     match err {
         LowerError::UnsupportedFeature(kind, _) => {
             let detail = kind.detail();
-            let diag = Diagnostic::from_template(DiagnosticTemplate::NotCompilable(
-                NotCompilable {
+            let diag =
+                Diagnostic::from_template(DiagnosticTemplate::NotCompilable(NotCompilable {
                     message: format!("execution support for {detail} is not executable yet"),
-                },
-            ))
-            .with_label(span, format!("{detail} cannot be compiled yet"))
-            .with_note("this file can still pass `asterc check` while `run` and `build` reject it");
+                }))
+                .with_label(span, format!("{detail} cannot be compiled yet"))
+                .with_note(
+                    "this file can still pass `asterc check` while `run` and `build` reject it",
+                );
             render_diagnostic(source, filename, &diag);
         }
         LowerError::UnboundVariable(name, _) => {
-            let diag = Diagnostic::from_template(DiagnosticTemplate::NotCompilable(
-                NotCompilable {
+            let diag =
+                Diagnostic::from_template(DiagnosticTemplate::NotCompilable(NotCompilable {
                     message: format!("unbound variable '{name}' during lowering"),
-                },
-            ))
-            .with_label(span, "not found in lowered scope")
-            .with_note(
-                "this file can still pass `asterc check` while `run` and `build` reject it",
-            );
+                }))
+                .with_label(span, "not found in lowered scope")
+                .with_note(
+                    "this file can still pass `asterc check` while `run` and `build` reject it",
+                );
             render_diagnostic(source, filename, &diag);
         }
     }

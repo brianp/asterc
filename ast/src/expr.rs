@@ -618,7 +618,7 @@ mod tests {
         let int_lit = Box::new(Expr::Int(1, s));
         let variants: Vec<Expr> = vec![
             Expr::Int(42, s),
-            Expr::Float(3.14, s),
+            Expr::Float(3.15, s),
             Expr::Str("hello".into(), s),
             Expr::Bool(true, s),
             Expr::Nil(s),

@@ -66,7 +66,9 @@ fn function_with_return() {
 fn string_sub_type_error() {
     let err = common::check_err("let x = \"a\" - \"b\"");
     assert!(
-        err.contains("Cannot apply") || err.contains("incompatible types") || err.contains("used outside"),
+        err.contains("Cannot apply")
+            || err.contains("incompatible types")
+            || err.contains("used outside"),
         "got: {}",
         err
     );
@@ -76,7 +78,9 @@ fn string_sub_type_error() {
 fn int_and_bool_error() {
     let err = common::check_err("let x = 1 + true");
     assert!(
-        err.contains("Cannot apply") || err.contains("incompatible types") || err.contains("used outside"),
+        err.contains("Cannot apply")
+            || err.contains("incompatible types")
+            || err.contains("used outside"),
         "got: {}",
         err
     );

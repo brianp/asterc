@@ -16,22 +16,23 @@ impl Parser {
         let mut names = Vec::new();
         loop {
             let tok = self.advance();
-            let name = match &tok.kind {
-                TokenKind::Ident(n) => n.clone(),
-                t => {
-                    let span = Span {
-                        start: tok.start,
-                        end: tok.end,
-                    };
-                    return Err(
-                        Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                            expected: format!("{} name", context),
-                            found: format!("`{}`", t),
-                        }))
-                        .with_label(span, "expected identifier"),
-                    );
-                }
-            };
+            let name =
+                match &tok.kind {
+                    TokenKind::Ident(n) => n.clone(),
+                    t => {
+                        let span = Span {
+                            start: tok.start,
+                            end: tok.end,
+                        };
+                        return Err(Diagnostic::from_template(
+                            DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                                expected: format!("{} name", context),
+                                found: format!("`{}`", t),
+                            }),
+                        )
+                        .with_label(span, "expected identifier"));
+                    }
+                };
             names.push(name);
             if self.at(&TokenKind::Comma) {
                 self.advance();
@@ -51,22 +52,23 @@ impl Parser {
         let mut refs = Vec::new();
         loop {
             let tok = self.advance();
-            let name = match &tok.kind {
-                TokenKind::Ident(n) => n.clone(),
-                t => {
-                    let span = Span {
-                        start: tok.start,
-                        end: tok.end,
-                    };
-                    return Err(
-                        Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                            expected: "trait name".to_string(),
-                            found: format!("`{}`", t),
-                        }))
-                        .with_label(span, "expected trait name"),
-                    );
-                }
-            };
+            let name =
+                match &tok.kind {
+                    TokenKind::Ident(n) => n.clone(),
+                    t => {
+                        let span = Span {
+                            start: tok.start,
+                            end: tok.end,
+                        };
+                        return Err(Diagnostic::from_template(
+                            DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                                expected: "trait name".to_string(),
+                                found: format!("`{}`", t),
+                            }),
+                        )
+                        .with_label(span, "expected trait name"));
+                    }
+                };
             // Optional type arguments: From[Int] or Convert[A, B]
             let type_args = if self.at(&TokenKind::LBracket) {
                 self.advance();
@@ -125,10 +127,12 @@ impl Parser {
                     end: name_tok.end,
                 };
                 return Err(
-                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                        expected: "enum name".to_string(),
-                        found: format!("`{}`", t),
-                    }))
+                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
+                        UnexpectedToken {
+                            expected: "enum name".to_string(),
+                            found: format!("`{}`", t),
+                        },
+                    ))
                     .with_label(span, "expected enum name"),
                 );
             }
@@ -160,13 +164,13 @@ impl Parser {
                                 start: pub_next.start,
                                 end: pub_next.end,
                             };
-                            return Err(
-                                Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
                                     expected: "def after 'pub' in enum".to_string(),
                                     found: format!("`{}`", pub_next.kind),
-                                }))
-                                .with_label(span, "expected 'def'"),
-                            );
+                                }),
+                            )
+                            .with_label(span, "expected 'def'"));
                         }
                     }
                 }
@@ -190,13 +194,13 @@ impl Parser {
                                             start: fname_tok.start,
                                             end: fname_tok.end,
                                         };
-                                        return Err(
-                                            Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                                        return Err(Diagnostic::from_template(
+                                            DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
                                                 expected: "field name in enum variant".to_string(),
                                                 found: format!("`{}`", t),
-                                            }))
-                                            .with_label(span, "expected field name"),
-                                        );
+                                            }),
+                                        )
+                                        .with_label(span, "expected field name"));
                                     }
                                 };
                                 self.expect(Colon)?;
@@ -227,10 +231,12 @@ impl Parser {
                         end: tok.end,
                     };
                     return Err(
-                        Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                            expected: "variant name or method in enum".to_string(),
-                            found: format!("`{}`", tok.kind),
-                        }))
+                        Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
+                            UnexpectedToken {
+                                expected: "variant name or method in enum".to_string(),
+                                found: format!("`{}`", tok.kind),
+                            },
+                        ))
                         .with_label(span, "unexpected token in enum body"),
                     );
                 }
@@ -263,10 +269,12 @@ impl Parser {
                     end: name_tok.end,
                 };
                 return Err(
-                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                        expected: "class name".to_string(),
-                        found: format!("`{}`", t),
-                    }))
+                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
+                        UnexpectedToken {
+                            expected: "class name".to_string(),
+                            found: format!("`{}`", t),
+                        },
+                    ))
                     .with_label(span, "expected class name"),
                 );
             }
@@ -284,22 +292,23 @@ impl Parser {
         let extends = if self.at(&TokenKind::Extends) {
             self.advance();
             let parent_tok = self.advance();
-            let parent = match &parent_tok.kind {
-                Ident(n) => n.clone(),
-                t => {
-                    let span = Span {
-                        start: parent_tok.start,
-                        end: parent_tok.end,
-                    };
-                    return Err(
-                        Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                            expected: "class name after 'extends'".to_string(),
-                            found: format!("`{}`", t),
-                        }))
-                        .with_label(span, "expected class name"),
-                    );
-                }
-            };
+            let parent =
+                match &parent_tok.kind {
+                    Ident(n) => n.clone(),
+                    t => {
+                        let span = Span {
+                            start: parent_tok.start,
+                            end: parent_tok.end,
+                        };
+                        return Err(Diagnostic::from_template(
+                            DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                                expected: "class name after 'extends'".to_string(),
+                                found: format!("`{}`", t),
+                            }),
+                        )
+                        .with_label(span, "expected class name"));
+                    }
+                };
             Some(parent)
         } else {
             None
@@ -347,13 +356,13 @@ impl Parser {
                                 start: pub_next.start,
                                 end: pub_next.end,
                             };
-                            return Err(
-                                Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
                                     expected: "def or field name after 'pub' in class".to_string(),
                                     found: format!("`{}`", pub_next.kind),
-                                }))
-                                .with_label(span, "expected 'def' or field name"),
-                            );
+                                }),
+                            )
+                            .with_label(span, "expected 'def' or field name"));
                         }
                     }
                 }
@@ -369,13 +378,13 @@ impl Parser {
                                 start: fname_tok.start,
                                 end: fname_tok.end,
                             };
-                            return Err(
-                                Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
                                     expected: "field name".to_string(),
                                     found: format!("`{}`", t),
-                                }))
-                                .with_label(span, "expected field name"),
-                            );
+                                }),
+                            )
+                            .with_label(span, "expected field name"));
                         }
                     };
                     self.expect(Colon)?;
@@ -418,10 +427,12 @@ impl Parser {
                     end: name_tok.end,
                 };
                 return Err(
-                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                        expected: "trait name".to_string(),
-                        found: format!("`{}`", t),
-                    }))
+                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
+                        UnexpectedToken {
+                            expected: "trait name".to_string(),
+                            found: format!("`{}`", t),
+                        },
+                    ))
                     .with_label(span, "expected trait name"),
                 );
             }
@@ -459,13 +470,13 @@ impl Parser {
                                 start: pub_next.start,
                                 end: pub_next.end,
                             };
-                            return Err(
-                                Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
                                     expected: "def after 'pub' in trait".to_string(),
                                     found: format!("`{}`", pub_next.kind),
-                                }))
-                                .with_label(span, "expected 'def'"),
-                            );
+                                }),
+                            )
+                            .with_label(span, "expected 'def'"));
                         }
                     }
                 }
@@ -476,10 +487,12 @@ impl Parser {
                         end: tok.end,
                     };
                     return Err(
-                        Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                            expected: "method definition in trait".to_string(),
-                            found: format!("`{}`", tok.kind),
-                        }))
+                        Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
+                            UnexpectedToken {
+                                expected: "method definition in trait".to_string(),
+                                found: format!("`{}`", tok.kind),
+                            },
+                        ))
                         .with_label(span, "unexpected token in trait body"),
                     );
                 }
@@ -530,10 +543,12 @@ impl Parser {
                     end: name_tok.end,
                 };
                 return Err(
-                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                        expected: "function name".to_string(),
-                        found: format!("`{}`", t),
-                    }))
+                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
+                        UnexpectedToken {
+                            expected: "function name".to_string(),
+                            found: format!("`{}`", t),
+                        },
+                    ))
                     .with_label(span, "expected function name"),
                 );
             }
@@ -542,10 +557,12 @@ impl Parser {
         // Generic type parameters are inferred inline from param types (BC-5).
         // Bracket syntax [T] on functions is no longer supported (use class Box[T] for classes).
         if self.at(&LBracket) {
-            return Err(Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                expected: "function parameter list or body".to_string(),
-                found: "'[' (bracket generic syntax is not supported on functions)".to_string(),
-            })));
+            return Err(Diagnostic::from_template(
+                DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                    expected: "function parameter list or body".to_string(),
+                    found: "'[' (bracket generic syntax is not supported on functions)".to_string(),
+                }),
+            ));
         }
         let generic_params: Option<Vec<String>> = None;
 
@@ -565,13 +582,13 @@ impl Parser {
                                 start: pname_tok.start,
                                 end: pname_tok.end,
                             };
-                            return Err(
-                                Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
                                     expected: "parameter name".to_string(),
                                     found: format!("`{}`", t),
-                                }))
-                                .with_label(span, "expected parameter name"),
-                            );
+                                }),
+                            )
+                            .with_label(span, "expected parameter name"));
                         }
                     };
                     self.expect(Colon)?;
@@ -589,13 +606,13 @@ impl Parser {
                                     start: class_tok.start,
                                     end: class_tok.end,
                                 };
-                                return Err(
-                                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                                return Err(Diagnostic::from_template(
+                                    DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
                                         expected: "class name after 'extends'".to_string(),
                                         found: format!("`{}`", t),
-                                    }))
-                                    .with_label(span, "expected class name"),
-                                );
+                                    }),
+                                )
+                                .with_label(span, "expected class name"));
                             }
                         };
                         constraints.push(TypeConstraint::Extends(class_name));
@@ -610,13 +627,13 @@ impl Parser {
                                     start: trait_tok.start,
                                     end: trait_tok.end,
                                 };
-                                return Err(
-                                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                                return Err(Diagnostic::from_template(
+                                    DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
                                         expected: "trait name after 'includes'".to_string(),
                                         found: format!("`{}`", t),
-                                    }))
-                                    .with_label(span, "expected trait name"),
-                                );
+                                    }),
+                                )
+                                .with_label(span, "expected trait name"));
                             }
                         };
                         // Optional type args: includes From[Float]
@@ -640,10 +657,13 @@ impl Parser {
                         let type_param_name = match &ptype {
                             Type::Custom(name, args) if args.is_empty() => name.clone(),
                             _ => {
-                                return Err(Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                                    expected: "type parameter (e.g. T) for generic constraint".to_string(),
-                                    found: "non-type-parameter type".to_string(),
-                                })));
+                                return Err(Diagnostic::from_template(
+                                    DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                                        expected: "type parameter (e.g. T) for generic constraint"
+                                            .to_string(),
+                                        found: "non-type-parameter type".to_string(),
+                                    }),
+                                ));
                             }
                         };
                         type_constraints.push((type_param_name, constraints));
@@ -656,10 +676,13 @@ impl Parser {
                         Some(self.parse_expr()?)
                     } else {
                         if seen_default {
-                            return Err(Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                                expected: format!("default value for parameter '{}'", pname),
-                                found: "parameter without default after parameter with default".to_string(),
-                            })));
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                                    expected: format!("default value for parameter '{}'", pname),
+                                    found: "parameter without default after parameter with default"
+                                        .to_string(),
+                                }),
+                            ));
                         }
                         None
                     };

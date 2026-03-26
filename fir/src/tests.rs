@@ -42,10 +42,9 @@ fn real_body(func: &FirFunction) -> &[FirStmt] {
         value: FirExpr::RuntimeCall { name, .. },
         ..
     }) = func.body.first()
+        && name == "aster_async_scope_enter"
     {
-        if name == "aster_async_scope_enter" {
-            return &func.body[1..];
-        }
+        return &func.body[1..];
     }
     &func.body
 }
@@ -749,8 +748,8 @@ fn lower_all_comparison_ops() {
     assert!(body.len() >= 7);
 
     // Each let should have a BinaryOp with Bool result type
-    for i in 0..6 {
-        match &body[i] {
+    for (i, stmt) in body.iter().enumerate().take(6) {
+        match stmt {
             FirStmt::Let { ty, value, .. } => {
                 assert_eq!(*ty, FirType::Bool);
                 match value {
@@ -2800,14 +2799,16 @@ def main() -> Int
     let main = fir.get_function(fir.entry.unwrap());
     let body = real_body(main);
     // The body should contain a ClosureCall somewhere (the indirect call)
-    let has_closure_call = body.iter().any(|s| match s {
-        FirStmt::Return(FirExpr::ClosureCall { .. }) => true,
-        FirStmt::Expr(FirExpr::ClosureCall { .. }) => true,
-        FirStmt::Let {
-            value: FirExpr::ClosureCall { .. },
-            ..
-        } => true,
-        _ => false,
+    let has_closure_call = body.iter().any(|s| {
+        matches!(
+            s,
+            FirStmt::Return(FirExpr::ClosureCall { .. })
+                | FirStmt::Expr(FirExpr::ClosureCall { .. })
+                | FirStmt::Let {
+                    value: FirExpr::ClosureCall { .. },
+                    ..
+                }
+        )
     });
     assert!(
         has_closure_call,
@@ -2833,14 +2834,16 @@ def main() -> Int
     let apply = &fir.functions[0];
     assert_eq!(apply.name, "apply");
     let body = real_body(apply);
-    let has_closure_call = body.iter().any(|s| match s {
-        FirStmt::Return(FirExpr::ClosureCall { .. }) => true,
-        FirStmt::Expr(FirExpr::ClosureCall { .. }) => true,
-        FirStmt::Let {
-            value: FirExpr::ClosureCall { .. },
-            ..
-        } => true,
-        _ => false,
+    let has_closure_call = body.iter().any(|s| {
+        matches!(
+            s,
+            FirStmt::Return(FirExpr::ClosureCall { .. })
+                | FirStmt::Expr(FirExpr::ClosureCall { .. })
+                | FirStmt::Let {
+                    value: FirExpr::ClosureCall { .. },
+                    ..
+                }
+        )
     });
     assert!(
         has_closure_call,

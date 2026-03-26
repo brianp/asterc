@@ -11,6 +11,9 @@ impl UnknownField {
         "E010"
     }
     pub fn render(&self) -> String {
-        format!("Unknown field '{}' on type '{}'", self.field, self.type_name)
+        format!(
+            "Unknown field '{}' on type '{}'",
+            self.field, self.type_name
+        )
     }
 }

@@ -69,7 +69,10 @@ fn cross_module_private_field_not_accessible() {
         files,
     );
     assert!(
-        err.contains("E026") || err.contains("not public") || err.contains("private") || err.contains("cannot be reassigned"),
+        err.contains("E026")
+            || err.contains("not public")
+            || err.contains("private")
+            || err.contains("cannot be reassigned"),
         "should report visibility error: {}",
         err
     );
@@ -87,7 +90,10 @@ fn cross_module_all_private_fields_rejected() {
         files,
     );
     assert!(
-        err.contains("E026") || err.contains("not public") || err.contains("private") || err.contains("cannot be reassigned"),
+        err.contains("E026")
+            || err.contains("not public")
+            || err.contains("private")
+            || err.contains("cannot be reassigned"),
         "should report visibility error for private field: {}",
         err
     );
@@ -120,7 +126,10 @@ fn cross_module_private_method_not_accessible() {
         files,
     );
     assert!(
-        err.contains("E026") || err.contains("not public") || err.contains("private") || err.contains("cannot be reassigned"),
+        err.contains("E026")
+            || err.contains("not public")
+            || err.contains("private")
+            || err.contains("cannot be reassigned"),
         "should report visibility error for private method: {}",
         err
     );
@@ -169,7 +178,10 @@ fn namespace_import_private_field_rejected() {
         files,
     );
     assert!(
-        err.contains("E026") || err.contains("not public") || err.contains("private") || err.contains("cannot be reassigned"),
+        err.contains("E026")
+            || err.contains("not public")
+            || err.contains("private")
+            || err.contains("cannot be reassigned"),
         "namespace import should enforce visibility: {}",
         err
     );
@@ -210,7 +222,10 @@ fn cross_module_inherited_private_field_rejected() {
         files,
     );
     assert!(
-        err.contains("E026") || err.contains("not public") || err.contains("private") || err.contains("cannot be reassigned"),
+        err.contains("E026")
+            || err.contains("not public")
+            || err.contains("private")
+            || err.contains("cannot be reassigned"),
         "inherited private field should not be accessible: {}",
         err
     );
@@ -234,7 +249,10 @@ fn reexported_class_preserves_field_visibility() {
         files,
     );
     assert!(
-        err.contains("E026") || err.contains("not public") || err.contains("private") || err.contains("cannot be reassigned"),
+        err.contains("E026")
+            || err.contains("not public")
+            || err.contains("private")
+            || err.contains("cannot be reassigned"),
         "re-exported class should preserve field visibility: {}",
         err
     );
@@ -274,7 +292,10 @@ fn visibility_error_mentions_class_name() {
     // Note: the current error mentions the field name (not necessarily class name).
     // Accept either the class name or the field name or visibility-related terms.
     assert!(
-        err.contains("User") || err.contains("secret") || err.contains("private") || err.contains("cannot be reassigned"),
+        err.contains("User")
+            || err.contains("secret")
+            || err.contains("private")
+            || err.contains("cannot be reassigned"),
         "error should mention the field or class name: {}",
         err
     );

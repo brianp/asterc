@@ -149,9 +149,7 @@ def main() -> Int
 ",
     );
     assert!(
-        err.contains("1 argument")
-            || err.contains("expected 1")
-            || err.contains("parameter count"),
+        err.contains("1 argument") || err.contains("expected 1") || err.contains("parameter count"),
         "expected arg count error, got: {err}"
     );
 }

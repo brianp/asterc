@@ -77,7 +77,11 @@ def main() -> Int
 ",
     );
     assert!(
-        err.contains("no method") || err.contains("Unknown field") || err.contains("receive") || err.contains("send") || err.contains("foo"),
+        err.contains("no method")
+            || err.contains("Unknown field")
+            || err.contains("receive")
+            || err.contains("send")
+            || err.contains("foo"),
         "expected no method error for receive on MultiSend, got: {err}"
     );
 }
@@ -93,7 +97,11 @@ def main() -> Int
 ",
     );
     assert!(
-        err.contains("no method") || err.contains("Unknown field") || err.contains("receive") || err.contains("send") || err.contains("foo"),
+        err.contains("no method")
+            || err.contains("Unknown field")
+            || err.contains("receive")
+            || err.contains("send")
+            || err.contains("foo"),
         "expected no method error for send on MultiReceive, got: {err}"
     );
 }
@@ -109,7 +117,11 @@ def main() -> Int
 ",
     );
     assert!(
-        err.contains("no method") || err.contains("Unknown field") || err.contains("receive") || err.contains("send") || err.contains("foo"),
+        err.contains("no method")
+            || err.contains("Unknown field")
+            || err.contains("receive")
+            || err.contains("send")
+            || err.contains("foo"),
         "expected method error, got: {err}"
     );
 }

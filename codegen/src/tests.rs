@@ -4695,7 +4695,7 @@ def identity(x: T) -> T
   return x
 
 def main() -> Float
-  identity(x: 3.14)
+  identity(x: 2.72)
 ";
     let fir = compile_and_run(src);
     let jit = jit_compile(&fir);
@@ -4703,8 +4703,8 @@ def main() -> Float
     let f: fn() -> f64 = unsafe { std::mem::transmute(ptr) };
     let result = f();
     assert!(
-        (result - 3.14).abs() < 1e-10,
-        "expected 3.14, got {}",
+        (result - 2.72_f64).abs() < 1e-10,
+        "expected 2.72, got {}",
         result
     );
 }
@@ -5050,8 +5050,14 @@ fn list_contains_runtime_direct() {
     crate::runtime::aster_list_push(list, 10);
     crate::runtime::aster_list_push(list, 20);
     crate::runtime::aster_list_push(list, 30);
-    assert_eq!(crate::runtime::aster_list_contains(list as *const u8, 20, 0), 1);
-    assert_eq!(crate::runtime::aster_list_contains(list as *const u8, 99, 0), 0);
+    assert_eq!(
+        crate::runtime::aster_list_contains(list as *const u8, 20, 0),
+        1
+    );
+    assert_eq!(
+        crate::runtime::aster_list_contains(list as *const u8, 99, 0),
+        0
+    );
 }
 
 #[test]

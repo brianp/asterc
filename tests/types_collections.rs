@@ -208,16 +208,12 @@ let y = x.name
 
 #[test]
 fn list_insert_typecheck() {
-    common::check_ok(
-        "let xs = [1, 2, 3]\nxs.insert(at: 1, item: 99)\n",
-    );
+    common::check_ok("let xs = [1, 2, 3]\nxs.insert(at: 1, item: 99)\n");
 }
 
 #[test]
 fn list_insert_wrong_type_error() {
-    let err = common::check_err(
-        "let xs = [1, 2]\nxs.insert(at: 0, item: \"bad\")\n",
-    );
+    let err = common::check_err("let xs = [1, 2]\nxs.insert(at: 0, item: \"bad\")\n");
     assert!(
         err.contains("mismatch") || err.contains("expected") || err.contains("Int"),
         "Expected type mismatch error, got: {}",
@@ -227,9 +223,7 @@ fn list_insert_wrong_type_error() {
 
 #[test]
 fn list_insert_index_not_int_error() {
-    let err = common::check_err(
-        "let xs = [1, 2]\nxs.insert(at: \"zero\", item: 3)\n",
-    );
+    let err = common::check_err("let xs = [1, 2]\nxs.insert(at: \"zero\", item: 3)\n");
     assert!(
         err.contains("Int") || err.contains("mismatch") || err.contains("expected"),
         "Expected Int index error, got: {}",
@@ -239,16 +233,12 @@ fn list_insert_index_not_int_error() {
 
 #[test]
 fn list_remove_typecheck() {
-    common::check_ok(
-        "let xs = [1, 2, 3]\nlet removed: Int = xs.remove(at: 0)\n",
-    );
+    common::check_ok("let xs = [1, 2, 3]\nlet removed: Int = xs.remove(at: 0)\n");
 }
 
 #[test]
 fn list_remove_returns_element_type() {
-    let err = common::check_err(
-        "let xs = [1, 2, 3]\nlet removed: String = xs.remove(at: 0)\n",
-    );
+    let err = common::check_err("let xs = [1, 2, 3]\nlet removed: String = xs.remove(at: 0)\n");
     assert!(
         err.contains("mismatch") || err.contains("String") || err.contains("Int"),
         "Expected type mismatch error, got: {}",
@@ -258,16 +248,12 @@ fn list_remove_returns_element_type() {
 
 #[test]
 fn list_pop_typecheck() {
-    common::check_ok(
-        "let xs = [1, 2, 3]\nlet last: Int = xs.pop()\n",
-    );
+    common::check_ok("let xs = [1, 2, 3]\nlet last: Int = xs.pop()\n");
 }
 
 #[test]
 fn list_pop_returns_element_type() {
-    let err = common::check_err(
-        "let xs = [1, 2, 3]\nlet last: String = xs.pop()\n",
-    );
+    let err = common::check_err("let xs = [1, 2, 3]\nlet last: String = xs.pop()\n");
     assert!(
         err.contains("mismatch") || err.contains("String") || err.contains("Int"),
         "Expected type mismatch error, got: {}",
@@ -277,30 +263,22 @@ fn list_pop_returns_element_type() {
 
 #[test]
 fn list_remove_first_typecheck() {
-    common::check_ok(
-        "let xs = [1, 2, 3]\nlet found = xs.remove_first(f: -> x : x == 2)\n",
-    );
+    common::check_ok("let xs = [1, 2, 3]\nlet found = xs.remove_first(f: -> x : x == 2)\n");
 }
 
 #[test]
 fn list_remove_first_returns_nullable() {
-    common::check_ok(
-        "let xs = [1, 2, 3]\nlet found: Int? = xs.remove_first(f: -> x : x > 1)\n",
-    );
+    common::check_ok("let xs = [1, 2, 3]\nlet found: Int? = xs.remove_first(f: -> x : x > 1)\n");
 }
 
 #[test]
 fn list_contains_item_typecheck() {
-    common::check_ok(
-        "let xs = [1, 2, 3]\nlet has_two: Bool = xs.contains(item: 2)\n",
-    );
+    common::check_ok("let xs = [1, 2, 3]\nlet has_two: Bool = xs.contains(item: 2)\n");
 }
 
 #[test]
 fn list_contains_item_wrong_type_error() {
-    let err = common::check_err(
-        "let xs = [1, 2]\nxs.contains(item: \"bad\")\n",
-    );
+    let err = common::check_err("let xs = [1, 2]\nxs.contains(item: \"bad\")\n");
     assert!(
         err.contains("mismatch") || err.contains("expected") || err.contains("Int"),
         "Expected type mismatch error, got: {}",
@@ -310,9 +288,7 @@ fn list_contains_item_wrong_type_error() {
 
 #[test]
 fn list_contains_predicate_typecheck() {
-    common::check_ok(
-        "let xs = [1, 2, 3]\nlet has_big: Bool = xs.contains(f: -> x : x > 2)\n",
-    );
+    common::check_ok("let xs = [1, 2, 3]\nlet has_big: Bool = xs.contains(f: -> x : x > 2)\n");
 }
 
 #[test]

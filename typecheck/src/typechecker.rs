@@ -1,11 +1,11 @@
+use ast::templates::DiagnosticTemplate;
 use ast::templates::module_errors::{CircularImport, InvalidImportAlias, SymbolNotExported};
 use ast::templates::type_errors::{
     ArgumentTypeMismatch, BinaryOpError, ConditionTypeError, ConstReassignment, ConstraintError,
-    IndexTypeError, InvalidAssignment, MissingIterable, ReturnTypeMismatch, TraitError, TypeMismatch,
-    UndeclaredAssignment, UndefinedVariable, UnknownField,
+    IndexTypeError, InvalidAssignment, MissingIterable, ReturnTypeMismatch, TraitError,
+    TypeMismatch, UndeclaredAssignment, UndefinedVariable, UnknownField,
 };
 use ast::templates::warnings::{RedundantTypeAnnotation, ShadowedVariable};
-use ast::templates::DiagnosticTemplate;
 use ast::{
     ClassInfo, Diagnostic, EnumInfo, Expr, MatchPattern, Span, Stmt, TraitInfo, Type, TypeEnv,
     TypeTable,
@@ -960,25 +960,31 @@ impl TypeChecker {
                             self.env.set_var(name.clone(), ann.clone());
                             return Ok(ann.clone());
                         }
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(TypeMismatch {
-                            expected: ann.clone(),
-                            actual: ty.clone(),
-                        }))
+                        return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(
+                            TypeMismatch {
+                                expected: ann.clone(),
+                                actual: ty.clone(),
+                            },
+                        ))
                         .with_label(stmt_span, format!("expected {}", ann)));
                     }
                     // Nil cannot be assigned to non-nullable types
                     if ty == Type::Nil && !matches!(ann, Type::Nil) {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(TypeMismatch {
-                            expected: ann.clone(),
-                            actual: ty.clone(),
-                        }))
+                        return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(
+                            TypeMismatch {
+                                expected: ann.clone(),
+                                actual: ty.clone(),
+                            },
+                        ))
                         .with_label(stmt_span, format!("expected {}", ann)));
                     }
                     if !Self::types_compatible_with_env(ann, &ty, &self.env) {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(TypeMismatch {
-                            expected: ann.clone(),
-                            actual: ty.clone(),
-                        }))
+                        return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(
+                            TypeMismatch {
+                                expected: ann.clone(),
+                                actual: ty.clone(),
+                            },
+                        ))
                         .with_label(stmt_span, format!("expected {}", ann)));
                     }
                     // W001: warn when a type annotation is redundant (matches inferred type)
@@ -988,11 +994,13 @@ impl TypeChecker {
                                 "redundant type annotation: type `{}` can be inferred",
                                 ann
                             ))
-                            .with_template(DiagnosticTemplate::RedundantTypeAnnotation(
-                                RedundantTypeAnnotation {
-                                    type_name: ann.to_string(),
-                                },
-                            )),
+                            .with_template(
+                                DiagnosticTemplate::RedundantTypeAnnotation(
+                                    RedundantTypeAnnotation {
+                                        type_name: ann.to_string(),
+                                    },
+                                ),
+                            ),
                         );
                     }
                 }
@@ -1067,9 +1075,11 @@ impl TypeChecker {
                         }
                         method_map.insert(short_name, mty);
                     } else {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(TraitError {
-                            message: format!("Unexpected stmt in trait methods: {:?}", m),
-                        }))
+                        return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
+                            TraitError {
+                                message: format!("Unexpected stmt in trait methods: {:?}", m),
+                            },
+                        ))
                         .with_label(m.span(), "expected method definition"));
                     }
                 }
@@ -1108,12 +1118,16 @@ impl TypeChecker {
                     && !Self::is_subtype_compatible(&ty, expected, &self.env)
                 {
                     let ctx = self.current_function.as_deref().unwrap_or("<anonymous>");
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::ReturnTypeMismatch(ReturnTypeMismatch {
-                        function: ctx.to_string(),
-                        expected: expected.clone(),
-                        actual: ty.clone(),
-                    }))
-                    .with_label(*span, format!("expected {}", expected)));
+                    return Err(
+                        Diagnostic::from_template(DiagnosticTemplate::ReturnTypeMismatch(
+                            ReturnTypeMismatch {
+                                function: ctx.to_string(),
+                                expected: expected.clone(),
+                                actual: ty.clone(),
+                            },
+                        ))
+                        .with_label(*span, format!("expected {}", expected)),
+                    );
                 }
                 Ok(ty)
             }
@@ -1127,19 +1141,25 @@ impl TypeChecker {
             } => {
                 let cond_ty = self.check_expr(cond)?;
                 if cond_ty != Type::Bool && !cond_ty.is_error() {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::ConditionTypeError(ConditionTypeError {
-                        actual: cond_ty.clone(),
-                    }))
-                    .with_label(cond.span(), "expected Bool"));
+                    return Err(
+                        Diagnostic::from_template(DiagnosticTemplate::ConditionTypeError(
+                            ConditionTypeError {
+                                actual: cond_ty.clone(),
+                            },
+                        ))
+                        .with_label(cond.span(), "expected Bool"),
+                    );
                 }
 
                 self.with_child_scope(|tc| tc.check_body(then_body))?;
                 for (elif_cond, elif_body) in elif_branches {
                     let elif_cond_ty = self.check_expr(elif_cond)?;
                     if elif_cond_ty != Type::Bool && !elif_cond_ty.is_error() {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::ConditionTypeError(ConditionTypeError {
-                            actual: elif_cond_ty.clone(),
-                        }))
+                        return Err(Diagnostic::from_template(
+                            DiagnosticTemplate::ConditionTypeError(ConditionTypeError {
+                                actual: elif_cond_ty.clone(),
+                            }),
+                        )
                         .with_label(elif_cond.span(), "expected Bool"));
                     }
                     self.with_child_scope(|tc| tc.check_body(elif_body))?;
@@ -1149,10 +1169,14 @@ impl TypeChecker {
             Stmt::While { cond, body, .. } => {
                 let cond_ty = self.check_expr(cond)?;
                 if cond_ty != Type::Bool && !cond_ty.is_error() {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::ConditionTypeError(ConditionTypeError {
-                        actual: cond_ty.clone(),
-                    }))
-                    .with_label(cond.span(), "expected Bool"));
+                    return Err(
+                        Diagnostic::from_template(DiagnosticTemplate::ConditionTypeError(
+                            ConditionTypeError {
+                                actual: cond_ty.clone(),
+                            },
+                        ))
+                        .with_label(cond.span(), "expected Bool"),
+                    );
                 }
                 self.with_child_scope(|tc| {
                     tc.loop_depth += 1;
@@ -1176,38 +1200,50 @@ impl TypeChecker {
                     Type::Custom(ref class_name, _) => {
                         if let Some(class_info) = self.env.get_class(class_name) {
                             if class_info.includes.contains(&"Iterable".to_string()) {
-                                Self::get_iterable_element_type_from_class(class_info)
-                                    .ok_or_else(|| {
-                                        Diagnostic::from_template(DiagnosticTemplate::MissingIterable(MissingIterable {
-                                            type_name: class_name.clone(),
-                                        }))
+                                Self::get_iterable_element_type_from_class(class_info).ok_or_else(
+                                    || {
+                                        Diagnostic::from_template(
+                                            DiagnosticTemplate::MissingIterable(MissingIterable {
+                                                type_name: class_name.clone(),
+                                            }),
+                                        )
                                         .with_label(iter.span(), "missing each() method")
-                                    })?
+                                    },
+                                )?
                             } else if class_info.includes.contains(&"Iterator".to_string()) {
-                                Self::get_iterator_element_type_from_class(class_info)
-                                    .ok_or_else(|| {
-                                        Diagnostic::from_template(DiagnosticTemplate::MissingIterable(MissingIterable {
-                                            type_name: class_name.clone(),
-                                        }))
+                                Self::get_iterator_element_type_from_class(class_info).ok_or_else(
+                                    || {
+                                        Diagnostic::from_template(
+                                            DiagnosticTemplate::MissingIterable(MissingIterable {
+                                                type_name: class_name.clone(),
+                                            }),
+                                        )
                                         .with_label(iter.span(), "missing next() method")
-                                    })?
+                                    },
+                                )?
                             } else {
-                                return Err(Diagnostic::from_template(DiagnosticTemplate::MissingIterable(MissingIterable {
-                                    type_name: class_name.clone(),
-                                }))
+                                return Err(Diagnostic::from_template(
+                                    DiagnosticTemplate::MissingIterable(MissingIterable {
+                                        type_name: class_name.clone(),
+                                    }),
+                                )
                                 .with_label(iter.span(), "does not include Iterable or Iterator"));
                             }
                         } else {
-                            return Err(Diagnostic::from_template(DiagnosticTemplate::MissingIterable(MissingIterable {
-                                type_name: iter_ty.to_string(),
-                            }))
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::MissingIterable(MissingIterable {
+                                    type_name: iter_ty.to_string(),
+                                }),
+                            )
                             .with_label(iter.span(), "expected List, Iterable, or Iterator"));
                         }
                     }
                     _ => {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::MissingIterable(MissingIterable {
-                            type_name: iter_ty.to_string(),
-                        }))
+                        return Err(Diagnostic::from_template(
+                            DiagnosticTemplate::MissingIterable(MissingIterable {
+                                type_name: iter_ty.to_string(),
+                            }),
+                        )
                         .with_label(iter.span(), "expected List, Iterable, or Iterator"));
                     }
                 };
@@ -1227,15 +1263,19 @@ impl TypeChecker {
                     Expr::Ident(name, ident_span) => {
                         // Check if the variable is a const binding
                         if self.const_names.contains(name) {
-                            return Err(Diagnostic::from_template(DiagnosticTemplate::ConstReassignment(ConstReassignment {
-                                name: name.clone(),
-                            }))
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::ConstReassignment(ConstReassignment {
+                                    name: name.clone(),
+                                }),
+                            )
                             .with_label(*ident_span, "const binding cannot be reassigned"));
                         }
                         let target_ty = self.env.get_var(name).cloned().ok_or_else(|| {
-                            let mut diag = Diagnostic::from_template(DiagnosticTemplate::UndeclaredAssignment(UndeclaredAssignment {
-                                name: name.clone(),
-                            }))
+                            let mut diag = Diagnostic::from_template(
+                                DiagnosticTemplate::UndeclaredAssignment(UndeclaredAssignment {
+                                    name: name.clone(),
+                                }),
+                            )
                             .with_label(*ident_span, "not found in this scope");
                             if let Some(suggestion) = self.suggest_similar_name(name) {
                                 diag = diag.with_note(format!("did you mean '{}'?", suggestion));
@@ -1256,10 +1296,12 @@ impl TypeChecker {
                             if Self::is_subtype_compatible(&val_ty, &target_ty, &self.env) {
                                 return Ok(target_ty);
                             }
-                            return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(TypeMismatch {
-                                expected: target_ty.clone(),
-                                actual: val_ty.clone(),
-                            }))
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::TypeMismatch(TypeMismatch {
+                                    expected: target_ty.clone(),
+                                    actual: val_ty.clone(),
+                                }),
+                            )
                             .with_label(stmt_span, format!("expected {}", target_ty)));
                         }
                         // Reassignment clears boundary-crossed status (new value)
@@ -1281,31 +1323,39 @@ impl TypeChecker {
                                         {
                                             return Ok(field_ty.clone());
                                         }
-                                        return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(TypeMismatch {
-                                            expected: field_ty.clone(),
-                                            actual: val_ty.clone(),
-                                        }))
+                                        return Err(Diagnostic::from_template(
+                                            DiagnosticTemplate::TypeMismatch(TypeMismatch {
+                                                expected: field_ty.clone(),
+                                                actual: val_ty.clone(),
+                                            }),
+                                        )
                                         .with_label(stmt_span, format!("expected {}", field_ty)));
                                     }
                                 } else {
-                                    return Err(Diagnostic::from_template(DiagnosticTemplate::UnknownField(UnknownField {
-                                        field: field.clone(),
-                                        type_name: class_name.clone(),
-                                    }))
+                                    return Err(Diagnostic::from_template(
+                                        DiagnosticTemplate::UnknownField(UnknownField {
+                                            field: field.clone(),
+                                            type_name: class_name.clone(),
+                                        }),
+                                    )
                                     .with_label(target.span(), "unknown field"));
                                 }
                             } else {
-                                return Err(Diagnostic::from_template(DiagnosticTemplate::UnknownField(UnknownField {
-                                    field: class_name.clone(),
-                                    type_name: class_name.clone(),
-                                }))
+                                return Err(Diagnostic::from_template(
+                                    DiagnosticTemplate::UnknownField(UnknownField {
+                                        field: class_name.clone(),
+                                        type_name: class_name.clone(),
+                                    }),
+                                )
                                 .with_label(object.span(), "unknown class"));
                             }
                         } else {
-                            return Err(Diagnostic::from_template(DiagnosticTemplate::UnknownField(UnknownField {
-                                field: obj_ty.to_string(),
-                                type_name: obj_ty.to_string(),
-                            }))
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::UnknownField(UnknownField {
+                                    field: obj_ty.to_string(),
+                                    type_name: obj_ty.to_string(),
+                                }),
+                            )
                             .with_label(object.span(), "not a class type"));
                         }
                         Ok(val_ty)
@@ -1319,69 +1369,83 @@ impl TypeChecker {
                         match &obj_ty {
                             Type::List(inner) => {
                                 if idx_ty != Type::Int {
-                                    return Err(Diagnostic::from_template(DiagnosticTemplate::IndexTypeError(IndexTypeError {
-                                        actual: idx_ty.clone(),
-                                    }))
+                                    return Err(Diagnostic::from_template(
+                                        DiagnosticTemplate::IndexTypeError(IndexTypeError {
+                                            actual: idx_ty.clone(),
+                                        }),
+                                    )
                                     .with_label(index.span(), "expected Int"));
                                 }
                                 if **inner != val_ty {
-                                    return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(TypeMismatch {
-                                        expected: *inner.clone(),
-                                        actual: val_ty.clone(),
-                                    }))
+                                    return Err(Diagnostic::from_template(
+                                        DiagnosticTemplate::TypeMismatch(TypeMismatch {
+                                            expected: *inner.clone(),
+                                            actual: val_ty.clone(),
+                                        }),
+                                    )
                                     .with_label(stmt_span, format!("expected {}", inner)));
                                 }
                                 Ok(val_ty)
                             }
                             Type::Map(key_ty, map_val_ty) => {
                                 if idx_ty != **key_ty {
-                                    return Err(Diagnostic::from_template(DiagnosticTemplate::IndexTypeError(IndexTypeError {
-                                        actual: idx_ty.clone(),
-                                    }))
+                                    return Err(Diagnostic::from_template(
+                                        DiagnosticTemplate::IndexTypeError(IndexTypeError {
+                                            actual: idx_ty.clone(),
+                                        }),
+                                    )
                                     .with_label(index.span(), format!("expected {}", key_ty)));
                                 }
                                 if **map_val_ty != val_ty {
-                                    return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(TypeMismatch {
-                                        expected: *map_val_ty.clone(),
-                                        actual: val_ty.clone(),
-                                    }))
+                                    return Err(Diagnostic::from_template(
+                                        DiagnosticTemplate::TypeMismatch(TypeMismatch {
+                                            expected: *map_val_ty.clone(),
+                                            actual: val_ty.clone(),
+                                        }),
+                                    )
                                     .with_label(stmt_span, format!("expected {}", map_val_ty)));
                                 }
                                 Ok(val_ty)
                             }
-                            _ => Err(Diagnostic::from_template(DiagnosticTemplate::IndexTypeError(IndexTypeError {
-                                actual: obj_ty.clone(),
-                            }))
+                            _ => Err(Diagnostic::from_template(
+                                DiagnosticTemplate::IndexTypeError(IndexTypeError {
+                                    actual: obj_ty.clone(),
+                                }),
+                            )
                             .with_label(object.span(), "not a list or map")),
                         }
                     }
-                    _ => Err(Diagnostic::from_template(DiagnosticTemplate::InvalidAssignment(InvalidAssignment {}))
-                        .with_label(target.span(), "invalid target")),
+                    _ => Err(
+                        Diagnostic::from_template(DiagnosticTemplate::InvalidAssignment(
+                            InvalidAssignment {},
+                        ))
+                        .with_label(target.span(), "invalid target"),
+                    ),
                 }
             }
             Stmt::Break(span) => {
                 if self.loop_depth == 0 {
-                    return Err(
-                        Diagnostic::from_template(DiagnosticTemplate::BinaryOpError(BinaryOpError {
+                    return Err(Diagnostic::from_template(DiagnosticTemplate::BinaryOpError(
+                        BinaryOpError {
                             op: "break".to_string(),
                             left: Type::Void,
                             right: Type::Void,
-                        }))
-                        .with_label(*span, "not inside a loop"),
-                    );
+                        },
+                    ))
+                    .with_label(*span, "not inside a loop"));
                 }
                 Ok(Type::Void)
             }
             Stmt::Continue(span) => {
                 if self.loop_depth == 0 {
-                    return Err(
-                        Diagnostic::from_template(DiagnosticTemplate::BinaryOpError(BinaryOpError {
+                    return Err(Diagnostic::from_template(DiagnosticTemplate::BinaryOpError(
+                        BinaryOpError {
                             op: "continue".to_string(),
                             left: Type::Void,
                             right: Type::Void,
-                        }))
-                        .with_label(*span, "not inside a loop"),
-                    );
+                        },
+                    ))
+                    .with_label(*span, "not inside a loop"));
                 }
                 Ok(Type::Void)
             }
@@ -1415,14 +1479,16 @@ impl TypeChecker {
                     if let Some(ref gp) = trait_info.generic_params
                         && type_args.len() != gp.len()
                     {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(TraitError {
-                            message: format!(
-                                "Trait '{}' expects {} type parameter(s), got {}",
-                                trait_name,
-                                gp.len(),
-                                type_args.len()
-                            ),
-                        })));
+                        return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
+                            TraitError {
+                                message: format!(
+                                    "Trait '{}' expects {} type parameter(s), got {}",
+                                    trait_name,
+                                    gp.len(),
+                                    type_args.len()
+                                ),
+                            },
+                        )));
                     }
                     include_names.push(trait_name.clone());
                 }
@@ -1443,18 +1509,22 @@ impl TypeChecker {
             } => {
                 // Validate that the value is a compile-time constant expression
                 if !Self::is_const_expr(value) {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::ConstReassignment(ConstReassignment {
-                        name: name.clone(),
-                    }))
-                    .with_label(stmt_span, "not a constant expression"));
+                    return Err(
+                        Diagnostic::from_template(DiagnosticTemplate::ConstReassignment(
+                            ConstReassignment { name: name.clone() },
+                        ))
+                        .with_label(stmt_span, "not a constant expression"),
+                    );
                 }
                 let val_ty = self.check_expr(value)?;
                 if let Some(ann) = type_ann {
                     if !Self::types_compatible_with_env(ann, &val_ty, &self.env) {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(TypeMismatch {
-                            expected: ann.clone(),
-                            actual: val_ty.clone(),
-                        }))
+                        return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(
+                            TypeMismatch {
+                                expected: ann.clone(),
+                                actual: val_ty.clone(),
+                            },
+                        ))
                         .with_label(stmt_span, format!("expected {}", ann)));
                     }
                     self.env.set_var(name.clone(), ann.clone());
@@ -1533,34 +1603,38 @@ impl TypeChecker {
     }
 
     /// Validate that Set[T] and Map[K, V] element/key types are hashable.
-    fn validate_collection_eq_constraint(
-        &self,
-        ty: &Type,
-        span: Span,
-    ) -> Result<(), Diagnostic> {
+    fn validate_collection_eq_constraint(&self, ty: &Type, span: Span) -> Result<(), Diagnostic> {
         match ty {
             Type::Set(inner) => {
                 if !self.type_is_hashable(inner) {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::ConstraintError(ConstraintError {
-                        message: format!(
-                            "Set element type {} does not include Eq. \
+                    return Err(
+                        Diagnostic::from_template(DiagnosticTemplate::ConstraintError(
+                            ConstraintError {
+                                message: format!(
+                                    "Set element type {} does not include Eq. \
                              Add 'includes Eq' to use as a Set element",
-                            inner
-                        ),
-                    }))
-                    .with_label(span, "Set requires Eq on element type"));
+                                    inner
+                                ),
+                            },
+                        ))
+                        .with_label(span, "Set requires Eq on element type"),
+                    );
                 }
             }
             Type::Map(key, _) => {
                 if !self.type_is_hashable(key) {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::ConstraintError(ConstraintError {
-                        message: format!(
-                            "Map key type {} does not include Eq. \
+                    return Err(
+                        Diagnostic::from_template(DiagnosticTemplate::ConstraintError(
+                            ConstraintError {
+                                message: format!(
+                                    "Map key type {} does not include Eq. \
                              Add 'includes Eq' to use as a Map key",
-                            key
-                        ),
-                    }))
-                    .with_label(span, "Map requires Eq on key type"));
+                                    key
+                                ),
+                            },
+                        ))
+                        .with_label(span, "Map requires Eq on key type"),
+                    );
                 }
             }
             _ => {}
@@ -1671,10 +1745,11 @@ impl TypeChecker {
                     }
                     None => "Import from a submodule: use std/cmp { Eq }, use std/fmt { Printable }, use std/collections { Iterable }, use std/convert { From }, use std/random { Random }".to_string(),
                 };
-                let mut diag = Diagnostic::from_template(DiagnosticTemplate::CircularImport(CircularImport {
-                    module: "std".to_string(),
-                }))
-                .with_label(*span, "bare `use std` is not supported");
+                let mut diag =
+                    Diagnostic::from_template(DiagnosticTemplate::CircularImport(CircularImport {
+                        module: "std".to_string(),
+                    }))
+                    .with_label(*span, "bare `use std` is not supported");
                 diag.message = hint;
                 return Err(diag);
             }
@@ -1711,17 +1786,23 @@ impl TypeChecker {
         match (names, alias) {
             (Some(_), Some(_)) => {
                 // Selective + alias is not allowed
-                Err(Diagnostic::from_template(DiagnosticTemplate::InvalidImportAlias(InvalidImportAlias {}))
-                .with_label(*span, "use either { names } or 'as alias', not both"))
+                Err(
+                    Diagnostic::from_template(DiagnosticTemplate::InvalidImportAlias(
+                        InvalidImportAlias {},
+                    ))
+                    .with_label(*span, "use either { names } or 'as alias', not both"),
+                )
             }
             (Some(selected_names), None) => {
                 // Selective import: use foo { Bar, baz }
                 for name in selected_names {
                     if !self.inject_export(name, exports) {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::SymbolNotExported(SymbolNotExported {
-                            symbol: name.clone(),
-                            module: module_key.to_string(),
-                        }))
+                        return Err(Diagnostic::from_template(
+                            DiagnosticTemplate::SymbolNotExported(SymbolNotExported {
+                                symbol: name.clone(),
+                                module: module_key.to_string(),
+                            }),
+                        )
                         .with_label(*span, format!("'{}' not found in module", name)));
                     }
                 }
@@ -1810,11 +1891,13 @@ impl TypeChecker {
                     Expr::Bool(..) => Type::Bool,
                     Expr::Nil(_) => Type::Nil,
                     _ => {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
-                            param: "pattern".to_string(),
-                            expected: Type::Int,
-                            actual: Type::Void,
-                        }))
+                        return Err(Diagnostic::from_template(
+                            DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
+                                param: "pattern".to_string(),
+                                expected: Type::Int,
+                                actual: Type::Void,
+                            }),
+                        )
                         .with_label(*span, "invalid pattern"));
                     }
                 };
@@ -1829,10 +1912,12 @@ impl TypeChecker {
                     }
                 }
                 if pat_ty != *scrutinee_ty {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(TypeMismatch {
-                        expected: scrutinee_ty.clone(),
-                        actual: pat_ty.clone(),
-                    }))
+                    return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(
+                        TypeMismatch {
+                            expected: scrutinee_ty.clone(),
+                            actual: pat_ty.clone(),
+                        },
+                    ))
                     .with_label(*span, format!("expected {}", scrutinee_ty)));
                 }
                 Ok(())
@@ -1844,17 +1929,23 @@ impl TypeChecker {
             } => {
                 // Check the enum exists
                 let enum_info = self.env.get_enum(enum_name).ok_or_else(|| {
-                    Diagnostic::from_template(DiagnosticTemplate::UndefinedVariable(UndefinedVariable {
-                        name: enum_name.clone(),
-                    }))
+                    Diagnostic::from_template(DiagnosticTemplate::UndefinedVariable(
+                        UndefinedVariable {
+                            name: enum_name.clone(),
+                        },
+                    ))
                     .with_label(*span, "unknown enum")
                 })?;
                 // Check the variant exists
                 if !enum_info.variants.contains(&variant.to_string()) {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::UndefinedVariable(UndefinedVariable {
-                        name: format!("{}::{}", enum_name, variant),
-                    }))
-                    .with_label(*span, format!("unknown variant on {}", enum_name)));
+                    return Err(
+                        Diagnostic::from_template(DiagnosticTemplate::UndefinedVariable(
+                            UndefinedVariable {
+                                name: format!("{}::{}", enum_name, variant),
+                            },
+                        ))
+                        .with_label(*span, format!("unknown variant on {}", enum_name)),
+                    );
                 }
                 // Check enum type matches scrutinee type (unwrap Nullable if present)
                 let expected_enum_ty = Type::Custom(enum_name.clone(), Vec::new());
@@ -1863,10 +1954,12 @@ impl TypeChecker {
                     other => other,
                 };
                 if *scrutinee_unwrapped != expected_enum_ty {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(TypeMismatch {
-                        expected: scrutinee_ty.clone(),
-                        actual: Type::Custom(enum_name.clone(), Vec::new()),
-                    }))
+                    return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(
+                        TypeMismatch {
+                            expected: scrutinee_ty.clone(),
+                            actual: Type::Custom(enum_name.clone(), Vec::new()),
+                        },
+                    ))
                     .with_label(*span, format!("expected {}", scrutinee_ty)));
                 }
                 Ok(())

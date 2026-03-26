@@ -212,6 +212,50 @@ impl Type {
     }
 }
 
+impl fmt::Display for Type {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Type::Int => write!(f, "Int"),
+            Type::Float => write!(f, "Float"),
+            Type::Bool => write!(f, "Bool"),
+            Type::String => write!(f, "String"),
+            Type::Nil => write!(f, "Nil"),
+            Type::Void => write!(f, "Void"),
+            Type::Never => write!(f, "Never"),
+            Type::Error => write!(f, "Error"),
+            Type::Inferred => write!(f, "Inferred"),
+            Type::List(inner) => write!(f, "List[{}]", inner),
+            Type::Set(inner) => write!(f, "Set[{}]", inner),
+            Type::Nullable(inner) => write!(f, "{}?", inner),
+            Type::Custom(name, params) if params.is_empty() => write!(f, "{}", name),
+            Type::Custom(name, params) => {
+                let ps: Vec<std::string::String> = params.iter().map(|p| p.to_string()).collect();
+                write!(f, "{}[{}]", name, ps.join(", "))
+            }
+            Type::Task(inner) => write!(f, "Task[{}]", inner),
+            Type::Map(k, v) => write!(f, "Map[{}, {}]", k, v),
+            Type::TypeVar(name, _) => write!(f, "{}", name),
+            Type::Function {
+                params,
+                ret,
+                throws,
+                suspendable,
+                ..
+            } => {
+                let ps: Vec<std::string::String> = params.iter().map(|p| p.to_string()).collect();
+                write!(f, "Fn({}) -> {}", ps.join(", "), ret)?;
+                if let Some(t) = throws {
+                    write!(f, " throws {}", t)?;
+                }
+                if *suspendable {
+                    write!(f, " suspendable")?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,49 +339,5 @@ mod tests {
         ty.collect_types(&|t| matches!(t, Type::Int), &mut results);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], Type::Int);
-    }
-}
-
-impl fmt::Display for Type {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Type::Int => write!(f, "Int"),
-            Type::Float => write!(f, "Float"),
-            Type::Bool => write!(f, "Bool"),
-            Type::String => write!(f, "String"),
-            Type::Nil => write!(f, "Nil"),
-            Type::Void => write!(f, "Void"),
-            Type::Never => write!(f, "Never"),
-            Type::Error => write!(f, "Error"),
-            Type::Inferred => write!(f, "Inferred"),
-            Type::List(inner) => write!(f, "List[{}]", inner),
-            Type::Set(inner) => write!(f, "Set[{}]", inner),
-            Type::Nullable(inner) => write!(f, "{}?", inner),
-            Type::Custom(name, params) if params.is_empty() => write!(f, "{}", name),
-            Type::Custom(name, params) => {
-                let ps: Vec<std::string::String> = params.iter().map(|p| p.to_string()).collect();
-                write!(f, "{}[{}]", name, ps.join(", "))
-            }
-            Type::Task(inner) => write!(f, "Task[{}]", inner),
-            Type::Map(k, v) => write!(f, "Map[{}, {}]", k, v),
-            Type::TypeVar(name, _) => write!(f, "{}", name),
-            Type::Function {
-                params,
-                ret,
-                throws,
-                suspendable,
-                ..
-            } => {
-                let ps: Vec<std::string::String> = params.iter().map(|p| p.to_string()).collect();
-                write!(f, "Fn({}) -> {}", ps.join(", "), ret)?;
-                if let Some(t) = throws {
-                    write!(f, " throws {}", t)?;
-                }
-                if *suspendable {
-                    write!(f, " suspendable")?;
-                }
-                Ok(())
-            }
-        }
     }
 }

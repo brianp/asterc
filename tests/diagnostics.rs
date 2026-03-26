@@ -159,7 +159,11 @@ fn diagnostic_serializable() {
     let json = serde_json::to_string(&diag).unwrap();
     // The serialized JSON contains the template variant and type info; the error code
     // is computed from the template at runtime rather than stored as a string field.
-    assert!(json.contains("TypeMismatch") || json.contains("E001"), "json: {}", json);
+    assert!(
+        json.contains("TypeMismatch") || json.contains("E001"),
+        "json: {}",
+        json
+    );
     assert!(json.contains("Int"));
 }
 

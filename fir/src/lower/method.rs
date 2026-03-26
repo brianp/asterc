@@ -649,7 +649,7 @@ impl Lowerer {
             }
             builtin_method::CONTAINS => {
                 // Check if this is the predicate form: contains(f: ...)
-                let is_predicate = args.first().map_or(false, |(n, _, _)| n == "f");
+                let is_predicate = args.first().is_some_and(|(n, _, _)| n == "f");
                 if is_predicate {
                     // Determine element type for the loop
                     let elem_ty = if let Some(Type::List(inner)) = &object_ast_ty {
@@ -790,7 +790,10 @@ impl Lowerer {
     }
 
     /// Lower the first argument of a method call (by name or position).
-    fn lower_first_arg(&mut self, args: &[(String, ast::Span, Expr)]) -> Result<FirExpr, LowerError> {
+    fn lower_first_arg(
+        &mut self,
+        args: &[(String, ast::Span, Expr)],
+    ) -> Result<FirExpr, LowerError> {
         if let Some((_, _, arg)) = args.first() {
             self.lower_expr(arg)
         } else {

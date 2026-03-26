@@ -21,7 +21,7 @@ pub struct Diagnostic {
     pub message: String,
     pub labels: Vec<Label>,
     pub notes: Vec<String>,
-    pub template: Option<DiagnosticTemplate>,
+    pub template: Option<Box<DiagnosticTemplate>>,
 }
 
 impl Diagnostic {
@@ -62,13 +62,13 @@ impl Diagnostic {
             message,
             labels: Vec::new(),
             notes: Vec::new(),
-            template: Some(template),
+            template: Some(Box::new(template)),
         }
     }
 
     pub fn with_template(mut self, template: DiagnosticTemplate) -> Self {
         self.message = template.render();
-        self.template = Some(template);
+        self.template = Some(Box::new(template));
         self
     }
 

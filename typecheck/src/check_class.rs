@@ -1,5 +1,7 @@
-use ast::templates::type_errors::{CollectionConstraintError, ConstraintError, PrintableError, TraitError};
 use ast::templates::DiagnosticTemplate;
+use ast::templates::type_errors::{
+    CollectionConstraintError, ConstraintError, PrintableError, TraitError,
+};
 use ast::{ClassInfo, Diagnostic, Stmt, Type};
 use indexmap::IndexMap;
 use std::collections::HashMap;
@@ -33,9 +35,11 @@ impl TypeChecker {
         let mut pub_fields = std::collections::HashSet::new();
         for (fname, fty, is_pub) in fields {
             if field_map.contains_key(fname) {
-                return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(TraitError {
-                    message: format!("Duplicate field '{}' in class '{}'", fname, name),
-                })));
+                return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
+                    TraitError {
+                        message: format!("Duplicate field '{}' in class '{}'", fname, name),
+                    },
+                )));
             }
             field_map.insert(fname.clone(), fty.clone());
             if *is_pub {
@@ -145,9 +149,14 @@ impl TypeChecker {
                             }
                             overloads.push(mty);
                         } else {
-                            return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(TraitError {
-                                message: format!("Duplicate method '{}' in class '{}'", short_name, name),
-                            }))
+                            return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
+                                TraitError {
+                                    message: format!(
+                                        "Duplicate method '{}' in class '{}'",
+                                        short_name, name
+                                    ),
+                                },
+                            ))
                             .with_label(m.span(), "duplicate method"));
                         }
                     } else if overloaded_methods.contains_key(&short_name) {
@@ -160,9 +169,11 @@ impl TypeChecker {
                         method_map.insert(short_name, mty);
                     }
                 } else {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(TraitError {
-                        message: format!("Unexpected stmt in class methods: {:?}", m),
-                    }))
+                    return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
+                        TraitError {
+                            message: format!("Unexpected stmt in class methods: {:?}", m),
+                        },
+                    ))
                     .with_label(m.span(), "expected method definition"));
                 }
             }
@@ -218,12 +229,14 @@ impl TypeChecker {
             }
 
             if iterable_element_type.is_none() {
-                return Err(Diagnostic::from_template(DiagnosticTemplate::CollectionConstraintError(CollectionConstraintError {
-                    message: format!(
-                        "Class '{}' includes Iterable but has no each(f: Fn(T) -> Void) -> Void method",
-                        name
-                    ),
-                })));
+                return Err(Diagnostic::from_template(
+                    DiagnosticTemplate::CollectionConstraintError(CollectionConstraintError {
+                        message: format!(
+                            "Class '{}' includes Iterable but has no each(f: Fn(T) -> Void) -> Void method",
+                            name
+                        ),
+                    }),
+                ));
             }
 
             // Inject vocabulary methods (only if not already defined by the class)
@@ -310,14 +323,16 @@ impl TypeChecker {
             if let Some(ref gp) = trait_info.generic_params
                 && targs.len() != gp.len()
             {
-                return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(TraitError {
-                    message: format!(
-                        "Trait '{}' expects {} type parameter(s), got {}",
-                        trait_name,
-                        gp.len(),
-                        targs.len()
-                    ),
-                })));
+                return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
+                    TraitError {
+                        message: format!(
+                            "Trait '{}' expects {} type parameter(s), got {}",
+                            trait_name,
+                            gp.len(),
+                            targs.len()
+                        ),
+                    },
+                )));
             }
 
             for method_name in &trait_info.required_methods {
@@ -409,12 +424,18 @@ impl TypeChecker {
                             )
                             .is_err()
                             {
-                                return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(TraitError {
-                                    message: format!(
-                                        "Method '{}' in class '{}' has signature {}, but trait '{}' requires {}",
-                                        method_name, name, class_method_ty, trait_name, resolved_trait_ty
-                                    ),
-                                })));
+                                return Err(Diagnostic::from_template(
+                                    DiagnosticTemplate::TraitError(TraitError {
+                                        message: format!(
+                                            "Method '{}' in class '{}' has signature {}, but trait '{}' requires {}",
+                                            method_name,
+                                            name,
+                                            class_method_ty,
+                                            trait_name,
+                                            resolved_trait_ty
+                                        ),
+                                    }),
+                                ));
                             }
                         }
                     }
@@ -434,12 +455,14 @@ impl TypeChecker {
                         pub_methods.insert(mname.clone());
                         method_map.insert(mname, mty);
                     } else {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(TraitError {
-                            message: format!(
-                                "Class '{}' must implement method '{}' from trait '{}'",
-                                name, method_name, trait_name
-                            ),
-                        })));
+                        return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
+                            TraitError {
+                                message: format!(
+                                    "Class '{}' must implement method '{}' from trait '{}'",
+                                    name, method_name, trait_name
+                                ),
+                            },
+                        )));
                     }
                 }
             }
@@ -465,9 +488,14 @@ impl TypeChecker {
         // Validate extends
         if let Some(parent_name) = extends {
             if self.env.get_class(parent_name).is_none() {
-                return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(TraitError {
-                    message: format!("Class '{}' extends unknown class '{}'", name, parent_name),
-                })));
+                return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
+                    TraitError {
+                        message: format!(
+                            "Class '{}' extends unknown class '{}'",
+                            name, parent_name
+                        ),
+                    },
+                )));
             }
             self.validate_circular_inheritance(name)?;
         }
@@ -534,12 +562,14 @@ impl TypeChecker {
             .and_then(|info| info.extends.clone());
         while let Some(ref cname) = current {
             if !visited.insert(cname.clone()) {
-                return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(TraitError {
-                    message: format!(
-                        "Circular inheritance detected: class '{}' forms a cycle through '{}'",
-                        name, cname
-                    ),
-                })));
+                return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
+                    TraitError {
+                        message: format!(
+                            "Circular inheritance detected: class '{}' forms a cycle through '{}'",
+                            name, cname
+                        ),
+                    },
+                )));
             }
             current = self
                 .env
@@ -563,12 +593,14 @@ impl TypeChecker {
         }
         for (fname, _, _) in fields {
             if inherited_fields.contains(fname) {
-                return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(TraitError {
-                    message: format!(
-                        "Field '{}' in class '{}' shadows inherited field from parent chain",
-                        fname, name
-                    ),
-                })));
+                return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
+                    TraitError {
+                        message: format!(
+                            "Field '{}' in class '{}' shadows inherited field from parent chain",
+                            fname, name
+                        ),
+                    },
+                )));
             }
         }
         Ok(())
@@ -587,7 +619,13 @@ impl TypeChecker {
     ) -> Result<Option<(String, Type)>, Diagnostic> {
         match (trait_name, method_name) {
             ("Eq", "eq") => {
-                self.check_auto_derive(class_name, fields, "Eq", |msg| DiagnosticTemplate::ConstraintError(ConstraintError { message: msg }), Self::type_includes_eq)?;
+                self.check_auto_derive(
+                    class_name,
+                    fields,
+                    "Eq",
+                    |msg| DiagnosticTemplate::ConstraintError(ConstraintError { message: msg }),
+                    Self::type_includes_eq,
+                )?;
                 Ok(Some((
                     "eq".into(),
                     Type::Function {
@@ -600,7 +638,13 @@ impl TypeChecker {
                 )))
             }
             ("Ord", "cmp") => {
-                self.check_auto_derive(class_name, fields, "Ord", |msg| DiagnosticTemplate::ConstraintError(ConstraintError { message: msg }), Self::type_includes_ord)?;
+                self.check_auto_derive(
+                    class_name,
+                    fields,
+                    "Ord",
+                    |msg| DiagnosticTemplate::ConstraintError(ConstraintError { message: msg }),
+                    Self::type_includes_ord,
+                )?;
                 Ok(Some((
                     "cmp".into(),
                     Type::Function {

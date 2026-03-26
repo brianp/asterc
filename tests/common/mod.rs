@@ -1,3 +1,5 @@
+// Each integration test binary uses a different subset of these helpers.
+// Without this allow, every test binary warns about every helper it doesn't call.
 #![allow(dead_code)]
 
 use ast::{Diagnostic, ParseResult};

@@ -11,6 +11,9 @@ impl SymbolNotExported {
         "M002"
     }
     pub fn render(&self) -> String {
-        format!("'{}' is not exported by module '{}'", self.symbol, self.module)
+        format!(
+            "'{}' is not exported by module '{}'",
+            self.symbol, self.module
+        )
     }
 }

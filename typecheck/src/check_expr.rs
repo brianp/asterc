@@ -1,11 +1,12 @@
+use ast::templates::DiagnosticTemplate;
 use ast::templates::module_errors::InvalidImportAlias;
 use ast::templates::type_errors::{
-    ArgumentCountMismatch, ArgumentTypeMismatch, BinaryOpError, CollectionConstraintError, ConstReassignment, InconsistentListType, IndexTypeError,
-    MatchError, PrintableError, ReturnTypeMismatch, TaskAlreadyConsumed, TaskNotResolved,
-    TraitError, TypeConstraintError, TypeMismatch, UndefinedVariable, UnaryOpError, UnknownField,
+    ArgumentCountMismatch, ArgumentTypeMismatch, BinaryOpError, CollectionConstraintError,
+    ConstReassignment, InconsistentListType, IndexTypeError, MatchError, PrintableError,
+    ReturnTypeMismatch, TaskAlreadyConsumed, TaskNotResolved, TraitError, TypeConstraintError,
+    TypeMismatch, UnaryOpError, UndefinedVariable, UnknownField,
 };
 use ast::templates::warnings::UseAfterMove;
-use ast::templates::DiagnosticTemplate;
 use ast::{BinOp, Diagnostic, Expr, MatchPattern, Span, Type, UnaryOp};
 use std::collections::HashMap;
 
@@ -39,10 +40,11 @@ impl TypeChecker {
                 }
                 {
                     let ty = self.env.get_var(name).cloned().ok_or_else(|| {
-                        let mut diag = Diagnostic::from_template(DiagnosticTemplate::UndefinedVariable(UndefinedVariable {
-                            name: name.clone(),
-                        }))
-                        .with_label(*span, "not found in this scope");
+                        let mut diag =
+                            Diagnostic::from_template(DiagnosticTemplate::UndefinedVariable(
+                                UndefinedVariable { name: name.clone() },
+                            ))
+                            .with_label(*span, "not found in this scope");
                         if let Some(suggestion) = self.suggest_similar_name(name) {
                             diag = diag.with_note(format!("did you mean '{}'?", suggestion));
                         }
@@ -114,7 +116,9 @@ impl TypeChecker {
                                 if let Some(class_info) = self.env.get_class(name)
                                     && !class_info.includes.contains(&"Printable".to_string())
                                 {
-                                    return Err(Diagnostic::from_template(DiagnosticTemplate::PrintableError(PrintableError {}))
+                                    return Err(Diagnostic::from_template(
+                                        DiagnosticTemplate::PrintableError(PrintableError {}),
+                                    )
                                     .with_label(*span, "expression must be Printable"));
                                 }
                                 // If class not found, allow it (may be a generic type)
@@ -136,19 +140,23 @@ impl TypeChecker {
                     let kt = self.check_expr(k)?;
                     let vt = self.check_expr(v)?;
                     if kt != key_ty {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::BinaryOpError(BinaryOpError {
-                            op: "map key".to_string(),
-                            left: key_ty.clone(),
-                            right: kt.clone(),
-                        }))
+                        return Err(Diagnostic::from_template(DiagnosticTemplate::BinaryOpError(
+                            BinaryOpError {
+                                op: "map key".to_string(),
+                                left: key_ty.clone(),
+                                right: kt.clone(),
+                            },
+                        ))
                         .with_label(k.span(), "mismatched key type"));
                     }
                     if vt != val_ty {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::BinaryOpError(BinaryOpError {
-                            op: "map value".to_string(),
-                            left: val_ty.clone(),
-                            right: vt.clone(),
-                        }))
+                        return Err(Diagnostic::from_template(DiagnosticTemplate::BinaryOpError(
+                            BinaryOpError {
+                                op: "map value".to_string(),
+                                left: val_ty.clone(),
+                                right: vt.clone(),
+                            },
+                        ))
                         .with_label(v.span(), "mismatched value type"));
                     }
                 }
@@ -170,24 +178,24 @@ impl TypeChecker {
         let start_ty = self.check_expr(start)?;
         let end_ty = self.check_expr(end)?;
         if start_ty != Type::Int {
-            return Err(
-                Diagnostic::from_template(DiagnosticTemplate::BinaryOpError(BinaryOpError {
+            return Err(Diagnostic::from_template(DiagnosticTemplate::BinaryOpError(
+                BinaryOpError {
                     op: "range".to_string(),
                     left: Type::Int,
                     right: start_ty.clone(),
-                }))
-                .with_label(start.span(), "expected Int"),
-            );
+                },
+            ))
+            .with_label(start.span(), "expected Int"));
         }
         if end_ty != Type::Int {
-            return Err(
-                Diagnostic::from_template(DiagnosticTemplate::BinaryOpError(BinaryOpError {
+            return Err(Diagnostic::from_template(DiagnosticTemplate::BinaryOpError(
+                BinaryOpError {
                     op: "range".to_string(),
                     left: Type::Int,
                     right: end_ty.clone(),
-                }))
-                .with_label(end.span(), "expected Int"),
-            );
+                },
+            ))
+            .with_label(end.span(), "expected Int"));
         }
         self.type_table
             .insert(span, Type::Custom("Range".into(), vec![]));
@@ -239,10 +247,12 @@ impl TypeChecker {
                         .collect();
 
                     if resolved_params.len() != expected_params.len() {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
-                            expected: expected_params.len(),
-                            actual: resolved_params.len(),
-                        }))
+                        return Err(Diagnostic::from_template(
+                            DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
+                                expected: expected_params.len(),
+                                actual: resolved_params.len(),
+                            }),
+                        )
                         .with_label(expr.span(), "wrong number of parameters"));
                     }
 
@@ -278,11 +288,15 @@ impl TypeChecker {
                     }
                     return result;
                 } else if has_inferred_params {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentTypeMismatch(ast::templates::type_errors::ArgumentTypeMismatch {
-                        param: "lambda param".to_string(),
-                        expected: Type::Inferred,
-                        actual: Type::Inferred,
-                    }))
+                    return Err(Diagnostic::from_template(
+                        DiagnosticTemplate::ArgumentTypeMismatch(
+                            ast::templates::type_errors::ArgumentTypeMismatch {
+                                param: "lambda param".to_string(),
+                                expected: Type::Inferred,
+                                actual: Type::Inferred,
+                            },
+                        ),
+                    )
                     .with_label(expr.span(), "cannot infer types"));
                 }
             }
@@ -321,10 +335,12 @@ impl TypeChecker {
                 if !Self::types_compatible_with_env(ptype, &default_ty, &self.env)
                     && default_ty != *ptype
                 {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(TypeMismatch {
-                        expected: ptype.clone(),
-                        actual: default_ty.clone(),
-                    }))
+                    return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(
+                        TypeMismatch {
+                            expected: ptype.clone(),
+                            actual: default_ty.clone(),
+                        },
+                    ))
                     .with_label(default_expr.span(), format!("expected {}", ptype)));
                 }
             }
@@ -335,22 +351,26 @@ impl TypeChecker {
                 match c {
                     ast::TypeConstraint::Extends(class_name) => {
                         if self.env.get_class(class_name).is_none() {
-                            return Err(Diagnostic::from_template(DiagnosticTemplate::TypeConstraintError(TypeConstraintError {
-                                message: format!(
-                                    "Unknown class '{}' in extends constraint",
-                                    class_name
-                                ),
-                            })));
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::TypeConstraintError(TypeConstraintError {
+                                    message: format!(
+                                        "Unknown class '{}' in extends constraint",
+                                        class_name
+                                    ),
+                                }),
+                            ));
                         }
                     }
                     ast::TypeConstraint::Includes(trait_name, _) => {
                         if self.env.get_trait(trait_name).is_none() {
-                            return Err(Diagnostic::from_template(DiagnosticTemplate::TypeConstraintError(TypeConstraintError {
-                                message: format!(
-                                    "Unknown trait '{}' in includes constraint",
-                                    trait_name
-                                ),
-                            })));
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::TypeConstraintError(TypeConstraintError {
+                                    message: format!(
+                                        "Unknown trait '{}' in includes constraint",
+                                        trait_name
+                                    ),
+                                }),
+                            ));
                         }
                     }
                 }
@@ -375,11 +395,13 @@ impl TypeChecker {
         // Check for unresolved Inferred types — means no context was available
         for (n, t) in params {
             if *t == Type::Inferred {
-                return Err(Diagnostic::from_template(DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
-                    param: n.clone(),
-                    expected: Type::Inferred,
-                    actual: Type::Inferred,
-                })));
+                return Err(Diagnostic::from_template(
+                    DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
+                        param: n.clone(),
+                        expected: Type::Inferred,
+                        actual: Type::Inferred,
+                    }),
+                ));
             }
         }
 
@@ -700,12 +722,16 @@ impl TypeChecker {
                     && !Self::is_nullable_compatible(ret_type, &ret_val_ty)
                     && !Self::is_subtype_compatible(&ret_val_ty, ret_type, &sub.env)
                 {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::ReturnTypeMismatch(ReturnTypeMismatch {
-                        function: sub.current_function.clone().unwrap_or_default(),
-                        expected: ret_type.clone(),
-                        actual: ret_val_ty.clone(),
-                    }))
-                    .with_label(expr.span(), format!("expected {}", ret_type)));
+                    return Err(
+                        Diagnostic::from_template(DiagnosticTemplate::ReturnTypeMismatch(
+                            ReturnTypeMismatch {
+                                function: sub.current_function.clone().unwrap_or_default(),
+                                expected: ret_type.clone(),
+                                actual: ret_val_ty.clone(),
+                            },
+                        ))
+                        .with_label(expr.span(), format!("expected {}", ret_type)),
+                    );
                 }
                 // Mark returned task idents as consumed (caller takes responsibility)
                 sub.mark_task_ident_consumed(expr);
@@ -735,18 +761,22 @@ impl TypeChecker {
         {
             if let Type::Nullable(inner) = ret_type {
                 if last != **inner && last != Type::Nil {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::ReturnTypeMismatch(ReturnTypeMismatch {
+                    return Err(Diagnostic::from_template(
+                        DiagnosticTemplate::ReturnTypeMismatch(ReturnTypeMismatch {
+                            function: "lambda".to_string(),
+                            expected: ret_type.clone(),
+                            actual: last.clone(),
+                        }),
+                    ));
+                }
+            } else {
+                return Err(Diagnostic::from_template(
+                    DiagnosticTemplate::ReturnTypeMismatch(ReturnTypeMismatch {
                         function: "lambda".to_string(),
                         expected: ret_type.clone(),
                         actual: last.clone(),
-                    })));
-                }
-            } else {
-                return Err(Diagnostic::from_template(DiagnosticTemplate::ReturnTypeMismatch(ReturnTypeMismatch {
-                    function: "lambda".to_string(),
-                    expected: ret_type.clone(),
-                    actual: last.clone(),
-                })));
+                    }),
+                ));
             }
         }
         Ok(last)
@@ -813,20 +843,26 @@ impl TypeChecker {
                     (Type::Int, Type::Int) => Ok(Type::Int),
                     (Type::Float, Type::Float) => Ok(Type::Float),
                     (Type::Int, Type::Float) | (Type::Float, Type::Int) => Ok(Type::Float),
-                    _ => Err(Diagnostic::from_template(DiagnosticTemplate::BinaryOpError(BinaryOpError {
-                        op: op.to_string(),
-                        left: lt.clone(),
-                        right: rt.clone(),
-                    }))
+                    _ => Err(Diagnostic::from_template(DiagnosticTemplate::BinaryOpError(
+                        BinaryOpError {
+                            op: op.to_string(),
+                            left: lt.clone(),
+                            right: rt.clone(),
+                        },
+                    ))
                     .with_label(left.span().merge(right.span()), "type mismatch")),
                 }
             }
             BinOp::Eq | BinOp::Neq => {
                 if matches!(&lt, Type::Function { .. }) || matches!(&rt, Type::Function { .. }) {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::ComparisonError(ast::templates::type_errors::ComparisonError {
-                        message: format!("Cannot compare function types with {}", op),
-                    }))
-                    .with_label(left.span().merge(right.span()), "function comparison"));
+                    return Err(
+                        Diagnostic::from_template(DiagnosticTemplate::ComparisonError(
+                            ast::templates::type_errors::ComparisonError {
+                                message: format!("Cannot compare function types with {}", op),
+                            },
+                        ))
+                        .with_label(left.span().merge(right.span()), "function comparison"),
+                    );
                 }
                 if lt == rt {
                     // Same type — check if user type includes Eq
@@ -851,9 +887,16 @@ impl TypeChecker {
                         _ => None,
                     };
                     if let Some(name) = type_name {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::ComparisonError(ast::templates::type_errors::ComparisonError {
-                            message: format!("{} types do not support {} comparison", name, op),
-                        }))
+                        return Err(Diagnostic::from_template(
+                            DiagnosticTemplate::ComparisonError(
+                                ast::templates::type_errors::ComparisonError {
+                                    message: format!(
+                                        "{} types do not support {} comparison",
+                                        name, op
+                                    ),
+                                },
+                            ),
+                        )
                         .with_label(
                             left.span().merge(right.span()),
                             "no runtime equality for this type",
@@ -865,10 +908,14 @@ impl TypeChecker {
                 // precision for integers larger than 2^53.
                 match (&lt, &rt) {
                     (Type::Int, Type::Float) | (Type::Float, Type::Int) => Ok(Type::Bool),
-                    _ => Err(Diagnostic::from_template(DiagnosticTemplate::ComparisonError(ast::templates::type_errors::ComparisonError {
-                        message: format!("Cannot compare {} and {} with {}", lt, rt, op),
-                    }))
-                    .with_label(left.span().merge(right.span()), "incompatible types")),
+                    _ => Err(
+                        Diagnostic::from_template(DiagnosticTemplate::ComparisonError(
+                            ast::templates::type_errors::ComparisonError {
+                                message: format!("Cannot compare {} and {} with {}", lt, rt, op),
+                            },
+                        ))
+                        .with_label(left.span().merge(right.span()), "incompatible types"),
+                    ),
                 }
             }
             BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => match (&lt, &rt) {
@@ -891,9 +938,11 @@ impl TypeChecker {
                     }
                 }
                 _ => Err(
-                    Diagnostic::from_template(DiagnosticTemplate::ComparisonError(ast::templates::type_errors::ComparisonError {
-                        message: format!("Cannot order {} and {} with {}", lt, rt, op),
-                    }))
+                    Diagnostic::from_template(DiagnosticTemplate::ComparisonError(
+                        ast::templates::type_errors::ComparisonError {
+                            message: format!("Cannot order {} and {} with {}", lt, rt, op),
+                        },
+                    ))
                     .with_label(left.span().merge(right.span()), "incompatible types"),
                 ),
             },
@@ -901,8 +950,12 @@ impl TypeChecker {
                 if lt == Type::Bool && rt == Type::Bool {
                     Ok(Type::Bool)
                 } else {
-                    Err(Diagnostic::from_template(DiagnosticTemplate::LogicalOpError(ast::templates::type_errors::LogicalOpError {}))
-                    .with_label(left.span().merge(right.span()), "expected Bool operands"))
+                    Err(
+                        Diagnostic::from_template(DiagnosticTemplate::LogicalOpError(
+                            ast::templates::type_errors::LogicalOpError {},
+                        ))
+                        .with_label(left.span().merge(right.span()), "expected Bool operands"),
+                    )
                 }
             }
         }
@@ -917,27 +970,33 @@ impl TypeChecker {
             UnaryOp::Neg => match t {
                 Type::Int => Ok(Type::Int),
                 Type::Float => Ok(Type::Float),
-                _ => Err(Diagnostic::from_template(DiagnosticTemplate::UnaryOpError(UnaryOpError {
-                    op: "-".to_string(),
-                    actual: t.clone(),
-                }))
+                _ => Err(Diagnostic::from_template(DiagnosticTemplate::UnaryOpError(
+                    UnaryOpError {
+                        op: "-".to_string(),
+                        actual: t.clone(),
+                    },
+                ))
                 .with_label(operand.span(), "expected numeric type")),
             },
             UnaryOp::Not => {
                 if t == Type::Bool {
                     Ok(Type::Bool)
                 } else if let Type::Nullable(_) = &t {
-                    Err(Diagnostic::from_template(DiagnosticTemplate::UnaryOpError(UnaryOpError {
-                        op: "not".to_string(),
-                        actual: t.clone(),
-                    }))
-                    .with_label(operand.span(), format!("this is {}, not Bool", t)))
+                    Err(
+                        Diagnostic::from_template(DiagnosticTemplate::UnaryOpError(UnaryOpError {
+                            op: "not".to_string(),
+                            actual: t.clone(),
+                        }))
+                        .with_label(operand.span(), format!("this is {}, not Bool", t)),
+                    )
                 } else {
-                    Err(Diagnostic::from_template(DiagnosticTemplate::UnaryOpError(UnaryOpError {
-                        op: "not".to_string(),
-                        actual: t.clone(),
-                    }))
-                    .with_label(operand.span(), "expected Bool"))
+                    Err(
+                        Diagnostic::from_template(DiagnosticTemplate::UnaryOpError(UnaryOpError {
+                            op: "not".to_string(),
+                            actual: t.clone(),
+                        }))
+                        .with_label(operand.span(), "expected Bool"),
+                    )
                 }
             }
         }
@@ -961,11 +1020,15 @@ impl TypeChecker {
                 return Ok(Type::Error);
             }
             if ty != first_ty {
-                return Err(Diagnostic::from_template(DiagnosticTemplate::InconsistentListType(InconsistentListType {
-                    expected: first_ty.clone(),
-                    actual: ty.clone(),
-                }))
-                .with_label(elem.span(), format!("expected {}", first_ty)));
+                return Err(
+                    Diagnostic::from_template(DiagnosticTemplate::InconsistentListType(
+                        InconsistentListType {
+                            expected: first_ty.clone(),
+                            actual: ty.clone(),
+                        },
+                    ))
+                    .with_label(elem.span(), format!("expected {}", first_ty)),
+                );
             }
         }
         Ok(Type::List(Box::new(first_ty)))
@@ -980,26 +1043,36 @@ impl TypeChecker {
         match &obj_ty {
             Type::Map(key_ty, val_ty) => {
                 if idx_ty != **key_ty {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::IndexTypeError(IndexTypeError {
-                        actual: idx_ty.clone(),
-                    }))
-                    .with_label(index.span(), format!("expected {}", key_ty)));
+                    return Err(
+                        Diagnostic::from_template(DiagnosticTemplate::IndexTypeError(
+                            IndexTypeError {
+                                actual: idx_ty.clone(),
+                            },
+                        ))
+                        .with_label(index.span(), format!("expected {}", key_ty)),
+                    );
                 }
                 Ok(Type::Nullable(val_ty.clone()))
             }
             Type::List(inner) => {
                 if idx_ty != Type::Int {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::IndexTypeError(IndexTypeError {
-                        actual: idx_ty.clone(),
-                    }))
-                    .with_label(index.span(), "expected Int"));
+                    return Err(
+                        Diagnostic::from_template(DiagnosticTemplate::IndexTypeError(
+                            IndexTypeError {
+                                actual: idx_ty.clone(),
+                            },
+                        ))
+                        .with_label(index.span(), "expected Int"),
+                    );
                 }
                 Ok(*inner.clone())
             }
-            _ => Err(Diagnostic::from_template(DiagnosticTemplate::IndexTypeError(IndexTypeError {
-                actual: obj_ty.clone(),
-            }))
-            .with_label(object.span(), "not indexable")),
+            _ => Err(
+                Diagnostic::from_template(DiagnosticTemplate::IndexTypeError(IndexTypeError {
+                    actual: obj_ty.clone(),
+                }))
+                .with_label(object.span(), "not indexable"),
+            ),
         }
     }
 
@@ -1035,8 +1108,12 @@ impl TypeChecker {
                 self.env.set_trait(field.to_string(), info.clone());
                 return Ok(Type::Void);
             }
-            return Err(Diagnostic::from_template(DiagnosticTemplate::InvalidImportAlias(InvalidImportAlias {}))
-            .with_label(object.span(), format!("'{}' not exported", field)));
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::InvalidImportAlias(
+                    InvalidImportAlias {},
+                ))
+                .with_label(object.span(), format!("'{}' not exported", field)),
+            );
         }
 
         // Built-in static methods
@@ -1056,16 +1133,16 @@ impl TypeChecker {
             if enum_info.variants.contains(&field.to_string()) {
                 return Ok(Type::Custom(name.clone(), Vec::new()));
             }
-            return Err(
-                Diagnostic::from_template(DiagnosticTemplate::UnknownField(UnknownField {
+            return Err(Diagnostic::from_template(DiagnosticTemplate::UnknownField(
+                UnknownField {
                     field: field.to_string(),
                     type_name: name.clone(),
-                }))
-                .with_label(
-                    object.span(),
-                    format!("no variant '{}' on this enum", field),
-                ),
-            );
+                },
+            ))
+            .with_label(
+                object.span(),
+                format!("no variant '{}' on this enum", field),
+            ));
         }
 
         let obj_ty = self.check_expr(object)?;
@@ -1076,10 +1153,12 @@ impl TypeChecker {
             if field == "or" || field == "or_else" || field == "or_throw" {
                 return Ok(Type::Void);
             }
-            return Err(Diagnostic::from_template(DiagnosticTemplate::UnaryOpError(UnaryOpError {
-                op: format!(".{}", field),
-                actual: obj_ty.clone(),
-            }))
+            return Err(Diagnostic::from_template(DiagnosticTemplate::UnaryOpError(
+                UnaryOpError {
+                    op: format!(".{}", field),
+                    actual: obj_ty.clone(),
+                },
+            ))
             .with_label(object.span(), "nullable type"));
         }
         if let Type::Task(ref inner) = obj_ty {
@@ -1144,9 +1223,11 @@ impl TypeChecker {
                         // Enforce visibility for imported classes
                         if self.imported_classes.contains(cname) && !info.pub_fields.contains(field)
                         {
-                            return Err(Diagnostic::from_template(DiagnosticTemplate::ConstReassignment(ConstReassignment {
-                                name: field.to_string(),
-                            }))
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::ConstReassignment(ConstReassignment {
+                                    name: field.to_string(),
+                                }),
+                            )
                             .with_label(
                                 object.span(),
                                 format!("'{}' is private to its defining module", field),
@@ -1160,9 +1241,11 @@ impl TypeChecker {
                         if self.imported_classes.contains(cname)
                             && !info.pub_methods.contains(field)
                         {
-                            return Err(Diagnostic::from_template(DiagnosticTemplate::ConstReassignment(ConstReassignment {
-                                name: field.to_string(),
-                            }))
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::ConstReassignment(ConstReassignment {
+                                    name: field.to_string(),
+                                }),
+                            )
                             .with_label(
                                 object.span(),
                                 format!("'{}' is private to its defining module", field),
@@ -1228,18 +1311,22 @@ impl TypeChecker {
                     }
                     current_class = info.extends.clone();
                 } else {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::UnknownField(UnknownField {
-                        field: field.to_string(),
-                        type_name: cname.clone(),
-                    }))
+                    return Err(Diagnostic::from_template(DiagnosticTemplate::UnknownField(
+                        UnknownField {
+                            field: field.to_string(),
+                            type_name: cname.clone(),
+                        },
+                    ))
                     .with_label(object.span(), "unknown class"));
                 }
             }
-            Err(Diagnostic::from_template(DiagnosticTemplate::UnknownField(UnknownField {
-                field: field.to_string(),
-                type_name: class_name.clone(),
-            }))
-            .with_label(object.span(), format!("no member '{}' on this type", field)))
+            Err(
+                Diagnostic::from_template(DiagnosticTemplate::UnknownField(UnknownField {
+                    field: field.to_string(),
+                    type_name: class_name.clone(),
+                }))
+                .with_label(object.span(), format!("no member '{}' on this type", field)),
+            )
         } else {
             Err(
                 Diagnostic::from_template(DiagnosticTemplate::UnknownField(UnknownField {
@@ -1339,11 +1426,13 @@ impl TypeChecker {
                 throws: io_err(),
                 suspendable: false,
             }),
-            _ => Err(Diagnostic::from_template(DiagnosticTemplate::UnknownField(UnknownField {
-                field: field.to_string(),
-                type_name: "File".to_string(),
-            }))
-            .with_label(object.span(), format!("no member '{}' on File", field))),
+            _ => Err(
+                Diagnostic::from_template(DiagnosticTemplate::UnknownField(UnknownField {
+                    field: field.to_string(),
+                    type_name: "File".to_string(),
+                }))
+                .with_label(object.span(), format!("no member '{}' on File", field)),
+            ),
         }
     }
 
@@ -1617,9 +1706,21 @@ impl TypeChecker {
     fn check_string_member(field: &str, object: &Expr) -> Result<Type, Diagnostic> {
         match field {
             "len" => Ok(Type::func(vec![], vec![], Type::Int)),
-            "contains" => Ok(Type::func(vec!["str".into()], vec![Type::String], Type::Bool)),
-            "starts_with" => Ok(Type::func(vec!["pre".into()], vec![Type::String], Type::Bool)),
-            "ends_with" => Ok(Type::func(vec!["suf".into()], vec![Type::String], Type::Bool)),
+            "contains" => Ok(Type::func(
+                vec!["str".into()],
+                vec![Type::String],
+                Type::Bool,
+            )),
+            "starts_with" => Ok(Type::func(
+                vec!["pre".into()],
+                vec![Type::String],
+                Type::Bool,
+            )),
+            "ends_with" => Ok(Type::func(
+                vec!["suf".into()],
+                vec![Type::String],
+                Type::Bool,
+            )),
             "trim" => Ok(Type::func(vec![], vec![], Type::String)),
             "to_upper" => Ok(Type::func(vec![], vec![], Type::String)),
             "to_lower" => Ok(Type::func(vec![], vec![], Type::String)),
@@ -1723,26 +1824,34 @@ impl TypeChecker {
 
         // Ord-gated methods: check constraint before returning type
         if matches!(field, "min" | "max" | "sort") && !self.type_includes_ord(inner) {
-            return Err(Diagnostic::from_template(DiagnosticTemplate::CollectionConstraintError(CollectionConstraintError {
-                message: format!(
-                    "Cannot call '{}()': element type {} does not include Ord. \
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::CollectionConstraintError(
+                    CollectionConstraintError {
+                        message: format!(
+                            "Cannot call '{}()': element type {} does not include Ord. \
                      Add 'includes Ord' to the element type to enable {}",
-                    field, inner, field
-                ),
-            }))
-            .with_label(object.span(), format!("{} requires Ord", field)));
+                            field, inner, field
+                        ),
+                    },
+                ))
+                .with_label(object.span(), format!("{} requires Ord", field)),
+            );
         }
 
         // Eq-gated methods: check constraint before returning type
         if field == "unique" && !self.type_includes_eq(inner) {
-            return Err(Diagnostic::from_template(DiagnosticTemplate::CollectionConstraintError(CollectionConstraintError {
-                message: format!(
-                    "Cannot call 'unique()': element type {} does not include Eq. \
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::CollectionConstraintError(
+                    CollectionConstraintError {
+                        message: format!(
+                            "Cannot call 'unique()': element type {} does not include Eq. \
                      Add 'includes Eq' to the element type to enable unique",
-                    inner
-                ),
-            }))
-            .with_label(object.span(), "unique requires Eq".to_string()));
+                            inner
+                        ),
+                    },
+                ))
+                .with_label(object.span(), "unique requires Eq".to_string()),
+            );
         }
 
         // Look up from shared Iterable vocabulary definitions
@@ -1753,11 +1862,13 @@ impl TypeChecker {
             }
         }
 
-        Err(Diagnostic::from_template(DiagnosticTemplate::UnknownField(UnknownField {
-            field: field.to_string(),
-            type_name: "List".to_string(),
-        }))
-        .with_label(object.span(), format!("no member '{}' on List", field)))
+        Err(
+            Diagnostic::from_template(DiagnosticTemplate::UnknownField(UnknownField {
+                field: field.to_string(),
+                type_name: "List".to_string(),
+            }))
+            .with_label(object.span(), format!("no member '{}' on List", field)),
+        )
     }
 
     fn check_set_member(
@@ -1825,26 +1936,34 @@ impl TypeChecker {
 
         // Ord-gated methods
         if matches!(field, "min" | "max" | "sort") && !self.type_includes_ord(inner) {
-            return Err(Diagnostic::from_template(DiagnosticTemplate::CollectionConstraintError(CollectionConstraintError {
-                message: format!(
-                    "Cannot call '{}()': element type {} does not include Ord. \
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::CollectionConstraintError(
+                    CollectionConstraintError {
+                        message: format!(
+                            "Cannot call '{}()': element type {} does not include Ord. \
                      Add 'includes Ord' to the element type to enable {}",
-                    field, inner, field
-                ),
-            }))
-            .with_label(object.span(), format!("{} requires Ord", field)));
+                            field, inner, field
+                        ),
+                    },
+                ))
+                .with_label(object.span(), format!("{} requires Ord", field)),
+            );
         }
 
         // Eq-gated methods
         if field == "unique" && !self.type_includes_eq(inner) {
-            return Err(Diagnostic::from_template(DiagnosticTemplate::CollectionConstraintError(CollectionConstraintError {
-                message: format!(
-                    "Cannot call 'unique()': element type {} does not include Eq. \
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::CollectionConstraintError(
+                    CollectionConstraintError {
+                        message: format!(
+                            "Cannot call 'unique()': element type {} does not include Eq. \
                      Add 'includes Eq' to the element type to enable unique",
-                    inner
-                ),
-            }))
-            .with_label(object.span(), "unique requires Eq".to_string()));
+                            inner
+                        ),
+                    },
+                ))
+                .with_label(object.span(), "unique requires Eq".to_string()),
+            );
         }
 
         // Iterable vocabulary methods
@@ -1855,11 +1974,13 @@ impl TypeChecker {
             }
         }
 
-        Err(Diagnostic::from_template(DiagnosticTemplate::UnknownField(UnknownField {
-            field: field.to_string(),
-            type_name: "Set".to_string(),
-        }))
-        .with_label(object.span(), format!("no member '{}' on Set", field)))
+        Err(
+            Diagnostic::from_template(DiagnosticTemplate::UnknownField(UnknownField {
+                field: field.to_string(),
+                type_name: "Set".to_string(),
+            }))
+            .with_label(object.span(), format!("no member '{}' on Set", field)),
+        )
     }
 
     fn check_match_expr(
@@ -1872,10 +1993,12 @@ impl TypeChecker {
             return Ok(Type::Error);
         }
         if arms.is_empty() {
-            return Err(Diagnostic::from_template(DiagnosticTemplate::MatchError(MatchError {
-                message: "Match expression must have at least one arm".to_string(),
-            }))
-            .with_label(scrutinee.span(), "match has no arms"));
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::MatchError(MatchError {
+                    message: "Match expression must have at least one arm".to_string(),
+                }))
+                .with_label(scrutinee.span(), "match has no arms"),
+            );
         }
         let mut result_ty: Option<Type> = None;
         let mut has_nil_arm = false;
@@ -1918,10 +2041,12 @@ impl TypeChecker {
                     && !Self::is_subtype_compatible(&arm_ty, expected, &self.env)
                     && !Self::is_subtype_compatible(expected, &arm_ty, &self.env)
                 {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(ast::templates::type_errors::TypeMismatch {
-                        expected: expected.clone(),
-                        actual: arm_ty.clone(),
-                    }))
+                    return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(
+                        ast::templates::type_errors::TypeMismatch {
+                            expected: expected.clone(),
+                            actual: arm_ty.clone(),
+                        },
+                    ))
                     .with_label(value.span(), format!("expected {}", expected)));
                 }
             } else {
@@ -1944,9 +2069,13 @@ impl TypeChecker {
                 |(p, _)| matches!(p, MatchPattern::Literal(e, _) if matches!(**e, Expr::Nil(_))),
             );
             if is_nullable && !has_nil_arm {
-                return Err(Diagnostic::from_template(DiagnosticTemplate::MatchError(MatchError {
-                    message: "Non-exhaustive match: nullable type requires a 'nil' arm or wildcard".to_string(),
-                }))
+                return Err(Diagnostic::from_template(DiagnosticTemplate::MatchError(
+                    MatchError {
+                        message:
+                            "Non-exhaustive match: nullable type requires a 'nil' arm or wildcard"
+                                .to_string(),
+                    },
+                ))
                 .with_label(scrutinee.span(), "non-exhaustive patterns"));
             }
             match &effective_ty {
@@ -1984,12 +2113,14 @@ impl TypeChecker {
                             .map(|v| v.as_str())
                             .collect();
                         if !missing.is_empty() {
-                            return Err(Diagnostic::from_template(DiagnosticTemplate::MatchError(MatchError {
-                                message: format!(
-                                    "Non-exhaustive match: missing variants: {}",
-                                    missing.join(", ")
-                                ),
-                            }))
+                            return Err(Diagnostic::from_template(DiagnosticTemplate::MatchError(
+                                MatchError {
+                                    message: format!(
+                                        "Non-exhaustive match: missing variants: {}",
+                                        missing.join(", ")
+                                    ),
+                                },
+                            ))
                             .with_label(scrutinee.span(), "non-exhaustive patterns"));
                         }
                     } else {
@@ -2036,9 +2167,11 @@ impl TypeChecker {
         let ret_ty = self.check_call_inner(func, args, true)?;
         if !self.last_call_suspendable {
             return Err(
-                Diagnostic::from_template(DiagnosticTemplate::TaskAlreadyConsumed(TaskAlreadyConsumed {
-                    name: "suspendable callee".to_string(),
-                }))
+                Diagnostic::from_template(DiagnosticTemplate::TaskAlreadyConsumed(
+                    TaskAlreadyConsumed {
+                        name: "suspendable callee".to_string(),
+                    },
+                ))
                 .with_label(func.span(), "callee does not suspend"),
             );
         }
@@ -2053,15 +2186,23 @@ impl TypeChecker {
         match ty {
             Type::Task(_) => {
                 // Bare resolve without ! is an error — CancelledError is always possible
-                Err(Diagnostic::from_template(DiagnosticTemplate::TaskAlreadyConsumed(TaskAlreadyConsumed {
-                    name: "resolve".to_string(),
-                }))
-                .with_label(expr.span(), "add ! to propagate CancelledError"))
+                Err(
+                    Diagnostic::from_template(DiagnosticTemplate::TaskAlreadyConsumed(
+                        TaskAlreadyConsumed {
+                            name: "resolve".to_string(),
+                        },
+                    ))
+                    .with_label(expr.span(), "add ! to propagate CancelledError"),
+                )
             }
-            _ => Err(Diagnostic::from_template(DiagnosticTemplate::TaskAlreadyConsumed(TaskAlreadyConsumed {
-                name: ty.to_string(),
-            }))
-            .with_label(expr.span(), "expected Task[T]")),
+            _ => Err(
+                Diagnostic::from_template(DiagnosticTemplate::TaskAlreadyConsumed(
+                    TaskAlreadyConsumed {
+                        name: ty.to_string(),
+                    },
+                ))
+                .with_label(expr.span(), "expected Task[T]"),
+            ),
         }
     }
 

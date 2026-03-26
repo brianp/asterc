@@ -71,10 +71,7 @@ def main() -> Int
   r
 ",
     );
-    let data_sharing = warnings
-        .iter()
-        .filter(|w| w.code() == Some("W002"))
-        .count();
+    let data_sharing = warnings.iter().filter(|w| w.code() == Some("W002")).count();
     assert_eq!(
         data_sharing, 0,
         "expected no W002 warnings, got: {:?}",
@@ -99,10 +96,7 @@ def main() -> Int
   r
 ",
     );
-    let data_sharing = warnings
-        .iter()
-        .filter(|w| w.code() == Some("W002"))
-        .count();
+    let data_sharing = warnings.iter().filter(|w| w.code() == Some("W002")).count();
     assert_eq!(
         data_sharing, 0,
         "expected no W002 after reassignment, got: {:?}",
@@ -129,10 +123,7 @@ def main() -> Int
   r1 + r2
 ",
     );
-    let data_sharing = warnings
-        .iter()
-        .filter(|w| w.code() == Some("W002"))
-        .count();
+    let data_sharing = warnings.iter().filter(|w| w.code() == Some("W002")).count();
     assert!(
         data_sharing >= 1,
         "expected W002 warning for use after boundary, got: {:?}",
@@ -157,10 +148,7 @@ def main() -> Int
   r
 ",
     );
-    let data_sharing = warnings
-        .iter()
-        .filter(|w| w.code() == Some("W002"))
-        .count();
+    let data_sharing = warnings.iter().filter(|w| w.code() == Some("W002")).count();
     assert!(
         data_sharing >= 1,
         "expected W002 warning for use of 'n' after async boundary, got: {:?}",

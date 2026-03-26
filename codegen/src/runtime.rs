@@ -182,7 +182,11 @@ pub extern "C" fn aster_string_slice(ptr: *const u8, from: i64, to: i64) -> *mut
         return aster_string_new(std::ptr::null(), 0);
     }
     // Map character indices to byte offsets
-    let byte_start = s.char_indices().nth(from).map(|(i, _)| i).unwrap_or(s.len());
+    let byte_start = s
+        .char_indices()
+        .nth(from)
+        .map(|(i, _)| i)
+        .unwrap_or(s.len());
     let byte_end = if to == char_count {
         s.len()
     } else {
@@ -193,11 +197,7 @@ pub extern "C" fn aster_string_slice(ptr: *const u8, from: i64, to: i64) -> *mut
 }
 
 /// Replace all occurrences of `old` with `new` in a heap string.
-pub extern "C" fn aster_string_replace(
-    ptr: *const u8,
-    old: *const u8,
-    new: *const u8,
-) -> *mut u8 {
+pub extern "C" fn aster_string_replace(ptr: *const u8, old: *const u8, new: *const u8) -> *mut u8 {
     let s = unsafe { aster_string_to_rust(ptr) };
     let old_s = unsafe { aster_string_to_rust(old) };
     let new_s = unsafe { aster_string_to_rust(new) };
@@ -216,8 +216,8 @@ pub extern "C" fn aster_string_split(ptr: *const u8, sep: *const u8) -> *mut u8 
     let block_size = 8 + 8 + count * 8; // len + cap + elements
     let block = aster_alloc(block_size) as *mut i64;
     unsafe {
-        *block = count as i64;         // len
-        *block.add(1) = count as i64;  // cap
+        *block = count as i64; // len
+        *block.add(1) = count as i64; // cap
         for (i, part) in parts.iter().enumerate() {
             let heap_str = aster_string_new(part.as_ptr(), part.len());
             *block.add(2 + i) = heap_str as i64;
@@ -403,10 +403,7 @@ pub extern "C" fn aster_list_insert(handle: *mut u8, index: i64, value: i64) {
         let block = list_block(handle);
         let len = *(block as *const i64);
         if index < 0 || index > len {
-            eprintln!(
-                "list insert index out of bounds: {} (len {})",
-                index, len
-            );
+            eprintln!("list insert index out of bounds: {} (len {})", index, len);
             std::process::abort();
         }
         let cap = *((block as *const i64).add(1));
@@ -446,10 +443,7 @@ pub extern "C" fn aster_list_remove(handle: *mut u8, index: i64) -> i64 {
         let block = list_block(handle);
         let len = *(block as *const i64);
         if index < 0 || index >= len {
-            eprintln!(
-                "list remove index out of bounds: {} (len {})",
-                index, len
-            );
+            eprintln!("list remove index out of bounds: {} (len {})", index, len);
             std::process::abort();
         }
         let data = (block as *mut i64).add(2);
@@ -2052,14 +2046,8 @@ pub fn runtime_builtin_symbols() -> Vec<(&'static str, *const u8)> {
         ("aster_string_len", aster_string_len as *const u8),
         ("aster_string_eq", aster_string_eq as *const u8),
         ("aster_string_compare", aster_string_compare as *const u8),
-        (
-            "aster_string_char_len",
-            aster_string_char_len as *const u8,
-        ),
-        (
-            "aster_string_contains",
-            aster_string_contains as *const u8,
-        ),
+        ("aster_string_char_len", aster_string_char_len as *const u8),
+        ("aster_string_contains", aster_string_contains as *const u8),
         (
             "aster_string_starts_with",
             aster_string_starts_with as *const u8,
@@ -2069,14 +2057,8 @@ pub fn runtime_builtin_symbols() -> Vec<(&'static str, *const u8)> {
             aster_string_ends_with as *const u8,
         ),
         ("aster_string_trim", aster_string_trim as *const u8),
-        (
-            "aster_string_to_upper",
-            aster_string_to_upper as *const u8,
-        ),
-        (
-            "aster_string_to_lower",
-            aster_string_to_lower as *const u8,
-        ),
+        ("aster_string_to_upper", aster_string_to_upper as *const u8),
+        ("aster_string_to_lower", aster_string_to_lower as *const u8),
         ("aster_string_slice", aster_string_slice as *const u8),
         ("aster_string_replace", aster_string_replace as *const u8),
         ("aster_string_split", aster_string_split as *const u8),

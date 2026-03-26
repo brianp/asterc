@@ -114,9 +114,9 @@ impl Parser {
         self.depth += 1;
         if self.depth > MAX_NESTING_DEPTH {
             self.depth -= 1;
-            return Err(Diagnostic::from_template(DiagnosticTemplate::ExpectedIndentedBlock(
-                ExpectedIndentedBlock,
-            )));
+            return Err(Diagnostic::from_template(
+                DiagnosticTemplate::ExpectedIndentedBlock(ExpectedIndentedBlock),
+            ));
         }
         let result = self.parse_block_inner();
         self.depth -= 1;
@@ -165,10 +165,12 @@ impl Parser {
                 // async def is no longer valid — give a clear error
                 if self.tokens.get(self.pos + 1).map(|t| &t.kind) == Some(&TokenKind::Def) {
                     return Err(
-                        Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                            expected: "def".to_string(),
-                            found: "async def".to_string(),
-                        }))
+                        Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
+                            UnexpectedToken {
+                                expected: "def".to_string(),
+                                found: "async def".to_string(),
+                            },
+                        ))
                         .with_label(self.span_from(start), "remove 'async' keyword"),
                     );
                 }
@@ -236,10 +238,12 @@ impl Parser {
                     end: name_tok.end,
                 };
                 return Err(
-                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                        expected: "module name after 'use'".to_string(),
-                        found: format!("`{}`", t),
-                    }))
+                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
+                        UnexpectedToken {
+                            expected: "module name after 'use'".to_string(),
+                            found: format!("`{}`", t),
+                        },
+                    ))
                     .with_label(span, "expected module name"),
                 );
             }
@@ -250,22 +254,23 @@ impl Parser {
         while self.at(&TokenKind::Slash) {
             self.advance();
             let seg_tok = self.advance();
-            let seg = match &seg_tok.kind {
-                TokenKind::Ident(n) => n.clone(),
-                t => {
-                    let span = Span {
-                        start: seg_tok.start,
-                        end: seg_tok.end,
-                    };
-                    return Err(
-                        Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                            expected: "module name after '/'".to_string(),
-                            found: format!("`{}`", t),
-                        }))
-                        .with_label(span, "expected module name"),
-                    );
-                }
-            };
+            let seg =
+                match &seg_tok.kind {
+                    TokenKind::Ident(n) => n.clone(),
+                    t => {
+                        let span = Span {
+                            start: seg_tok.start,
+                            end: seg_tok.end,
+                        };
+                        return Err(Diagnostic::from_template(
+                            DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                                expected: "module name after '/'".to_string(),
+                                found: format!("`{}`", t),
+                            }),
+                        )
+                        .with_label(span, "expected module name"));
+                    }
+                };
             path.push(seg);
         }
 
@@ -283,13 +288,13 @@ impl Parser {
                                 start: n_tok.start,
                                 end: n_tok.end,
                             };
-                            return Err(
-                                Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
                                     expected: "identifier in use list".to_string(),
                                     found: format!("`{}`", t),
-                                }))
-                                .with_label(span, "expected identifier"),
-                            );
+                                }),
+                            )
+                            .with_label(span, "expected identifier"));
                         }
                     };
                     names.push(n);
@@ -310,22 +315,23 @@ impl Parser {
         let alias = if self.at(&TokenKind::As) {
             self.advance();
             let a_tok = self.advance();
-            let a = match &a_tok.kind {
-                TokenKind::Ident(n) => n.clone(),
-                t => {
-                    let span = Span {
-                        start: a_tok.start,
-                        end: a_tok.end,
-                    };
-                    return Err(
-                        Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                            expected: "alias name after 'as'".to_string(),
-                            found: format!("`{}`", t),
-                        }))
-                        .with_label(span, "expected identifier"),
-                    );
-                }
-            };
+            let a =
+                match &a_tok.kind {
+                    TokenKind::Ident(n) => n.clone(),
+                    t => {
+                        let span = Span {
+                            start: a_tok.start,
+                            end: a_tok.end,
+                        };
+                        return Err(Diagnostic::from_template(
+                            DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                                expected: "alias name after 'as'".to_string(),
+                                found: format!("`{}`", t),
+                            }),
+                        )
+                        .with_label(span, "expected identifier"));
+                    }
+                };
             Some(a)
         } else {
             None
@@ -357,10 +363,13 @@ impl Parser {
                     end: tok.end,
                 };
                 Err(
-                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                        expected: "def, class, trait, enum, let, or use after 'pub'".to_string(),
-                        found: format!("`{}`", t),
-                    }))
+                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
+                        UnexpectedToken {
+                            expected: "def, class, trait, enum, let, or use after 'pub'"
+                                .to_string(),
+                            found: format!("`{}`", t),
+                        },
+                    ))
                     .with_label(span, "unexpected token after 'pub'"),
                 )
             }
@@ -422,10 +431,12 @@ impl Parser {
                     end: var_tok.end,
                 };
                 return Err(
-                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                        expected: "variable name after 'for'".to_string(),
-                        found: format!("`{}`", t),
-                    }))
+                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
+                        UnexpectedToken {
+                            expected: "variable name after 'for'".to_string(),
+                            found: format!("`{}`", t),
+                        },
+                    ))
                     .with_label(span, "expected loop variable name"),
                 );
             }

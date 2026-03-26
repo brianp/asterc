@@ -35,10 +35,12 @@ impl Parser {
                     end: name_tok.end,
                 };
                 return Err(
-                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                        expected: "type name".to_string(),
-                        found: format!("`{}`", t),
-                    }))
+                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
+                        UnexpectedToken {
+                            expected: "type name".to_string(),
+                            found: format!("`{}`", t),
+                        },
+                    ))
                     .with_label(span, "not a valid type name"),
                 );
             }
@@ -159,10 +161,12 @@ impl Parser {
                     end: tok.end,
                 };
                 return Err(
-                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                        expected: "type annotation".to_string(),
-                        found: "'?' (nested nullable types T?? are not allowed)".to_string(),
-                    }))
+                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
+                        UnexpectedToken {
+                            expected: "type annotation".to_string(),
+                            found: "'?' (nested nullable types T?? are not allowed)".to_string(),
+                        },
+                    ))
                     .with_label(span, "remove this second '?'"),
                 );
             }
@@ -174,10 +178,12 @@ impl Parser {
                     end: tok.end,
                 };
                 return Err(
-                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                        expected: "type annotation".to_string(),
-                        found: "'?' (type is already nullable)".to_string(),
-                    }))
+                    Diagnostic::from_template(DiagnosticTemplate::UnexpectedToken(
+                        UnexpectedToken {
+                            expected: "type annotation".to_string(),
+                            found: "'?' (type is already nullable)".to_string(),
+                        },
+                    ))
                     .with_label(span, "type is already nullable"),
                 );
             }

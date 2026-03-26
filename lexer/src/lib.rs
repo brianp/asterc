@@ -8,14 +8,14 @@ mod tests;
 pub use token::{Token, TokenKind};
 
 use ast::{
+    Diagnostic, Span,
     templates::{
+        DiagnosticTemplate,
         lex_errors::{
             BadFloatLiteral, IntegerOverflow, InterpolationError, InvalidEscape, MissingNewline,
             StringTooLong, TabIndentation, UnterminatedString,
         },
-        DiagnosticTemplate,
     },
-    Diagnostic, Span,
 };
 
 const MAX_INPUT_SIZE: usize = 10 * 1024 * 1024; // 10 MB
@@ -227,13 +227,15 @@ fn lex_string_full(
                     }
                 }
                 if brace_depth != 0 {
-                    return Err(Diagnostic::from_template(
-                        DiagnosticTemplate::UnterminatedString(UnterminatedString),
-                    )
-                    .with_note(format!(
-                        "unterminated string interpolation at line {}",
-                        line_no
-                    )));
+                    return Err(
+                        Diagnostic::from_template(DiagnosticTemplate::UnterminatedString(
+                            UnterminatedString,
+                        ))
+                        .with_note(format!(
+                            "unterminated string interpolation at line {}",
+                            line_no
+                        )),
+                    );
                 }
                 // Lex the expression text into tokens
                 // We need to produce tokens with correct positions
@@ -310,14 +312,16 @@ fn lex_string_full(
                 }
             }
             None => {
-                return Err(Diagnostic::from_template(DiagnosticTemplate::UnterminatedString(
-                    UnterminatedString,
-                ))
-                .with_note(format!("unterminated string at line {}", line_no))
-                .with_label(
-                    Span::new(byte_offset, byte_offset + col),
-                    "string starts here but is never closed",
-                ));
+                return Err(
+                    Diagnostic::from_template(DiagnosticTemplate::UnterminatedString(
+                        UnterminatedString,
+                    ))
+                    .with_note(format!("unterminated string at line {}", line_no))
+                    .with_label(
+                        Span::new(byte_offset, byte_offset + col),
+                        "string starts here but is never closed",
+                    ),
+                );
             }
         }
     }
@@ -424,7 +428,10 @@ fn lex_number(
                 Diagnostic::from_template(DiagnosticTemplate::BadFloatLiteral(BadFloatLiteral {
                     line: line_no,
                 }))
-                .with_note(format!("invalid integer literal '{}' at line {}", num, line_no))
+                .with_note(format!(
+                    "invalid integer literal '{}' at line {}",
+                    num, line_no
+                ))
                 .with_label(
                     Span::new(byte_offset, byte_offset + num.len()),
                     "invalid integer",
@@ -516,12 +523,14 @@ pub fn lex(input: &str) -> Result<Vec<Token>, Diagnostic> {
     use TokenKind::*;
 
     if input.len() > MAX_INPUT_SIZE {
-        return Err(Diagnostic::from_template(DiagnosticTemplate::MissingNewline(MissingNewline))
-            .with_note(format!(
-                "input too large: {} bytes exceeds maximum of {} bytes",
-                input.len(),
-                MAX_INPUT_SIZE
-            )));
+        return Err(
+            Diagnostic::from_template(DiagnosticTemplate::MissingNewline(MissingNewline))
+                .with_note(format!(
+                    "input too large: {} bytes exceeds maximum of {} bytes",
+                    input.len(),
+                    MAX_INPUT_SIZE
+                )),
+        );
     }
 
     let line_starts = compute_line_starts(input);
@@ -596,11 +605,13 @@ pub fn lex(input: &str) -> Result<Vec<Token>, Diagnostic> {
                     }
                 }
                 if indent_stack.last().copied().unwrap_or(0) != indent_width {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::TabIndentation(
-                        TabIndentation,
-                    ))
-                    .with_note(format!("indentation error at line {}", line_no))
-                    .with_label(Span::new(ls, ls + indent_width), "unexpected indent level"));
+                    return Err(
+                        Diagnostic::from_template(DiagnosticTemplate::TabIndentation(
+                            TabIndentation,
+                        ))
+                        .with_note(format!("indentation error at line {}", line_no))
+                        .with_label(Span::new(ls, ls + indent_width), "unexpected indent level"),
+                    );
                 }
             }
         }
@@ -783,14 +794,16 @@ pub fn lex(input: &str) -> Result<Vec<Token>, Diagnostic> {
                 }
 
                 _ => {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::InterpolationError(
-                        InterpolationError,
-                    ))
-                    .with_note(format!("unexpected character '{}' at line {}", ch, line_no))
-                    .with_label(
-                        Span::new(tok_start, tok_start + ch.len_utf8()),
-                        "unexpected character",
-                    ));
+                    return Err(
+                        Diagnostic::from_template(DiagnosticTemplate::InterpolationError(
+                            InterpolationError,
+                        ))
+                        .with_note(format!("unexpected character '{}' at line {}", ch, line_no))
+                        .with_label(
+                            Span::new(tok_start, tok_start + ch.len_utf8()),
+                            "unexpected character",
+                        ),
+                    );
                 }
             }
         }
