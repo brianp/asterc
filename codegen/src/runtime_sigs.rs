@@ -122,6 +122,37 @@ pub static RUNTIME_SIGS: &[RuntimeSig] = &[
         &[types::F64, types::F64],
         Some(types::F64),
     ),
+    // Int numeric methods
+    ("aster_int_is_even", &[types::I64], Some(types::I8)),
+    ("aster_int_is_odd", &[types::I64], Some(types::I8)),
+    ("aster_int_abs", &[types::I64], Some(types::I64)),
+    (
+        "aster_int_clamp",
+        &[types::I64, types::I64, types::I64],
+        Some(types::I64),
+    ),
+    ("aster_int_min", &[types::I64, types::I64], Some(types::I64)),
+    ("aster_int_max", &[types::I64, types::I64], Some(types::I64)),
+    // Float numeric methods
+    ("aster_float_abs", &[types::F64], Some(types::F64)),
+    ("aster_float_round", &[types::F64], Some(types::I64)),
+    ("aster_float_floor", &[types::F64], Some(types::I64)),
+    ("aster_float_ceil", &[types::F64], Some(types::I64)),
+    (
+        "aster_float_clamp",
+        &[types::F64, types::F64, types::F64],
+        Some(types::F64),
+    ),
+    (
+        "aster_float_min",
+        &[types::F64, types::F64],
+        Some(types::F64),
+    ),
+    (
+        "aster_float_max",
+        &[types::F64, types::F64],
+        Some(types::F64),
+    ),
     ("aster_int_to_string", &[types::I64], Some(types::I64)),
     ("aster_float_to_string", &[types::F64], Some(types::I64)),
     ("aster_bool_to_string", &[types::I8], Some(types::I64)),

@@ -1197,6 +1197,16 @@ impl TypeChecker {
             return Self::check_string_member(field, object);
         }
 
+        // Handle Int built-in methods
+        if obj_ty == Type::Int {
+            return Self::check_int_member(field, object);
+        }
+
+        // Handle Float built-in methods
+        if obj_ty == Type::Float {
+            return Self::check_float_member(field, object);
+        }
+
         // Handle List built-in methods (List implicitly includes Iterable)
         if let Type::List(ref inner) = obj_ty {
             return self.check_list_member(field, inner, object);
@@ -1745,6 +1755,59 @@ impl TypeChecker {
                     type_name: "String".to_string(),
                 }))
                 .with_label(object.span(), format!("no member '{}' on String", field)),
+            ),
+        }
+    }
+
+    fn check_int_member(field: &str, object: &Expr) -> Result<Type, Diagnostic> {
+        match field {
+            "is_even" => Ok(Type::func(vec![], vec![], Type::Bool)),
+            "is_odd" => Ok(Type::func(vec![], vec![], Type::Bool)),
+            "abs" => Ok(Type::func(vec![], vec![], Type::Int)),
+            "clamp" => Ok(Type::func(
+                vec!["min".into(), "max".into()],
+                vec![Type::Int, Type::Int],
+                Type::Int,
+            )),
+            "min" => Ok(Type::func(vec!["value".into()], vec![Type::Int], Type::Int)),
+            "max" => Ok(Type::func(vec!["value".into()], vec![Type::Int], Type::Int)),
+            _ => Err(
+                Diagnostic::from_template(DiagnosticTemplate::UnknownField(UnknownField {
+                    field: field.to_string(),
+                    type_name: "Int".to_string(),
+                }))
+                .with_label(object.span(), format!("no member '{}' on Int", field)),
+            ),
+        }
+    }
+
+    fn check_float_member(field: &str, object: &Expr) -> Result<Type, Diagnostic> {
+        match field {
+            "abs" => Ok(Type::func(vec![], vec![], Type::Float)),
+            "round" => Ok(Type::func(vec![], vec![], Type::Int)),
+            "floor" => Ok(Type::func(vec![], vec![], Type::Int)),
+            "ceil" => Ok(Type::func(vec![], vec![], Type::Int)),
+            "clamp" => Ok(Type::func(
+                vec!["min".into(), "max".into()],
+                vec![Type::Float, Type::Float],
+                Type::Float,
+            )),
+            "min" => Ok(Type::func(
+                vec!["value".into()],
+                vec![Type::Float],
+                Type::Float,
+            )),
+            "max" => Ok(Type::func(
+                vec!["value".into()],
+                vec![Type::Float],
+                Type::Float,
+            )),
+            _ => Err(
+                Diagnostic::from_template(DiagnosticTemplate::UnknownField(UnknownField {
+                    field: field.to_string(),
+                    type_name: "Float".to_string(),
+                }))
+                .with_label(object.span(), format!("no member '{}' on Float", field)),
             ),
         }
     }

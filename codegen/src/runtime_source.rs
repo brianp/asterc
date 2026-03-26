@@ -322,6 +322,101 @@ double aster_pow_float(double base, double exp) {
     return pow(base, exp);
 }
 
+/* ─── Int numeric methods ──────────────────────────────────────────── */
+
+int8_t aster_int_is_even(int64_t n) { return (n % 2 == 0) ? 1 : 0; }
+int8_t aster_int_is_odd(int64_t n)  { return (n % 2 != 0) ? 1 : 0; }
+
+int64_t aster_int_abs(int64_t n) {
+    if (n == INT64_MIN) {
+        fprintf(stderr, "integer overflow: abs(%lld) exceeds 64-bit range\n", (long long)n);
+        abort();
+    }
+    return n < 0 ? -n : n;
+}
+
+int64_t aster_int_clamp(int64_t n, int64_t min, int64_t max) {
+    if (min > max) {
+        fprintf(stderr, "invalid arguments: clamp min (%lld) > max (%lld)\n",
+                (long long)min, (long long)max);
+        abort();
+    }
+    if (n < min) return min;
+    if (n > max) return max;
+    return n;
+}
+
+int64_t aster_int_min(int64_t a, int64_t b) { return a <= b ? a : b; }
+int64_t aster_int_max(int64_t a, int64_t b) { return a >= b ? a : b; }
+
+/* ─── Float numeric methods ────────────────────────────────────────── */
+
+static void check_float_valid(double val, const char* op) {
+    if (val != val) { /* NaN */
+        fprintf(stderr, "invalid float: %s(NaN)\n", op);
+        abort();
+    }
+    if (val == 1.0/0.0 || val == -1.0/0.0) { /* Inf */
+        fprintf(stderr, "invalid float: %s(%g)\n", op, val);
+        abort();
+    }
+}
+
+static void check_float_fits_i64(double val, const char* op) {
+    check_float_valid(val, op);
+    if (val > (double)INT64_MAX || val < (double)INT64_MIN) {
+        fprintf(stderr, "float out of Int range: %s(%g) exceeds 64-bit integer range\n", op, val);
+        abort();
+    }
+}
+
+double aster_float_abs(double n) { return fabs(n); }
+
+int64_t aster_float_round(double n) {
+    check_float_fits_i64(n, "round");
+    return (int64_t)round(n);
+}
+
+int64_t aster_float_floor(double n) {
+    check_float_fits_i64(n, "floor");
+    return (int64_t)floor(n);
+}
+
+int64_t aster_float_ceil(double n) {
+    check_float_fits_i64(n, "ceil");
+    return (int64_t)ceil(n);
+}
+
+double aster_float_clamp(double n, double min, double max) {
+    if (n != n || min != min || max != max) {
+        fprintf(stderr, "invalid float: clamp with NaN argument\n");
+        abort();
+    }
+    if (min > max) {
+        fprintf(stderr, "invalid arguments: clamp min (%g) > max (%g)\n", min, max);
+        abort();
+    }
+    if (n < min) return min;
+    if (n > max) return max;
+    return n;
+}
+
+double aster_float_min(double a, double b) {
+    if (a != a || b != b) {
+        fprintf(stderr, "invalid float: min with NaN argument\n");
+        abort();
+    }
+    return a <= b ? a : b;
+}
+
+double aster_float_max(double a, double b) {
+    if (a != a || b != b) {
+        fprintf(stderr, "invalid float: max with NaN argument\n");
+        abort();
+    }
+    return a >= b ? a : b;
+}
+
 void* aster_int_to_string(int64_t val) {
     char buf[32];
     int len = snprintf(buf, sizeof(buf), "%lld", (long long)val);

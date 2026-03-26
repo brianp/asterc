@@ -552,6 +552,125 @@ pub extern "C" fn aster_int_mul(a: i64, b: i64) -> i64 {
     }
 }
 
+// ─── Int numeric methods ──────────────────────────────────────────────
+
+pub extern "C" fn aster_int_is_even(n: i64) -> i8 {
+    (n % 2 == 0) as i8
+}
+
+pub extern "C" fn aster_int_is_odd(n: i64) -> i8 {
+    (n % 2 != 0) as i8
+}
+
+pub extern "C" fn aster_int_abs(n: i64) -> i64 {
+    match n.checked_abs() {
+        Some(result) => result,
+        None => {
+            eprintln!("integer overflow: abs({}) exceeds 64-bit range", n);
+            std::process::abort();
+        }
+    }
+}
+
+pub extern "C" fn aster_int_clamp(n: i64, min: i64, max: i64) -> i64 {
+    if min > max {
+        eprintln!("invalid arguments: clamp min ({}) > max ({})", min, max);
+        std::process::abort();
+    }
+    if n < min {
+        min
+    } else if n > max {
+        max
+    } else {
+        n
+    }
+}
+
+pub extern "C" fn aster_int_min(a: i64, b: i64) -> i64 {
+    if a <= b { a } else { b }
+}
+
+pub extern "C" fn aster_int_max(a: i64, b: i64) -> i64 {
+    if a >= b { a } else { b }
+}
+
+// ─── Float numeric methods ────────────────────────────────────────────
+
+fn check_float_valid(val: f64, op: &str) {
+    if val.is_nan() {
+        eprintln!("invalid float: {}(NaN)", op);
+        std::process::abort();
+    }
+    if val.is_infinite() {
+        eprintln!("invalid float: {}({})", op, val);
+        std::process::abort();
+    }
+}
+
+fn check_float_fits_i64(val: f64, op: &str) {
+    check_float_valid(val, op);
+    if val > i64::MAX as f64 || val < i64::MIN as f64 {
+        eprintln!(
+            "float out of Int range: {}({}) exceeds 64-bit integer range",
+            op, val
+        );
+        std::process::abort();
+    }
+}
+
+pub extern "C" fn aster_float_abs(n: f64) -> f64 {
+    n.abs()
+}
+
+pub extern "C" fn aster_float_round(n: f64) -> i64 {
+    check_float_fits_i64(n, "round");
+    n.round() as i64
+}
+
+pub extern "C" fn aster_float_floor(n: f64) -> i64 {
+    check_float_fits_i64(n, "floor");
+    n.floor() as i64
+}
+
+pub extern "C" fn aster_float_ceil(n: f64) -> i64 {
+    check_float_fits_i64(n, "ceil");
+    n.ceil() as i64
+}
+
+pub extern "C" fn aster_float_clamp(n: f64, min: f64, max: f64) -> f64 {
+    if min.is_nan() || max.is_nan() || n.is_nan() {
+        eprintln!("invalid float: clamp with NaN argument");
+        std::process::abort();
+    }
+    if min > max {
+        eprintln!("invalid arguments: clamp min ({}) > max ({})", min, max);
+        std::process::abort();
+    }
+    if n < min {
+        min
+    } else if n > max {
+        max
+    } else {
+        n
+    }
+}
+
+pub extern "C" fn aster_float_min(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        eprintln!("invalid float: min with NaN argument");
+        std::process::abort();
+    }
+    if a <= b { a } else { b }
+}
+
+pub extern "C" fn aster_float_max(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        eprintln!("invalid float: max with NaN argument");
+        std::process::abort();
+    }
+    if a >= b { a } else { b }
+}
+
 /// Float exponentiation: base ** exp.
 pub extern "C" fn aster_pow_float(base: f64, exp: f64) -> f64 {
     base.powf(exp)
@@ -2083,6 +2202,21 @@ pub fn runtime_builtin_symbols() -> Vec<(&'static str, *const u8)> {
         ("aster_int_mul", aster_int_mul as *const u8),
         ("aster_pow_int", aster_pow_int as *const u8),
         ("aster_pow_float", aster_pow_float as *const u8),
+        // Int numeric methods
+        ("aster_int_is_even", aster_int_is_even as *const u8),
+        ("aster_int_is_odd", aster_int_is_odd as *const u8),
+        ("aster_int_abs", aster_int_abs as *const u8),
+        ("aster_int_clamp", aster_int_clamp as *const u8),
+        ("aster_int_min", aster_int_min as *const u8),
+        ("aster_int_max", aster_int_max as *const u8),
+        // Float numeric methods
+        ("aster_float_abs", aster_float_abs as *const u8),
+        ("aster_float_round", aster_float_round as *const u8),
+        ("aster_float_floor", aster_float_floor as *const u8),
+        ("aster_float_ceil", aster_float_ceil as *const u8),
+        ("aster_float_clamp", aster_float_clamp as *const u8),
+        ("aster_float_min", aster_float_min as *const u8),
+        ("aster_float_max", aster_float_max as *const u8),
         ("aster_int_to_string", aster_int_to_string as *const u8),
         ("aster_float_to_string", aster_float_to_string as *const u8),
         ("aster_bool_to_string", aster_bool_to_string as *const u8),

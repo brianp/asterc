@@ -588,6 +588,119 @@ impl Lowerer {
             }
         }
 
+        // Check for Int built-in methods
+        if matches!(object_ast_ty, Some(Type::Int)) {
+            match method {
+                builtin_method::IS_EVEN => {
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_int_is_even".to_string(),
+                        args: vec![fir_object],
+                        ret_ty: FirType::Bool,
+                    });
+                }
+                builtin_method::IS_ODD => {
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_int_is_odd".to_string(),
+                        args: vec![fir_object],
+                        ret_ty: FirType::Bool,
+                    });
+                }
+                builtin_method::ABS => {
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_int_abs".to_string(),
+                        args: vec![fir_object],
+                        ret_ty: FirType::I64,
+                    });
+                }
+                builtin_method::CLAMP => {
+                    let min_arg = self.lower_named_or_positional_arg(args, "min", 0)?;
+                    let max_arg = self.lower_named_or_positional_arg(args, "max", 1)?;
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_int_clamp".to_string(),
+                        args: vec![fir_object, min_arg, max_arg],
+                        ret_ty: FirType::I64,
+                    });
+                }
+                builtin_method::MIN => {
+                    let value_arg = self.lower_named_or_positional_arg(args, "value", 0)?;
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_int_min".to_string(),
+                        args: vec![fir_object, value_arg],
+                        ret_ty: FirType::I64,
+                    });
+                }
+                builtin_method::MAX => {
+                    let value_arg = self.lower_named_or_positional_arg(args, "value", 0)?;
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_int_max".to_string(),
+                        args: vec![fir_object, value_arg],
+                        ret_ty: FirType::I64,
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        // Check for Float built-in methods
+        if matches!(object_ast_ty, Some(Type::Float)) {
+            match method {
+                builtin_method::ABS => {
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_float_abs".to_string(),
+                        args: vec![fir_object],
+                        ret_ty: FirType::F64,
+                    });
+                }
+                builtin_method::ROUND => {
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_float_round".to_string(),
+                        args: vec![fir_object],
+                        ret_ty: FirType::I64,
+                    });
+                }
+                builtin_method::FLOOR => {
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_float_floor".to_string(),
+                        args: vec![fir_object],
+                        ret_ty: FirType::I64,
+                    });
+                }
+                builtin_method::CEIL => {
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_float_ceil".to_string(),
+                        args: vec![fir_object],
+                        ret_ty: FirType::I64,
+                    });
+                }
+                builtin_method::CLAMP => {
+                    let min_arg = self.lower_named_or_positional_arg(args, "min", 0)?;
+                    let max_arg = self.lower_named_or_positional_arg(args, "max", 1)?;
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_float_clamp".to_string(),
+                        args: vec![fir_object, min_arg, max_arg],
+                        ret_ty: FirType::F64,
+                    });
+                }
+                builtin_method::MIN => {
+                    let value_arg = self.lower_named_or_positional_arg(args, "value", 0)?;
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_float_min".to_string(),
+                        args: vec![fir_object, value_arg],
+                        ret_ty: FirType::F64,
+                    });
+                }
+                builtin_method::MAX => {
+                    let value_arg = self.lower_named_or_positional_arg(args, "value", 0)?;
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_float_max".to_string(),
+                        args: vec![fir_object, value_arg],
+                        ret_ty: FirType::F64,
+                    });
+                }
+                _ => {}
+            }
+        }
+
         // Check for list built-in methods
         match method {
             builtin_method::LEN => {

@@ -21,6 +21,15 @@ pub mod method {
     pub const REMOVE_FIRST: &str = "remove_first";
     pub const RANDOM: &str = "random";
 
+    // Numeric methods (Int / Float)
+    pub const IS_EVEN: &str = "is_even";
+    pub const IS_ODD: &str = "is_odd";
+    pub const ABS: &str = "abs";
+    pub const CLAMP: &str = "clamp";
+    pub const ROUND: &str = "round";
+    pub const FLOOR: &str = "floor";
+    pub const CEIL: &str = "ceil";
+
     // String methods
     pub const CONTAINS: &str = "contains";
     pub const STARTS_WITH: &str = "starts_with";
