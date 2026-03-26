@@ -393,6 +393,117 @@ pub extern "C" fn aster_list_len(handle: *const u8) -> i64 {
     }
 }
 
+/// Insert an element at a given index, shifting subsequent elements right.
+pub extern "C" fn aster_list_insert(handle: *mut u8, index: i64, value: i64) {
+    if handle.is_null() {
+        eprintln!("aster_list_insert: null list handle");
+        std::process::abort();
+    }
+    unsafe {
+        let block = list_block(handle);
+        let len = *(block as *const i64);
+        if index < 0 || index > len {
+            eprintln!(
+                "list insert index out of bounds: {} (len {})",
+                index, len
+            );
+            std::process::abort();
+        }
+        let cap = *((block as *const i64).add(1));
+        let block = if len >= cap {
+            let new_cap = (cap * 2).max(4) as usize;
+            let alloc_size = match new_cap.checked_mul(8).and_then(|n| n.checked_add(16)) {
+                Some(n) => n,
+                None => {
+                    eprintln!("aster_list_insert: size overflow");
+                    std::process::abort();
+                }
+            };
+            let new_block = gc_alloc_data_block(alloc_size);
+            std::ptr::copy_nonoverlapping(block, new_block, 16 + (len as usize) * 8);
+            *((new_block as *mut i64).add(1)) = new_cap as i64;
+            *(handle as *mut *mut u8) = new_block;
+            new_block
+        } else {
+            block
+        };
+        let data = (block as *mut i64).add(2);
+        let idx = index as usize;
+        let count = (len - index) as usize;
+        std::ptr::copy(data.add(idx), data.add(idx + 1), count);
+        *data.add(idx) = value;
+        *(block as *mut i64) = len + 1;
+    }
+}
+
+/// Remove an element at a given index, shifting subsequent elements left. Returns the removed value.
+pub extern "C" fn aster_list_remove(handle: *mut u8, index: i64) -> i64 {
+    if handle.is_null() {
+        eprintln!("aster_list_remove: null list handle");
+        std::process::abort();
+    }
+    unsafe {
+        let block = list_block(handle);
+        let len = *(block as *const i64);
+        if index < 0 || index >= len {
+            eprintln!(
+                "list remove index out of bounds: {} (len {})",
+                index, len
+            );
+            std::process::abort();
+        }
+        let data = (block as *mut i64).add(2);
+        let idx = index as usize;
+        let removed = *data.add(idx);
+        let count = (len - index - 1) as usize;
+        std::ptr::copy(data.add(idx + 1), data.add(idx), count);
+        *(block as *mut i64) = len - 1;
+        removed
+    }
+}
+
+/// Remove and return the last element. Aborts on empty list.
+pub extern "C" fn aster_list_pop(handle: *mut u8) -> i64 {
+    if handle.is_null() {
+        eprintln!("aster_list_pop: null list handle");
+        std::process::abort();
+    }
+    unsafe {
+        let block = list_block(handle);
+        let len = *(block as *const i64);
+        if len <= 0 {
+            eprintln!("aster_list_pop: empty list");
+            std::process::abort();
+        }
+        let data = (block as *const i64).add(2);
+        let value = *data.add((len - 1) as usize);
+        *(block as *mut i64) = len - 1;
+        value
+    }
+}
+
+/// Check if a list contains a value. `is_string`: 1 = use string equality, 0 = bitwise i64.
+pub extern "C" fn aster_list_contains(handle: *const u8, item: i64, is_string: i64) -> i8 {
+    if handle.is_null() {
+        return 0;
+    }
+    unsafe {
+        let block = list_block(handle);
+        let len = *(block as *const i64);
+        let data = (block as *const i64).add(2);
+        for i in 0..len as usize {
+            if is_string != 0 {
+                if aster_string_eq(*data.add(i) as *const u8, item as *const u8) != 0 {
+                    return 1;
+                }
+            } else if *data.add(i) == item {
+                return 1;
+            }
+        }
+    }
+    0
+}
+
 /// Integer exponentiation: base ** exp (exp >= 0).
 pub extern "C" fn aster_pow_int(base: i64, exp: i64) -> i64 {
     if exp < 0 {
@@ -1975,6 +2086,10 @@ pub fn runtime_builtin_symbols() -> Vec<(&'static str, *const u8)> {
         ("aster_list_set", aster_list_set as *const u8),
         ("aster_list_push", aster_list_push as *const u8),
         ("aster_list_len", aster_list_len as *const u8),
+        ("aster_list_insert", aster_list_insert as *const u8),
+        ("aster_list_remove", aster_list_remove as *const u8),
+        ("aster_list_pop", aster_list_pop as *const u8),
+        ("aster_list_contains", aster_list_contains as *const u8),
         ("aster_class_alloc", aster_class_alloc as *const u8),
         (
             "aster_class_alloc_typed",

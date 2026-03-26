@@ -608,6 +608,94 @@ impl Lowerer {
                     ret_ty: FirType::Ptr,
                 });
             }
+            builtin_method::INSERT => {
+                let at_arg = args
+                    .iter()
+                    .find(|(n, _, _)| n == "at")
+                    .or_else(|| args.first())
+                    .map(|(_, _, e)| e);
+                let item_arg = args
+                    .iter()
+                    .find(|(n, _, _)| n == "item")
+                    .or_else(|| args.get(1))
+                    .map(|(_, _, e)| e);
+                let fir_at = self.lower_expr(at_arg.unwrap())?;
+                let fir_item = self.lower_expr(item_arg.unwrap())?;
+                return Ok(FirExpr::RuntimeCall {
+                    name: "aster_list_insert".to_string(),
+                    args: vec![fir_object, fir_at, fir_item],
+                    ret_ty: FirType::Void,
+                });
+            }
+            builtin_method::REMOVE => {
+                let at_arg = args
+                    .iter()
+                    .find(|(n, _, _)| n == "at")
+                    .or_else(|| args.first())
+                    .map(|(_, _, e)| e);
+                let fir_at = self.lower_expr(at_arg.unwrap())?;
+                return Ok(FirExpr::RuntimeCall {
+                    name: "aster_list_remove".to_string(),
+                    args: vec![fir_object, fir_at],
+                    ret_ty: FirType::I64,
+                });
+            }
+            builtin_method::POP => {
+                return Ok(FirExpr::RuntimeCall {
+                    name: "aster_list_pop".to_string(),
+                    args: vec![fir_object],
+                    ret_ty: FirType::I64,
+                });
+            }
+            builtin_method::CONTAINS => {
+                // Check if this is the predicate form: contains(f: ...)
+                let is_predicate = args.first().map_or(false, |(n, _, _)| n == "f");
+                if is_predicate {
+                    // Determine element type for the loop
+                    let elem_ty = if let Some(Type::List(inner)) = &object_ast_ty {
+                        self.lower_type(inner)
+                    } else {
+                        self.resolve_list_elem_type(object).unwrap_or(FirType::I64)
+                    };
+                    // Reuse `any` lowering
+                    return self.lower_iterable_with_callback(
+                        builtin_method::ANY,
+                        fir_object,
+                        args,
+                        &elem_ty,
+                        object,
+                    );
+                }
+                // contains(item:) — runtime call with string flag
+                let item_arg = args
+                    .iter()
+                    .find(|(n, _, _)| n == "item")
+                    .or_else(|| args.first())
+                    .map(|(_, _, e)| e);
+                let fir_item = self.lower_expr(item_arg.unwrap())?;
+                let is_string = if let Some(Type::List(inner)) = &object_ast_ty {
+                    if **inner == Type::String {
+                        FirExpr::IntLit(1)
+                    } else {
+                        FirExpr::IntLit(0)
+                    }
+                } else {
+                    FirExpr::IntLit(0)
+                };
+                return Ok(FirExpr::RuntimeCall {
+                    name: "aster_list_contains".to_string(),
+                    args: vec![fir_object, fir_item, is_string],
+                    ret_ty: FirType::Bool,
+                });
+            }
+            builtin_method::REMOVE_FIRST => {
+                let elem_ty = if let Some(Type::List(inner)) = &object_ast_ty {
+                    self.lower_type(inner)
+                } else {
+                    self.resolve_list_elem_type(object).unwrap_or(FirType::I64)
+                };
+                return self.lower_list_remove_first(fir_object, args, &elem_ty, object);
+            }
             builtin_method::RANDOM => {
                 // list.random() → aster_list_random(list)
                 // Single runtime call avoids double-evaluation and GC issues

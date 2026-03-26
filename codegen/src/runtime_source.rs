@@ -385,6 +385,7 @@ void* aster_list_new(int64_t cap, int64_t ptr_elems) {
 }
 
 int64_t aster_random_int(int64_t max); /* forward decl for aster_list_random */
+int8_t aster_string_eq(void* a, void* b); /* forward decl for aster_list_contains */
 
 int64_t aster_list_get(void* handle, int64_t index) {
     if (!handle) { fprintf(stderr, "aster_list_get: null list\n"); abort(); }
@@ -446,6 +447,77 @@ int64_t aster_list_len(void* handle) {
     if (!handle) return 0;
     void* block = *(void**)handle;
     return *(int64_t*)block;
+}
+
+void aster_list_insert(void* handle, int64_t index, int64_t value) {
+    if (!handle) { fprintf(stderr, "aster_list_insert: null list\n"); abort(); }
+    void* block = *(void**)handle;
+    int64_t len = *(int64_t*)block;
+    if (index < 0 || index > len) {
+        fprintf(stderr, "list insert index out of bounds: %lld (len %lld)\n",
+                (long long)index, (long long)len);
+        abort();
+    }
+    int64_t cap = *((int64_t*)block + 1);
+    if (len >= cap) {
+        int64_t new_cap = cap * 2;
+        if (new_cap < 4) new_cap = 4;
+        if (new_cap > (INT64_MAX - 16) / 8) {
+            fprintf(stderr, "aster_list_insert: size overflow\n"); abort();
+        }
+        void* new_block = aster_alloc(16 + new_cap * 8);
+        memcpy(new_block, block, (size_t)(16 + len * 8));
+        *((int64_t*)new_block + 1) = new_cap;
+        free(block);
+        *(void**)handle = new_block;
+        block = new_block;
+    }
+    int64_t* data = (int64_t*)block + 2;
+    memmove(data + index + 1, data + index, (size_t)((len - index) * 8));
+    data[index] = value;
+    *(int64_t*)block = len + 1;
+}
+
+int64_t aster_list_remove(void* handle, int64_t index) {
+    if (!handle) { fprintf(stderr, "aster_list_remove: null list\n"); abort(); }
+    void* block = *(void**)handle;
+    int64_t len = *(int64_t*)block;
+    if (index < 0 || index >= len) {
+        fprintf(stderr, "list remove index out of bounds: %lld (len %lld)\n",
+                (long long)index, (long long)len);
+        abort();
+    }
+    int64_t* data = (int64_t*)block + 2;
+    int64_t removed = data[index];
+    memmove(data + index, data + index + 1, (size_t)((len - index - 1) * 8));
+    *(int64_t*)block = len - 1;
+    return removed;
+}
+
+int64_t aster_list_pop(void* handle) {
+    if (!handle) { fprintf(stderr, "aster_list_pop: null list\n"); abort(); }
+    void* block = *(void**)handle;
+    int64_t len = *(int64_t*)block;
+    if (len <= 0) { fprintf(stderr, "aster_list_pop: empty list\n"); abort(); }
+    int64_t* data = (int64_t*)block + 2;
+    int64_t value = data[len - 1];
+    *(int64_t*)block = len - 1;
+    return value;
+}
+
+int8_t aster_list_contains(void* handle, int64_t item, int64_t is_string) {
+    if (!handle) return 0;
+    void* block = *(void**)handle;
+    int64_t len = *(int64_t*)block;
+    int64_t* data = (int64_t*)block + 2;
+    for (int64_t i = 0; i < len; i++) {
+        if (is_string) {
+            if (aster_string_eq((void*)(intptr_t)data[i], (void*)(intptr_t)item)) return 1;
+        } else {
+            if (data[i] == item) return 1;
+        }
+    }
+    return 0;
 }
 
 /* ===================================================================

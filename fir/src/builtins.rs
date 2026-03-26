@@ -15,6 +15,10 @@ pub mod method {
     // List / collection methods
     pub const LEN: &str = "len";
     pub const PUSH: &str = "push";
+    pub const INSERT: &str = "insert";
+    pub const REMOVE: &str = "remove";
+    pub const POP: &str = "pop";
+    pub const REMOVE_FIRST: &str = "remove_first";
     pub const RANDOM: &str = "random";
 
     // String methods

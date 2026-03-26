@@ -90,6 +90,22 @@ pub static RUNTIME_SIGS: &[RuntimeSig] = &[
         Some(types::I64),
     ),
     ("aster_list_len", &[types::I64], Some(types::I64)),
+    (
+        "aster_list_insert",
+        &[types::I64, types::I64, types::I64],
+        None,
+    ),
+    (
+        "aster_list_remove",
+        &[types::I64, types::I64],
+        Some(types::I64),
+    ),
+    ("aster_list_pop", &[types::I64], Some(types::I64)),
+    (
+        "aster_list_contains",
+        &[types::I64, types::I64, types::I64],
+        Some(types::I8),
+    ),
     ("aster_class_alloc", &[types::I64], Some(types::I64)),
     (
         "aster_class_alloc_typed",

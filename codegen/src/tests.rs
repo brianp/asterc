@@ -4831,3 +4831,236 @@ def main() -> Int
     let result = jit.call_i64(fir.entry.unwrap());
     assert_eq!(result, 42);
 }
+
+// ===========================================================================
+// List mutation methods (Issue #9)
+// ===========================================================================
+
+#[test]
+fn list_insert_at_beginning() {
+    let src = "\
+def main() -> Int
+  let xs: List[Int] = [2, 3]
+  xs.insert(at: 0, item: 1)
+  xs[0]
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 1);
+}
+
+#[test]
+fn list_insert_at_middle() {
+    let src = "\
+def main() -> Int
+  let xs: List[Int] = [1, 3]
+  xs.insert(at: 1, item: 2)
+  xs[1]
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 2);
+}
+
+#[test]
+fn list_insert_preserves_len() {
+    let src = "\
+def main() -> Int
+  let xs: List[Int] = [1, 2]
+  xs.insert(at: 1, item: 99)
+  xs.len()
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 3);
+}
+
+#[test]
+fn list_remove_at_beginning() {
+    let src = "\
+def main() -> Int
+  let xs: List[Int] = [10, 20, 30]
+  let removed = xs.remove(at: 0)
+  removed
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 10);
+}
+
+#[test]
+fn list_remove_shifts_elements() {
+    let src = "\
+def main() -> Int
+  let xs: List[Int] = [10, 20, 30]
+  xs.remove(at: 0)
+  xs[0]
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 20);
+}
+
+#[test]
+fn list_remove_decreases_len() {
+    let src = "\
+def main() -> Int
+  let xs: List[Int] = [1, 2, 3]
+  xs.remove(at: 1)
+  xs.len()
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 2);
+}
+
+#[test]
+fn list_pop_returns_last() {
+    let src = "\
+def main() -> Int
+  let xs: List[Int] = [1, 2, 42]
+  xs.pop()
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn list_pop_decreases_len() {
+    let src = "\
+def main() -> Int
+  let xs: List[Int] = [1, 2, 3]
+  xs.pop()
+  xs.len()
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 2);
+}
+
+#[test]
+fn list_contains_item_found() {
+    let src = "\
+def main() -> Int
+  let xs: List[Int] = [10, 20, 30]
+  let result: Int = 0
+  if xs.contains(item: 20)
+    result = 1
+  result
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 1);
+}
+
+#[test]
+fn list_contains_item_not_found() {
+    let src = "\
+def main() -> Int
+  let xs: List[Int] = [10, 20, 30]
+  let result: Int = 0
+  if xs.contains(item: 99)
+    result = 1
+  result
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 0);
+}
+
+#[test]
+fn list_contains_predicate() {
+    let src = "\
+def main() -> Int
+  let xs: List[Int] = [1, 2, 3]
+  let result: Int = 0
+  if xs.contains(f: -> x : x > 2)
+    result = 1
+  result
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 1);
+}
+
+#[test]
+fn list_remove_first_found() {
+    // Verify remove_first removes the element and decreases length
+    let src = "\
+def main() -> Int
+  let xs: List[Int] = [1, 2, 3, 2]
+  xs.remove_first(f: -> x : x == 2)
+  xs.len()
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 3);
+}
+
+#[test]
+fn list_remove_first_not_found() {
+    // When no match is found, list is unchanged
+    let src = "\
+def main() -> Int
+  let xs: List[Int] = [1, 2, 3]
+  xs.remove_first(f: -> x : x == 99)
+  xs.len()
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 3);
+}
+
+#[test]
+fn list_remove_first_shifts_elements() {
+    // After removing first match, subsequent elements shift
+    let src = "\
+def main() -> Int
+  let xs: List[Int] = [10, 20, 30]
+  xs.remove_first(f: -> x : x == 20)
+  xs[1]
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 30);
+}
+
+#[test]
+fn list_contains_runtime_direct() {
+    // Direct test of the runtime function, bypassing JIT compilation
+    let list = crate::runtime::aster_list_new(4, 0);
+    crate::runtime::aster_list_push(list, 10);
+    crate::runtime::aster_list_push(list, 20);
+    crate::runtime::aster_list_push(list, 30);
+    assert_eq!(crate::runtime::aster_list_contains(list as *const u8, 20, 0), 1);
+    assert_eq!(crate::runtime::aster_list_contains(list as *const u8, 99, 0), 0);
+}
+
+#[test]
+fn list_remove_first_updates_len() {
+    let src = "\
+def main() -> Int
+  let xs: List[Int] = [1, 2, 3]
+  xs.remove_first(f: -> x : x == 2)
+  xs.len()
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 2);
+}

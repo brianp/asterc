@@ -144,6 +144,29 @@ impl TypeChecker {
                 }
             }
 
+            // List.contains overload: contains(f: (T) -> Bool) -> Bool
+            // When the arg is named "f", treat as predicate form instead of item form
+            if field == "contains"
+                && let Type::List(inner) = &obj_ty
+                && args.len() == 1
+                && args[0].0 == "f"
+            {
+                let expected_fn = Type::func(
+                    vec!["_0".into()],
+                    vec![*inner.clone()],
+                    Type::Bool,
+                );
+                let arg_ty = if let Expr::Lambda { .. } = &args[0].2 {
+                    self.check_lambda_with_expected(&args[0].2, Some(&expected_fn))?
+                } else {
+                    self.check_expr(&args[0].2)?
+                };
+                if arg_ty.is_error() {
+                    return Ok(Type::Error);
+                }
+                return Ok(Type::Bool);
+            }
+
             // List[Nil] promotion: pushing into an empty list infers the element type
             if field == "push"
                 && let Type::List(inner) = &obj_ty

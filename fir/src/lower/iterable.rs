@@ -965,6 +965,73 @@ impl Lowerer {
         Ok(FirExpr::LocalVar(result_id, FirType::Ptr))
     }
 
+    /// Lower `list.remove_first(f:)` — find first matching element, remove it, return T?.
+    /// Like `find`, but also calls aster_list_remove on the matched index.
+    pub(crate) fn lower_list_remove_first(
+        &mut self,
+        fir_list: FirExpr,
+        args: &[(String, ast::Span, Expr)],
+        elem_ty: &FirType,
+        object: &Expr,
+    ) -> Result<FirExpr, LowerError> {
+        let callback = Self::resolve_callback_arg(args);
+        let (list_id, len_id, idx_id, elem_id) = self.iter_loop_scaffold(fir_list, elem_ty);
+
+        let nullable_ty = FirType::TaggedUnion {
+            tag_bits: 1,
+            variants: vec![elem_ty.clone(), FirType::Void],
+        };
+        let result_id = self.alloc_local();
+        self.local_types.insert(result_id, nullable_ty.clone());
+        self.pending_stmts.push(FirStmt::Let {
+            name: result_id,
+            ty: nullable_ty.clone(),
+            value: FirExpr::TagWrap {
+                tag: 1,
+                value: Box::new(FirExpr::NilLit),
+                ty: FirType::Ptr,
+            },
+        });
+
+        let mut loop_body = vec![Self::iter_get_elem(list_id, idx_id, elem_id, elem_ty)];
+        let saved_pending = std::mem::take(&mut self.pending_stmts);
+        let cond_val = self.apply_inline_lambda(callback, elem_id, elem_ty, object)?;
+        loop_body.append(&mut self.pending_stmts);
+        self.pending_stmts = saved_pending;
+        loop_body.push(FirStmt::If {
+            cond: cond_val,
+            then_body: vec![
+                // Remove the element at the current index
+                FirStmt::Expr(FirExpr::RuntimeCall {
+                    name: "aster_list_remove".to_string(),
+                    args: vec![
+                        FirExpr::LocalVar(list_id, FirType::Ptr),
+                        FirExpr::LocalVar(idx_id, FirType::I64),
+                    ],
+                    ret_ty: FirType::I64,
+                }),
+                // Store the element as Some(elem)
+                FirStmt::Assign {
+                    target: FirPlace::Local(result_id),
+                    value: FirExpr::TagWrap {
+                        tag: 0,
+                        value: Box::new(FirExpr::LocalVar(elem_id, elem_ty.clone())),
+                        ty: elem_ty.clone(),
+                    },
+                },
+                FirStmt::Break,
+            ],
+            else_body: vec![],
+        });
+
+        self.pending_stmts.push(FirStmt::While {
+            cond: Self::iter_cond(idx_id, len_id),
+            body: loop_body,
+            increment: Self::iter_increment(idx_id),
+        });
+        Ok(FirExpr::LocalVar(result_id, nullable_ty))
+    }
+
     /// Check if the iterable expression refers to a class that includes Iterator.
     /// Returns the class name if so.
     /// Check if the iterable expression refers to a class that includes Iterator.

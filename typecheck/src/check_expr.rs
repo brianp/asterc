@@ -1637,6 +1637,44 @@ impl TypeChecker {
                     Type::Void,
                 ));
             }
+            "insert" => {
+                return Ok(Type::func(
+                    vec!["at".into(), "item".into()],
+                    vec![Type::Int, inner.clone()],
+                    Type::Void,
+                ));
+            }
+            "remove" => {
+                return Ok(Type::func(
+                    vec!["at".into()],
+                    vec![Type::Int],
+                    inner.clone(),
+                ));
+            }
+            "pop" => {
+                return Ok(Type::func(vec![], vec![], inner.clone()));
+            }
+            "remove_first" => {
+                return Ok(Type::func(
+                    vec!["f".into()],
+                    vec![Type::func(
+                        vec!["_0".into()],
+                        vec![inner.clone()],
+                        Type::Bool,
+                    )],
+                    Type::Nullable(Box::new(inner.clone())),
+                ));
+            }
+            "contains" => {
+                // Default signature: contains(item: T) -> Bool
+                // The predicate overload contains(f: (T) -> Bool) -> Bool
+                // is handled in check_call when arg name is "f"
+                return Ok(Type::func(
+                    vec!["item".into()],
+                    vec![inner.clone()],
+                    Type::Bool,
+                ));
+            }
             "random" => {
                 return Ok(Type::func(vec![], vec![], inner.clone()));
             }
