@@ -314,14 +314,27 @@ impl Parser {
                     let pub_next = self.peek();
                     match &pub_next.kind {
                         Def => methods.push(self.parse_def_as_let(Some(name.clone()), true)?),
+                        Ident(_) => {
+                            // pub field_name: Type
+                            let fname_tok = self.advance();
+                            let fname = match &fname_tok.kind {
+                                Ident(n) => n.clone(),
+                                _ => unreachable!(),
+                            };
+                            self.expect(Colon)?;
+                            let ftype = self.parse_type()?;
+                            fields.push((fname, ftype, true));
+                        }
                         _ => {
                             let span = Span {
                                 start: pub_next.start,
                                 end: pub_next.end,
                             };
-                            return Err(Diagnostic::error("Expected def after 'pub' in class")
-                                .with_code("P001")
-                                .with_label(span, "expected 'def'"));
+                            return Err(Diagnostic::error(
+                                "Expected def or field name after 'pub' in class",
+                            )
+                            .with_code("P001")
+                            .with_label(span, "expected 'def' or field name"));
                         }
                     }
                 }
@@ -347,7 +360,7 @@ impl Parser {
                     };
                     self.expect(Colon)?;
                     let ftype = self.parse_type()?;
-                    fields.push((fname, ftype));
+                    fields.push((fname, ftype, false));
                 }
             }
             self.consume_newlines();

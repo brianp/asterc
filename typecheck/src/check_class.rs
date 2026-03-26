@@ -8,7 +8,7 @@ impl TypeChecker {
     pub(crate) fn check_class_stmt(
         &mut self,
         name: &str,
-        fields: &[(String, Type)],
+        fields: &[(String, Type, bool)],
         methods: &[Stmt],
         generic_params: &Option<Vec<String>>,
         extends: &Option<String>,
@@ -28,7 +28,8 @@ impl TypeChecker {
         });
 
         let mut field_map = IndexMap::new();
-        for (fname, fty) in fields {
+        let mut pub_fields = std::collections::HashSet::new();
+        for (fname, fty, is_pub) in fields {
             if field_map.contains_key(fname) {
                 return Err(Diagnostic::error(format!(
                     "Duplicate field '{}' in class '{}'",
@@ -37,6 +38,9 @@ impl TypeChecker {
                 .with_code("E014"));
             }
             field_map.insert(fname.clone(), fty.clone());
+            if *is_pub {
+                pub_fields.insert(fname.clone());
+            }
         }
 
         // Pre-register constructor so method bodies can call ClassName(field: val)
@@ -56,7 +60,7 @@ impl TypeChecker {
 
         // Create a child checker with class fields in scope for method body checking
         let mut method_checker = self.child_checker();
-        for (fname, fty) in fields {
+        for (fname, fty, _) in fields {
             method_checker.env.set_var(fname.clone(), fty.clone());
         }
         // Also inject inherited fields from parent classes
@@ -82,12 +86,16 @@ impl TypeChecker {
 
         let mut method_map = HashMap::new();
         let mut overloaded_methods: HashMap<String, Vec<Type>> = HashMap::new();
+        let mut pub_methods = std::collections::HashSet::new();
 
         // Run the methods loop, capturing errors so we can always restore env
         let methods_result: Result<(), Diagnostic> = (|| {
             for m in methods {
                 if let Stmt::Let {
-                    name: mname, value, ..
+                    name: mname,
+                    value,
+                    is_public: m_is_public,
+                    ..
                 } = m
                 {
                     // Substitute Self -> class type in method lambda types before checking
@@ -119,6 +127,9 @@ impl TypeChecker {
                         .strip_prefix(&format!("{}.", name))
                         .unwrap_or(mname)
                         .to_string();
+                    if *m_is_public {
+                        pub_methods.insert(short_name.clone());
+                    }
                     #[allow(clippy::map_entry)]
                     if method_map.contains_key(&short_name) {
                         // Allow duplicate if class has multiple parametric trait inclusions
@@ -223,6 +234,12 @@ impl TypeChecker {
             let elem_ty = iterable_element_type
                 .clone()
                 .expect("invariant: set when Iterable detected above");
+            // Mark all vocabulary methods as public (they come from trait inclusion)
+            for (vname, _) in iterable_vocabulary_methods(&elem_ty) {
+                if !method_map.contains_key(&vname) {
+                    pub_methods.insert(vname);
+                }
+            }
             self.inject_iterable_vocabulary(&mut method_map, &elem_ty);
         }
 
@@ -305,6 +322,8 @@ impl TypeChecker {
             }
 
             for method_name in &trait_info.required_methods {
+                // Trait-satisfying methods are part of the public interface
+                pub_methods.insert(method_name.clone());
                 // For overloaded methods, find the matching overload by return type
                 let class_method_ty = if let Some(overloads) = overloaded_methods.get(method_name) {
                     // Resolve expected return type from trait + type args
@@ -412,6 +431,7 @@ impl TypeChecker {
                         &field_map,
                         &class_type,
                     )? {
+                        pub_methods.insert(mname.clone());
                         method_map.insert(mname, mty);
                     } else {
                         return Err(Diagnostic::error(format!(
@@ -428,6 +448,7 @@ impl TypeChecker {
         // Printable: auto-add debug() defaulting to to_string() signature if not defined
         if includes_list.contains(&"Printable".to_string()) && !method_map.contains_key("debug") {
             method_map.insert("debug".into(), Type::func(vec![], vec![], Type::String));
+            pub_methods.insert("debug".into());
         }
 
         let mut info = ClassInfo::new(class_type, field_map, method_map);
@@ -436,6 +457,8 @@ impl TypeChecker {
         info.includes = includes_list;
         info.overloaded_methods = overloaded_methods;
         info.parametric_includes = parametric_includes;
+        info.pub_fields = pub_fields;
+        info.pub_methods = pub_methods;
         self.env.set_class(name.to_string(), info);
 
         // Validate extends
@@ -466,7 +489,7 @@ impl TypeChecker {
     fn register_constructor(
         &mut self,
         name: &str,
-        fields: &[(String, Type)],
+        fields: &[(String, Type, bool)],
         generic_params: &Option<Vec<String>>,
         extends: &Option<String>,
     ) {
@@ -490,8 +513,8 @@ impl TypeChecker {
                 }
             }
         }
-        all_field_names.extend(fields.iter().map(|(n, _)| n.clone()));
-        all_field_types.extend(fields.iter().map(|(_, t)| t.clone()));
+        all_field_names.extend(fields.iter().map(|(n, _, _)| n.clone()));
+        all_field_types.extend(fields.iter().map(|(_, t, _)| t.clone()));
         self.env.set_var(
             name.to_string(),
             Type::func(
@@ -530,7 +553,7 @@ impl TypeChecker {
     fn detect_field_shadowing(
         &self,
         name: &str,
-        fields: &[(String, Type)],
+        fields: &[(String, Type, bool)],
     ) -> Result<(), Diagnostic> {
         let mut inherited_fields = std::collections::HashSet::new();
         for ancestor in self.walk_ancestors(name) {
@@ -538,7 +561,7 @@ impl TypeChecker {
                 inherited_fields.insert(fname.clone());
             }
         }
-        for (fname, _) in fields {
+        for (fname, _, _) in fields {
             if inherited_fields.contains(fname) {
                 return Err(Diagnostic::error(format!(
                     "Field '{}' in class '{}' shadows inherited field from parent chain",

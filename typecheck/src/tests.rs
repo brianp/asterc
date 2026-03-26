@@ -147,7 +147,7 @@ fn class_type_check_and_member_access() {
     let mut tc = TypeChecker::new();
     let class_stmt = Stmt::Class {
         name: "Point".into(),
-        fields: vec![("x".into(), Type::Int)],
+        fields: vec![("x".into(), Type::Int, false)],
         methods: vec![Stmt::Let {
             name: "Point.show".into(),
             type_ann: None,
@@ -1117,7 +1117,7 @@ fn class_includes_trait_gets_methods() {
     // Define class that includes it
     let class_stmt = Stmt::Class {
         name: "User".into(),
-        fields: vec![("name".into(), Type::String)],
+        fields: vec![("name".into(), Type::String, false)],
         methods: vec![Stmt::Let {
             name: "User.to_string".into(),
             type_ann: None,
@@ -1192,7 +1192,7 @@ fn class_missing_trait_method_error() {
     // Class without the required method
     let class_stmt = Stmt::Class {
         name: "User".into(),
-        fields: vec![("name".into(), Type::String)],
+        fields: vec![("name".into(), Type::String, false)],
         methods: vec![],
         is_public: false,
         generic_params: None,
@@ -1211,7 +1211,7 @@ fn generic_class_registers_with_params() {
     let mut tc = TypeChecker::new();
     let class_stmt = Stmt::Class {
         name: "Box".into(),
-        fields: vec![("value".into(), Type::TypeVar("T".into(), vec![]))],
+        fields: vec![("value".into(), Type::TypeVar("T".into(), vec![]), false)],
         methods: vec![],
         is_public: false,
         generic_params: Some(vec!["T".into()]),
@@ -1445,7 +1445,7 @@ fn member_access_finds_method_unqualified() {
     let mut tc = TypeChecker::new();
     let class_stmt = Stmt::Class {
         name: "Point".into(),
-        fields: vec![("x".into(), Type::Int)],
+        fields: vec![("x".into(), Type::Int, false)],
         methods: vec![Stmt::Let {
             name: "Point.show".into(),
             type_ann: None,

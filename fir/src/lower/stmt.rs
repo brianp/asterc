@@ -230,7 +230,7 @@ impl Lowerer {
     pub(crate) fn lower_class(
         &mut self,
         name: &str,
-        fields: &[(String, Type)],
+        fields: &[(String, Type, bool)],
         methods: &[Stmt],
         extends: Option<&str>,
     ) -> Result<(), LowerError> {
@@ -273,7 +273,7 @@ impl Lowerer {
                 }
             }
         }
-        for (field_name, field_type) in fields {
+        for (field_name, field_type, _) in fields {
             let fir_type = self.lower_type(field_type);
             unordered.push((field_name.clone(), fir_type));
         }

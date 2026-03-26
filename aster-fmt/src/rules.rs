@@ -660,7 +660,7 @@ fn format_block_inner(
 #[allow(clippy::too_many_arguments)]
 fn format_class(
     name: &str,
-    fields: &[(String, Type)],
+    fields: &[(String, Type, bool)],
     methods: &[Stmt],
     is_public: bool,
     generic_params: &Option<Vec<String>>,
@@ -704,12 +704,15 @@ fn format_class(
     }
 
     let mut body_parts = Vec::new();
-    for (fname, ftype) in fields {
-        body_parts.push(concat(vec![
-            text(fname.as_str()),
-            text(": "),
-            format_type(ftype),
-        ]));
+    for (fname, ftype, is_pub) in fields {
+        let mut field_parts = Vec::new();
+        if *is_pub {
+            field_parts.push(text("pub "));
+        }
+        field_parts.push(text(fname.as_str()));
+        field_parts.push(text(": "));
+        field_parts.push(format_type(ftype));
+        body_parts.push(concat(field_parts));
     }
     for method in methods {
         body_parts.push(format_stmt(method, config));

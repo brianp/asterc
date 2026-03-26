@@ -339,7 +339,7 @@ fn namespace_import_class_field_access() {
     let mut files = HashMap::new();
     files.insert(
         "models/counter".to_string(),
-        "pub class Counter\n  value: Int\n".to_string(),
+        "pub class Counter\n  pub value: Int\n".to_string(),
     );
     common::check_ok_with_files(
         "use models/counter as m\n\
@@ -593,7 +593,7 @@ fn module_with_own_defs_and_reexports() {
     let mut files = HashMap::new();
     files.insert(
         "internal/user".to_string(),
-        "pub class User\n  name: String\n".to_string(),
+        "pub class User\n  pub name: String\n".to_string(),
     );
     files.insert(
         "api".to_string(),

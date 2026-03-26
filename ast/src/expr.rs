@@ -23,7 +23,8 @@ pub enum Stmt {
     },
     Class {
         name: String,
-        fields: Vec<(String, Type)>,
+        /// (field_name, field_type, is_public)
+        fields: Vec<(String, Type, bool)>,
         methods: Vec<Stmt>,
         is_public: bool,
         generic_params: Option<Vec<String>>,

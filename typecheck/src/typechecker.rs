@@ -54,6 +54,8 @@ pub struct TypeChecker {
     /// Persists across child scopes (not saved/restored by ScopeState),
     /// so promotions inside if/while/for are visible after the block exits.
     pub(crate) nil_promotions: HashMap<String, Type>,
+    /// Class names imported from other modules. Used to enforce field/method visibility.
+    pub(crate) imported_classes: std::collections::HashSet<String>,
 }
 
 struct ScopeState {
@@ -97,6 +99,7 @@ impl TypeChecker {
             type_table: TypeTable::new(),
             last_call_suspendable: false,
             nil_promotions: HashMap::new(),
+            imported_classes: std::collections::HashSet::new(),
         }
     }
 
@@ -464,16 +467,19 @@ impl TypeChecker {
             type_table: TypeTable::new(),
             last_call_suspendable: false,
             nil_promotions: HashMap::new(),
+            imported_classes: self.imported_classes.clone(),
         }
     }
 
     /// Restore the parent env from a child checker after it is done.
-    /// Merges diagnostics and type_table, then recovers the parent env.
+    /// Merges diagnostics, type_table, and imported_classes, then recovers the parent env.
     pub(crate) fn restore_from_child(&mut self, mut child: TypeChecker) {
         self.diagnostics
             .extend(std::mem::take(&mut child.diagnostics));
         self.type_table
             .extend(std::mem::take(&mut child.type_table));
+        self.imported_classes
+            .extend(std::mem::take(&mut child.imported_classes));
         child.env.exit_scope();
         self.env = child.env;
     }
@@ -1714,6 +1720,7 @@ impl TypeChecker {
         }
         for (name, info) in &exports.classes {
             self.env.set_class(name.clone(), info.clone());
+            self.imported_classes.insert(name.clone());
         }
         for (name, info) in &exports.traits {
             self.env.set_trait(name.clone(), info.clone());
@@ -1729,6 +1736,7 @@ impl TypeChecker {
         let mut found = false;
         if let Some(info) = exports.classes.get(name) {
             self.env.set_class(name.to_string(), info.clone());
+            self.imported_classes.insert(name.to_string());
             found = true;
         }
         if let Some(info) = exports.traits.get(name) {

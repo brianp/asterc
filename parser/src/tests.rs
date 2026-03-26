@@ -63,7 +63,7 @@ class Point
             ..
         } => {
             assert_eq!(name, "Point");
-            assert_eq!(fields, &[("x".to_string(), Type::Int)]);
+            assert_eq!(fields, &[("x".to_string(), Type::Int, false)]);
             assert_eq!(methods.len(), 1);
             match &methods[0] {
                 Stmt::Let { name, value, .. } => {
@@ -1086,7 +1086,7 @@ class Outer
             ..
         } => {
             assert_eq!(name, "Outer");
-            assert_eq!(fields, &[("a".to_string(), Type::Int)]);
+            assert_eq!(fields, &[("a".to_string(), Type::Int, false)]);
             assert!(
                 methods
                     .iter()

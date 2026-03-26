@@ -1,6 +1,6 @@
 use crate::types::Type;
 use indexmap::IndexMap;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -19,6 +19,10 @@ pub struct ClassInfo {
     /// Parametric trait inclusions with type args: [(trait_name, [type_args])].
     /// Preserves multiple inclusions of the same trait with different args.
     pub parametric_includes: Vec<(String, Vec<Type>)>,
+    /// Fields marked `pub` — accessible from outside the defining module.
+    pub pub_fields: HashSet<String>,
+    /// Methods marked `pub` — accessible from outside the defining module.
+    pub pub_methods: HashSet<String>,
 }
 
 impl ClassInfo {
@@ -32,6 +36,8 @@ impl ClassInfo {
             includes: Vec::new(),
             overloaded_methods: HashMap::new(),
             parametric_includes: Vec::new(),
+            pub_fields: HashSet::new(),
+            pub_methods: HashSet::new(),
         }
     }
 }

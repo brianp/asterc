@@ -1014,6 +1014,7 @@ impl TypeChecker {
             if let Some(info) = ns.classes.get(field) {
                 // Inject class into env so constructor calls and field access work
                 self.env.set_class(field.to_string(), info.clone());
+                self.imported_classes.insert(field.to_string());
                 // Return the constructor function type
                 if let Some(ty) = ns.variables.get(field) {
                     self.env.set_var(field.to_string(), ty.clone());
@@ -1134,10 +1135,37 @@ impl TypeChecker {
                         })
                         .unwrap_or_default();
                     if let Some(t) = info.fields.get(field) {
+                        // Enforce visibility for imported classes
+                        if self.imported_classes.contains(cname) && !info.pub_fields.contains(field)
+                        {
+                            return Err(Diagnostic::error(format!(
+                                "Field '{}' on class '{}' is not public",
+                                field, class_name
+                            ))
+                            .with_code("E026")
+                            .with_label(
+                                object.span(),
+                                format!("'{}' is private to its defining module", field),
+                            ));
+                        }
                         let resolved = Self::substitute_typevars(t, &bindings);
                         return Ok(resolved);
                     }
                     if let Some(t) = info.methods.get(field) {
+                        // Enforce visibility for imported classes
+                        if self.imported_classes.contains(cname)
+                            && !info.pub_methods.contains(field)
+                        {
+                            return Err(Diagnostic::error(format!(
+                                "Method '{}' on class '{}' is not public",
+                                field, class_name
+                            ))
+                            .with_code("E026")
+                            .with_label(
+                                object.span(),
+                                format!("'{}' is private to its defining module", field),
+                            ));
+                        }
                         // Check Ord constraint for conditional Iterable methods
                         if (field == "min" || field == "max" || field == "sort")
                             && info.includes.contains(&"Iterable".to_string())
