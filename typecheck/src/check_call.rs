@@ -351,94 +351,10 @@ impl TypeChecker {
                     return self.check_random_call(func, args);
                 }
                 "resolve_all" => {
-                    if args.len() != 1 {
-                        return Err(Diagnostic::from_template(
-                            DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
-                                expected: 1,
-                                actual: args.len(),
-                            }),
-                        )
-                        .with_label(func.span(), "expected 1 argument"));
-                    }
-                    let aty = self.check_expr(&args[0].2)?;
-                    if aty.is_error() {
-                        return Ok(Type::Error);
-                    }
-                    match aty {
-                        Type::List(inner) => match *inner {
-                            Type::Task(result) => {
-                                return Ok(Type::List(result));
-                            }
-                            other => {
-                                return Err(Diagnostic::from_template(
-                                    DiagnosticTemplate::ArgumentTypeMismatch(
-                                        ArgumentTypeMismatch {
-                                            param: "_0".to_string(),
-                                            expected: Type::List(Box::new(Type::Task(Box::new(
-                                                Type::Int,
-                                            )))),
-                                            actual: Type::List(Box::new(other)),
-                                        },
-                                    ),
-                                )
-                                .with_label(args[0].2.span(), "expected List[Task[T]]"));
-                            }
-                        },
-                        other => {
-                            return Err(Diagnostic::from_template(
-                                DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
-                                    param: "_0".to_string(),
-                                    expected: Type::List(Box::new(Type::Task(Box::new(Type::Int)))),
-                                    actual: other,
-                                }),
-                            )
-                            .with_label(args[0].2.span(), "expected List[Task[T]]"));
-                        }
-                    }
+                    return self.check_resolve_builtin(func, args, true);
                 }
                 "resolve_first" => {
-                    if args.len() != 1 {
-                        return Err(Diagnostic::from_template(
-                            DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
-                                expected: 1,
-                                actual: args.len(),
-                            }),
-                        )
-                        .with_label(func.span(), "expected 1 argument"));
-                    }
-                    let aty = self.check_expr(&args[0].2)?;
-                    if aty.is_error() {
-                        return Ok(Type::Error);
-                    }
-                    match aty {
-                        Type::List(inner) => match *inner {
-                            Type::Task(result) => return Ok(*result),
-                            other => {
-                                return Err(Diagnostic::from_template(
-                                    DiagnosticTemplate::ArgumentTypeMismatch(
-                                        ArgumentTypeMismatch {
-                                            param: "_0".to_string(),
-                                            expected: Type::List(Box::new(Type::Task(Box::new(
-                                                Type::Int,
-                                            )))),
-                                            actual: Type::List(Box::new(other)),
-                                        },
-                                    ),
-                                )
-                                .with_label(args[0].2.span(), "expected List[Task[T]]"));
-                            }
-                        },
-                        other => {
-                            return Err(Diagnostic::from_template(
-                                DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
-                                    param: "_0".to_string(),
-                                    expected: Type::List(Box::new(Type::Task(Box::new(Type::Int)))),
-                                    actual: other,
-                                }),
-                            )
-                            .with_label(args[0].2.span(), "expected List[Task[T]]"));
-                        }
-                    }
+                    return self.check_resolve_builtin(func, args, false);
                 }
                 // Mutex(value) → Mutex[T]
                 "Mutex" => {
@@ -1333,10 +1249,10 @@ impl TypeChecker {
         if let Some(ref ty) = target {
             match ty {
                 Type::Int => {
-                    return self.check_random_int(func, args);
+                    return self.check_random_numeric(func, args, Type::Int);
                 }
                 Type::Float => {
-                    return self.check_random_float(func, args);
+                    return self.check_random_numeric(func, args, Type::Float);
                 }
                 Type::Bool => {
                     if !args.is_empty() {
@@ -1365,8 +1281,8 @@ impl TypeChecker {
         if let Some((_, _, expr)) = sample_arg {
             let aty = self.check_expr(expr)?;
             match aty {
-                Type::Int => return self.check_random_int(func, args),
-                Type::Float => return self.check_random_float(func, args),
+                Type::Int => return self.check_random_numeric(func, args, Type::Int),
+                Type::Float => return self.check_random_numeric(func, args, Type::Float),
                 _ => {
                     return Err(Diagnostic::from_template(
                         DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
@@ -1392,23 +1308,25 @@ impl TypeChecker {
         )
     }
 
-    fn check_random_int(
+    fn check_random_numeric(
         &mut self,
         func: &Expr,
         args: &[(String, Span, Expr)],
+        numeric_type: Type,
     ) -> Result<Type, Diagnostic> {
+        let type_name = format!("{}", numeric_type);
         for (name, _, expr) in args {
             if name == "max" || name == "min" {
                 let aty = self.check_expr(expr)?;
-                if aty != Type::Int {
+                if aty != numeric_type {
                     return Err(Diagnostic::from_template(
                         DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
                             param: name.clone(),
-                            expected: Type::Int,
+                            expected: numeric_type.clone(),
                             actual: aty.clone(),
                         }),
                     )
-                    .with_label(expr.span(), "expected Int"));
+                    .with_label(expr.span(), format!("expected {}", type_name)));
                 }
             }
         }
@@ -1423,41 +1341,61 @@ impl TypeChecker {
                 .with_label(func.span(), "add max: argument"),
             );
         }
-        Ok(Type::Int)
+        Ok(numeric_type)
     }
 
-    fn check_random_float(
+    fn check_resolve_builtin(
         &mut self,
         func: &Expr,
         args: &[(String, Span, Expr)],
+        wrap_in_list: bool,
     ) -> Result<Type, Diagnostic> {
-        for (name, _, expr) in args {
-            if name == "max" || name == "min" {
-                let aty = self.check_expr(expr)?;
-                if aty != Type::Float {
-                    return Err(Diagnostic::from_template(
-                        DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
-                            param: name.clone(),
-                            expected: Type::Float,
-                            actual: aty.clone(),
-                        }),
-                    )
-                    .with_label(expr.span(), "expected Float"));
-                }
-            }
-        }
-        if !args.iter().any(|(n, _, _)| n == "max") {
+        if args.len() != 1 {
             return Err(
                 Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(
                     ArgumentCountMismatch {
                         expected: 1,
-                        actual: 0,
+                        actual: args.len(),
                     },
                 ))
-                .with_label(func.span(), "add max: argument"),
+                .with_label(func.span(), "expected 1 argument"),
             );
         }
-        Ok(Type::Float)
+        let aty = self.check_expr(&args[0].2)?;
+        if aty.is_error() {
+            return Ok(Type::Error);
+        }
+        match aty {
+            Type::List(inner) => {
+                match *inner {
+                    Type::Task(result) => {
+                        if wrap_in_list {
+                            Ok(Type::List(result))
+                        } else {
+                            Ok(*result)
+                        }
+                    }
+                    other => Err(Diagnostic::from_template(
+                        DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
+                            param: "_0".to_string(),
+                            expected: Type::List(Box::new(Type::Task(Box::new(Type::Int)))),
+                            actual: Type::List(Box::new(other)),
+                        }),
+                    )
+                    .with_label(args[0].2.span(), "expected List[Task[T]]")),
+                }
+            }
+            other => Err(
+                Diagnostic::from_template(DiagnosticTemplate::ArgumentTypeMismatch(
+                    ArgumentTypeMismatch {
+                        param: "_0".to_string(),
+                        expected: Type::List(Box::new(Type::Task(Box::new(Type::Int)))),
+                        actual: other,
+                    },
+                ))
+                .with_label(args[0].2.span(), "expected List[Task[T]]"),
+            ),
+        }
     }
 
     /// Resolve a type from an expression used in a type position (e.g., the `Int` in `Set[Int]()`).

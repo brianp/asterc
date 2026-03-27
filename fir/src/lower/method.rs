@@ -323,46 +323,22 @@ impl Lowerer {
                 }
             };
 
-            let nullable_id = self.alloc_local();
-            self.local_types.insert(nullable_id, fir_object_ty.clone());
-            self.pending_stmts.push(FirStmt::Let {
-                name: nullable_id,
-                ty: fir_object_ty.clone(),
-                value: fir_object,
-            });
-
-            let result_id = self.alloc_local();
-            self.local_types.insert(result_id, inner_ty.clone());
-            self.pending_stmts.push(FirStmt::Let {
-                name: result_id,
-                ty: inner_ty.clone(),
-                value: self.default_value_for_type(&inner_ty),
-            });
-
-            self.pending_stmts.push(FirStmt::If {
-                cond: FirExpr::TagCheck {
-                    value: Box::new(FirExpr::LocalVar(nullable_id, fir_object_ty.clone())),
-                    tag: 1,
-                },
-                then_body: vec![FirStmt::Expr(FirExpr::RuntimeCall {
-                    name: "aster_error_set".to_string(),
-                    args: vec![],
-                    ret_ty: FirType::Void,
-                })],
-                else_body: vec![FirStmt::Assign {
-                    target: FirPlace::Local(result_id),
-                    value: FirExpr::TagUnwrap {
-                        value: Box::new(FirExpr::LocalVar(nullable_id, fir_object_ty)),
-                        expected_tag: 0,
-                        ty: inner_ty.clone(),
-                    },
-                }],
-            });
-
+            let on_nil = vec![FirStmt::Expr(FirExpr::RuntimeCall {
+                name: "aster_error_set".to_string(),
+                args: vec![],
+                ret_ty: FirType::Void,
+            })];
+            let (nullable_id, result_id) = self.nullable_unwrap_setup(
+                fir_object,
+                &fir_object_ty,
+                &inner_ty,
+                self.default_value_for_type(&inner_ty),
+            );
+            self.nullable_unwrap_if(nullable_id, result_id, &fir_object_ty, &inner_ty, on_nil);
             return Ok(FirExpr::LocalVar(result_id, inner_ty));
         }
 
-        // Nullable `.or(default: value)` — returns the inner value or the default if nil.
+        // Nullable `.or(default: value)` - returns the inner value or the default if nil.
         // TaggedUnion tag 0 = Some(value), tag 1 = nil.
         if method == builtin_method::OR
             && let FirType::TaggedUnion { ref variants, .. } = fir_object_ty
@@ -375,21 +351,8 @@ impl Lowerer {
                 self.default_value_for_type(&inner_ty)
             };
 
-            let nullable_id = self.alloc_local();
-            self.local_types.insert(nullable_id, fir_object_ty.clone());
-            self.pending_stmts.push(FirStmt::Let {
-                name: nullable_id,
-                ty: fir_object_ty.clone(),
-                value: fir_object,
-            });
-
-            let result_id = self.alloc_local();
-            self.local_types.insert(result_id, inner_ty.clone());
-            self.pending_stmts.push(FirStmt::Let {
-                name: result_id,
-                ty: inner_ty.clone(),
-                value: default_expr,
-            });
+            let (nullable_id, result_id) =
+                self.nullable_unwrap_setup(fir_object, &fir_object_ty, &inner_ty, default_expr);
 
             self.pending_stmts.push(FirStmt::If {
                 cond: FirExpr::TagCheck {
@@ -410,28 +373,13 @@ impl Lowerer {
             return Ok(FirExpr::LocalVar(result_id, inner_ty));
         }
 
-        // Nullable `.or_else(f: expr)` — lazy variant of `.or()`.
+        // Nullable `.or_else(f: expr)` - lazy variant of `.or()`.
         // The fallback expression is only evaluated when the value is nil.
         if method == builtin_method::OR_ELSE
             && let FirType::TaggedUnion { ref variants, .. } = fir_object_ty
             && !variants.is_empty()
         {
             let inner_ty = variants[0].clone();
-            let nullable_id = self.alloc_local();
-            self.local_types.insert(nullable_id, fir_object_ty.clone());
-            self.pending_stmts.push(FirStmt::Let {
-                name: nullable_id,
-                ty: fir_object_ty.clone(),
-                value: fir_object,
-            });
-
-            let result_id = self.alloc_local();
-            self.local_types.insert(result_id, inner_ty.clone());
-            self.pending_stmts.push(FirStmt::Let {
-                name: result_id,
-                ty: inner_ty.clone(),
-                value: self.default_value_for_type(&inner_ty),
-            });
 
             // Lower fallback in an isolated pending_stmts scope so any
             // emitted statements land inside the else branch (lazy eval).
@@ -443,6 +391,13 @@ impl Lowerer {
             };
             let mut else_body = std::mem::take(&mut self.pending_stmts);
             self.pending_stmts = saved;
+
+            let (nullable_id, result_id) = self.nullable_unwrap_setup(
+                fir_object,
+                &fir_object_ty,
+                &inner_ty,
+                self.default_value_for_type(&inner_ty),
+            );
 
             else_body.push(FirStmt::Assign {
                 target: FirPlace::Local(result_id),
@@ -929,5 +884,60 @@ impl Lowerer {
         } else {
             Ok(FirExpr::IntLit(0))
         }
+    }
+
+    /// Shared setup for nullable unwrap: allocates nullable_id and result_id,
+    /// emits Let stmts for both. Returns (nullable_id, result_id).
+    fn nullable_unwrap_setup(
+        &mut self,
+        fir_object: FirExpr,
+        fir_object_ty: &FirType,
+        inner_ty: &FirType,
+        initial_result: FirExpr,
+    ) -> (LocalId, LocalId) {
+        let nullable_id = self.alloc_local();
+        self.local_types.insert(nullable_id, fir_object_ty.clone());
+        self.pending_stmts.push(FirStmt::Let {
+            name: nullable_id,
+            ty: fir_object_ty.clone(),
+            value: fir_object,
+        });
+
+        let result_id = self.alloc_local();
+        self.local_types.insert(result_id, inner_ty.clone());
+        self.pending_stmts.push(FirStmt::Let {
+            name: result_id,
+            ty: inner_ty.clone(),
+            value: initial_result,
+        });
+
+        (nullable_id, result_id)
+    }
+
+    /// Emit an If that checks tag==1 (nil) and executes on_nil, otherwise unwraps.
+    /// Used by or_throw where the nil branch performs an action (error_set).
+    fn nullable_unwrap_if(
+        &mut self,
+        nullable_id: LocalId,
+        result_id: LocalId,
+        fir_object_ty: &FirType,
+        inner_ty: &FirType,
+        on_nil: Vec<FirStmt>,
+    ) {
+        self.pending_stmts.push(FirStmt::If {
+            cond: FirExpr::TagCheck {
+                value: Box::new(FirExpr::LocalVar(nullable_id, fir_object_ty.clone())),
+                tag: 1,
+            },
+            then_body: on_nil,
+            else_body: vec![FirStmt::Assign {
+                target: FirPlace::Local(result_id),
+                value: FirExpr::TagUnwrap {
+                    value: Box::new(FirExpr::LocalVar(nullable_id, fir_object_ty.clone())),
+                    expected_tag: 0,
+                    ty: inner_ty.clone(),
+                },
+            }],
+        });
     }
 }

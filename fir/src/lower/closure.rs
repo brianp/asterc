@@ -215,7 +215,6 @@ impl Lowerer {
         &mut self,
         parts: &[ast::StringPart],
     ) -> Result<FirExpr, LowerError> {
-        // Convert each part to a string FirExpr, then fold-concat them.
         let mut string_exprs = Vec::new();
 
         for part in parts {
@@ -225,67 +224,19 @@ impl Lowerer {
                 }
                 ast::StringPart::Expr(expr) => {
                     let fir_expr = self.lower_expr(expr)?;
-                    let fir_ty = self.infer_fir_type(&fir_expr);
-                    // Convert to string based on type
-                    let str_expr = match fir_ty {
-                        FirType::Ptr => {
-                            // Check if this is a List (needs runtime to_string)
-                            let ast_ty = self.resolve_expr_ast_type(expr);
-                            if matches!(ast_ty.as_ref(), Some(Type::List(_))) {
-                                FirExpr::RuntimeCall {
-                                    name: "aster_list_to_string".to_string(),
-                                    args: vec![fir_expr],
-                                    ret_ty: FirType::Ptr,
-                                }
-                            // Check if this is a class instance (needs to_string call)
-                            } else if let Ok(class_name) = self.resolve_class_name(expr) {
-                                let qualified = format!("{}.to_string", class_name);
-                                if let Some(&func_id) = self.functions.get(&qualified) {
-                                    FirExpr::Call {
-                                        func: func_id,
-                                        args: vec![fir_expr],
-                                        ret_ty: FirType::Ptr,
-                                    }
-                                } else {
-                                    fir_expr // no to_string lowered, pass through
-                                }
-                            } else {
-                                fir_expr // plain string or unknown — pass through
-                            }
-                        }
-                        FirType::I64 => FirExpr::RuntimeCall {
-                            name: "aster_int_to_string".to_string(),
-                            args: vec![fir_expr],
-                            ret_ty: FirType::Ptr,
-                        },
-                        FirType::F64 => FirExpr::RuntimeCall {
-                            name: "aster_float_to_string".to_string(),
-                            args: vec![fir_expr],
-                            ret_ty: FirType::Ptr,
-                        },
-                        FirType::Bool => FirExpr::RuntimeCall {
-                            name: "aster_bool_to_string".to_string(),
-                            args: vec![fir_expr],
-                            ret_ty: FirType::Ptr,
-                        },
-                        _ => fir_expr, // fallback: pass through
-                    };
-                    string_exprs.push(str_expr);
+                    string_exprs.push(self.to_string_expr(expr, fir_expr));
                 }
             }
         }
 
-        // If empty, return empty string
         if string_exprs.is_empty() {
             return Ok(FirExpr::StringLit(String::new()));
         }
 
-        // If single part, return it directly
         if string_exprs.len() == 1 {
             return Ok(string_exprs.into_iter().next().unwrap());
         }
 
-        // Fold left with aster_string_concat
         let mut result = string_exprs.remove(0);
         for part in string_exprs {
             result = FirExpr::RuntimeCall {

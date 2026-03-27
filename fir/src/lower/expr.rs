@@ -1163,6 +1163,15 @@ impl Lowerer {
     pub(crate) fn to_string_expr(&self, ast_expr: &Expr, fir_expr: FirExpr) -> FirExpr {
         match self.infer_fir_type(&fir_expr) {
             FirType::Ptr => {
+                // Check if this is a List (needs runtime to_string)
+                let ast_ty = self.resolve_expr_ast_type(ast_expr);
+                if matches!(ast_ty.as_ref(), Some(Type::List(_))) {
+                    return FirExpr::RuntimeCall {
+                        name: "aster_list_to_string".to_string(),
+                        args: vec![fir_expr],
+                        ret_ty: FirType::Ptr,
+                    };
+                }
                 if let Ok(class_name) = self.resolve_class_name(ast_expr) {
                     let qualified = format!("{}.to_string", class_name);
                     if let Some(&func_id) = self.functions.get(&qualified) {

@@ -32,22 +32,7 @@ impl Lowerer {
                     return Ok(());
                 }
 
-                // Simple values: collect and inject into every function's global prelude.
-                let raw_value = self.lower_expr(value)?;
-                let fir_value = self.wrap_nullable_binding(type_ann.as_ref(), value, raw_value);
-                let fir_type = if let Some(ann) = type_ann {
-                    self.lower_type(ann)
-                } else {
-                    self.infer_fir_type(&fir_value)
-                };
-                // Allocate a global local ID for this binding
-                let local_id = self.alloc_local();
-                self.locals.insert(name.clone(), local_id);
-                self.local_types.insert(local_id, fir_type.clone());
-                self.globals.insert(name.clone(), local_id);
-                self.top_level_lets
-                    .push((name.clone(), fir_type, fir_value));
-                Ok(())
+                self.lower_top_level_binding(name, type_ann.as_ref(), value)
             }
             Stmt::Class {
                 name,
@@ -68,22 +53,7 @@ impl Lowerer {
                 type_ann,
                 value,
                 ..
-            } => {
-                let raw_value = self.lower_expr(value)?;
-                let fir_value = self.wrap_nullable_binding(type_ann.as_ref(), value, raw_value);
-                let fir_type = if let Some(ann) = type_ann {
-                    self.lower_type(ann)
-                } else {
-                    self.infer_fir_type(&fir_value)
-                };
-                let local_id = self.alloc_local();
-                self.locals.insert(name.clone(), local_id);
-                self.local_types.insert(local_id, fir_type.clone());
-                self.globals.insert(name.clone(), local_id);
-                self.top_level_lets
-                    .push((name.clone(), fir_type, fir_value));
-                Ok(())
-            }
+            } => self.lower_top_level_binding(name, type_ann.as_ref(), value),
             Stmt::Expr(_, _) => {
                 self.top_level_exprs.push(stmt.clone());
                 Ok(())
@@ -446,6 +416,62 @@ impl Lowerer {
         }
     }
 
+    fn lower_top_level_binding(
+        &mut self,
+        name: &str,
+        type_ann: Option<&Type>,
+        value: &Expr,
+    ) -> Result<(), LowerError> {
+        let raw_value = self.lower_expr(value)?;
+        let fir_value = self.wrap_nullable_binding(type_ann, value, raw_value);
+        let fir_type = if let Some(ann) = type_ann {
+            self.lower_type(ann)
+        } else {
+            self.infer_fir_type(&fir_value)
+        };
+        let local_id = self.alloc_local();
+        self.locals.insert(name.to_string(), local_id);
+        self.local_types.insert(local_id, fir_type.clone());
+        self.globals.insert(name.to_string(), local_id);
+        self.top_level_lets
+            .push((name.to_string(), fir_type, fir_value));
+        Ok(())
+    }
+
+    fn lower_simple_binding(
+        &mut self,
+        name: &str,
+        type_ann: Option<&Type>,
+        value: &Expr,
+    ) -> Result<FirStmt, LowerError> {
+        let raw_value = self.lower_expr(value)?;
+        let fir_value = self.wrap_nullable_binding(type_ann, value, raw_value);
+        let fir_type = if let Some(ann) = type_ann {
+            self.lower_type(ann)
+        } else {
+            self.infer_fir_type(&fir_value)
+        };
+        let local_id = self.alloc_local();
+        self.locals.insert(name.to_string(), local_id);
+        self.local_types.insert(local_id, fir_type.clone());
+        Ok(FirStmt::Let {
+            name: local_id,
+            ty: fir_type,
+            value: fir_value,
+        })
+    }
+
+    pub(crate) fn lower_loop_body(&mut self, body: &[Stmt]) -> Result<Vec<FirStmt>, LowerError> {
+        let scope_start = self.cleanup_locals.len();
+        self.cleanup_scope_stack.push(scope_start);
+        let mut stmts = self.lower_body(body)?;
+        self.emit_cleanup_calls_since(scope_start);
+        stmts.append(&mut self.pending_stmts);
+        self.cleanup_scope_stack.pop();
+        self.cleanup_locals.truncate(scope_start);
+        Ok(stmts)
+    }
+
     pub(crate) fn lower_body(&mut self, stmts: &[Stmt]) -> Result<Vec<FirStmt>, LowerError> {
         let mut result = Vec::new();
         for stmt in stmts {
@@ -616,17 +642,8 @@ impl Lowerer {
             } => self.lower_if(cond, then_body, elif_branches, else_body),
             Stmt::While { cond, body, .. } => {
                 let fir_cond = self.lower_expr(cond)?;
-                // Push scope boundary for cleanup tracking
-                let scope_start = self.cleanup_locals.len();
-                self.cleanup_scope_stack.push(scope_start);
-                let mut fir_body = self.lower_body(body)?;
-                // Emit end-of-iteration cleanup for loop-body locals
-                self.emit_cleanup_calls_since(scope_start);
-                fir_body.append(&mut self.pending_stmts);
+                let mut fir_body = self.lower_loop_body(body)?;
                 fir_body.push(FirStmt::Expr(FirExpr::Safepoint));
-                // Pop scope and remove loop-body locals from function-level cleanup
-                self.cleanup_scope_stack.pop();
-                self.cleanup_locals.truncate(scope_start);
                 Ok(FirStmt::While {
                     cond: fir_cond,
                     body: fir_body,
@@ -667,23 +684,7 @@ impl Lowerer {
                 type_ann,
                 value,
                 ..
-            } => {
-                let raw_value = self.lower_expr(value)?;
-                let fir_value = self.wrap_nullable_binding(type_ann.as_ref(), value, raw_value);
-                let fir_type = if let Some(ann) = type_ann {
-                    self.lower_type(ann)
-                } else {
-                    self.infer_fir_type(&fir_value)
-                };
-                let local_id = self.alloc_local();
-                self.locals.insert(name.clone(), local_id);
-                self.local_types.insert(local_id, fir_type.clone());
-                Ok(FirStmt::Let {
-                    name: local_id,
-                    ty: fir_type,
-                    value: fir_value,
-                })
-            }
+            } => self.lower_simple_binding(name, type_ann.as_ref(), value),
             Stmt::Class {
                 name,
                 fields,

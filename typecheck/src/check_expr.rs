@@ -1818,29 +1818,8 @@ impl TypeChecker {
         inner: &Type,
         object: &Expr,
     ) -> Result<Type, Diagnostic> {
-        // List-specific methods (not part of Iterable vocabulary)
+        // List-specific methods not shared with Set
         match field {
-            "len" => {
-                return Ok(Type::func(vec![], vec![], Type::Int));
-            }
-            "each" => {
-                return Ok(Type::func(
-                    vec!["f".into()],
-                    vec![Type::func(
-                        vec!["_0".into()],
-                        vec![inner.clone()],
-                        Type::Void,
-                    )],
-                    Type::Void,
-                ));
-            }
-            "push" => {
-                return Ok(Type::func(
-                    vec!["item".into()],
-                    vec![inner.clone()],
-                    Type::Void,
-                ));
-            }
             "insert" => {
                 return Ok(Type::func(
                     vec!["at".into(), "item".into()],
@@ -1855,83 +1834,13 @@ impl TypeChecker {
                     inner.clone(),
                 ));
             }
-            "pop" => {
-                return Ok(Type::func(vec![], vec![], inner.clone()));
-            }
-            "remove_first" => {
-                return Ok(Type::func(
-                    vec!["f".into()],
-                    vec![Type::func(
-                        vec!["_0".into()],
-                        vec![inner.clone()],
-                        Type::Bool,
-                    )],
-                    Type::Nullable(Box::new(inner.clone())),
-                ));
-            }
-            "contains" => {
-                // Default signature: contains(item: T) -> Bool
-                // The predicate overload contains(f: (T) -> Bool) -> Bool
-                // is handled in check_call when arg name is "f"
-                return Ok(Type::func(
-                    vec!["item".into()],
-                    vec![inner.clone()],
-                    Type::Bool,
-                ));
-            }
             "random" => {
                 return Ok(Type::func(vec![], vec![], inner.clone()));
             }
             _ => {}
         }
 
-        // Ord-gated methods: check constraint before returning type
-        if matches!(field, "min" | "max" | "sort") && !self.type_includes_ord(inner) {
-            return Err(
-                Diagnostic::from_template(DiagnosticTemplate::CollectionConstraintError(
-                    CollectionConstraintError {
-                        message: format!(
-                            "Cannot call '{}()': element type {} does not include Ord. \
-                     Add 'includes Ord' to the element type to enable {}",
-                            field, inner, field
-                        ),
-                    },
-                ))
-                .with_label(object.span(), format!("{} requires Ord", field)),
-            );
-        }
-
-        // Eq-gated methods: check constraint before returning type
-        if field == "unique" && !self.type_includes_eq(inner) {
-            return Err(
-                Diagnostic::from_template(DiagnosticTemplate::CollectionConstraintError(
-                    CollectionConstraintError {
-                        message: format!(
-                            "Cannot call 'unique()': element type {} does not include Eq. \
-                     Add 'includes Eq' to the element type to enable unique",
-                            inner
-                        ),
-                    },
-                ))
-                .with_label(object.span(), "unique requires Eq".to_string()),
-            );
-        }
-
-        // Look up from shared Iterable vocabulary definitions
-        let vocab = crate::check_class::iterable_vocabulary_methods(inner);
-        for (name, ty) in &vocab {
-            if name == field {
-                return Ok(ty.clone());
-            }
-        }
-
-        Err(
-            Diagnostic::from_template(DiagnosticTemplate::UnknownField(UnknownField {
-                field: field.to_string(),
-                type_name: "List".to_string(),
-            }))
-            .with_label(object.span(), format!("no member '{}' on List", field)),
-        )
+        self.check_collection_member(field, inner, object, "List")
     }
 
     fn check_set_member(
@@ -1944,6 +1853,24 @@ impl TypeChecker {
         // - push: silent no-op on duplicate
         // - remove takes item (not index)
         // - no insert (no ordering) or indexing
+        if field == "remove" {
+            return Ok(Type::func(
+                vec!["item".into()],
+                vec![inner.clone()],
+                Type::Void,
+            ));
+        }
+
+        self.check_collection_member(field, inner, object, "Set")
+    }
+
+    fn check_collection_member(
+        &self,
+        field: &str,
+        inner: &Type,
+        object: &Expr,
+        collection_name: &str,
+    ) -> Result<Type, Diagnostic> {
         match field {
             "len" => {
                 return Ok(Type::func(vec![], vec![], Type::Int));
@@ -1966,13 +1893,6 @@ impl TypeChecker {
                     Type::Void,
                 ));
             }
-            "remove" => {
-                return Ok(Type::func(
-                    vec!["item".into()],
-                    vec![inner.clone()],
-                    Type::Void,
-                ));
-            }
             "pop" => {
                 return Ok(Type::func(vec![], vec![], inner.clone()));
             }
@@ -1997,7 +1917,33 @@ impl TypeChecker {
             _ => {}
         }
 
-        // Ord-gated methods
+        self.check_collection_constraint(field, inner, object)?;
+
+        let vocab = crate::check_class::iterable_vocabulary_methods(inner);
+        for (name, ty) in &vocab {
+            if name == field {
+                return Ok(ty.clone());
+            }
+        }
+
+        Err(
+            Diagnostic::from_template(DiagnosticTemplate::UnknownField(UnknownField {
+                field: field.to_string(),
+                type_name: collection_name.to_string(),
+            }))
+            .with_label(
+                object.span(),
+                format!("no member '{}' on {}", field, collection_name),
+            ),
+        )
+    }
+
+    fn check_collection_constraint(
+        &self,
+        field: &str,
+        inner: &Type,
+        object: &Expr,
+    ) -> Result<(), Diagnostic> {
         if matches!(field, "min" | "max" | "sort") && !self.type_includes_ord(inner) {
             return Err(
                 Diagnostic::from_template(DiagnosticTemplate::CollectionConstraintError(
@@ -2013,7 +1959,6 @@ impl TypeChecker {
             );
         }
 
-        // Eq-gated methods
         if field == "unique" && !self.type_includes_eq(inner) {
             return Err(
                 Diagnostic::from_template(DiagnosticTemplate::CollectionConstraintError(
@@ -2029,21 +1974,7 @@ impl TypeChecker {
             );
         }
 
-        // Iterable vocabulary methods
-        let vocab = crate::check_class::iterable_vocabulary_methods(inner);
-        for (name, ty) in &vocab {
-            if name == field {
-                return Ok(ty.clone());
-            }
-        }
-
-        Err(
-            Diagnostic::from_template(DiagnosticTemplate::UnknownField(UnknownField {
-                field: field.to_string(),
-                type_name: "Set".to_string(),
-            }))
-            .with_label(object.span(), format!("no member '{}' on Set", field)),
-        )
+        Ok(())
     }
 
     fn check_match_expr(

@@ -82,38 +82,7 @@ impl Lowerer {
             },
         });
 
-        // Push scope boundary for cleanup tracking in for-loop body
-        let scope_start = self.cleanup_locals.len();
-        self.cleanup_scope_stack.push(scope_start);
-
-        // Lower the user's loop body
-        for stmt in body {
-            let fir_stmt = self.lower_stmt_inner(stmt)?;
-            while_body.append(&mut self.pending_stmts);
-            while_body.push(fir_stmt);
-        }
-
-        // Emit end-of-iteration cleanup for loop-body locals
-        self.emit_cleanup_calls_since(scope_start);
-        while_body.append(&mut self.pending_stmts);
-
-        // Pop scope and remove loop-body locals from function-level cleanup
-        self.cleanup_scope_stack.pop();
-        self.cleanup_locals.truncate(scope_start);
-
-        // Increment: __idx = __idx + 1 (runs after body and on continue)
-        let increment = vec![
-            FirStmt::Assign {
-                target: FirPlace::Local(idx_id),
-                value: FirExpr::BinaryOp {
-                    left: Box::new(FirExpr::LocalVar(idx_id, FirType::I64)),
-                    op: BinOp::Add,
-                    right: Box::new(FirExpr::IntLit(1)),
-                    result_ty: FirType::I64,
-                },
-            },
-            FirStmt::Expr(FirExpr::Safepoint),
-        ];
+        while_body.extend(self.lower_loop_body(body)?);
 
         let setup_and_loop = vec![
             FirStmt::Let {
@@ -143,7 +112,7 @@ impl Lowerer {
                     result_ty: FirType::Bool,
                 },
                 body: while_body,
-                increment,
+                increment: Self::loop_increment(idx_id),
             },
         ];
 
@@ -173,36 +142,7 @@ impl Lowerer {
         self.locals.insert(var.to_string(), var_id);
         self.local_types.insert(var_id, FirType::I64);
 
-        // Build the while loop body
-        let mut while_body = Vec::new();
-
-        let scope_start = self.cleanup_locals.len();
-        self.cleanup_scope_stack.push(scope_start);
-
-        for stmt in body {
-            let fir_stmt = self.lower_stmt_inner(stmt)?;
-            while_body.append(&mut self.pending_stmts);
-            while_body.push(fir_stmt);
-        }
-
-        self.emit_cleanup_calls_since(scope_start);
-        while_body.append(&mut self.pending_stmts);
-        self.cleanup_scope_stack.pop();
-        self.cleanup_locals.truncate(scope_start);
-
-        // Increment: var = var + 1 (runs after body and on continue)
-        let increment = vec![
-            FirStmt::Assign {
-                target: FirPlace::Local(var_id),
-                value: FirExpr::BinaryOp {
-                    left: Box::new(FirExpr::LocalVar(var_id, FirType::I64)),
-                    op: BinOp::Add,
-                    right: Box::new(FirExpr::IntLit(1)),
-                    result_ty: FirType::I64,
-                },
-            },
-            FirStmt::Expr(FirExpr::Safepoint),
-        ];
+        let while_body = self.lower_loop_body(body)?;
 
         // Condition: var < end (exclusive) or var <= end (inclusive)
         let cmp_op = if inclusive { BinOp::Lte } else { BinOp::Lt };
@@ -227,7 +167,7 @@ impl Lowerer {
             FirStmt::While {
                 cond,
                 body: while_body,
-                increment,
+                increment: Self::loop_increment(var_id),
             },
         ];
 
@@ -285,36 +225,7 @@ impl Lowerer {
         self.locals.insert(var.to_string(), var_id);
         self.local_types.insert(var_id, FirType::I64);
 
-        // Build while loop body
-        let mut while_body = Vec::new();
-
-        let scope_start = self.cleanup_locals.len();
-        self.cleanup_scope_stack.push(scope_start);
-
-        for stmt in body {
-            let fir_stmt = self.lower_stmt_inner(stmt)?;
-            while_body.append(&mut self.pending_stmts);
-            while_body.push(fir_stmt);
-        }
-
-        self.emit_cleanup_calls_since(scope_start);
-        while_body.append(&mut self.pending_stmts);
-        self.cleanup_scope_stack.pop();
-        self.cleanup_locals.truncate(scope_start);
-
-        // Increment: var = var + 1 (runs after body and on continue)
-        let increment = vec![
-            FirStmt::Assign {
-                target: FirPlace::Local(var_id),
-                value: FirExpr::BinaryOp {
-                    left: Box::new(FirExpr::LocalVar(var_id, FirType::I64)),
-                    op: BinOp::Add,
-                    right: Box::new(FirExpr::IntLit(1)),
-                    result_ty: FirType::I64,
-                },
-            },
-            FirStmt::Expr(FirExpr::Safepoint),
-        ];
+        let while_body = self.lower_loop_body(body)?;
 
         // Condition: if inclusive -> var <= end, else var < end
         // Use: (inclusive AND var <= end) OR (NOT inclusive AND var < end)
@@ -358,11 +269,26 @@ impl Lowerer {
             FirStmt::While {
                 cond,
                 body: while_body,
-                increment,
+                increment: Self::loop_increment(var_id),
             },
         ];
 
         Ok(FirStmt::Block(setup_and_loop))
+    }
+
+    fn loop_increment(var_id: LocalId) -> Vec<FirStmt> {
+        vec![
+            FirStmt::Assign {
+                target: FirPlace::Local(var_id),
+                value: FirExpr::BinaryOp {
+                    left: Box::new(FirExpr::LocalVar(var_id, FirType::I64)),
+                    op: BinOp::Add,
+                    right: Box::new(FirExpr::IntLit(1)),
+                    result_ty: FirType::I64,
+                },
+            },
+            FirStmt::Expr(FirExpr::Safepoint),
+        ]
     }
 
     pub(crate) fn resolve_iterator_class(&self, iter: &Expr) -> Option<String> {
@@ -458,24 +384,7 @@ impl Lowerer {
             },
         });
 
-        // Push scope boundary for cleanup tracking in iterator for-loop
-        let scope_start = self.cleanup_locals.len();
-        self.cleanup_scope_stack.push(scope_start);
-
-        // Lower user's loop body
-        for stmt in body {
-            let fir_stmt = self.lower_stmt_inner(stmt)?;
-            while_body.append(&mut self.pending_stmts);
-            while_body.push(fir_stmt);
-        }
-
-        // Emit end-of-iteration cleanup for loop-body locals
-        self.emit_cleanup_calls_since(scope_start);
-        while_body.append(&mut self.pending_stmts);
-
-        // Pop scope and remove loop-body locals from function-level cleanup
-        self.cleanup_scope_stack.pop();
-        self.cleanup_locals.truncate(scope_start);
+        while_body.extend(self.lower_loop_body(body)?);
 
         while_body.push(FirStmt::Expr(FirExpr::Safepoint));
 
