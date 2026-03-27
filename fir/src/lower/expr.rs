@@ -10,11 +10,11 @@ impl Lowerer {
             Expr::Nil(_) => Ok(FirExpr::NilLit),
 
             Expr::Ident(name, _) => {
-                if let Some(&local_id) = self.locals.get(name.as_str()) {
+                if let Some(&local_id) = self.scope.locals.get(name.as_str()) {
                     // Resolve the type from the type env
                     let ty = self.resolve_var_type(name);
                     Ok(FirExpr::LocalVar(local_id, ty))
-                } else if let Some(&self_id) = self.locals.get("self") {
+                } else if let Some(&self_id) = self.scope.locals.get("self") {
                     // Inside a method body — resolve bare field names as self.field
                     let self_expr = Expr::Ident("self".to_string(), expr.span());
                     match self.resolve_field_access(&self_expr, name) {
@@ -71,7 +71,7 @@ impl Lowerer {
                 // Check if the object is a map (use local_ast_types to determine)
                 let is_map = if let Expr::Ident(name, _) = object.as_ref() {
                     matches!(
-                        self.local_ast_types.get(name.as_str()),
+                        self.scope.local_ast_types.get(name.as_str()),
                         Some(Type::Map(_, _))
                     )
                 } else {
@@ -83,7 +83,8 @@ impl Lowerer {
                 if is_map {
                     // Determine value FIR type from AST type info
                     let val_fir_ty = if let Expr::Ident(name, _) = object.as_ref() {
-                        if let Some(Type::Map(_, v)) = self.local_ast_types.get(name.as_str()) {
+                        if let Some(Type::Map(_, v)) = self.scope.local_ast_types.get(name.as_str())
+                        {
                             self.lower_type(v)
                         } else {
                             FirType::I64
@@ -101,10 +102,14 @@ impl Lowerer {
                             tag_bits: 1,
                             variants: vec![FirType::Ptr, FirType::Void],
                         };
-                        let uid = self.next_local;
+                        let uid = self.scope.next_local;
                         let result_id = self.alloc_local();
-                        self.locals.insert(format!("__map_get_{}", uid), result_id);
-                        self.local_types.insert(result_id, nullable_ty.clone());
+                        self.scope
+                            .locals
+                            .insert(format!("__map_get_{}", uid), result_id);
+                        self.scope
+                            .local_types
+                            .insert(result_id, nullable_ty.clone());
                         self.pending_stmts.push(FirStmt::Let {
                             name: result_id,
                             ty: nullable_ty.clone(),
@@ -123,10 +128,14 @@ impl Lowerer {
                             tag_bits: 1,
                             variants: vec![val_fir_ty.clone(), FirType::Void],
                         };
-                        let uid = self.next_local;
+                        let uid = self.scope.next_local;
                         let result_id = self.alloc_local();
-                        self.locals.insert(format!("__map_get_{}", uid), result_id);
-                        self.local_types.insert(result_id, nullable_ty.clone());
+                        self.scope
+                            .locals
+                            .insert(format!("__map_get_{}", uid), result_id);
+                        self.scope
+                            .local_types
+                            .insert(result_id, nullable_ty.clone());
 
                         // let __map_get = nil (default: key not found)
                         self.pending_stmts.push(FirStmt::Let {
@@ -178,7 +187,9 @@ impl Lowerer {
                 } else {
                     // Resolve element type from AST type info when available
                     let elem_ty = if let Expr::Ident(name, _) = object.as_ref() {
-                        if let Some(Type::List(inner)) = self.local_ast_types.get(name.as_str()) {
+                        if let Some(Type::List(inner)) =
+                            self.scope.local_ast_types.get(name.as_str())
+                        {
                             self.lower_type(inner)
                         } else {
                             FirType::I64
@@ -248,7 +259,7 @@ impl Lowerer {
                     args,
                     ret_ty: FirType::Ptr,
                     result_ty,
-                    scope: self.async_scope_stack.last().copied(),
+                    scope: self.scope.async_scope_stack.last().copied(),
                 })
             }
 
@@ -290,11 +301,11 @@ impl Lowerer {
             Expr::Member { object, field, .. } => {
                 // Check if this is an enum variant construction: EnumName.Variant
                 if let Expr::Ident(name, _) = object.as_ref()
-                    && self.enum_variants.contains_key(name.as_str())
+                    && self.ms.enum_variants.contains_key(name.as_str())
                 {
                     // Fieldless enum variant: call the constructor with no args
                     let ctor_name = format!("{}.{}", name, field);
-                    if let Some(&func_id) = self.functions.get(&ctor_name) {
+                    if let Some(&func_id) = self.ms.functions.get(&ctor_name) {
                         return Ok(FirExpr::Call {
                             func: func_id,
                             args: vec![],
@@ -392,7 +403,7 @@ impl Lowerer {
             && let Ok(class_name) = self.resolve_class_name(left)
         {
             let eq_name = format!("{}.eq", class_name);
-            if let Some(&func_id) = self.functions.get(&eq_name) {
+            if let Some(&func_id) = self.ms.functions.get(&eq_name) {
                 let fir_left = self.lower_expr(left)?;
                 let fir_right = self.lower_expr(right)?;
                 let eq_result = FirExpr::Call {
@@ -418,7 +429,7 @@ impl Lowerer {
         ) && let Ok(class_name) = self.resolve_class_name(left)
         {
             let cmp_name = format!("{}.cmp", class_name);
-            if let Some(&func_id) = self.functions.get(&cmp_name) {
+            if let Some(&func_id) = self.ms.functions.get(&cmp_name) {
                 let fir_left = self.lower_expr(left)?;
                 let fir_right = self.lower_expr(right)?;
                 // cmp returns Ordering (tag: 0=Less, 1=Equal, 2=Greater)
@@ -600,7 +611,7 @@ impl Lowerer {
         }
 
         // Closure call (statically resolved)
-        if let Some((func_id, env_local, _captures)) = self.closure_info.get(name).cloned() {
+        if let Some((func_id, env_local, _captures)) = self.scope.closure_info.get(name).cloned() {
             let mut fir_args = Vec::new();
             if let Some(env_id) = env_local {
                 fir_args.push(FirExpr::LocalVar(env_id, FirType::Ptr));
@@ -619,8 +630,9 @@ impl Lowerer {
         }
 
         // Class constructor call
-        if let Some(&class_id) = self.classes.get(name.as_str()) {
+        if let Some(&class_id) = self.ms.classes.get(name.as_str()) {
             let field_layout = self
+                .ms
                 .class_fields
                 .get(&class_id)
                 .cloned()
@@ -655,7 +667,7 @@ impl Lowerer {
             });
         }
 
-        if let Some(&func_id) = self.functions.get(name.as_str()) {
+        if let Some(&func_id) = self.ms.functions.get(name.as_str()) {
             let fir_args = self.lower_call_args_with_defaults(name, args)?;
             let ret_ty = self.resolve_function_ret_type(name);
             let (fir_args, cast_ret) =
@@ -674,7 +686,7 @@ impl Lowerer {
             } else {
                 Ok(call)
             }
-        } else if self.locals.contains_key(name.as_str()) {
+        } else if self.scope.locals.contains_key(name.as_str()) {
             // Local variable with function type — closure call (dynamic dispatch)
             let closure_var = self.lower_expr(func)?;
             let fir_args: Result<Vec<_>, _> = args
@@ -772,7 +784,7 @@ impl Lowerer {
         let fir_inner = self.lower_expr(inner)?;
         let result_ty = self.infer_fir_type(&fir_inner);
         let result_id = self.alloc_local();
-        self.local_types.insert(result_id, result_ty.clone());
+        self.scope.local_types.insert(result_id, result_ty.clone());
 
         self.pending_stmts.push(FirStmt::Let {
             name: result_id,
@@ -788,7 +800,7 @@ impl Lowerer {
         // Save pending_stmts so cleanup emission doesn't steal earlier stmts.
         let saved = std::mem::take(&mut self.pending_stmts);
         self.emit_cleanup_calls();
-        if let Some(scope_id) = self.function_scope_id {
+        if let Some(scope_id) = self.scope.function_scope_id {
             self.emit_scope_exit(scope_id);
         }
         let mut error_body = std::mem::take(&mut self.pending_stmts);
@@ -818,7 +830,7 @@ impl Lowerer {
         let fir_default = self.lower_expr(default)?;
         let result_ty = self.infer_fir_type(&fir_inner);
         let result_id = self.alloc_local();
-        self.local_types.insert(result_id, result_ty.clone());
+        self.scope.local_types.insert(result_id, result_ty.clone());
 
         self.pending_stmts.push(FirStmt::Let {
             name: result_id,
@@ -864,7 +876,7 @@ impl Lowerer {
         };
         let result_ty = self.infer_fir_type(&fir_inner);
         let result_id = self.alloc_local();
-        self.local_types.insert(result_id, result_ty.clone());
+        self.scope.local_types.insert(result_id, result_ty.clone());
 
         self.pending_stmts.push(FirStmt::Let {
             name: result_id,
@@ -903,7 +915,7 @@ impl Lowerer {
         let fir_inner = self.lower_expr(inner)?;
         let result_ty = self.infer_fir_type(&fir_inner);
         let result_id = self.alloc_local();
-        self.local_types.insert(result_id, result_ty.clone());
+        self.scope.local_types.insert(result_id, result_ty.clone());
 
         self.pending_stmts.push(FirStmt::Let {
             name: result_id,
@@ -967,7 +979,7 @@ impl Lowerer {
 
         // Get the error tag into a local
         let tag_id = self.alloc_local();
-        self.local_types.insert(tag_id, FirType::I64);
+        self.scope.local_types.insert(tag_id, FirType::I64);
         let tag_let = FirStmt::Let {
             name: tag_id,
             ty: FirType::I64,
@@ -980,7 +992,7 @@ impl Lowerer {
 
         // Get the error value into a local
         let err_val_id = self.alloc_local();
-        self.local_types.insert(err_val_id, FirType::Ptr);
+        self.scope.local_types.insert(err_val_id, FirType::Ptr);
         let err_val_let = FirStmt::Let {
             name: err_val_id,
             ty: FirType::Ptr,
@@ -1001,7 +1013,7 @@ impl Lowerer {
             let mut matching_tags = Vec::new();
             // The arm matches the exact type AND all subtypes (classes that extend it).
             // First, get the exact class ID for this error type.
-            if let Some(&class_id) = self.classes.get(*error_type) {
+            if let Some(&class_id) = self.ms.classes.get(*error_type) {
                 matching_tags.push(class_id.0 as i64);
                 // Also find all classes that transitively extend this type
                 self.collect_subclass_tags(error_type, &mut matching_tags);
@@ -1034,9 +1046,9 @@ impl Lowerer {
             // Bind the error variable in locals and register its AST type
             // so that field accesses like e.code can resolve the class.
             let var_id = self.alloc_local();
-            self.local_types.insert(var_id, FirType::Ptr);
-            let old_binding = self.locals.insert(var.to_string(), var_id);
-            let old_ast_type = self.local_ast_types.insert(
+            self.scope.local_types.insert(var_id, FirType::Ptr);
+            let old_binding = self.scope.locals.insert(var.to_string(), var_id);
+            let old_ast_type = self.scope.local_ast_types.insert(
                 var.to_string(),
                 ast::Type::Custom(error_type.to_string(), vec![]),
             );
@@ -1045,14 +1057,14 @@ impl Lowerer {
 
             // Restore previous bindings
             if let Some(old) = old_binding {
-                self.locals.insert(var.to_string(), old);
+                self.scope.locals.insert(var.to_string(), old);
             } else {
-                self.locals.remove(var);
+                self.scope.locals.remove(var);
             }
             if let Some(old) = old_ast_type {
-                self.local_ast_types.insert(var.to_string(), old);
+                self.scope.local_ast_types.insert(var.to_string(), old);
             } else {
-                self.local_ast_types.remove(var);
+                self.scope.local_ast_types.remove(var);
             }
 
             // Build the condition: tag == t1 || tag == t2 || ...
@@ -1112,7 +1124,7 @@ impl Lowerer {
 
     /// Collect ClassId tags for all classes that (transitively) extend the given type.
     fn collect_subclass_tags(&self, parent_name: &str, tags: &mut Vec<i64>) {
-        for (name, &class_id) in &self.classes {
+        for (name, &class_id) in &self.ms.classes {
             if let Some(class_info) = self.type_env.get_class(name)
                 && class_info.extends.as_deref() == Some(parent_name)
             {
@@ -1139,7 +1151,7 @@ impl Lowerer {
         };
         let type_tag = class_name
             .as_deref()
-            .and_then(|name| self.classes.get(name))
+            .and_then(|name| self.ms.classes.get(name))
             .map(|cid| cid.0 as i64)
             .unwrap_or(0);
 
@@ -1149,6 +1161,7 @@ impl Lowerer {
             ret_ty: FirType::Void,
         }));
         let dummy = match self
+            .scope
             .current_return_type
             .as_ref()
             .map(|t| self.lower_type(t))
@@ -1174,7 +1187,7 @@ impl Lowerer {
                 }
                 if let Ok(class_name) = self.resolve_class_name(ast_expr) {
                     let qualified = format!("{}.to_string", class_name);
-                    if let Some(&func_id) = self.functions.get(&qualified) {
+                    if let Some(&func_id) = self.ms.functions.get(&qualified) {
                         return FirExpr::Call {
                             func: func_id,
                             args: vec![fir_expr],
@@ -1218,7 +1231,7 @@ impl Lowerer {
     /// `return nil` → TagWrap(tag=1, NilLit)  [nil]
     /// `return expr` → TagWrap(tag=0, expr)    [Some(value)]
     pub(crate) fn maybe_wrap_nullable_return(&self, fir_expr: FirExpr, ast_expr: &Expr) -> FirExpr {
-        if let Some(Type::Nullable(inner)) = &self.current_return_type {
+        if let Some(Type::Nullable(inner)) = &self.scope.current_return_type {
             let result_ty = self.lower_type(inner);
             if matches!(ast_expr, Expr::Nil(_)) {
                 // return nil → TagWrap(1, nil)
@@ -1273,7 +1286,7 @@ impl Lowerer {
         func_name: &str,
         args: &[(String, ast::Span, Expr)],
     ) -> Result<Vec<FirExpr>, LowerError> {
-        if let Some(param_defaults) = self.function_defaults.get(func_name).cloned() {
+        if let Some(param_defaults) = self.ms.function_defaults.get(func_name).cloned() {
             // Build args in parameter order, using defaults for missing args
             let mut fir_args = Vec::new();
             for (param_name, default_expr) in &param_defaults {

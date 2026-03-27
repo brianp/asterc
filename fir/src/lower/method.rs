@@ -11,10 +11,10 @@ impl Lowerer {
     ) -> Result<FirExpr, LowerError> {
         // Check for enum variant constructor with fields: EnumName.Variant(fields)
         if let Expr::Ident(name, _) = object
-            && self.enum_variants.contains_key(name.as_str())
+            && self.ms.enum_variants.contains_key(name.as_str())
         {
             let ctor_name = format!("{}.{}", name, method);
-            if let Some(&func_id) = self.functions.get(&ctor_name) {
+            if let Some(&func_id) = self.ms.functions.get(&ctor_name) {
                 let fir_args: Result<Vec<_>, _> = args
                     .iter()
                     .map(|(_, _, arg)| self.lower_expr(arg))
@@ -89,11 +89,11 @@ impl Lowerer {
         // e.g. Celsius.from(value: x) — the method has a self param in FIR (all methods do),
         // so pass nil (0) as the self pointer since no receiver instance exists.
         if let Expr::Ident(name, _) = object
-            && self.classes.contains_key(name.as_str())
-            && !self.locals.contains_key(name.as_str())
+            && self.ms.classes.contains_key(name.as_str())
+            && !self.scope.locals.contains_key(name.as_str())
         {
             let qualified_name = format!("{}.{}", name, method);
-            if let Some(&func_id) = self.functions.get(&qualified_name) {
+            if let Some(&func_id) = self.ms.functions.get(&qualified_name) {
                 let mut fir_args = vec![FirExpr::NilLit]; // nil self pointer
                 fir_args.extend(self.lower_call_args_with_defaults(&qualified_name, args)?);
                 let ret_ty = self.resolve_function_ret_type(&qualified_name);
@@ -112,7 +112,7 @@ impl Lowerer {
             .get(&object.span())
             .cloned()
             .or_else(|| match object {
-                Expr::Ident(name, _) => self.local_ast_types.get(name).cloned(),
+                Expr::Ident(name, _) => self.scope.local_ast_types.get(name).cloned(),
                 Expr::Str(..) => Some(Type::String),
                 _ => None,
             });
@@ -188,7 +188,7 @@ impl Lowerer {
                     {
                         // Store mutex ptr in a local for reuse in unlock
                         let mx_id = self.alloc_local();
-                        self.local_types.insert(mx_id, FirType::Ptr);
+                        self.scope.local_types.insert(mx_id, FirType::Ptr);
                         self.pending_stmts.push(FirStmt::Let {
                             name: mx_id,
                             ty: FirType::Ptr,
@@ -201,8 +201,8 @@ impl Lowerer {
                             .map(|(n, _)| n.clone())
                             .unwrap_or_else(|| "__lock_val".into());
                         let val_id = self.alloc_local();
-                        self.locals.insert(param_name, val_id);
-                        self.local_types.insert(val_id, FirType::I64);
+                        self.scope.locals.insert(param_name, val_id);
+                        self.scope.local_types.insert(val_id, FirType::I64);
                         self.pending_stmts.push(FirStmt::Let {
                             name: val_id,
                             ty: FirType::I64,
@@ -781,7 +781,7 @@ impl Lowerer {
             let mut current = Some(class_name.clone());
             while let Some(ref cname) = current.clone() {
                 let qualified_name = format!("{}.{}", cname, method);
-                if let Some(&func_id) = self.functions.get(&qualified_name) {
+                if let Some(&func_id) = self.ms.functions.get(&qualified_name) {
                     // Build args: self + explicit args (with defaults filled in)
                     let mut call_args = vec![fir_object];
                     let method_args = self.lower_call_args_with_defaults(&qualified_name, args)?;
@@ -896,7 +896,9 @@ impl Lowerer {
         initial_result: FirExpr,
     ) -> (LocalId, LocalId) {
         let nullable_id = self.alloc_local();
-        self.local_types.insert(nullable_id, fir_object_ty.clone());
+        self.scope
+            .local_types
+            .insert(nullable_id, fir_object_ty.clone());
         self.pending_stmts.push(FirStmt::Let {
             name: nullable_id,
             ty: fir_object_ty.clone(),
@@ -904,7 +906,7 @@ impl Lowerer {
         });
 
         let result_id = self.alloc_local();
-        self.local_types.insert(result_id, inner_ty.clone());
+        self.scope.local_types.insert(result_id, inner_ty.clone());
         self.pending_stmts.push(FirStmt::Let {
             name: result_id,
             ty: inner_ty.clone(),

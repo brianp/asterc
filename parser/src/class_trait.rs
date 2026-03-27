@@ -359,26 +359,65 @@ impl Parser {
         })
     }
 
-    pub(crate) fn parse_def_as_let(
+    fn parse_type_constraints(
         &mut self,
-        receiver: Option<String>,
-        is_public: bool,
-    ) -> Result<Stmt, Diagnostic> {
+        ptype: &Type,
+    ) -> Result<Option<(String, Vec<TypeConstraint>)>, Diagnostic> {
         use TokenKind::*;
-        let start = self.start_span();
-        self.expect(Def)?;
-        let (name, _) = self.expect_ident("function name")?;
-
-        // Generic type parameters are inferred inline from param types (BC-5).
-        // Bracket syntax [T] on functions is no longer supported (use class Box[T] for classes).
-        if self.at(&LBracket) {
-            return Err(Diagnostic::from_template(
-                DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                    expected: "function parameter list or body".to_string(),
-                    found: "'[' (bracket generic syntax is not supported on functions)".to_string(),
-                }),
-            ));
+        let mut constraints = Vec::new();
+        if self.at(&Extends) {
+            self.advance();
+            let (class_name, _) = self.expect_ident("class name after 'extends'")?;
+            constraints.push(TypeConstraint::Extends(class_name));
         }
+        if self.at(&Includes) {
+            self.advance();
+            let (trait_name, _) = self.expect_ident("trait name after 'includes'")?;
+            // Optional type args: includes From[Float]
+            let trait_args = if self.at(&LBracket) {
+                self.advance();
+                let mut args = Vec::new();
+                args.push(self.parse_type()?);
+                while self.at(&Comma) {
+                    self.advance();
+                    args.push(self.parse_type()?);
+                }
+                self.expect(RBracket)?;
+                args
+            } else {
+                vec![]
+            };
+            constraints.push(TypeConstraint::Includes(trait_name, trait_args));
+        }
+        if constraints.is_empty() {
+            return Ok(None);
+        }
+        let type_param_name = match ptype {
+            Type::Custom(name, args) if args.is_empty() => name.clone(),
+            _ => {
+                return Err(Diagnostic::from_template(
+                    DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                        expected: "type parameter (e.g. T) for generic constraint".to_string(),
+                        found: "non-type-parameter type".to_string(),
+                    }),
+                ));
+            }
+        };
+        Ok(Some((type_param_name, constraints)))
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn parse_param_list(
+        &mut self,
+    ) -> Result<
+        (
+            Vec<(String, Type)>,
+            Vec<Option<Expr>>,
+            Vec<(String, Vec<TypeConstraint>)>,
+        ),
+        Diagnostic,
+    > {
+        use TokenKind::*;
         let mut params: Vec<(String, Type)> = Vec::new();
         let mut defaults: Vec<Option<Expr>> = Vec::new();
         let mut type_constraints: Vec<(String, Vec<TypeConstraint>)> = Vec::new();
@@ -391,47 +430,8 @@ impl Parser {
                     self.expect(Colon)?;
                     let ptype = self.parse_type()?;
 
-                    // Parse optional generic constraints: T extends Foo includes Bar
-                    let mut constraints = Vec::new();
-                    if self.at(&Extends) {
-                        self.advance();
-                        let (class_name, _) = self.expect_ident("class name after 'extends'")?;
-                        constraints.push(TypeConstraint::Extends(class_name));
-                    }
-                    if self.at(&Includes) {
-                        self.advance();
-                        let (trait_name, _) = self.expect_ident("trait name after 'includes'")?;
-                        // Optional type args: includes From[Float]
-                        let trait_args = if self.at(&LBracket) {
-                            self.advance();
-                            let mut args = Vec::new();
-                            args.push(self.parse_type()?);
-                            while self.at(&Comma) {
-                                self.advance();
-                                args.push(self.parse_type()?);
-                            }
-                            self.expect(RBracket)?;
-                            args
-                        } else {
-                            vec![]
-                        };
-                        constraints.push(TypeConstraint::Includes(trait_name, trait_args));
-                    }
-                    if !constraints.is_empty() {
-                        // Extract the type param name from the Custom type
-                        let type_param_name = match &ptype {
-                            Type::Custom(name, args) if args.is_empty() => name.clone(),
-                            _ => {
-                                return Err(Diagnostic::from_template(
-                                    DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                                        expected: "type parameter (e.g. T) for generic constraint"
-                                            .to_string(),
-                                        found: "non-type-parameter type".to_string(),
-                                    }),
-                                ));
-                            }
-                        };
-                        type_constraints.push((type_param_name, constraints));
+                    if let Some(tc) = self.parse_type_constraints(&ptype)? {
+                        type_constraints.push(tc);
                     }
 
                     // Parse optional default value: = expr
@@ -463,6 +463,30 @@ impl Parser {
             }
             self.expect(RParen)?;
         }
+        Ok((params, defaults, type_constraints))
+    }
+
+    pub(crate) fn parse_def_as_let(
+        &mut self,
+        receiver: Option<String>,
+        is_public: bool,
+    ) -> Result<Stmt, Diagnostic> {
+        use TokenKind::*;
+        let start = self.start_span();
+        self.expect(Def)?;
+        let (name, _) = self.expect_ident("function name")?;
+
+        // Generic type parameters are inferred inline from param types (BC-5).
+        // Bracket syntax [T] on functions is no longer supported (use class Box[T] for classes).
+        if self.at(&LBracket) {
+            return Err(Diagnostic::from_template(
+                DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                    expected: "function parameter list or body".to_string(),
+                    found: "'[' (bracket generic syntax is not supported on functions)".to_string(),
+                }),
+            ));
+        }
+        let (params, defaults, type_constraints) = self.parse_param_list()?;
 
         // Optional throws: def fetch(url: String) throws NetworkError -> String
         let throws = if self.at(&TokenKind::Throws) {

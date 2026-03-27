@@ -9,9 +9,9 @@ impl TypeChecker {
     /// Used for returns, argument passing, and task consumption tracking.
     pub(crate) fn mark_task_ident_consumed(&mut self, expr: &Expr) {
         if let Expr::Ident(name, _) = expr
-            && self.task_bindings.contains_key(name)
+            && self.sc.task_bindings.contains_key(name)
         {
-            self.consumed_tasks.insert(name.clone());
+            self.sc.consumed_tasks.insert(name.clone());
         }
     }
 
@@ -22,7 +22,7 @@ impl TypeChecker {
         if !matches!(self.env.get_var(name), Some(Type::Task(_))) {
             return Ok(());
         }
-        if self.consumed_tasks.insert(name.clone()) {
+        if self.sc.consumed_tasks.insert(name.clone()) {
             return Ok(());
         }
         Err(
@@ -69,7 +69,7 @@ impl TypeChecker {
                 let is_cancelled =
                     matches!(err_ty.as_ref(), Type::Custom(n, _) if n == "CancelledError");
                 if !is_cancelled {
-                    let caller_throws = self.throws_type.as_ref().ok_or_else(|| {
+                    let caller_throws = self.sc.throws_type.as_ref().ok_or_else(|| {
                         Diagnostic::from_template(DiagnosticTemplate::ErrorPropagation(ErrorPropagation {
                             message: "Cannot use '!' to propagate errors outside of a function that declares 'throws'".to_string(),
                         }))
@@ -292,7 +292,7 @@ impl TypeChecker {
 
     pub(crate) fn check_throw(&mut self, value: &Expr) -> Result<Type, Diagnostic> {
         let val_ty = self.check_expr(value)?;
-        let throws_ty = self.throws_type.as_ref().ok_or_else(|| {
+        let throws_ty = self.sc.throws_type.as_ref().ok_or_else(|| {
             Diagnostic::from_template(DiagnosticTemplate::ErrorPropagation(ErrorPropagation {
                 message: "Cannot use 'throw' outside of a function that declares 'throws'"
                     .to_string(),

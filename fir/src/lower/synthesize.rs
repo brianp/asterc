@@ -5,19 +5,20 @@ impl Lowerer {
     /// Injects the global prelude + top-level control flow in a proper function scope.
     pub(crate) fn synthesize_entry_function(&mut self) -> Result<(), LowerError> {
         let snapshot = self.save_scope();
-        self.current_return_type = Some(Type::Void);
+        self.scope.current_return_type = Some(Type::Void);
 
         // Inject globals
         let mut body: Vec<FirStmt> = Vec::new();
         let top_level_snapshot: Vec<_> = self
+            .tl
             .top_level_lets
             .iter()
             .map(|(n, t, v)| (n.clone(), t.clone(), v.clone()))
             .collect();
         for (tl_name, tl_ty, tl_value) in top_level_snapshot {
             let local_id = self.alloc_local();
-            self.locals.insert(tl_name, local_id);
-            self.local_types.insert(local_id, tl_ty.clone());
+            self.scope.locals.insert(tl_name, local_id);
+            self.scope.local_types.insert(local_id, tl_ty.clone());
             body.push(FirStmt::Let {
                 name: local_id,
                 ty: tl_ty,
@@ -26,7 +27,7 @@ impl Lowerer {
         }
 
         // Lower top-level control flow stmts (for, if, while, assignment)
-        let tl_stmts: Vec<_> = self.top_level_stmts.clone();
+        let tl_stmts: Vec<_> = self.tl.top_level_stmts.clone();
         for tl_stmt in &tl_stmts {
             let fir_stmt = self.lower_stmt_inner(tl_stmt)?;
             body.append(&mut self.pending_stmts);
@@ -34,15 +35,15 @@ impl Lowerer {
         }
 
         // Lower top-level bare expressions (say, etc.)
-        let tl_exprs: Vec<_> = self.top_level_exprs.clone();
+        let tl_exprs: Vec<_> = self.tl.top_level_exprs.clone();
         for tl_expr in &tl_exprs {
             let fir_stmt = self.lower_stmt_inner(tl_expr)?;
             body.append(&mut self.pending_stmts);
             body.push(fir_stmt);
         }
 
-        let id = FunctionId(self.next_function);
-        self.next_function += 1;
+        let id = FunctionId(self.ms.next_function);
+        self.ms.next_function += 1;
         let func = FirFunction {
             id,
             name: "__top_main".to_string(),
@@ -52,8 +53,8 @@ impl Lowerer {
             is_entry: true,
             suspendable: false,
         };
-        self.module.add_function(func);
-        self.module.entry = Some(id);
+        self.ms.module.add_function(func);
+        self.ms.module.entry = Some(id);
 
         self.restore_scope(snapshot);
         Ok(())
@@ -68,11 +69,12 @@ impl Lowerer {
         class_id: ClassId,
     ) -> Result<(), LowerError> {
         let qualified = format!("{}.to_string", class_name);
-        let func_id = FunctionId(self.next_function);
-        self.next_function += 1;
-        self.functions.insert(qualified.clone(), func_id);
+        let func_id = FunctionId(self.ms.next_function);
+        self.ms.next_function += 1;
+        self.ms.functions.insert(qualified.clone(), func_id);
 
         let field_layout = self
+            .ms
             .class_fields
             .get(&class_id)
             .cloned()
@@ -150,7 +152,7 @@ impl Lowerer {
             is_entry: false,
             suspendable: false,
         };
-        self.module.add_function(func);
+        self.ms.module.add_function(func);
         Ok(())
     }
 
@@ -162,11 +164,12 @@ impl Lowerer {
         class_id: ClassId,
     ) -> Result<(), LowerError> {
         let qualified = format!("{}.eq", class_name);
-        let func_id = FunctionId(self.next_function);
-        self.next_function += 1;
-        self.functions.insert(qualified.clone(), func_id);
+        let func_id = FunctionId(self.ms.next_function);
+        self.ms.next_function += 1;
+        self.ms.functions.insert(qualified.clone(), func_id);
 
         let field_layout = self
+            .ms
             .class_fields
             .get(&class_id)
             .cloned()
@@ -218,7 +221,7 @@ impl Lowerer {
             is_entry: false,
             suspendable: false,
         };
-        self.module.add_function(func);
+        self.ms.module.add_function(func);
         Ok(())
     }
 
@@ -230,11 +233,12 @@ impl Lowerer {
         class_id: ClassId,
     ) -> Result<(), LowerError> {
         let qualified = format!("{}.cmp", class_name);
-        let func_id = FunctionId(self.next_function);
-        self.next_function += 1;
-        self.functions.insert(qualified.clone(), func_id);
+        let func_id = FunctionId(self.ms.next_function);
+        self.ms.next_function += 1;
+        self.ms.functions.insert(qualified.clone(), func_id);
 
         let field_layout = self
+            .ms
             .class_fields
             .get(&class_id)
             .cloned()
@@ -248,7 +252,7 @@ impl Lowerer {
         // Ordering enum: tag 0 = Less, tag 1 = Equal, tag 2 = Greater
         let ordering_ctor = |tag: i64| -> FirExpr {
             // Ordering variant is a struct with a single tag field
-            if let Some(&ctor_func_id) = self.functions.get(match tag {
+            if let Some(&ctor_func_id) = self.ms.functions.get(match tag {
                 0 => "Ordering.Less",
                 1 => "Ordering.Equal",
                 _ => "Ordering.Greater",
@@ -313,7 +317,7 @@ impl Lowerer {
             is_entry: false,
             suspendable: false,
         };
-        self.module.add_function(func);
+        self.ms.module.add_function(func);
         Ok(())
     }
 
@@ -331,9 +335,9 @@ impl Lowerer {
         ];
 
         for (ctor_name, tag) in variants {
-            let func_id = FunctionId(self.next_function);
-            self.next_function += 1;
-            self.functions.insert(ctor_name.to_string(), func_id);
+            let func_id = FunctionId(self.ms.next_function);
+            self.ms.next_function += 1;
+            self.ms.functions.insert(ctor_name.to_string(), func_id);
 
             // Body: alloc, store tag, return ptr
             let ptr_id = LocalId(0);
@@ -357,7 +361,7 @@ impl Lowerer {
                 FirStmt::Return(FirExpr::LocalVar(ptr_id, FirType::Ptr)),
             ];
 
-            self.module.add_function(FirFunction {
+            self.ms.module.add_function(FirFunction {
                 id: func_id,
                 name: ctor_name.to_string(),
                 params: vec![],
@@ -369,7 +373,7 @@ impl Lowerer {
         }
 
         // Register enum_variants for match lowering
-        self.enum_variants.insert(
+        self.ms.enum_variants.insert(
             "Ordering".to_string(),
             vec![
                 ("Less".to_string(), 0, vec![]),

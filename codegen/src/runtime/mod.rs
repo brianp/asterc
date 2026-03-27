@@ -1,0 +1,238 @@
+use cranelift_jit::JITBuilder;
+
+pub mod alloc;
+pub mod channel;
+pub mod error;
+pub mod gc;
+pub mod io;
+pub mod list;
+pub mod map;
+pub mod mutex;
+pub mod numeric;
+pub mod print;
+pub mod string;
+pub mod task;
+
+// Re-export everything so external code can use `crate::runtime::*` or
+// `crate::runtime::some_fn` without knowing the internal module layout.
+
+pub use alloc::{aster_alloc, aster_class_alloc, aster_class_alloc_typed, aster_closure_alloc};
+
+pub use string::{
+    aster_bool_to_string, aster_float_to_string, aster_int_to_string, aster_string_char_len,
+    aster_string_compare, aster_string_concat, aster_string_contains, aster_string_ends_with,
+    aster_string_eq, aster_string_len, aster_string_new, aster_string_replace, aster_string_slice,
+    aster_string_split, aster_string_starts_with, aster_string_to_lower, aster_string_to_upper,
+    aster_string_trim,
+};
+
+pub use list::{
+    aster_list_contains, aster_list_get, aster_list_insert, aster_list_len, aster_list_new,
+    aster_list_pop, aster_list_push, aster_list_random, aster_list_remove, aster_list_set,
+    aster_list_to_string,
+};
+
+pub use map::{aster_map_get, aster_map_has_key, aster_map_new, aster_map_set};
+
+pub use gc::{aster_gc_collect, aster_gc_pop_roots, aster_gc_push_roots};
+pub(crate) use gc::{shadow_stack_get, shadow_stack_set};
+
+pub use error::{
+    aster_async_scope_enter, aster_async_scope_exit, aster_error_check, aster_error_get_tag,
+    aster_error_get_value, aster_error_set, aster_error_set_typed, aster_panic, aster_safepoint,
+};
+pub(crate) use error::{error_flag_get, error_flag_set};
+
+pub use task::{
+    aster_task_block_on, aster_task_cancel, aster_task_from_f64, aster_task_from_i8,
+    aster_task_from_i64, aster_task_is_ready, aster_task_resolve_all_i64, aster_task_resolve_f64,
+    aster_task_resolve_first_i64, aster_task_resolve_i8, aster_task_resolve_i64, aster_task_spawn,
+    aster_task_wait_cancel,
+};
+
+pub use mutex::{aster_mutex_get_value, aster_mutex_lock, aster_mutex_new, aster_mutex_unlock};
+
+pub use channel::{
+    aster_channel_close, aster_channel_new, aster_channel_receive, aster_channel_send,
+    aster_channel_try_receive, aster_channel_try_send, aster_channel_wait_receive,
+    aster_channel_wait_send,
+};
+
+pub use io::{
+    aster_blocking_submit, aster_file_append, aster_file_read, aster_file_write,
+    aster_io_wait_read, aster_io_wait_write,
+};
+
+pub use print::{aster_say_bool, aster_say_float, aster_say_int, aster_say_str};
+
+pub use numeric::{
+    aster_float_abs, aster_float_ceil, aster_float_clamp, aster_float_floor, aster_float_max,
+    aster_float_min, aster_float_round, aster_int_abs, aster_int_add, aster_int_clamp,
+    aster_int_is_even, aster_int_is_odd, aster_int_max, aster_int_min, aster_int_mul,
+    aster_int_sub, aster_pow_float, aster_pow_int, aster_random_bool, aster_random_float,
+    aster_random_int, aster_range_check, aster_range_new,
+};
+
+pub fn runtime_builtin_symbols() -> Vec<(&'static str, *const u8)> {
+    vec![
+        ("aster_alloc", aster_alloc as *const u8),
+        ("aster_say_str", aster_say_str as *const u8),
+        ("aster_say_int", aster_say_int as *const u8),
+        ("aster_say_float", aster_say_float as *const u8),
+        ("aster_say_bool", aster_say_bool as *const u8),
+        ("aster_string_new", aster_string_new as *const u8),
+        ("aster_string_concat", aster_string_concat as *const u8),
+        ("aster_string_len", aster_string_len as *const u8),
+        ("aster_string_eq", aster_string_eq as *const u8),
+        ("aster_string_compare", aster_string_compare as *const u8),
+        ("aster_string_char_len", aster_string_char_len as *const u8),
+        ("aster_string_contains", aster_string_contains as *const u8),
+        (
+            "aster_string_starts_with",
+            aster_string_starts_with as *const u8,
+        ),
+        (
+            "aster_string_ends_with",
+            aster_string_ends_with as *const u8,
+        ),
+        ("aster_string_trim", aster_string_trim as *const u8),
+        ("aster_string_to_upper", aster_string_to_upper as *const u8),
+        ("aster_string_to_lower", aster_string_to_lower as *const u8),
+        ("aster_string_slice", aster_string_slice as *const u8),
+        ("aster_string_replace", aster_string_replace as *const u8),
+        ("aster_string_split", aster_string_split as *const u8),
+        ("aster_list_new", aster_list_new as *const u8),
+        ("aster_list_get", aster_list_get as *const u8),
+        ("aster_list_random", aster_list_random as *const u8),
+        ("aster_list_set", aster_list_set as *const u8),
+        ("aster_list_push", aster_list_push as *const u8),
+        ("aster_list_len", aster_list_len as *const u8),
+        ("aster_list_insert", aster_list_insert as *const u8),
+        ("aster_list_remove", aster_list_remove as *const u8),
+        ("aster_list_pop", aster_list_pop as *const u8),
+        ("aster_list_contains", aster_list_contains as *const u8),
+        ("aster_class_alloc", aster_class_alloc as *const u8),
+        (
+            "aster_class_alloc_typed",
+            aster_class_alloc_typed as *const u8,
+        ),
+        ("aster_closure_alloc", aster_closure_alloc as *const u8),
+        ("aster_int_add", aster_int_add as *const u8),
+        ("aster_int_sub", aster_int_sub as *const u8),
+        ("aster_int_mul", aster_int_mul as *const u8),
+        ("aster_pow_int", aster_pow_int as *const u8),
+        ("aster_pow_float", aster_pow_float as *const u8),
+        // Int numeric methods
+        ("aster_int_is_even", aster_int_is_even as *const u8),
+        ("aster_int_is_odd", aster_int_is_odd as *const u8),
+        ("aster_int_abs", aster_int_abs as *const u8),
+        ("aster_int_clamp", aster_int_clamp as *const u8),
+        ("aster_int_min", aster_int_min as *const u8),
+        ("aster_int_max", aster_int_max as *const u8),
+        // Float numeric methods
+        ("aster_float_abs", aster_float_abs as *const u8),
+        ("aster_float_round", aster_float_round as *const u8),
+        ("aster_float_floor", aster_float_floor as *const u8),
+        ("aster_float_ceil", aster_float_ceil as *const u8),
+        ("aster_float_clamp", aster_float_clamp as *const u8),
+        ("aster_float_min", aster_float_min as *const u8),
+        ("aster_float_max", aster_float_max as *const u8),
+        ("aster_int_to_string", aster_int_to_string as *const u8),
+        ("aster_float_to_string", aster_float_to_string as *const u8),
+        ("aster_bool_to_string", aster_bool_to_string as *const u8),
+        ("aster_list_to_string", aster_list_to_string as *const u8),
+        ("aster_map_new", aster_map_new as *const u8),
+        ("aster_map_set", aster_map_set as *const u8),
+        ("aster_map_get", aster_map_get as *const u8),
+        ("aster_map_has_key", aster_map_has_key as *const u8),
+        ("aster_error_set", aster_error_set as *const u8),
+        ("aster_error_set_typed", aster_error_set_typed as *const u8),
+        ("aster_error_check", aster_error_check as *const u8),
+        ("aster_error_get_tag", aster_error_get_tag as *const u8),
+        ("aster_error_get_value", aster_error_get_value as *const u8),
+        ("aster_safepoint", aster_safepoint as *const u8),
+        ("aster_panic", aster_panic as *const u8),
+        (
+            "aster_async_scope_enter",
+            aster_async_scope_enter as *const u8,
+        ),
+        (
+            "aster_async_scope_exit",
+            aster_async_scope_exit as *const u8,
+        ),
+        ("aster_task_spawn", aster_task_spawn as *const u8),
+        ("aster_task_block_on", aster_task_block_on as *const u8),
+        ("aster_task_from_i64", aster_task_from_i64 as *const u8),
+        ("aster_task_from_f64", aster_task_from_f64 as *const u8),
+        ("aster_task_from_i8", aster_task_from_i8 as *const u8),
+        ("aster_task_is_ready", aster_task_is_ready as *const u8),
+        ("aster_task_cancel", aster_task_cancel as *const u8),
+        (
+            "aster_task_wait_cancel",
+            aster_task_wait_cancel as *const u8,
+        ),
+        (
+            "aster_task_resolve_i64",
+            aster_task_resolve_i64 as *const u8,
+        ),
+        (
+            "aster_task_resolve_f64",
+            aster_task_resolve_f64 as *const u8,
+        ),
+        ("aster_task_resolve_i8", aster_task_resolve_i8 as *const u8),
+        (
+            "aster_task_resolve_all_i64",
+            aster_task_resolve_all_i64 as *const u8,
+        ),
+        (
+            "aster_task_resolve_first_i64",
+            aster_task_resolve_first_i64 as *const u8,
+        ),
+        ("aster_gc_push_roots", aster_gc_push_roots as *const u8),
+        ("aster_gc_pop_roots", aster_gc_pop_roots as *const u8),
+        ("aster_gc_collect", aster_gc_collect as *const u8),
+        ("aster_io_wait_read", aster_io_wait_read as *const u8),
+        ("aster_io_wait_write", aster_io_wait_write as *const u8),
+        ("aster_blocking_submit", aster_blocking_submit as *const u8),
+        ("aster_mutex_new", aster_mutex_new as *const u8),
+        ("aster_mutex_lock", aster_mutex_lock as *const u8),
+        ("aster_mutex_unlock", aster_mutex_unlock as *const u8),
+        ("aster_mutex_get_value", aster_mutex_get_value as *const u8),
+        ("aster_channel_new", aster_channel_new as *const u8),
+        ("aster_channel_send", aster_channel_send as *const u8),
+        (
+            "aster_channel_wait_send",
+            aster_channel_wait_send as *const u8,
+        ),
+        (
+            "aster_channel_try_send",
+            aster_channel_try_send as *const u8,
+        ),
+        ("aster_channel_receive", aster_channel_receive as *const u8),
+        (
+            "aster_channel_wait_receive",
+            aster_channel_wait_receive as *const u8,
+        ),
+        (
+            "aster_channel_try_receive",
+            aster_channel_try_receive as *const u8,
+        ),
+        ("aster_channel_close", aster_channel_close as *const u8),
+        // File I/O
+        ("aster_file_read", aster_file_read as *const u8),
+        ("aster_file_write", aster_file_write as *const u8),
+        ("aster_file_append", aster_file_append as *const u8),
+        // Range
+        ("aster_range_new", aster_range_new as *const u8),
+        ("aster_range_check", aster_range_check as *const u8),
+        // Random
+        ("aster_random_int", aster_random_int as *const u8),
+        ("aster_random_float", aster_random_float as *const u8),
+        ("aster_random_bool", aster_random_bool as *const u8),
+    ]
+}
+
+/// Register all runtime builtins with a JIT builder.
+pub fn register_runtime_builtins(builder: &mut JITBuilder) {
+    builder.symbols(runtime_builtin_symbols());
+}

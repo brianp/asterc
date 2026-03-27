@@ -17,19 +17,35 @@ use std::rc::Rc;
 
 use crate::module_loader::ModuleLoader;
 
-pub struct TypeChecker {
-    pub env: TypeEnv,
+pub struct ScopeContext {
     pub loop_depth: usize,
     pub expected_return_type: Option<Type>,
     /// Current function name for better error messages.
     pub current_function: Option<String>,
     /// The error type this function declares via `throws`.
     pub throws_type: Option<Type>,
+    /// Expected type from context (e.g., let binding type annotation, function arg type).
+    /// Used to resolve ambiguous parametric trait methods like `.into()`.
+    pub(crate) expected_type: Option<Type>,
+    /// Names of const bindings — cannot be reassigned.
+    pub(crate) const_names: std::collections::HashSet<String>,
+    /// Detectable single-consumer tracking for task bindings resolved in the current checker.
+    pub(crate) consumed_tasks: std::collections::HashSet<String>,
+    /// Task bindings created in the current scope via `let t = async f()`.
+    /// Maps variable name to creation span for must-consume enforcement.
+    pub(crate) task_bindings: HashMap<String, Span>,
+    /// Set by `check_call_inner` to indicate whether the resolved callee was suspendable.
+    /// Read by `check_blocking_call` to avoid re-evaluating the func expression.
+    pub(crate) last_call_suspendable: bool,
+    /// Variables that have crossed a thread boundary (passed to `async f()`).
+    /// Maps variable name to the span where the crossing happened.
+    /// Used for data sharing warnings (W002).
+    pub(crate) boundary_crossed: HashMap<String, Span>,
+}
+
+pub struct TypeRegistry {
     /// Accumulated diagnostics from error recovery.
     pub diagnostics: Vec<Diagnostic>,
-    /// Optional module loader for resolving `use` imports.
-    /// When None, `use` statements are ignored (prelude mode).
-    pub module_loader: Option<Rc<RefCell<ModuleLoader>>>,
     /// Built-in protocol traits (Eq, Ord, Printable, etc.) — source of truth for `use std`.
     /// In prelude mode (no loader), these are also copied to env.
     /// Wrapped in Rc since these are read-only after initialization; avoids cloning on every child scope.
@@ -37,33 +53,25 @@ pub struct TypeChecker {
     /// Built-in enum types (Ordering) — source of truth for `use std`.
     /// Wrapped in Rc since these are read-only after initialization.
     pub(crate) builtin_enums: Rc<HashMap<String, EnumInfo>>,
-    /// Expected type from context (e.g., let binding type annotation, function arg type).
-    /// Used to resolve ambiguous parametric trait methods like `.into()`.
-    pub(crate) expected_type: Option<Type>,
-    /// Names of const bindings — cannot be reassigned.
-    pub(crate) const_names: std::collections::HashSet<String>,
     /// For functions with default parameters: maps function name -> set of param names that have defaults.
     pub(crate) default_params: HashMap<String, std::collections::HashSet<String>>,
-    /// Detectable single-consumer tracking for task bindings resolved in the current checker.
-    pub(crate) consumed_tasks: std::collections::HashSet<String>,
-    /// Task bindings created in the current scope via `let t = async f()`.
-    /// Maps variable name to creation span for must-consume enforcement.
-    pub(crate) task_bindings: HashMap<String, Span>,
-    /// Variables that have crossed a thread boundary (passed to `async f()`).
-    /// Maps variable name to the span where the crossing happened.
-    /// Used for data sharing warnings (W002).
-    pub(crate) boundary_crossed: HashMap<String, Span>,
-    /// Maps expression spans to their resolved types. Consumed by FIR lowerer.
-    pub type_table: TypeTable,
-    /// Set by `check_call_inner` to indicate whether the resolved callee was suspendable.
-    /// Read by `check_blocking_call` to avoid re-evaluating the func expression.
-    pub(crate) last_call_suspendable: bool,
     /// Tracks List[Nil] → List[T] promotions from `.push()` calls.
     /// Persists across child scopes (not saved/restored by ScopeState),
     /// so promotions inside if/while/for are visible after the block exits.
     pub(crate) nil_promotions: HashMap<String, Type>,
     /// Class names imported from other modules. Used to enforce field/method visibility.
     pub(crate) imported_classes: std::collections::HashSet<String>,
+}
+
+pub struct TypeChecker {
+    pub env: TypeEnv,
+    pub sc: ScopeContext,
+    pub reg: TypeRegistry,
+    /// Maps expression spans to their resolved types. Consumed by FIR lowerer.
+    pub type_table: TypeTable,
+    /// Optional module loader for resolving `use` imports.
+    /// When None, `use` statements are ignored (prelude mode).
+    pub module_loader: Option<Rc<RefCell<ModuleLoader>>>,
 }
 
 struct ScopeState {
@@ -90,24 +98,28 @@ impl TypeChecker {
         let (builtin_traits, builtin_enums) = Self::register_builtins(&mut env);
         Self {
             env,
-            loop_depth: 0,
-            expected_return_type: None,
-            current_function: None,
-            throws_type: None,
-            diagnostics: Vec::new(),
+            sc: ScopeContext {
+                loop_depth: 0,
+                expected_return_type: None,
+                current_function: None,
+                throws_type: None,
+                expected_type: None,
+                const_names: std::collections::HashSet::new(),
+                consumed_tasks: std::collections::HashSet::new(),
+                task_bindings: HashMap::new(),
+                boundary_crossed: HashMap::new(),
+                last_call_suspendable: false,
+            },
+            reg: TypeRegistry {
+                diagnostics: Vec::new(),
+                builtin_traits,
+                builtin_enums,
+                default_params: HashMap::new(),
+                nil_promotions: HashMap::new(),
+                imported_classes: std::collections::HashSet::new(),
+            },
             module_loader: None,
-            builtin_traits,
-            builtin_enums,
-            expected_type: None,
-            const_names: std::collections::HashSet::new(),
-            default_params: HashMap::new(),
-            consumed_tasks: std::collections::HashSet::new(),
-            task_bindings: HashMap::new(),
-            boundary_crossed: HashMap::new(),
             type_table: TypeTable::new(),
-            last_call_suspendable: false,
-            nil_promotions: HashMap::new(),
-            imported_classes: std::collections::HashSet::new(),
         }
     }
 
@@ -458,36 +470,42 @@ impl TypeChecker {
     pub(crate) fn child_checker(&mut self) -> TypeChecker {
         TypeChecker {
             env: std::mem::take(&mut self.env).into_child(),
-            loop_depth: self.loop_depth,
-            expected_return_type: self.expected_return_type.clone(),
-            current_function: self.current_function.clone(),
-            throws_type: self.throws_type.clone(),
-            diagnostics: Vec::new(),
+            sc: ScopeContext {
+                loop_depth: self.sc.loop_depth,
+                expected_return_type: self.sc.expected_return_type.clone(),
+                current_function: self.sc.current_function.clone(),
+                throws_type: self.sc.throws_type.clone(),
+                expected_type: self.sc.expected_type.clone(),
+                const_names: self.sc.const_names.clone(),
+                consumed_tasks: self.sc.consumed_tasks.clone(),
+                task_bindings: self.sc.task_bindings.clone(),
+                boundary_crossed: HashMap::new(),
+                last_call_suspendable: false,
+            },
+            reg: TypeRegistry {
+                diagnostics: Vec::new(),
+                builtin_traits: self.reg.builtin_traits.clone(),
+                builtin_enums: self.reg.builtin_enums.clone(),
+                default_params: self.reg.default_params.clone(),
+                nil_promotions: HashMap::new(),
+                imported_classes: self.reg.imported_classes.clone(),
+            },
             module_loader: self.module_loader.clone(),
-            builtin_traits: self.builtin_traits.clone(),
-            builtin_enums: self.builtin_enums.clone(),
-            expected_type: self.expected_type.clone(),
-            const_names: self.const_names.clone(),
-            default_params: self.default_params.clone(),
-            consumed_tasks: self.consumed_tasks.clone(),
-            task_bindings: self.task_bindings.clone(),
-            boundary_crossed: HashMap::new(),
             type_table: TypeTable::new(),
-            last_call_suspendable: false,
-            nil_promotions: HashMap::new(),
-            imported_classes: self.imported_classes.clone(),
         }
     }
 
     /// Restore the parent env from a child checker after it is done.
     /// Merges diagnostics, type_table, and imported_classes, then recovers the parent env.
     pub(crate) fn restore_from_child(&mut self, mut child: TypeChecker) {
-        self.diagnostics
-            .extend(std::mem::take(&mut child.diagnostics));
+        self.reg
+            .diagnostics
+            .extend(std::mem::take(&mut child.reg.diagnostics));
         self.type_table
             .extend(std::mem::take(&mut child.type_table));
-        self.imported_classes
-            .extend(std::mem::take(&mut child.imported_classes));
+        self.reg
+            .imported_classes
+            .extend(std::mem::take(&mut child.reg.imported_classes));
         child.env.exit_scope();
         self.env = child.env;
     }
@@ -495,7 +513,7 @@ impl TypeChecker {
     /// Emit a W003 warning if `name` already exists in a parent scope.
     pub(crate) fn warn_if_shadowed(&mut self, name: &str, span: Span) {
         if self.env.parent_has_var(name) {
-            self.diagnostics.push(
+            self.reg.diagnostics.push(
                 Diagnostic::warning(format!("variable '{}' shadows a previous binding", name))
                     .with_template(DiagnosticTemplate::ShadowedVariable(ShadowedVariable {
                         name: name.to_string(),
@@ -507,34 +525,34 @@ impl TypeChecker {
 
     fn save_scope_state(&mut self) -> ScopeState {
         ScopeState {
-            loop_depth: self.loop_depth,
-            expected_return_type: self.expected_return_type.clone(),
-            current_function: self.current_function.clone(),
-            throws_type: self.throws_type.clone(),
-            diagnostics: std::mem::take(&mut self.diagnostics),
-            expected_type: self.expected_type.clone(),
-            const_names: self.const_names.clone(),
-            consumed_tasks: self.consumed_tasks.clone(),
-            task_bindings: self.task_bindings.clone(),
+            loop_depth: self.sc.loop_depth,
+            expected_return_type: self.sc.expected_return_type.clone(),
+            current_function: self.sc.current_function.clone(),
+            throws_type: self.sc.throws_type.clone(),
+            diagnostics: std::mem::take(&mut self.reg.diagnostics),
+            expected_type: self.sc.expected_type.clone(),
+            const_names: self.sc.const_names.clone(),
+            consumed_tasks: self.sc.consumed_tasks.clone(),
+            task_bindings: self.sc.task_bindings.clone(),
         }
     }
 
     fn restore_scope_state(&mut self, saved: ScopeState) {
-        let child_diagnostics = std::mem::take(&mut self.diagnostics);
-        let child_task_bindings = std::mem::take(&mut self.task_bindings);
+        let child_diagnostics = std::mem::take(&mut self.reg.diagnostics);
+        let child_task_bindings = std::mem::take(&mut self.sc.task_bindings);
 
-        self.loop_depth = saved.loop_depth;
-        self.expected_return_type = saved.expected_return_type;
-        self.current_function = saved.current_function;
-        self.throws_type = saved.throws_type;
-        self.diagnostics = saved.diagnostics;
-        self.expected_type = saved.expected_type;
-        self.const_names = saved.const_names;
-        self.consumed_tasks = saved.consumed_tasks;
-        self.task_bindings = saved.task_bindings;
+        self.sc.loop_depth = saved.loop_depth;
+        self.sc.expected_return_type = saved.expected_return_type;
+        self.sc.current_function = saved.current_function;
+        self.sc.throws_type = saved.throws_type;
+        self.reg.diagnostics = saved.diagnostics;
+        self.sc.expected_type = saved.expected_type;
+        self.sc.const_names = saved.const_names;
+        self.sc.consumed_tasks = saved.consumed_tasks;
+        self.sc.task_bindings = saved.task_bindings;
 
-        self.task_bindings.extend(child_task_bindings);
-        self.diagnostics.extend(child_diagnostics);
+        self.sc.task_bindings.extend(child_task_bindings);
+        self.reg.diagnostics.extend(child_diagnostics);
     }
 
     /// Execute `f` in a child scope. The env is scoped via enter/exit (zero-copy),
@@ -563,7 +581,7 @@ impl TypeChecker {
                     first_error = Some(d);
                 }
             } else {
-                self.diagnostics.push(d);
+                self.reg.diagnostics.push(d);
             }
         }
         match first_error {
@@ -670,14 +688,14 @@ impl TypeChecker {
             if !inferred_fns.is_empty() {
                 // Save diagnostics accumulated before the fixpoint loop so they
                 // are not lost when we clear intermediate fixpoint results.
-                let saved_diagnostics = std::mem::take(&mut self.diagnostics);
-                let saved_nil_promotions = std::mem::take(&mut self.nil_promotions);
+                let saved_diagnostics = std::mem::take(&mut self.reg.diagnostics);
+                let saved_nil_promotions = std::mem::take(&mut self.reg.nil_promotions);
 
                 // Fixpoint: keep checking until no return types change
                 for _ in 0..inferred_fns.len() + 1 {
                     let mut changed = false;
-                    self.diagnostics.clear();
-                    self.nil_promotions.clear();
+                    self.reg.diagnostics.clear();
+                    self.reg.nil_promotions.clear();
                     for &idx in &inferred_fns {
                         let s = &m.body[idx];
                         let name = match s {
@@ -687,7 +705,7 @@ impl TypeChecker {
                         match self.check_stmt(s) {
                             Ok(_) => {}
                             Err(diag) => {
-                                self.diagnostics.push(diag);
+                                self.reg.diagnostics.push(diag);
                             }
                         }
                         // Check if the return type was resolved from Inferred
@@ -704,8 +722,8 @@ impl TypeChecker {
                 }
                 // Restore pre-fixpoint diagnostics; discard intermediate fixpoint
                 // diagnostics since the final pass will re-check everything.
-                self.diagnostics = saved_diagnostics;
-                self.nil_promotions = saved_nil_promotions;
+                self.reg.diagnostics = saved_diagnostics;
+                self.reg.nil_promotions = saved_nil_promotions;
             }
         }
 
@@ -714,7 +732,7 @@ impl TypeChecker {
             match self.check_stmt(s) {
                 Ok(_) => {}
                 Err(diag) => {
-                    self.diagnostics.push(diag);
+                    self.reg.diagnostics.push(diag);
                     // For let bindings that failed, assign Type::Error so later code doesn't cascade
                     if let ast::Stmt::Let { name, .. } = s {
                         self.env.set_var(name.clone(), Type::Error);
@@ -722,13 +740,13 @@ impl TypeChecker {
                 }
             }
         }
-        let all = std::mem::take(&mut self.diagnostics);
+        let all = std::mem::take(&mut self.reg.diagnostics);
         let mut errors = Vec::new();
         for d in all {
             if d.severity == ast::Severity::Error {
                 errors.push(d);
             } else {
-                self.diagnostics.push(d);
+                self.reg.diagnostics.push(d);
             }
         }
         errors
@@ -900,140 +918,7 @@ impl TypeChecker {
                 type_ann,
                 value,
                 ..
-            } => {
-                let prev_fn = self.current_function.clone();
-                if matches!(value, Expr::Lambda { .. }) {
-                    self.current_function = Some(name.clone());
-                }
-                // If the value is a lambda with inferred types and we have a type annotation,
-                // propagate the expected type for inference.
-                // Also set expected_type for parametric trait resolution (e.g., .into())
-                let prev_expected = self.expected_type.take();
-                if let Some(ann) = type_ann {
-                    self.validate_collection_eq_constraint(ann, stmt_span)?;
-                    self.expected_type = Some(ann.clone());
-                }
-                let mut ty = if matches!(value, Expr::Lambda { .. }) {
-                    self.check_lambda_with_expected(value, type_ann.as_ref())?
-                } else {
-                    self.check_expr(value)?
-                };
-                if matches!(value, Expr::Lambda { .. })
-                    && let (
-                        Type::Function {
-                            param_names,
-                            params,
-                            ret,
-                            throws,
-                            suspendable: false,
-                        },
-                        Some(Type::Function {
-                            suspendable: true, ..
-                        }),
-                    ) = (&ty, self.env.get_var(name))
-                {
-                    ty = Type::Function {
-                        param_names: param_names.clone(),
-                        params: params.clone(),
-                        ret: ret.clone(),
-                        throws: throws.clone(),
-                        suspendable: true,
-                    };
-                }
-                self.expected_type = prev_expected;
-                self.current_function = prev_fn;
-                if ty.is_error() {
-                    self.env.set_var(name.clone(), Type::Error);
-                    return Ok(Type::Error);
-                }
-                if let Some(ann) = type_ann {
-                    // Empty list takes on the annotated type
-                    if ty == Type::List(Box::new(Type::Nil)) && matches!(ann, Type::List(_)) {
-                        self.env.set_var(name.clone(), ann.clone());
-                        return Ok(ann.clone());
-                    }
-                    // Empty map takes on the annotated type
-                    if ty == Type::Map(Box::new(Type::Error), Box::new(Type::Error))
-                        && matches!(ann, Type::Map(_, _))
-                    {
-                        self.env.set_var(name.clone(), ann.clone());
-                        return Ok(ann.clone());
-                    }
-                    // Nullable auto-wrap: T or Nil assigned to T?
-                    if let Type::Nullable(inner) = ann {
-                        if ty == *ann || ty == **inner || ty == Type::Nil {
-                            self.env.set_var(name.clone(), ann.clone());
-                            return Ok(ann.clone());
-                        }
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(
-                            TypeMismatch {
-                                expected: ann.clone(),
-                                actual: ty.clone(),
-                            },
-                        ))
-                        .with_label(stmt_span, format!("expected {}", ann)));
-                    }
-                    // Nil cannot be assigned to non-nullable types
-                    if ty == Type::Nil && !matches!(ann, Type::Nil) {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(
-                            TypeMismatch {
-                                expected: ann.clone(),
-                                actual: ty.clone(),
-                            },
-                        ))
-                        .with_label(stmt_span, format!("expected {}", ann)));
-                    }
-                    if !Self::types_compatible_with_env(ann, &ty, &self.env) {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(
-                            TypeMismatch {
-                                expected: ann.clone(),
-                                actual: ty.clone(),
-                            },
-                        ))
-                        .with_label(stmt_span, format!("expected {}", ann)));
-                    }
-                    // W001: warn when a type annotation is redundant (matches inferred type)
-                    if Self::is_obviously_typed(value, &self.env) && *ann == ty {
-                        self.diagnostics.push(
-                            Diagnostic::warning(format!(
-                                "redundant type annotation: type `{}` can be inferred",
-                                ann
-                            ))
-                            .with_template(
-                                DiagnosticTemplate::RedundantTypeAnnotation(
-                                    RedundantTypeAnnotation {
-                                        type_name: ann.to_string(),
-                                    },
-                                ),
-                            ),
-                        );
-                    }
-                }
-                // Track default params for the function if it has any
-                if let Expr::Lambda {
-                    params, defaults, ..
-                } = value
-                {
-                    let mut default_set = std::collections::HashSet::new();
-                    for (i, d) in defaults.iter().enumerate() {
-                        if d.is_some()
-                            && let Some((pname, _)) = params.get(i)
-                        {
-                            default_set.insert(pname.clone());
-                        }
-                    }
-                    if !default_set.is_empty() {
-                        self.default_params.insert(name.clone(), default_set);
-                    }
-                }
-                self.warn_if_shadowed(name, stmt_span);
-                self.env.set_var(name.clone(), ty.clone());
-                // Track Task[T] bindings for must-consume enforcement
-                if matches!(ty, Type::Task(_)) {
-                    self.task_bindings.insert(name.clone(), stmt_span);
-                }
-                Ok(ty)
-            }
+            } => self.check_let_stmt(name, type_ann.as_ref(), value, stmt_span),
             Stmt::Class {
                 name,
                 fields,
@@ -1098,44 +983,7 @@ impl TypeChecker {
                 self.env.set_trait(name.clone(), info);
                 Ok(Type::Void)
             }
-            Stmt::Return(expr, span) => {
-                // Set expected_type from return type for inference (e.g., empty list literals)
-                let prev_expected = self.expected_type.take();
-                if let Some(ret) = &self.expected_return_type {
-                    self.expected_type = Some(ret.clone());
-                }
-                let ty = self.check_expr(expr)?;
-                self.expected_type = prev_expected;
-                if ty.is_error() {
-                    return Ok(Type::Error);
-                }
-                // Mark returned task idents as consumed (caller takes responsibility)
-                self.mark_task_ident_consumed(expr);
-                // List[Nil] is compatible with any List[T] (empty list)
-                let is_nil_list_compat = matches!(
-                    (&ty, &self.expected_return_type),
-                    (Type::List(inner), Some(Type::List(_))) if **inner == Type::Nil
-                );
-                if let Some(expected) = &self.expected_return_type
-                    && ty != *expected
-                    && !is_nil_list_compat
-                    && !Self::is_nullable_compatible(expected, &ty)
-                    && !Self::is_subtype_compatible(&ty, expected, &self.env)
-                {
-                    let ctx = self.current_function.as_deref().unwrap_or("<anonymous>");
-                    return Err(
-                        Diagnostic::from_template(DiagnosticTemplate::ReturnTypeMismatch(
-                            ReturnTypeMismatch {
-                                function: ctx.to_string(),
-                                expected: expected.clone(),
-                                actual: ty.clone(),
-                            },
-                        ))
-                        .with_label(*span, format!("expected {}", expected)),
-                    );
-                }
-                Ok(ty)
-            }
+            Stmt::Return(expr, span) => self.check_return_stmt(expr, *span),
             Stmt::Expr(expr, _) => self.check_expr(expr),
             Stmt::If {
                 cond,
@@ -1171,265 +1019,15 @@ impl TypeChecker {
                 }
                 self.with_child_scope(|tc| tc.check_body(else_body))
             }
-            Stmt::While { cond, body, .. } => {
-                let cond_ty = self.check_expr(cond)?;
-                if cond_ty != Type::Bool && !cond_ty.is_error() {
-                    return Err(
-                        Diagnostic::from_template(DiagnosticTemplate::ConditionTypeError(
-                            ConditionTypeError {
-                                actual: cond_ty.clone(),
-                            },
-                        ))
-                        .with_label(cond.span(), "expected Bool"),
-                    );
-                }
-                self.with_child_scope(|tc| {
-                    tc.loop_depth += 1;
-                    tc.check_body(body)
-                })
-            }
+            Stmt::While { cond, body, .. } => self.check_while_stmt(cond, body),
             Stmt::For {
                 var, iter, body, ..
-            } => {
-                let iter_ty = self.check_expr(iter)?;
-                if iter_ty.is_error() {
-                    return self.with_child_scope(|tc| {
-                        tc.loop_depth += 1;
-                        tc.env.set_var(var.clone(), Type::Error);
-                        tc.check_body(body)?;
-                        Ok(Type::Void)
-                    });
-                }
-                let elem_ty = match iter_ty {
-                    Type::List(inner) | Type::Set(inner) => *inner,
-                    Type::Custom(ref class_name, _) => {
-                        if let Some(class_info) = self.env.get_class(class_name) {
-                            if class_info.includes.contains(&"Iterable".to_string()) {
-                                Self::get_iterable_element_type_from_class(class_info).ok_or_else(
-                                    || {
-                                        Diagnostic::from_template(
-                                            DiagnosticTemplate::MissingIterable(MissingIterable {
-                                                type_name: class_name.clone(),
-                                            }),
-                                        )
-                                        .with_label(iter.span(), "missing each() method")
-                                    },
-                                )?
-                            } else if class_info.includes.contains(&"Iterator".to_string()) {
-                                Self::get_iterator_element_type_from_class(class_info).ok_or_else(
-                                    || {
-                                        Diagnostic::from_template(
-                                            DiagnosticTemplate::MissingIterable(MissingIterable {
-                                                type_name: class_name.clone(),
-                                            }),
-                                        )
-                                        .with_label(iter.span(), "missing next() method")
-                                    },
-                                )?
-                            } else {
-                                return Err(Diagnostic::from_template(
-                                    DiagnosticTemplate::MissingIterable(MissingIterable {
-                                        type_name: class_name.clone(),
-                                    }),
-                                )
-                                .with_label(iter.span(), "does not include Iterable or Iterator"));
-                            }
-                        } else {
-                            return Err(Diagnostic::from_template(
-                                DiagnosticTemplate::MissingIterable(MissingIterable {
-                                    type_name: iter_ty.to_string(),
-                                }),
-                            )
-                            .with_label(iter.span(), "expected List, Iterable, or Iterator"));
-                        }
-                    }
-                    _ => {
-                        return Err(Diagnostic::from_template(
-                            DiagnosticTemplate::MissingIterable(MissingIterable {
-                                type_name: iter_ty.to_string(),
-                            }),
-                        )
-                        .with_label(iter.span(), "expected List, Iterable, or Iterator"));
-                    }
-                };
-                self.with_child_scope(|tc| {
-                    tc.loop_depth += 1;
-                    tc.warn_if_shadowed(var, stmt_span);
-                    tc.env.set_var(var.clone(), elem_ty);
-                    tc.check_body(body)
-                })
-            }
+            } => self.check_for_stmt(var, iter, body, stmt_span),
             Stmt::Assignment { target, value, .. } => {
-                let val_ty = self.check_expr(value)?;
-                if val_ty.is_error() {
-                    return Ok(Type::Error);
-                }
-                match target {
-                    Expr::Ident(name, ident_span) => {
-                        // Check if the variable is a const binding
-                        if self.const_names.contains(name) {
-                            return Err(Diagnostic::from_template(
-                                DiagnosticTemplate::ConstReassignment(ConstReassignment {
-                                    name: name.clone(),
-                                }),
-                            )
-                            .with_label(*ident_span, "const binding cannot be reassigned"));
-                        }
-                        let target_ty = self.env.get_var(name).cloned().ok_or_else(|| {
-                            let mut diag = Diagnostic::from_template(
-                                DiagnosticTemplate::UndeclaredAssignment(UndeclaredAssignment {
-                                    name: name.clone(),
-                                }),
-                            )
-                            .with_label(*ident_span, "not found in this scope");
-                            if let Some(suggestion) = self.suggest_similar_name(name) {
-                                diag = diag.with_note(format!("did you mean '{}'?", suggestion));
-                            }
-                            diag
-                        })?;
-                        if target_ty.is_error() {
-                            return Ok(Type::Error);
-                        }
-                        if target_ty != val_ty {
-                            // Nullable auto-wrap: allow T or Nil assigned to T?
-                            if let Type::Nullable(inner) = &target_ty
-                                && (val_ty == **inner || val_ty == Type::Nil)
-                            {
-                                return Ok(target_ty);
-                            }
-                            // Subtype compatibility: allow Dog assigned to Animal
-                            if Self::is_subtype_compatible(&val_ty, &target_ty, &self.env) {
-                                return Ok(target_ty);
-                            }
-                            return Err(Diagnostic::from_template(
-                                DiagnosticTemplate::TypeMismatch(TypeMismatch {
-                                    expected: target_ty.clone(),
-                                    actual: val_ty.clone(),
-                                }),
-                            )
-                            .with_label(stmt_span, format!("expected {}", target_ty)));
-                        }
-                        // Reassignment clears boundary-crossed status (new value)
-                        self.boundary_crossed.remove(name);
-                        Ok(val_ty)
-                    }
-                    Expr::Member { object, field, .. } => {
-                        let obj_ty = self.check_expr(object)?;
-                        if obj_ty.is_error() {
-                            return Ok(Type::Error);
-                        }
-                        if let Type::Custom(class_name, _) = &obj_ty {
-                            if let Some(info) = self.env.get_class(class_name) {
-                                if let Some(field_ty) = info.fields.get(field) {
-                                    if *field_ty != val_ty {
-                                        // Nullable auto-wrap: allow T or Nil assigned to T?
-                                        if let Type::Nullable(inner) = field_ty
-                                            && (val_ty == **inner || val_ty == Type::Nil)
-                                        {
-                                            return Ok(field_ty.clone());
-                                        }
-                                        return Err(Diagnostic::from_template(
-                                            DiagnosticTemplate::TypeMismatch(TypeMismatch {
-                                                expected: field_ty.clone(),
-                                                actual: val_ty.clone(),
-                                            }),
-                                        )
-                                        .with_label(stmt_span, format!("expected {}", field_ty)));
-                                    }
-                                } else {
-                                    return Err(Diagnostic::from_template(
-                                        DiagnosticTemplate::UnknownField(UnknownField {
-                                            field: field.clone(),
-                                            type_name: class_name.clone(),
-                                        }),
-                                    )
-                                    .with_label(target.span(), "unknown field"));
-                                }
-                            } else {
-                                return Err(Diagnostic::from_template(
-                                    DiagnosticTemplate::UnknownField(UnknownField {
-                                        field: class_name.clone(),
-                                        type_name: class_name.clone(),
-                                    }),
-                                )
-                                .with_label(object.span(), "unknown class"));
-                            }
-                        } else {
-                            return Err(Diagnostic::from_template(
-                                DiagnosticTemplate::UnknownField(UnknownField {
-                                    field: obj_ty.to_string(),
-                                    type_name: obj_ty.to_string(),
-                                }),
-                            )
-                            .with_label(object.span(), "not a class type"));
-                        }
-                        Ok(val_ty)
-                    }
-                    Expr::Index { object, index, .. } => {
-                        let obj_ty = self.check_expr(object)?;
-                        let idx_ty = self.check_expr(index)?;
-                        if obj_ty.is_error() || idx_ty.is_error() {
-                            return Ok(Type::Error);
-                        }
-                        match &obj_ty {
-                            Type::List(inner) => {
-                                if idx_ty != Type::Int {
-                                    return Err(Diagnostic::from_template(
-                                        DiagnosticTemplate::IndexTypeError(IndexTypeError {
-                                            actual: idx_ty.clone(),
-                                        }),
-                                    )
-                                    .with_label(index.span(), "expected Int"));
-                                }
-                                if **inner != val_ty {
-                                    return Err(Diagnostic::from_template(
-                                        DiagnosticTemplate::TypeMismatch(TypeMismatch {
-                                            expected: *inner.clone(),
-                                            actual: val_ty.clone(),
-                                        }),
-                                    )
-                                    .with_label(stmt_span, format!("expected {}", inner)));
-                                }
-                                Ok(val_ty)
-                            }
-                            Type::Map(key_ty, map_val_ty) => {
-                                if idx_ty != **key_ty {
-                                    return Err(Diagnostic::from_template(
-                                        DiagnosticTemplate::IndexTypeError(IndexTypeError {
-                                            actual: idx_ty.clone(),
-                                        }),
-                                    )
-                                    .with_label(index.span(), format!("expected {}", key_ty)));
-                                }
-                                if **map_val_ty != val_ty {
-                                    return Err(Diagnostic::from_template(
-                                        DiagnosticTemplate::TypeMismatch(TypeMismatch {
-                                            expected: *map_val_ty.clone(),
-                                            actual: val_ty.clone(),
-                                        }),
-                                    )
-                                    .with_label(stmt_span, format!("expected {}", map_val_ty)));
-                                }
-                                Ok(val_ty)
-                            }
-                            _ => Err(Diagnostic::from_template(
-                                DiagnosticTemplate::IndexTypeError(IndexTypeError {
-                                    actual: obj_ty.clone(),
-                                }),
-                            )
-                            .with_label(object.span(), "not a list or map")),
-                        }
-                    }
-                    _ => Err(
-                        Diagnostic::from_template(DiagnosticTemplate::InvalidAssignment(
-                            InvalidAssignment {},
-                        ))
-                        .with_label(target.span(), "invalid target"),
-                    ),
-                }
+                self.check_assignment_stmt(target, value, stmt_span)
             }
             Stmt::Break(span) => {
-                if self.loop_depth == 0 {
+                if self.sc.loop_depth == 0 {
                     return Err(
                         Diagnostic::from_template(DiagnosticTemplate::ControlFlowError(
                             ControlFlowError {
@@ -1442,7 +1040,7 @@ impl TypeChecker {
                 Ok(Type::Void)
             }
             Stmt::Continue(span) => {
-                if self.loop_depth == 0 {
+                if self.sc.loop_depth == 0 {
                     return Err(
                         Diagnostic::from_template(DiagnosticTemplate::ControlFlowError(
                             ControlFlowError {
@@ -1536,11 +1134,469 @@ impl TypeChecker {
                 } else {
                     self.env.set_var(name.clone(), val_ty);
                 }
-                self.const_names.insert(name.clone());
+                self.sc.const_names.insert(name.clone());
                 Ok(Type::Void)
             }
         }
     }
+
+    // -------------------------------------------------------------------------
+    // check_stmt helpers — extracted from the match arms of check_stmt
+    // -------------------------------------------------------------------------
+
+    fn check_let_stmt(
+        &mut self,
+        name: &str,
+        type_ann: Option<&Type>,
+        value: &Expr,
+        stmt_span: Span,
+    ) -> Result<Type, Diagnostic> {
+        let prev_fn = self.sc.current_function.clone();
+        if matches!(value, Expr::Lambda { .. }) {
+            self.sc.current_function = Some(name.to_string());
+        }
+        // If the value is a lambda with inferred types and we have a type annotation,
+        // propagate the expected type for inference.
+        // Also set expected_type for parametric trait resolution (e.g., .into())
+        let prev_expected = self.sc.expected_type.take();
+        if let Some(ann) = type_ann {
+            self.validate_collection_eq_constraint(ann, stmt_span)?;
+            self.sc.expected_type = Some(ann.clone());
+        }
+        let mut ty = if matches!(value, Expr::Lambda { .. }) {
+            self.check_lambda_with_expected(value, type_ann)?
+        } else {
+            self.check_expr(value)?
+        };
+        if matches!(value, Expr::Lambda { .. })
+            && let (
+                Type::Function {
+                    param_names,
+                    params,
+                    ret,
+                    throws,
+                    suspendable: false,
+                },
+                Some(Type::Function {
+                    suspendable: true, ..
+                }),
+            ) = (&ty, self.env.get_var(name))
+        {
+            ty = Type::Function {
+                param_names: param_names.clone(),
+                params: params.clone(),
+                ret: ret.clone(),
+                throws: throws.clone(),
+                suspendable: true,
+            };
+        }
+        self.sc.expected_type = prev_expected;
+        self.sc.current_function = prev_fn;
+        if ty.is_error() {
+            self.env.set_var(name.to_string(), Type::Error);
+            return Ok(Type::Error);
+        }
+        if let Some(ann) = type_ann {
+            // Empty list takes on the annotated type
+            if ty == Type::List(Box::new(Type::Nil)) && matches!(ann, Type::List(_)) {
+                self.env.set_var(name.to_string(), ann.clone());
+                return Ok(ann.clone());
+            }
+            // Empty map takes on the annotated type
+            if ty == Type::Map(Box::new(Type::Error), Box::new(Type::Error))
+                && matches!(ann, Type::Map(_, _))
+            {
+                self.env.set_var(name.to_string(), ann.clone());
+                return Ok(ann.clone());
+            }
+            // Nullable auto-wrap: T or Nil assigned to T?
+            if let Type::Nullable(inner) = ann {
+                if ty == *ann || ty == **inner || ty == Type::Nil {
+                    self.env.set_var(name.to_string(), ann.clone());
+                    return Ok(ann.clone());
+                }
+                return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(
+                    TypeMismatch {
+                        expected: ann.clone(),
+                        actual: ty.clone(),
+                    },
+                ))
+                .with_label(stmt_span, format!("expected {}", ann)));
+            }
+            // Nil cannot be assigned to non-nullable types
+            if ty == Type::Nil && !matches!(ann, Type::Nil) {
+                return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(
+                    TypeMismatch {
+                        expected: ann.clone(),
+                        actual: ty.clone(),
+                    },
+                ))
+                .with_label(stmt_span, format!("expected {}", ann)));
+            }
+            if !Self::types_compatible_with_env(ann, &ty, &self.env) {
+                return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(
+                    TypeMismatch {
+                        expected: ann.clone(),
+                        actual: ty.clone(),
+                    },
+                ))
+                .with_label(stmt_span, format!("expected {}", ann)));
+            }
+            // W001: warn when a type annotation is redundant (matches inferred type)
+            if Self::is_obviously_typed(value, &self.env) && *ann == ty {
+                self.reg.diagnostics.push(
+                    Diagnostic::warning(format!(
+                        "redundant type annotation: type `{}` can be inferred",
+                        ann
+                    ))
+                    .with_template(
+                        DiagnosticTemplate::RedundantTypeAnnotation(RedundantTypeAnnotation {
+                            type_name: ann.to_string(),
+                        }),
+                    ),
+                );
+            }
+        }
+        // Track default params for the function if it has any
+        if let Expr::Lambda {
+            params, defaults, ..
+        } = value
+        {
+            let mut default_set = std::collections::HashSet::new();
+            for (i, d) in defaults.iter().enumerate() {
+                if d.is_some()
+                    && let Some((pname, _)) = params.get(i)
+                {
+                    default_set.insert(pname.clone());
+                }
+            }
+            if !default_set.is_empty() {
+                self.reg
+                    .default_params
+                    .insert(name.to_string(), default_set);
+            }
+        }
+        self.warn_if_shadowed(name, stmt_span);
+        self.env.set_var(name.to_string(), ty.clone());
+        // Track Task[T] bindings for must-consume enforcement
+        if matches!(ty, Type::Task(_)) {
+            self.sc.task_bindings.insert(name.to_string(), stmt_span);
+        }
+        Ok(ty)
+    }
+
+    fn check_return_stmt(&mut self, expr: &Expr, span: Span) -> Result<Type, Diagnostic> {
+        // Set expected_type from return type for inference (e.g., empty list literals)
+        let prev_expected = self.sc.expected_type.take();
+        if let Some(ret) = &self.sc.expected_return_type {
+            self.sc.expected_type = Some(ret.clone());
+        }
+        let ty = self.check_expr(expr)?;
+        self.sc.expected_type = prev_expected;
+        if ty.is_error() {
+            return Ok(Type::Error);
+        }
+        // Mark returned task idents as consumed (caller takes responsibility)
+        self.mark_task_ident_consumed(expr);
+        // List[Nil] is compatible with any List[T] (empty list)
+        let is_nil_list_compat = matches!(
+            (&ty, &self.sc.expected_return_type),
+            (Type::List(inner), Some(Type::List(_))) if **inner == Type::Nil
+        );
+        if let Some(expected) = &self.sc.expected_return_type
+            && ty != *expected
+            && !is_nil_list_compat
+            && !Self::is_nullable_compatible(expected, &ty)
+            && !Self::is_subtype_compatible(&ty, expected, &self.env)
+        {
+            let ctx = self.sc.current_function.as_deref().unwrap_or("<anonymous>");
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::ReturnTypeMismatch(
+                    ReturnTypeMismatch {
+                        function: ctx.to_string(),
+                        expected: expected.clone(),
+                        actual: ty.clone(),
+                    },
+                ))
+                .with_label(span, format!("expected {}", expected)),
+            );
+        }
+        Ok(ty)
+    }
+
+    fn check_while_stmt(&mut self, cond: &Expr, body: &[Stmt]) -> Result<Type, Diagnostic> {
+        let cond_ty = self.check_expr(cond)?;
+        if cond_ty != Type::Bool && !cond_ty.is_error() {
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::ConditionTypeError(
+                    ConditionTypeError {
+                        actual: cond_ty.clone(),
+                    },
+                ))
+                .with_label(cond.span(), "expected Bool"),
+            );
+        }
+        self.with_child_scope(|tc| {
+            tc.sc.loop_depth += 1;
+            tc.check_body(body)
+        })
+    }
+
+    fn check_for_stmt(
+        &mut self,
+        var: &str,
+        iter: &Expr,
+        body: &[Stmt],
+        stmt_span: Span,
+    ) -> Result<Type, Diagnostic> {
+        let iter_ty = self.check_expr(iter)?;
+        if iter_ty.is_error() {
+            return self.with_child_scope(|tc| {
+                tc.sc.loop_depth += 1;
+                tc.env.set_var(var.to_string(), Type::Error);
+                tc.check_body(body)?;
+                Ok(Type::Void)
+            });
+        }
+        let elem_ty = match iter_ty {
+            Type::List(inner) | Type::Set(inner) => *inner,
+            Type::Custom(ref class_name, _) => {
+                if let Some(class_info) = self.env.get_class(class_name) {
+                    if class_info.includes.contains(&"Iterable".to_string()) {
+                        Self::get_iterable_element_type_from_class(class_info).ok_or_else(|| {
+                            Diagnostic::from_template(DiagnosticTemplate::MissingIterable(
+                                MissingIterable {
+                                    type_name: class_name.clone(),
+                                },
+                            ))
+                            .with_label(iter.span(), "missing each() method")
+                        })?
+                    } else if class_info.includes.contains(&"Iterator".to_string()) {
+                        Self::get_iterator_element_type_from_class(class_info).ok_or_else(|| {
+                            Diagnostic::from_template(DiagnosticTemplate::MissingIterable(
+                                MissingIterable {
+                                    type_name: class_name.clone(),
+                                },
+                            ))
+                            .with_label(iter.span(), "missing next() method")
+                        })?
+                    } else {
+                        return Err(Diagnostic::from_template(
+                            DiagnosticTemplate::MissingIterable(MissingIterable {
+                                type_name: class_name.clone(),
+                            }),
+                        )
+                        .with_label(iter.span(), "does not include Iterable or Iterator"));
+                    }
+                } else {
+                    return Err(
+                        Diagnostic::from_template(DiagnosticTemplate::MissingIterable(
+                            MissingIterable {
+                                type_name: iter_ty.to_string(),
+                            },
+                        ))
+                        .with_label(iter.span(), "expected List, Iterable, or Iterator"),
+                    );
+                }
+            }
+            _ => {
+                return Err(
+                    Diagnostic::from_template(DiagnosticTemplate::MissingIterable(
+                        MissingIterable {
+                            type_name: iter_ty.to_string(),
+                        },
+                    ))
+                    .with_label(iter.span(), "expected List, Iterable, or Iterator"),
+                );
+            }
+        };
+        self.with_child_scope(|tc| {
+            tc.sc.loop_depth += 1;
+            tc.warn_if_shadowed(var, stmt_span);
+            tc.env.set_var(var.to_string(), elem_ty);
+            tc.check_body(body)
+        })
+    }
+
+    fn check_assignment_stmt(
+        &mut self,
+        target: &Expr,
+        value: &Expr,
+        stmt_span: Span,
+    ) -> Result<Type, Diagnostic> {
+        let val_ty = self.check_expr(value)?;
+        if val_ty.is_error() {
+            return Ok(Type::Error);
+        }
+        match target {
+            Expr::Ident(name, ident_span) => {
+                // Check if the variable is a const binding
+                if self.sc.const_names.contains(name) {
+                    return Err(
+                        Diagnostic::from_template(DiagnosticTemplate::ConstReassignment(
+                            ConstReassignment { name: name.clone() },
+                        ))
+                        .with_label(*ident_span, "const binding cannot be reassigned"),
+                    );
+                }
+                let target_ty = self.env.get_var(name).cloned().ok_or_else(|| {
+                    let mut diag =
+                        Diagnostic::from_template(DiagnosticTemplate::UndeclaredAssignment(
+                            UndeclaredAssignment { name: name.clone() },
+                        ))
+                        .with_label(*ident_span, "not found in this scope");
+                    if let Some(suggestion) = self.suggest_similar_name(name) {
+                        diag = diag.with_note(format!("did you mean '{}'?", suggestion));
+                    }
+                    diag
+                })?;
+                if target_ty.is_error() {
+                    return Ok(Type::Error);
+                }
+                if target_ty != val_ty {
+                    // Nullable auto-wrap: allow T or Nil assigned to T?
+                    if let Type::Nullable(inner) = &target_ty
+                        && (val_ty == **inner || val_ty == Type::Nil)
+                    {
+                        return Ok(target_ty);
+                    }
+                    // Subtype compatibility: allow Dog assigned to Animal
+                    if Self::is_subtype_compatible(&val_ty, &target_ty, &self.env) {
+                        return Ok(target_ty);
+                    }
+                    return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(
+                        TypeMismatch {
+                            expected: target_ty.clone(),
+                            actual: val_ty.clone(),
+                        },
+                    ))
+                    .with_label(stmt_span, format!("expected {}", target_ty)));
+                }
+                // Reassignment clears boundary-crossed status (new value)
+                self.sc.boundary_crossed.remove(name);
+                Ok(val_ty)
+            }
+            Expr::Member { object, field, .. } => {
+                let obj_ty = self.check_expr(object)?;
+                if obj_ty.is_error() {
+                    return Ok(Type::Error);
+                }
+                if let Type::Custom(class_name, _) = &obj_ty {
+                    if let Some(info) = self.env.get_class(class_name) {
+                        if let Some(field_ty) = info.fields.get(field) {
+                            if *field_ty != val_ty {
+                                // Nullable auto-wrap: allow T or Nil assigned to T?
+                                if let Type::Nullable(inner) = field_ty
+                                    && (val_ty == **inner || val_ty == Type::Nil)
+                                {
+                                    return Ok(field_ty.clone());
+                                }
+                                return Err(Diagnostic::from_template(
+                                    DiagnosticTemplate::TypeMismatch(TypeMismatch {
+                                        expected: field_ty.clone(),
+                                        actual: val_ty.clone(),
+                                    }),
+                                )
+                                .with_label(stmt_span, format!("expected {}", field_ty)));
+                            }
+                        } else {
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::UnknownField(UnknownField {
+                                    field: field.clone(),
+                                    type_name: class_name.clone(),
+                                }),
+                            )
+                            .with_label(target.span(), "unknown field"));
+                        }
+                    } else {
+                        return Err(Diagnostic::from_template(DiagnosticTemplate::UnknownField(
+                            UnknownField {
+                                field: class_name.clone(),
+                                type_name: class_name.clone(),
+                            },
+                        ))
+                        .with_label(object.span(), "unknown class"));
+                    }
+                } else {
+                    return Err(Diagnostic::from_template(DiagnosticTemplate::UnknownField(
+                        UnknownField {
+                            field: obj_ty.to_string(),
+                            type_name: obj_ty.to_string(),
+                        },
+                    ))
+                    .with_label(object.span(), "not a class type"));
+                }
+                Ok(val_ty)
+            }
+            Expr::Index { object, index, .. } => {
+                let obj_ty = self.check_expr(object)?;
+                let idx_ty = self.check_expr(index)?;
+                if obj_ty.is_error() || idx_ty.is_error() {
+                    return Ok(Type::Error);
+                }
+                match &obj_ty {
+                    Type::List(inner) => {
+                        if idx_ty != Type::Int {
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::IndexTypeError(IndexTypeError {
+                                    actual: idx_ty.clone(),
+                                }),
+                            )
+                            .with_label(index.span(), "expected Int"));
+                        }
+                        if **inner != val_ty {
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::TypeMismatch(TypeMismatch {
+                                    expected: *inner.clone(),
+                                    actual: val_ty.clone(),
+                                }),
+                            )
+                            .with_label(stmt_span, format!("expected {}", inner)));
+                        }
+                        Ok(val_ty)
+                    }
+                    Type::Map(key_ty, map_val_ty) => {
+                        if idx_ty != **key_ty {
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::IndexTypeError(IndexTypeError {
+                                    actual: idx_ty.clone(),
+                                }),
+                            )
+                            .with_label(index.span(), format!("expected {}", key_ty)));
+                        }
+                        if **map_val_ty != val_ty {
+                            return Err(Diagnostic::from_template(
+                                DiagnosticTemplate::TypeMismatch(TypeMismatch {
+                                    expected: *map_val_ty.clone(),
+                                    actual: val_ty.clone(),
+                                }),
+                            )
+                            .with_label(stmt_span, format!("expected {}", map_val_ty)));
+                        }
+                        Ok(val_ty)
+                    }
+                    _ => Err(
+                        Diagnostic::from_template(DiagnosticTemplate::IndexTypeError(
+                            IndexTypeError {
+                                actual: obj_ty.clone(),
+                            },
+                        ))
+                        .with_label(object.span(), "not a list or map"),
+                    ),
+                }
+            }
+            _ => Err(
+                Diagnostic::from_template(DiagnosticTemplate::InvalidAssignment(
+                    InvalidAssignment {},
+                ))
+                .with_label(target.span(), "invalid target"),
+            ),
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // End of check_stmt helpers
+    // -------------------------------------------------------------------------
 
     /// Walk the ancestor chain for a class, returning ClassInfos in order (parent first).
     /// Stops on cycle detection. Does NOT include the class itself.
@@ -1684,12 +1740,12 @@ impl TypeChecker {
             enums: HashMap::new(),
         };
         for &name in trait_names {
-            if let Some(t) = self.builtin_traits.get(name) {
+            if let Some(t) = self.reg.builtin_traits.get(name) {
                 exports.traits.insert(name.to_string(), t.clone());
             }
         }
         for &name in enum_names {
-            if let Some(e) = self.builtin_enums.get(name) {
+            if let Some(e) = self.reg.builtin_enums.get(name) {
                 exports.enums.insert(name.to_string(), e.clone());
             }
         }
@@ -1832,7 +1888,7 @@ impl TypeChecker {
         }
         for (name, info) in &exports.classes {
             self.env.set_class(name.clone(), info.clone());
-            self.imported_classes.insert(name.clone());
+            self.reg.imported_classes.insert(name.clone());
         }
         for (name, info) in &exports.traits {
             self.env.set_trait(name.clone(), info.clone());
@@ -1848,7 +1904,7 @@ impl TypeChecker {
         let mut found = false;
         if let Some(info) = exports.classes.get(name) {
             self.env.set_class(name.to_string(), info.clone());
-            self.imported_classes.insert(name.to_string());
+            self.reg.imported_classes.insert(name.to_string());
             found = true;
         }
         if let Some(info) = exports.traits.get(name) {

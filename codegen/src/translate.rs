@@ -497,43 +497,10 @@ fn translate_expr(
 
         FirExpr::Spawn {
             func, args, scope, ..
-        } => {
-            let entry_ref = state.async_entry_refs.get(func).copied();
-            let param_types = state.function_params.get(func).cloned();
-            let spawn_ref = state.runtime_refs.get("aster_task_spawn").copied();
-            if let (Some(entry_ref), Some(param_types), Some(spawn_ref)) =
-                (entry_ref, param_types, spawn_ref)
-            {
-                let packet_ptr = lower_async_call_packet(builder, state, args, &param_types);
-                let entry_ptr = builder.ins().func_addr(types::I64, entry_ref);
-                let scope_ptr = scope
-                    .and_then(|scope_id| state.locals.get(&scope_id).copied())
-                    .map(|var| builder.use_var(var))
-                    .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
-                let call = builder
-                    .ins()
-                    .call(spawn_ref, &[entry_ptr, packet_ptr, scope_ptr]);
-                builder.inst_results(call)[0]
-            } else {
-                builder.ins().iconst(types::I64, 0)
-            }
-        }
+        } => translate_spawn(builder, state, func, args, *scope),
 
         FirExpr::BlockOn { func, args, ret_ty } => {
-            let entry_ref = state.async_entry_refs.get(func).copied();
-            let param_types = state.function_params.get(func).cloned();
-            let block_on_ref = state.runtime_refs.get("aster_task_block_on").copied();
-            if let (Some(entry_ref), Some(param_types), Some(block_on_ref)) =
-                (entry_ref, param_types, block_on_ref)
-            {
-                let packet_ptr = lower_async_call_packet(builder, state, args, &param_types);
-                let entry_ptr = builder.ins().func_addr(types::I64, entry_ref);
-                let call = builder.ins().call(block_on_ref, &[entry_ptr, packet_ptr]);
-                let raw = builder.inst_results(call)[0];
-                unpack_async_result(builder, raw, ret_ty)
-            } else {
-                builder.ins().iconst(types::I64, 0)
-            }
+            translate_block_on(builder, state, func, args, ret_ty)
         }
 
         FirExpr::ResolveTask { task, ret_ty } => {
@@ -606,50 +573,10 @@ fn translate_expr(
             fields,
             ptr_field_count,
             ..
-        } => {
-            if let Some(&alloc_ref) = state.runtime_refs.get("aster_class_alloc_typed") {
-                let size = fields.len() * 8;
-                let size_val = builder.ins().iconst(types::I64, size as i64);
-                let ptr_count_val = builder.ins().iconst(types::I64, *ptr_field_count as i64);
-                let call = builder.ins().call(alloc_ref, &[size_val, ptr_count_val]);
-                let ptr = builder.inst_results(call)[0];
-                for (i, field_expr) in fields.iter().enumerate() {
-                    let field_val = translate_expr(builder, state, field_expr);
-                    let off = i32::try_from(i * 8)
-                        .expect("codegen: construct field offset exceeds i32::MAX");
-                    builder
-                        .ins()
-                        .store(ir::MemFlags::new(), field_val, ptr, Offset32::new(off));
-                }
-                ptr
-            } else {
-                builder.ins().iconst(types::I64, 0)
-            }
-        }
+        } => translate_construct(builder, state, fields, *ptr_field_count),
 
         FirExpr::ListNew { elements, elem_ty } => {
-            if let Some(&new_ref) = state.runtime_refs.get("aster_list_new") {
-                let cap = elements.len().max(4) as i64;
-                let cap_val = builder.ins().iconst(types::I64, cap);
-                let ptr_elems = if elem_ty.needs_gc_root() { 1i64 } else { 0i64 };
-                let ptr_elems_val = builder.ins().iconst(types::I64, ptr_elems);
-                let call = builder.ins().call(new_ref, &[cap_val, ptr_elems_val]);
-                let list_ptr = builder.inst_results(call)[0];
-                if let Some(&push_ref) = state.runtime_refs.get("aster_list_push") {
-                    let mut current_ptr = list_ptr;
-                    for elem in elements {
-                        let val = translate_expr(builder, state, elem);
-                        let packed = pack_list_elem(builder, val);
-                        let call = builder.ins().call(push_ref, &[current_ptr, packed]);
-                        current_ptr = builder.inst_results(call)[0];
-                    }
-                    current_ptr
-                } else {
-                    list_ptr
-                }
-            } else {
-                builder.ins().iconst(types::I64, 0)
-            }
+            translate_list_new(builder, state, elements, elem_ty)
         }
 
         FirExpr::ListGet {
@@ -732,84 +659,14 @@ fn translate_expr(
         }
 
         FirExpr::ClosureCreate { func, env, .. } => {
-            // Allocate closure struct: [func_ptr: i64][env_ptr: i64]
-            if let Some(&alloc_ref) = state.runtime_refs.get("aster_closure_alloc") {
-                let size = builder.ins().iconst(types::I64, 16);
-                let call = builder.ins().call(alloc_ref, &[size]);
-                let closure_ptr = builder.inst_results(call)[0];
-
-                // Store the actual function pointer (for indirect calls)
-                let func_addr = if let Some(&func_ref) = state.func_refs.get(func) {
-                    builder.ins().func_addr(types::I64, func_ref)
-                } else {
-                    builder.ins().iconst(types::I64, 0)
-                };
-                builder.ins().store(
-                    ir::MemFlags::new(),
-                    func_addr,
-                    closure_ptr,
-                    Offset32::new(0),
-                );
-
-                // Store env pointer
-                let env_val = translate_expr(builder, state, env);
-                builder
-                    .ins()
-                    .store(ir::MemFlags::new(), env_val, closure_ptr, Offset32::new(8));
-
-                closure_ptr
-            } else {
-                builder.ins().iconst(types::I64, 0)
-            }
+            translate_closure_create(builder, state, func, env)
         }
 
         FirExpr::ClosureCall {
             closure,
             args,
             ret_ty,
-        } => {
-            let closure_ptr = translate_expr(builder, state, closure);
-
-            // Load function pointer from closure[0]
-            let func_ptr = builder.ins().load(
-                types::I64,
-                ir::MemFlags::new(),
-                closure_ptr,
-                Offset32::new(0),
-            );
-
-            // Load env pointer from closure[8]
-            let env_ptr = builder.ins().load(
-                types::I64,
-                ir::MemFlags::new(),
-                closure_ptr,
-                Offset32::new(8),
-            );
-
-            // Build signature for the indirect call: (env_ptr: i64, args...) -> ret_ty
-            let call_conv = builder.func.signature.call_conv;
-            let sig = builder.func.import_signature(ir::Signature {
-                params: {
-                    let mut params = vec![AbiParam::new(types::I64)]; // env ptr
-                    for arg in args {
-                        let arg_ty = fir_type_to_clif(&infer_operand_type(state, arg));
-                        params.push(AbiParam::new(arg_ty));
-                    }
-                    params
-                },
-                returns: vec![AbiParam::new(fir_type_to_clif(ret_ty))],
-                call_conv,
-            });
-
-            // Build args: env_ptr first, then explicit args
-            let mut call_args = vec![env_ptr];
-            for arg in args {
-                call_args.push(translate_expr(builder, state, arg));
-            }
-
-            let call = builder.ins().call_indirect(sig, func_ptr, &call_args);
-            builder.inst_results(call)[0]
-        }
+        } => translate_closure_call(builder, state, closure, args, ret_ty),
 
         FirExpr::EnvLoad { env, offset, ty } => {
             let env_ptr = translate_expr(builder, state, env);
@@ -849,6 +706,200 @@ fn translate_expr(
             }
         }
     }
+}
+
+fn translate_spawn(
+    builder: &mut FunctionBuilder,
+    state: &mut TranslationState,
+    func: &FunctionId,
+    args: &[FirExpr],
+    scope: Option<LocalId>,
+) -> Value {
+    let entry_ref = state.async_entry_refs.get(func).copied();
+    let param_types = state.function_params.get(func).cloned();
+    let spawn_ref = state.runtime_refs.get("aster_task_spawn").copied();
+    if let (Some(entry_ref), Some(param_types), Some(spawn_ref)) =
+        (entry_ref, param_types, spawn_ref)
+    {
+        let packet_ptr = lower_async_call_packet(builder, state, args, &param_types);
+        let entry_ptr = builder.ins().func_addr(types::I64, entry_ref);
+        let scope_ptr = scope
+            .and_then(|scope_id| state.locals.get(&scope_id).copied())
+            .map(|var| builder.use_var(var))
+            .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+        let call = builder
+            .ins()
+            .call(spawn_ref, &[entry_ptr, packet_ptr, scope_ptr]);
+        builder.inst_results(call)[0]
+    } else {
+        builder.ins().iconst(types::I64, 0)
+    }
+}
+
+fn translate_block_on(
+    builder: &mut FunctionBuilder,
+    state: &mut TranslationState,
+    func: &FunctionId,
+    args: &[FirExpr],
+    ret_ty: &FirType,
+) -> Value {
+    let entry_ref = state.async_entry_refs.get(func).copied();
+    let param_types = state.function_params.get(func).cloned();
+    let block_on_ref = state.runtime_refs.get("aster_task_block_on").copied();
+    if let (Some(entry_ref), Some(param_types), Some(block_on_ref)) =
+        (entry_ref, param_types, block_on_ref)
+    {
+        let packet_ptr = lower_async_call_packet(builder, state, args, &param_types);
+        let entry_ptr = builder.ins().func_addr(types::I64, entry_ref);
+        let call = builder.ins().call(block_on_ref, &[entry_ptr, packet_ptr]);
+        let raw = builder.inst_results(call)[0];
+        unpack_async_result(builder, raw, ret_ty)
+    } else {
+        builder.ins().iconst(types::I64, 0)
+    }
+}
+
+fn translate_construct(
+    builder: &mut FunctionBuilder,
+    state: &mut TranslationState,
+    fields: &[FirExpr],
+    ptr_field_count: u8,
+) -> Value {
+    if let Some(&alloc_ref) = state.runtime_refs.get("aster_class_alloc_typed") {
+        let size = fields.len() * 8;
+        let size_val = builder.ins().iconst(types::I64, size as i64);
+        let ptr_count_val = builder.ins().iconst(types::I64, ptr_field_count as i64);
+        let call = builder.ins().call(alloc_ref, &[size_val, ptr_count_val]);
+        let ptr = builder.inst_results(call)[0];
+        for (i, field_expr) in fields.iter().enumerate() {
+            let field_val = translate_expr(builder, state, field_expr);
+            let off =
+                i32::try_from(i * 8).expect("codegen: construct field offset exceeds i32::MAX");
+            builder
+                .ins()
+                .store(ir::MemFlags::new(), field_val, ptr, Offset32::new(off));
+        }
+        ptr
+    } else {
+        builder.ins().iconst(types::I64, 0)
+    }
+}
+
+fn translate_list_new(
+    builder: &mut FunctionBuilder,
+    state: &mut TranslationState,
+    elements: &[FirExpr],
+    elem_ty: &FirType,
+) -> Value {
+    if let Some(&new_ref) = state.runtime_refs.get("aster_list_new") {
+        let cap = elements.len().max(4) as i64;
+        let cap_val = builder.ins().iconst(types::I64, cap);
+        let ptr_elems = if elem_ty.needs_gc_root() { 1i64 } else { 0i64 };
+        let ptr_elems_val = builder.ins().iconst(types::I64, ptr_elems);
+        let call = builder.ins().call(new_ref, &[cap_val, ptr_elems_val]);
+        let list_ptr = builder.inst_results(call)[0];
+        if let Some(&push_ref) = state.runtime_refs.get("aster_list_push") {
+            let mut current_ptr = list_ptr;
+            for elem in elements {
+                let val = translate_expr(builder, state, elem);
+                let packed = pack_list_elem(builder, val);
+                let call = builder.ins().call(push_ref, &[current_ptr, packed]);
+                current_ptr = builder.inst_results(call)[0];
+            }
+            current_ptr
+        } else {
+            list_ptr
+        }
+    } else {
+        builder.ins().iconst(types::I64, 0)
+    }
+}
+
+fn translate_closure_create(
+    builder: &mut FunctionBuilder,
+    state: &mut TranslationState,
+    func: &FunctionId,
+    env: &FirExpr,
+) -> Value {
+    // Allocate closure struct: [func_ptr: i64][env_ptr: i64]
+    if let Some(&alloc_ref) = state.runtime_refs.get("aster_closure_alloc") {
+        let size = builder.ins().iconst(types::I64, 16);
+        let call = builder.ins().call(alloc_ref, &[size]);
+        let closure_ptr = builder.inst_results(call)[0];
+
+        // Store the actual function pointer (for indirect calls)
+        let func_addr = if let Some(&func_ref) = state.func_refs.get(func) {
+            builder.ins().func_addr(types::I64, func_ref)
+        } else {
+            builder.ins().iconst(types::I64, 0)
+        };
+        builder.ins().store(
+            ir::MemFlags::new(),
+            func_addr,
+            closure_ptr,
+            Offset32::new(0),
+        );
+
+        // Store env pointer
+        let env_val = translate_expr(builder, state, env);
+        builder
+            .ins()
+            .store(ir::MemFlags::new(), env_val, closure_ptr, Offset32::new(8));
+
+        closure_ptr
+    } else {
+        builder.ins().iconst(types::I64, 0)
+    }
+}
+
+fn translate_closure_call(
+    builder: &mut FunctionBuilder,
+    state: &mut TranslationState,
+    closure: &FirExpr,
+    args: &[FirExpr],
+    ret_ty: &FirType,
+) -> Value {
+    let closure_ptr = translate_expr(builder, state, closure);
+
+    // Load function pointer from closure[0]
+    let func_ptr = builder.ins().load(
+        types::I64,
+        ir::MemFlags::new(),
+        closure_ptr,
+        Offset32::new(0),
+    );
+
+    // Load env pointer from closure[8]
+    let env_ptr = builder.ins().load(
+        types::I64,
+        ir::MemFlags::new(),
+        closure_ptr,
+        Offset32::new(8),
+    );
+
+    // Build signature for the indirect call: (env_ptr: i64, args...) -> ret_ty
+    let call_conv = builder.func.signature.call_conv;
+    let sig = builder.func.import_signature(ir::Signature {
+        params: {
+            let mut params = vec![AbiParam::new(types::I64)]; // env ptr
+            for arg in args {
+                let arg_ty = fir_type_to_clif(&infer_operand_type(state, arg));
+                params.push(AbiParam::new(arg_ty));
+            }
+            params
+        },
+        returns: vec![AbiParam::new(fir_type_to_clif(ret_ty))],
+        call_conv,
+    });
+
+    // Build args: env_ptr first, then explicit args
+    let mut call_args = vec![env_ptr];
+    for arg in args {
+        call_args.push(translate_expr(builder, state, arg));
+    }
+
+    let call = builder.ins().call_indirect(sig, func_ptr, &call_args);
+    builder.inst_results(call)[0]
 }
 
 fn translate_binop(

@@ -40,30 +40,36 @@ impl Lowerer {
         let fir_iter = self.lower_expr(iter)?;
 
         // Use unique names to avoid collisions in nested for-loops
-        let uid = self.next_local;
+        let uid = self.scope.next_local;
 
         // let __iter = <iterable>
         let iter_id = self.alloc_local();
-        self.locals.insert(format!("__for_iter_{}", uid), iter_id);
-        self.local_types.insert(iter_id, FirType::Ptr);
+        self.scope
+            .locals
+            .insert(format!("__for_iter_{}", uid), iter_id);
+        self.scope.local_types.insert(iter_id, FirType::Ptr);
 
         // let __len = aster_list_len(__iter)
         let len_id = self.alloc_local();
-        self.locals.insert(format!("__for_len_{}", uid), len_id);
-        self.local_types.insert(len_id, FirType::I64);
+        self.scope
+            .locals
+            .insert(format!("__for_len_{}", uid), len_id);
+        self.scope.local_types.insert(len_id, FirType::I64);
 
         // let __idx = 0
         let idx_id = self.alloc_local();
-        self.locals.insert(format!("__for_idx_{}", uid), idx_id);
-        self.local_types.insert(idx_id, FirType::I64);
+        self.scope
+            .locals
+            .insert(format!("__for_idx_{}", uid), idx_id);
+        self.scope.local_types.insert(idx_id, FirType::I64);
 
         // Resolve element type from AST type info when available
         let elem_ty = self.resolve_list_elem_type(iter).unwrap_or(FirType::I64);
 
         // let var = aster_list_get(__iter, __idx)
         let var_id = self.alloc_local();
-        self.locals.insert(var.to_string(), var_id);
-        self.local_types.insert(var_id, elem_ty.clone());
+        self.scope.locals.insert(var.to_string(), var_id);
+        self.scope.local_types.insert(var_id, elem_ty.clone());
 
         // Build the while loop body
         let mut while_body = Vec::new();
@@ -130,17 +136,19 @@ impl Lowerer {
     ) -> Result<FirStmt, LowerError> {
         let fir_start = self.lower_expr(start)?;
         let fir_end = self.lower_expr(end)?;
-        let uid = self.next_local;
+        let uid = self.scope.next_local;
 
         // let __end = <end>
         let end_id = self.alloc_local();
-        self.locals.insert(format!("__range_end_{}", uid), end_id);
-        self.local_types.insert(end_id, FirType::I64);
+        self.scope
+            .locals
+            .insert(format!("__range_end_{}", uid), end_id);
+        self.scope.local_types.insert(end_id, FirType::I64);
 
         // let var = <start>
         let var_id = self.alloc_local();
-        self.locals.insert(var.to_string(), var_id);
-        self.local_types.insert(var_id, FirType::I64);
+        self.scope.locals.insert(var.to_string(), var_id);
+        self.scope.local_types.insert(var_id, FirType::I64);
 
         let while_body = self.lower_loop_body(body)?;
 
@@ -183,12 +191,14 @@ impl Lowerer {
         body: &[Stmt],
     ) -> Result<FirStmt, LowerError> {
         let fir_range = self.lower_expr(iter)?;
-        let uid = self.next_local;
+        let uid = self.scope.next_local;
 
         // let __range = <iter>
         let range_id = self.alloc_local();
-        self.locals.insert(format!("__range_ptr_{}", uid), range_id);
-        self.local_types.insert(range_id, FirType::Ptr);
+        self.scope
+            .locals
+            .insert(format!("__range_ptr_{}", uid), range_id);
+        self.scope.local_types.insert(range_id, FirType::Ptr);
 
         // Extract start, end, inclusive from range struct fields
         // Range layout: [start: i64 @ 0][end: i64 @ 8][inclusive: i64 @ 16]
@@ -209,21 +219,26 @@ impl Lowerer {
         };
 
         let start_id = self.alloc_local();
-        self.locals
+        self.scope
+            .locals
             .insert(format!("__range_start_{}", uid), start_id);
-        self.local_types.insert(start_id, FirType::I64);
+        self.scope.local_types.insert(start_id, FirType::I64);
 
         let end_id = self.alloc_local();
-        self.locals.insert(format!("__range_end_{}", uid), end_id);
-        self.local_types.insert(end_id, FirType::I64);
+        self.scope
+            .locals
+            .insert(format!("__range_end_{}", uid), end_id);
+        self.scope.local_types.insert(end_id, FirType::I64);
 
         let incl_id = self.alloc_local();
-        self.locals.insert(format!("__range_incl_{}", uid), incl_id);
-        self.local_types.insert(incl_id, FirType::Bool);
+        self.scope
+            .locals
+            .insert(format!("__range_incl_{}", uid), incl_id);
+        self.scope.local_types.insert(incl_id, FirType::Bool);
 
         let var_id = self.alloc_local();
-        self.locals.insert(var.to_string(), var_id);
-        self.local_types.insert(var_id, FirType::I64);
+        self.scope.locals.insert(var.to_string(), var_id);
+        self.scope.local_types.insert(var_id, FirType::I64);
 
         let while_body = self.lower_loop_body(body)?;
 
@@ -293,7 +308,7 @@ impl Lowerer {
 
     pub(crate) fn resolve_iterator_class(&self, iter: &Expr) -> Option<String> {
         if let Expr::Ident(name, _) = iter
-            && let Some(Type::Custom(class_name, _)) = self.local_ast_types.get(name.as_str())
+            && let Some(Type::Custom(class_name, _)) = self.scope.local_ast_types.get(name.as_str())
             && let Some(class_info) = self.type_env.get_class(class_name)
             && class_info
                 .includes
@@ -320,16 +335,16 @@ impl Lowerer {
         class_name: &str,
     ) -> Result<FirStmt, LowerError> {
         let fir_iter = self.lower_expr(iter)?;
-        let uid = self.next_local;
+        let uid = self.scope.next_local;
 
         // let __iter = <iterable>
         let iter_id = self.alloc_local();
-        self.locals.insert(format!("__iter_{}", uid), iter_id);
-        self.local_types.insert(iter_id, FirType::Ptr);
+        self.scope.locals.insert(format!("__iter_{}", uid), iter_id);
+        self.scope.local_types.insert(iter_id, FirType::Ptr);
 
         // Resolve the next() method
         let next_name = format!("{}.next", class_name);
-        let next_func_id = self.functions.get(&next_name).copied().ok_or_else(|| {
+        let next_func_id = self.ms.functions.get(&next_name).copied().ok_or_else(|| {
             LowerError::UnsupportedFeature(
                 UnsupportedFeatureKind::Other(format!(
                     "Iterator class '{}' has no next() method in FIR",
@@ -341,13 +356,13 @@ impl Lowerer {
 
         // let __next (will be reassigned each iteration)
         let next_id = self.alloc_local();
-        self.locals.insert(format!("__next_{}", uid), next_id);
-        self.local_types.insert(next_id, FirType::Ptr); // nullable = Ptr (0=nil, non-zero=boxed)
+        self.scope.locals.insert(format!("__next_{}", uid), next_id);
+        self.scope.local_types.insert(next_id, FirType::Ptr); // nullable = Ptr (0=nil, non-zero=boxed)
 
         // let var (the loop variable, unwrapped value)
         let var_id = self.alloc_local();
-        self.locals.insert(var.to_string(), var_id);
-        self.local_types.insert(var_id, FirType::I64);
+        self.scope.locals.insert(var.to_string(), var_id);
+        self.scope.local_types.insert(var_id, FirType::I64);
 
         // Build while(true) loop body:
         let mut while_body = Vec::new();

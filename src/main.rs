@@ -114,8 +114,8 @@ fn frontend(source: &str, filename: &str) -> Result<(ast::Module, TypeChecker), 
     let mut checker = TypeChecker::with_loader(loader);
     let errors = checker.check_module_all(&module_ast);
 
-    // Surface warnings (stored in checker.diagnostics by check_module_all)
-    let warnings: Vec<_> = checker.diagnostics.drain(..).collect();
+    // Surface warnings (stored in checker.reg.diagnostics by check_module_all)
+    let warnings: Vec<_> = checker.reg.diagnostics.drain(..).collect();
     for w in &warnings {
         render_diagnostic(source, filename, w);
     }

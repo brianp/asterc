@@ -23,8 +23,8 @@ impl TypeChecker {
 
             Expr::Ident(name, span) => {
                 // Data sharing warning: variable used after crossing a thread boundary
-                if let Some(crossing_span) = self.boundary_crossed.get(name) {
-                    self.diagnostics.push(
+                if let Some(crossing_span) = self.sc.boundary_crossed.get(name) {
+                    self.reg.diagnostics.push(
                         Diagnostic::warning(format!(
                             "'{}' was copied to an async context and is used afterward — mutation only affects the local copy",
                             name
@@ -36,7 +36,7 @@ impl TypeChecker {
                         .with_label(*span, "used after copy"),
                     );
                     // Remove to warn only once per variable
-                    self.boundary_crossed.remove(name);
+                    self.sc.boundary_crossed.remove(name);
                 }
                 {
                     let ty = self.env.get_var(name).cloned().ok_or_else(|| {
@@ -52,7 +52,7 @@ impl TypeChecker {
                     })?;
                     // Apply nil-list promotions from .push() calls in nested scopes
                     if matches!(&ty, Type::List(inner) if **inner == Type::Nil)
-                        && let Some(promoted) = self.nil_promotions.get(name)
+                        && let Some(promoted) = self.reg.nil_promotions.get(name)
                     {
                         return Ok(promoted.clone());
                     }
@@ -406,9 +406,9 @@ impl TypeChecker {
         }
 
         let mut sub = self.child_checker();
-        sub.throws_type = throws.as_deref().cloned();
+        sub.sc.throws_type = throws.as_deref().cloned();
         if *ret_type != Type::Void && *ret_type != Type::Inferred {
-            sub.expected_return_type = Some(ret_type.clone());
+            sub.sc.expected_return_type = Some(ret_type.clone());
         }
 
         // Register virtual ClassInfo for constrained type parameters so that
@@ -481,9 +481,9 @@ impl TypeChecker {
 
         // Must-consume check: emit E027 for any Task[T] binding not consumed
         if !is_abstract {
-            for (name, span) in &sub.task_bindings {
-                if !sub.consumed_tasks.contains(name) {
-                    sub.diagnostics.push(
+            for (name, span) in &sub.sc.task_bindings {
+                if !sub.sc.consumed_tasks.contains(name) {
+                    sub.reg.diagnostics.push(
                         Diagnostic::from_template(DiagnosticTemplate::TaskNotResolved(TaskNotResolved {
                             name: name.clone(),
                         }))
@@ -559,7 +559,7 @@ impl TypeChecker {
         Self::collect_push_calls_recursive(body, &nil_list_vars, &mut push_args);
 
         for (var_name, arg_expr) in push_args {
-            if sub.nil_promotions.contains_key(&var_name) {
+            if sub.reg.nil_promotions.contains_key(&var_name) {
                 continue;
             }
             // Try to resolve the push argument type
@@ -567,7 +567,8 @@ impl TypeChecker {
                 && !ty.is_error()
                 && ty != Type::Nil
             {
-                sub.nil_promotions
+                sub.reg
+                    .nil_promotions
                     .insert(var_name, Type::List(Box::new(ty)));
             }
         }
@@ -725,7 +726,7 @@ impl TypeChecker {
                     return Err(
                         Diagnostic::from_template(DiagnosticTemplate::ReturnTypeMismatch(
                             ReturnTypeMismatch {
-                                function: sub.current_function.clone().unwrap_or_default(),
+                                function: sub.sc.current_function.clone().unwrap_or_default(),
                                 expected: ret_type.clone(),
                                 actual: ret_val_ty.clone(),
                             },
@@ -1005,7 +1006,7 @@ impl TypeChecker {
     fn check_list_literal(&mut self, elems: &[Expr]) -> Result<Type, Diagnostic> {
         if elems.is_empty() {
             // Use expected type context if available (e.g., return type, assignment)
-            if let Some(Type::List(inner)) = &self.expected_type {
+            if let Some(Type::List(inner)) = &self.sc.expected_type {
                 return Ok(Type::List(inner.clone()));
             }
             return Ok(Type::List(Box::new(Type::Nil)));
@@ -1085,7 +1086,7 @@ impl TypeChecker {
             if let Some(info) = ns.classes.get(field) {
                 // Inject class into env so constructor calls and field access work
                 self.env.set_class(field.to_string(), info.clone());
-                self.imported_classes.insert(field.to_string());
+                self.reg.imported_classes.insert(field.to_string());
                 // Return the constructor function type
                 if let Some(ty) = ns.variables.get(field) {
                     self.env.set_var(field.to_string(), ty.clone());
@@ -1147,71 +1148,8 @@ impl TypeChecker {
         if obj_ty.is_error() {
             return Ok(Type::Error);
         }
-        if let Type::Nullable(_) = &obj_ty {
-            if field == "or" || field == "or_else" || field == "or_throw" {
-                return Ok(Type::Void);
-            }
-            return Err(Diagnostic::from_template(DiagnosticTemplate::UnaryOpError(
-                UnaryOpError {
-                    op: format!(".{}", field),
-                    actual: obj_ty.clone(),
-                },
-            ))
-            .with_label(object.span(), "nullable type"));
-        }
-        if let Type::Task(ref inner) = obj_ty {
-            self.mark_task_ident_consumed(object);
-            return Self::check_task_member(field, inner, object);
-        }
-        if let Type::Custom(ref name, ref type_args) = obj_ty
-            && name == "Mutex"
-            && !type_args.is_empty()
-        {
-            return Self::check_mutex_member(field, &type_args[0], object);
-        }
-        if let Type::Custom(ref name, ref type_args) = obj_ty
-            && name == "Channel"
-            && !type_args.is_empty()
-        {
-            return Self::check_channel_member(field, &type_args[0], object);
-        }
-        if let Type::Custom(ref name, ref type_args) = obj_ty
-            && (name == "MultiSend" || name == "MultiReceive")
-            && !type_args.is_empty()
-        {
-            return Self::check_multi_channel_member(field, name, type_args, object);
-        }
-        if let Type::Custom(ref name, _) = obj_ty {
-            if name == "TcpListener" {
-                return Self::check_tcp_listener_instance_member(field, object);
-            }
-            if name == "TcpStream" {
-                return Self::check_tcp_stream_instance_member(field, object);
-            }
-        }
-
-        // Handle String built-in methods
-        if obj_ty == Type::String {
-            return Self::check_string_member(field, object);
-        }
-
-        // Handle Int built-in methods
-        if obj_ty == Type::Int {
-            return Self::check_int_member(field, object);
-        }
-
-        // Handle Float built-in methods
-        if obj_ty == Type::Float {
-            return Self::check_float_member(field, object);
-        }
-
-        // Handle List built-in methods (List implicitly includes Iterable)
-        if let Type::List(ref inner) = obj_ty {
-            return self.check_list_member(field, inner, object);
-        }
-        // Handle Set built-in methods (Set has same interface as List)
-        if let Type::Set(ref inner) = obj_ty {
-            return self.check_set_member(field, inner, object);
+        if let Some(result) = self.check_builtin_member(&obj_ty, field, object) {
+            return result;
         }
         if let Type::Custom(class_name, type_args) = obj_ty {
             let mut current_class = Some(class_name.clone());
@@ -1229,7 +1167,8 @@ impl TypeChecker {
                         .unwrap_or_default();
                     if let Some(t) = info.fields.get(field) {
                         // Enforce visibility for imported classes
-                        if self.imported_classes.contains(cname) && !info.pub_fields.contains(field)
+                        if self.reg.imported_classes.contains(cname)
+                            && !info.pub_fields.contains(field)
                         {
                             return Err(Diagnostic::from_template(
                                 DiagnosticTemplate::VisibilityError(VisibilityError {
@@ -1247,7 +1186,7 @@ impl TypeChecker {
                     }
                     if let Some(t) = info.methods.get(field) {
                         // Enforce visibility for imported classes
-                        if self.imported_classes.contains(cname)
+                        if self.reg.imported_classes.contains(cname)
                             && !info.pub_methods.contains(field)
                         {
                             return Err(Diagnostic::from_template(
@@ -1348,6 +1287,83 @@ impl TypeChecker {
         }
     }
 
+    /// Dispatch member access for built-in types (Nullable, Task, Mutex, Channel,
+    /// MultiSend/MultiReceive, TcpListener, TcpStream, String, Int, Float, List,
+    /// Set). Returns `Some(result)` when the type is handled, `None` to fall
+    /// through to class field/method lookup.
+    fn check_builtin_member(
+        &mut self,
+        obj_ty: &Type,
+        field: &str,
+        object: &Expr,
+    ) -> Option<Result<Type, Diagnostic>> {
+        if let Type::Nullable(_) = obj_ty {
+            if field == "or" || field == "or_else" || field == "or_throw" {
+                return Some(Ok(Type::Void));
+            }
+            return Some(Err(Diagnostic::from_template(
+                DiagnosticTemplate::UnaryOpError(UnaryOpError {
+                    op: format!(".{}", field),
+                    actual: obj_ty.clone(),
+                }),
+            )
+            .with_label(object.span(), "nullable type")));
+        }
+        if let Type::Task(inner) = obj_ty {
+            self.mark_task_ident_consumed(object);
+            return Some(Self::check_task_member(field, inner, object));
+        }
+        if let Type::Custom(name, type_args) = obj_ty
+            && name == "Mutex"
+            && !type_args.is_empty()
+        {
+            return Some(Self::check_mutex_member(field, &type_args[0], object));
+        }
+        if let Type::Custom(name, type_args) = obj_ty
+            && name == "Channel"
+            && !type_args.is_empty()
+        {
+            return Some(Self::check_channel_member(field, &type_args[0], object));
+        }
+        if let Type::Custom(name, type_args) = obj_ty
+            && (name == "MultiSend" || name == "MultiReceive")
+            && !type_args.is_empty()
+        {
+            return Some(Self::check_multi_channel_member(
+                field, name, type_args, object,
+            ));
+        }
+        if let Type::Custom(name, _) = obj_ty {
+            if name == "TcpListener" {
+                return Some(Self::check_tcp_listener_instance_member(field, object));
+            }
+            if name == "TcpStream" {
+                return Some(Self::check_tcp_stream_instance_member(field, object));
+            }
+        }
+        // Handle String built-in methods
+        if *obj_ty == Type::String {
+            return Some(Self::check_string_member(field, object));
+        }
+        // Handle Int built-in methods
+        if *obj_ty == Type::Int {
+            return Some(Self::check_int_member(field, object));
+        }
+        // Handle Float built-in methods
+        if *obj_ty == Type::Float {
+            return Some(Self::check_float_member(field, object));
+        }
+        // Handle List built-in methods (List implicitly includes Iterable)
+        if let Type::List(inner) = obj_ty {
+            return Some(self.check_list_member(field, inner, object));
+        }
+        // Handle Set built-in methods (Set has same interface as List)
+        if let Type::Set(inner) = obj_ty {
+            return Some(self.check_set_member(field, inner, object));
+        }
+        None
+    }
+
     /// Resolve an overloaded method (e.g., multiple into() from Into[A], Into[B])
     /// using expected_type context to disambiguate.
     fn resolve_overloaded_method(
@@ -1362,7 +1378,7 @@ impl TypeChecker {
             return Ok(overloads[0].clone());
         }
         // Try to disambiguate using expected type
-        if let Some(ref expected) = self.expected_type {
+        if let Some(ref expected) = self.sc.expected_type {
             // For .into(), the expected type is the return type
             let matching: Vec<&Type> = overloads
                 .iter()
@@ -1402,7 +1418,7 @@ impl TypeChecker {
     /// Resolve .into() via From/Into auto-reverse: if expected type's class includes From[SourceType],
     /// synthesize the appropriate into() return type.
     fn resolve_into_via_from_reverse(&self, source_type: &Type) -> Option<Type> {
-        let expected = self.expected_type.as_ref()?;
+        let expected = self.sc.expected_type.as_ref()?;
         let target_name = match expected {
             Type::Custom(name, _) => name,
             _ => return None,
@@ -2146,7 +2162,7 @@ impl TypeChecker {
         // Mark arguments as boundary-crossed for data sharing warnings
         for (_, _, arg_expr) in args {
             if let Expr::Ident(name, span) = arg_expr {
-                self.boundary_crossed.insert(name.clone(), *span);
+                self.sc.boundary_crossed.insert(name.clone(), *span);
             }
         }
         Ok(Type::Task(Box::new(ret_ty)))
@@ -2157,9 +2173,9 @@ impl TypeChecker {
         func: &Expr,
         args: &[(String, Span, Expr)],
     ) -> Result<Type, Diagnostic> {
-        self.last_call_suspendable = false;
+        self.sc.last_call_suspendable = false;
         let ret_ty = self.check_call_inner(func, args, true)?;
-        if !self.last_call_suspendable {
+        if !self.sc.last_call_suspendable {
             return Err(
                 Diagnostic::from_template(DiagnosticTemplate::SuspensionError(SuspensionError {
                     message: "callee does not suspend".to_string(),

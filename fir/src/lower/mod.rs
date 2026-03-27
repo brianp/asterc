@@ -67,49 +67,51 @@ impl std::fmt::Display for LowerError {
 
 impl std::error::Error for LowerError {}
 
-pub struct Lowerer {
-    pub(super) type_env: TypeEnv,
-    pub(super) type_table: TypeTable,
-    pub(super) module: FirModule,
+/// Per-function-scope state in the Lowerer. Saved and restored when entering
+/// nested function/lambda scopes.
+#[derive(Default)]
+pub(super) struct ScopeState {
     pub(super) locals: HashMap<String, LocalId>,
     pub(super) local_types: HashMap<LocalId, FirType>,
     pub(super) local_ast_types: HashMap<String, Type>,
+    pub(super) closure_info: HashMap<String, (FunctionId, Option<LocalId>, Vec<String>)>,
+    pub(super) next_local: u32,
+    pub(super) current_return_type: Option<Type>,
+    pub(super) function_scope_id: Option<LocalId>,
+    pub(super) cleanup_locals: Vec<(LocalId, String, bool, bool)>,
+    pub(super) cleanup_scope_stack: Vec<usize>,
+    pub(super) async_scope_stack: Vec<LocalId>,
+}
+
+/// Module-level state accumulated while lowering.
+pub(super) struct ModuleState {
+    pub(super) module: FirModule,
     pub(super) functions: HashMap<String, FunctionId>,
     pub(super) classes: HashMap<String, ClassId>,
     pub(super) class_fields: HashMap<ClassId, Vec<(String, FirType, usize)>>,
     #[allow(clippy::type_complexity)]
     pub(super) enum_variants: HashMap<String, Vec<(String, i64, Vec<(String, FirType)>)>>,
-    pub(super) closure_info: HashMap<String, (FunctionId, Option<LocalId>, Vec<String>)>,
+    #[allow(clippy::type_complexity)]
+    pub(super) function_defaults: HashMap<String, Vec<(String, Option<Expr>)>>,
+    pub(super) next_function: u32,
+    pub(super) next_class: u32,
+}
+
+/// Top-level (module-scope) statement and binding state.
+pub(super) struct TopLevelState {
     pub(super) top_level_lets: Vec<(String, FirType, FirExpr)>,
     pub(super) top_level_stmts: Vec<Stmt>,
     pub(super) top_level_exprs: Vec<Stmt>,
     pub(super) globals: HashMap<String, LocalId>,
-    pub(super) next_local: u32,
-    pub(super) next_function: u32,
-    pub(super) next_class: u32,
-    pub(super) pending_stmts: Vec<FirStmt>,
-    #[allow(clippy::type_complexity)]
-    pub(super) function_defaults: HashMap<String, Vec<(String, Option<Expr>)>>,
-    pub(super) current_return_type: Option<Type>,
-    pub(super) async_scope_stack: Vec<LocalId>,
-    pub(super) function_scope_id: Option<LocalId>,
-    pub(super) cleanup_locals: Vec<(LocalId, String, bool, bool)>,
-    pub(super) cleanup_scope_stack: Vec<usize>,
 }
 
-/// Snapshot of per-function-scope state in the Lowerer. Saved before entering
-/// a nested function/lambda scope and restored on exit.
-pub(super) struct ScopeSnapshot {
-    pub(super) locals: HashMap<String, LocalId>,
-    pub(super) local_types: HashMap<LocalId, FirType>,
-    pub(super) local_ast_types: HashMap<String, Type>,
-    pub(super) closure_info: HashMap<String, (FunctionId, Option<LocalId>, Vec<String>)>,
-    pub(super) next_local: u32,
-    pub(super) current_return_type: Option<Type>,
-    pub(super) function_scope_id: Option<LocalId>,
-    pub(super) cleanup_locals: Vec<(LocalId, String, bool, bool)>,
-    pub(super) cleanup_scope_stack: Vec<usize>,
-    pub(super) async_scope_stack: Vec<LocalId>,
+pub struct Lowerer {
+    pub(super) type_env: TypeEnv,
+    pub(super) type_table: TypeTable,
+    pub(super) scope: ScopeState,
+    pub(super) ms: ModuleState,
+    pub(super) tl: TopLevelState,
+    pub(super) pending_stmts: Vec<FirStmt>,
 }
 
 impl Lowerer {
@@ -117,62 +119,35 @@ impl Lowerer {
         Self {
             type_env,
             type_table,
-            module: FirModule::new(),
-            locals: HashMap::new(),
-            local_types: HashMap::new(),
-            local_ast_types: HashMap::new(),
-            functions: HashMap::new(),
-            classes: HashMap::new(),
-            class_fields: HashMap::new(),
-            enum_variants: HashMap::new(),
-            closure_info: HashMap::new(),
-            top_level_lets: Vec::new(),
-            top_level_stmts: Vec::new(),
-            top_level_exprs: Vec::new(),
-            globals: HashMap::new(),
-            next_local: 0,
-            next_function: 0,
-            next_class: 0,
+            scope: ScopeState::default(),
+            ms: ModuleState {
+                module: FirModule::new(),
+                functions: HashMap::new(),
+                classes: HashMap::new(),
+                class_fields: HashMap::new(),
+                enum_variants: HashMap::new(),
+                function_defaults: HashMap::new(),
+                next_function: 0,
+                next_class: 0,
+            },
+            tl: TopLevelState {
+                top_level_lets: Vec::new(),
+                top_level_stmts: Vec::new(),
+                top_level_exprs: Vec::new(),
+                globals: HashMap::new(),
+            },
             pending_stmts: Vec::new(),
-            function_defaults: HashMap::new(),
-            current_return_type: None,
-            async_scope_stack: Vec::new(),
-            function_scope_id: None,
-            cleanup_locals: Vec::new(),
-            cleanup_scope_stack: Vec::new(),
         }
     }
 
     /// Save per-function scope state and reset for a nested scope.
-    fn save_scope(&mut self) -> ScopeSnapshot {
-        let snapshot = ScopeSnapshot {
-            locals: std::mem::take(&mut self.locals),
-            local_types: std::mem::take(&mut self.local_types),
-            local_ast_types: std::mem::take(&mut self.local_ast_types),
-            closure_info: std::mem::take(&mut self.closure_info),
-            next_local: self.next_local,
-            current_return_type: self.current_return_type.take(),
-            function_scope_id: self.function_scope_id.take(),
-            cleanup_locals: std::mem::take(&mut self.cleanup_locals),
-            cleanup_scope_stack: std::mem::take(&mut self.cleanup_scope_stack),
-            async_scope_stack: std::mem::take(&mut self.async_scope_stack),
-        };
-        self.next_local = 0;
-        snapshot
+    fn save_scope(&mut self) -> ScopeState {
+        std::mem::take(&mut self.scope)
     }
 
     /// Restore per-function scope state from a previous snapshot.
-    fn restore_scope(&mut self, snapshot: ScopeSnapshot) {
-        self.locals = snapshot.locals;
-        self.local_types = snapshot.local_types;
-        self.local_ast_types = snapshot.local_ast_types;
-        self.closure_info = snapshot.closure_info;
-        self.next_local = snapshot.next_local;
-        self.current_return_type = snapshot.current_return_type;
-        self.function_scope_id = snapshot.function_scope_id;
-        self.cleanup_locals = snapshot.cleanup_locals;
-        self.cleanup_scope_stack = snapshot.cleanup_scope_stack;
-        self.async_scope_stack = snapshot.async_scope_stack;
+    fn restore_scope(&mut self, saved: ScopeState) {
+        self.scope = saved;
     }
 
     pub fn lower_module(&mut self, module: &Module) -> Result<(), LowerError> {
@@ -187,9 +162,9 @@ impl Lowerer {
                         },
                     ..
                 } => {
-                    let id = FunctionId(self.next_function);
-                    self.next_function += 1;
-                    self.functions.insert(name.clone(), id);
+                    let id = FunctionId(self.ms.next_function);
+                    self.ms.next_function += 1;
+                    self.ms.functions.insert(name.clone(), id);
                     // Store defaults for filling in missing args at call sites
                     let param_defaults: Vec<(String, Option<Expr>)> = params
                         .iter()
@@ -197,13 +172,15 @@ impl Lowerer {
                         .map(|(i, (pname, _))| (pname.clone(), defaults.get(i).cloned().flatten()))
                         .collect();
                     if param_defaults.iter().any(|(_, d)| d.is_some()) {
-                        self.function_defaults.insert(name.clone(), param_defaults);
+                        self.ms
+                            .function_defaults
+                            .insert(name.clone(), param_defaults);
                     }
                 }
                 Stmt::Class { name, .. } => {
-                    let id = ClassId(self.next_class);
-                    self.next_class += 1;
-                    self.classes.insert(name.clone(), id);
+                    let id = ClassId(self.ms.next_class);
+                    self.ms.next_class += 1;
+                    self.ms.classes.insert(name.clone(), id);
                 }
                 Stmt::Enum { name, variants, .. } => {
                     // Register enum variant metadata for match lowering
@@ -216,13 +193,13 @@ impl Lowerer {
                             .collect();
                         variant_info.push((v.name.clone(), tag as i64, fields));
                     }
-                    self.enum_variants.insert(name.clone(), variant_info);
+                    self.ms.enum_variants.insert(name.clone(), variant_info);
                     // Register variant constructors as functions (will be defined in lower_enum)
                     for v in variants {
-                        let id = FunctionId(self.next_function);
-                        self.next_function += 1;
+                        let id = FunctionId(self.ms.next_function);
+                        self.ms.next_function += 1;
                         let ctor_name = format!("{}.{}", name, v.name);
-                        self.functions.insert(ctor_name, id);
+                        self.ms.functions.insert(ctor_name, id);
                     }
                 }
                 _ => {}
@@ -241,7 +218,7 @@ impl Lowerer {
                 false
             }
         });
-        if needs_ordering && !self.functions.contains_key("Ordering.Less") {
+        if needs_ordering && !self.ms.functions.contains_key("Ordering.Less") {
             self.inject_ordering_builtin();
         }
 
@@ -252,8 +229,8 @@ impl Lowerer {
 
         // If there are top-level exprs or stmts but no user-defined main function,
         // synthesize an entry function that runs globals + control flow + expressions.
-        if (!self.top_level_exprs.is_empty() || !self.top_level_stmts.is_empty())
-            && self.module.entry.is_none()
+        if (!self.tl.top_level_exprs.is_empty() || !self.tl.top_level_stmts.is_empty())
+            && self.ms.module.entry.is_none()
         {
             self.synthesize_entry_function()?;
         }
@@ -270,8 +247,8 @@ impl Lowerer {
     pub fn lower_repl_expr(&mut self, expr: &Expr, ty: &Type) -> Result<FunctionId, LowerError> {
         let ret_type = self.lower_type(ty);
         let fir_expr = self.lower_expr(expr)?;
-        let id = FunctionId(self.next_function);
-        self.next_function += 1;
+        let id = FunctionId(self.ms.next_function);
+        self.ms.next_function += 1;
         let func = FirFunction {
             id,
             name: format!("__repl_expr_{}", id.0),
@@ -281,18 +258,18 @@ impl Lowerer {
             is_entry: true,
             suspendable: false,
         };
-        self.module.add_function(func);
+        self.ms.module.add_function(func);
         Ok(id)
     }
 
     /// Take ownership of the built FirModule.
     pub fn finish(self) -> FirModule {
-        self.module
+        self.ms.module
     }
 
     /// Get a reference to the module being built.
     pub fn module(&self) -> &FirModule {
-        &self.module
+        &self.ms.module
     }
 
     fn value_has_pending_stmts(&self, value: &Expr) -> bool {
@@ -333,7 +310,7 @@ impl Lowerer {
     /// Resolve the element type of a list expression from local_ast_types or type_table.
     fn resolve_list_elem_type(&self, expr: &Expr) -> Option<FirType> {
         let ast_ty = match expr {
-            Expr::Ident(name, _) => self.local_ast_types.get(name).cloned(),
+            Expr::Ident(name, _) => self.scope.local_ast_types.get(name).cloned(),
             _ => self.type_table.get(&expr.span()).cloned(),
         };
         if let Some(Type::List(inner)) = ast_ty {
@@ -346,7 +323,7 @@ impl Lowerer {
     /// Resolve the AST type of an expression from local_ast_types or type_table.
     fn resolve_expr_ast_type(&self, expr: &Expr) -> Option<Type> {
         match expr {
-            Expr::Ident(name, _) => self.local_ast_types.get(name).cloned(),
+            Expr::Ident(name, _) => self.scope.local_ast_types.get(name).cloned(),
             _ => self.type_table.get(&expr.span()).cloned(),
         }
     }
@@ -358,9 +335,9 @@ impl Lowerer {
     fn lower_place(&self, expr: &Expr) -> Result<FirPlace, LowerError> {
         match expr {
             Expr::Ident(name, _) => {
-                if let Some(&local_id) = self.locals.get(name.as_str()) {
+                if let Some(&local_id) = self.scope.locals.get(name.as_str()) {
                     Ok(FirPlace::Local(local_id))
-                } else if let Some(&self_id) = self.locals.get("self") {
+                } else if let Some(&self_id) = self.scope.locals.get("self") {
                     // Inside a method body — resolve bare field names as self.field
                     let self_expr = Expr::Ident("self".to_string(), expr.span());
                     match self.resolve_field_access(&self_expr, name) {
@@ -377,7 +354,7 @@ impl Lowerer {
             Expr::Index { object, index, .. } => {
                 let is_map = if let Expr::Ident(name, _) = object.as_ref() {
                     matches!(
-                        self.local_ast_types.get(name.as_str()),
+                        self.scope.local_ast_types.get(name.as_str()),
                         Some(Type::Map(_, _))
                     )
                 } else {
@@ -419,10 +396,10 @@ impl Lowerer {
             Expr::Int(n, _) => Ok(FirExpr::IntLit(*n)),
             Expr::Str(s, _) => Ok(FirExpr::StringLit(s.clone())),
             Expr::Ident(name, _) => {
-                if let Some(&local_id) = self.locals.get(name.as_str()) {
+                if let Some(&local_id) = self.scope.locals.get(name.as_str()) {
                     let ty = self.resolve_var_type(name);
                     Ok(FirExpr::LocalVar(local_id, ty))
-                } else if let Some(&self_id) = self.locals.get("self") {
+                } else if let Some(&self_id) = self.scope.locals.get("self") {
                     // Inside a method body — resolve bare field names as self.field
                     let self_expr = Expr::Ident("self".to_string(), expr.span());
                     match self.resolve_field_access(&self_expr, name) {
@@ -517,8 +494,8 @@ impl Lowerer {
     }
 
     fn alloc_local(&mut self) -> LocalId {
-        let id = LocalId(self.next_local);
-        self.next_local += 1;
+        let id = LocalId(self.scope.next_local);
+        self.scope.next_local += 1;
         id
     }
 
@@ -590,8 +567,8 @@ impl Lowerer {
 
     fn resolve_var_type(&self, name: &str) -> FirType {
         // Check local scope first (function params, let bindings)
-        if let Some(&local_id) = self.locals.get(name)
-            && let Some(ty) = self.local_types.get(&local_id)
+        if let Some(&local_id) = self.scope.locals.get(name)
+            && let Some(ty) = self.scope.local_types.get(&local_id)
         {
             return ty.clone();
         }
@@ -609,7 +586,7 @@ impl Lowerer {
             return self.lower_type(ret);
         }
         // Check local AST types
-        if let Some(Type::Function { ret, .. }) = self.local_ast_types.get(name) {
+        if let Some(Type::Function { ret, .. }) = self.scope.local_ast_types.get(name) {
             return self.lower_type(ret);
         }
         FirType::I64 // fallback
@@ -700,6 +677,7 @@ impl Lowerer {
     fn resolve_called_function_id(&self, func: &Expr) -> Result<FunctionId, LowerError> {
         match func {
             Expr::Ident(name, _) => self
+                .ms
                 .functions
                 .get(name)
                 .copied()
@@ -733,7 +711,7 @@ impl Lowerer {
             return self.lower_type(inner_ty);
         }
         if let Expr::Ident(name, _) = expr {
-            if let Some(Type::Task(inner_ty)) = self.local_ast_types.get(name) {
+            if let Some(Type::Task(inner_ty)) = self.scope.local_ast_types.get(name) {
                 return self.lower_type(inner_ty);
             }
             if let Some(Type::Task(inner_ty)) = self.type_env.get_var(name) {
@@ -776,7 +754,7 @@ impl Lowerer {
             return Some(result.as_ref());
         }
         if let Expr::Ident(name, _) = expr
-            && let Some(Type::List(inner)) = self.local_ast_types.get(name)
+            && let Some(Type::List(inner)) = self.scope.local_ast_types.get(name)
             && let Type::Task(result) = inner.as_ref()
         {
             return Some(result.as_ref());
@@ -785,8 +763,8 @@ impl Lowerer {
     }
 
     fn resolve_function_ret_type_by_id(&self, id: FunctionId) -> FirType {
-        if (id.0 as usize) < self.module.functions.len() {
-            self.module.get_function(id).ret_type.clone()
+        if (id.0 as usize) < self.ms.module.functions.len() {
+            self.ms.module.get_function(id).ret_type.clone()
         } else {
             FirType::Void
         }
@@ -802,7 +780,7 @@ impl Lowerer {
         let class_name = self.resolve_class_name(object)?;
 
         // Look up the class ID
-        let class_id = self.classes.get(&class_name).ok_or_else(|| {
+        let class_id = self.ms.classes.get(&class_name).ok_or_else(|| {
             LowerError::UnsupportedFeature(
                 UnsupportedFeatureKind::Other(format!("unknown class: {}", class_name)),
                 object.span(),
@@ -810,7 +788,7 @@ impl Lowerer {
         })?;
 
         // Look up the field in the class layout
-        let fields = self.class_fields.get(class_id).ok_or_else(|| {
+        let fields = self.ms.class_fields.get(class_id).ok_or_else(|| {
             LowerError::UnsupportedFeature(
                 UnsupportedFeatureKind::Other(format!("no field layout for class: {}", class_name)),
                 object.span(),
@@ -837,7 +815,7 @@ impl Lowerer {
             return true;
         }
         if let Expr::Ident(name, _) = expr {
-            if let Some(Type::Custom(class_name, _)) = self.local_ast_types.get(name.as_str())
+            if let Some(Type::Custom(class_name, _)) = self.scope.local_ast_types.get(name.as_str())
                 && class_name == builtin_class::RANGE
             {
                 return true;
@@ -860,7 +838,7 @@ impl Lowerer {
         match expr {
             Expr::Ident(name, _) => {
                 // Check local AST types first (function-scoped variables)
-                if let Some(ty) = self.local_ast_types.get(name.as_str())
+                if let Some(ty) = self.scope.local_ast_types.get(name.as_str())
                     && let Type::Custom(class_name, _) = ty
                 {
                     return Ok(class_name.clone());
@@ -871,13 +849,13 @@ impl Lowerer {
                 }
                 // Inside a method body, bare field names resolve via self
                 // e.g. `addr.zip` where `addr` is a field of the current class
-                if let Some(Type::Custom(self_class, _)) = self.local_ast_types.get("self") {
+                if let Some(Type::Custom(self_class, _)) = self.scope.local_ast_types.get("self") {
                     let self_class = self_class.clone();
                     if let Some(class_info) = self.type_env.get_class(&self_class) {
                         for (fname, ftype) in &class_info.fields {
                             if fname == name
                                 && let Type::Custom(field_class, _) = ftype
-                                && self.classes.contains_key(field_class.as_str())
+                                && self.ms.classes.contains_key(field_class.as_str())
                             {
                                 return Ok(field_class.clone());
                             }
@@ -895,13 +873,13 @@ impl Lowerer {
             Expr::Call { func, .. } => {
                 if let Expr::Ident(name, _) = func.as_ref() {
                     // Constructor call: the function name IS the class name
-                    if self.classes.contains_key(name.as_str()) {
+                    if self.ms.classes.contains_key(name.as_str()) {
                         return Ok(name.clone());
                     }
                     // Function call that returns a class instance: look up return type
                     if let Some(Type::Function { ret, .. }) = self.type_env.get_var(name)
                         && let Type::Custom(class_name, _) = ret.as_ref()
-                        && self.classes.contains_key(class_name.as_str())
+                        && self.ms.classes.contains_key(class_name.as_str())
                     {
                         return Ok(class_name.clone());
                     }
@@ -913,20 +891,21 @@ impl Lowerer {
                             && let Some(Type::Function { ret, .. }) =
                                 class_info.methods.get(field.as_str())
                             && let Type::Custom(ret_class, _) = ret.as_ref()
-                            && self.classes.contains_key(ret_class.as_str())
+                            && self.ms.classes.contains_key(ret_class.as_str())
                         {
                             return Ok(ret_class.clone());
                         }
                         // Fall back: check FIR function registry for return type
                         let qualified = format!("{}.{}", class_name, field);
                         if let Some(ret_ty) = self
+                            .ms
                             .functions
                             .get(&qualified)
                             .copied()
                             .map(|fid| self.resolve_function_ret_type_by_id(fid))
                             && let FirType::Struct(class_id) = ret_ty
                         {
-                            for (cname, &cid) in &self.classes {
+                            for (cname, &cid) in &self.ms.classes {
                                 if cid == class_id {
                                     return Ok(cname.clone());
                                 }
@@ -947,7 +926,7 @@ impl Lowerer {
                 // field_ty must be a Struct (class instance) for this to be meaningful
                 if let FirType::Struct(class_id) = &field_ty {
                     // Find the class name from the id
-                    for (cname, &cid) in &self.classes {
+                    for (cname, &cid) in &self.ms.classes {
                         if cid == *class_id {
                             return Ok(cname.clone());
                         }
@@ -975,7 +954,7 @@ impl Lowerer {
             // List index: points[i] — element type from list's AST type
             Expr::Index { object, .. } => {
                 if let Expr::Ident(name, _) = object.as_ref() {
-                    let elem_class = match self.local_ast_types.get(name.as_str()) {
+                    let elem_class = match self.scope.local_ast_types.get(name.as_str()) {
                         Some(Type::List(inner)) => {
                             if let Type::Custom(class_name, _) = inner.as_ref() {
                                 Some(class_name.clone())
@@ -993,7 +972,7 @@ impl Lowerer {
                         _ => None,
                     };
                     if let Some(class_name) = elem_class
-                        && self.classes.contains_key(class_name.as_str())
+                        && self.ms.classes.contains_key(class_name.as_str())
                     {
                         return Ok(class_name);
                     }

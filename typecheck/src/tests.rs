@@ -730,7 +730,9 @@ fn break_outside_loop_error() {
     let mut tc = TypeChecker::new();
     let err = err_msg(tc.check_stmt(&Stmt::Break(s())));
     assert!(
-        err.contains("outside of a loop") || err.contains("outside of a valid context"),
+        err.contains("outside of a loop")
+            || err.contains("outside of a valid context")
+            || err.contains("inside a loop"),
         "got: {}",
         err
     );
@@ -741,7 +743,9 @@ fn continue_outside_loop_error() {
     let mut tc = TypeChecker::new();
     let err = err_msg(tc.check_stmt(&Stmt::Continue(s())));
     assert!(
-        err.contains("outside of a loop") || err.contains("outside of a valid context"),
+        err.contains("outside of a loop")
+            || err.contains("outside of a valid context")
+            || err.contains("inside a loop"),
         "got: {}",
         err
     );
@@ -750,14 +754,14 @@ fn continue_outside_loop_error() {
 #[test]
 fn break_inside_loop_ok() {
     let mut tc = TypeChecker::new();
-    tc.loop_depth = 1;
+    tc.sc.loop_depth = 1;
     assert!(tc.check_stmt(&Stmt::Break(s())).is_ok());
 }
 
 #[test]
 fn continue_inside_loop_ok() {
     let mut tc = TypeChecker::new();
-    tc.loop_depth = 1;
+    tc.sc.loop_depth = 1;
     assert!(tc.check_stmt(&Stmt::Continue(s())).is_ok());
 }
 

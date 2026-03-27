@@ -12,11 +12,14 @@ impl Lowerer {
         let fir_scrutinee = self.lower_expr(scrutinee)?;
         let scrutinee_ty = self.infer_fir_type(&fir_scrutinee);
         // Use unique names to avoid collisions in nested match expressions
-        let uid = self.next_local;
+        let uid = self.scope.next_local;
         let scrutinee_id = self.alloc_local();
-        self.locals
+        self.scope
+            .locals
             .insert(format!("__match_scrut_{}", uid), scrutinee_id);
-        self.local_types.insert(scrutinee_id, scrutinee_ty.clone());
+        self.scope
+            .local_types
+            .insert(scrutinee_id, scrutinee_ty.clone());
 
         // Allocate result temp local — infer type from the scrutinee's AST type
         // or default to I64 (the first arm body will be lowered inside build_match_chain)
@@ -25,9 +28,10 @@ impl Lowerer {
         // Try to infer result type from the first non-binding arm
         let inferred_ty = self.infer_match_result_type(arms);
         let result_ty = inferred_ty.unwrap_or(result_ty);
-        self.locals
+        self.scope
+            .locals
             .insert(format!("__match_result_{}", uid), result_id);
-        self.local_types.insert(result_id, result_ty.clone());
+        self.scope.local_types.insert(result_id, result_ty.clone());
 
         // Emit: let __match_scrut = <scrutinee>
         self.pending_stmts.push(FirStmt::Let {
@@ -67,7 +71,8 @@ impl Lowerer {
                 // For map index expressions: look up the map's value type from local_ast_types
                 if let Expr::Index { object, .. } = scrutinee
                     && let Expr::Ident(map_name, _) = object.as_ref()
-                    && let Some(Type::Map(_, val_ty)) = self.local_ast_types.get(map_name.as_str())
+                    && let Some(Type::Map(_, val_ty)) =
+                        self.scope.local_ast_types.get(map_name.as_str())
                 {
                     Some(*val_ty.clone())
                 } else {
@@ -165,11 +170,11 @@ impl Lowerer {
 
                     // Bind the (possibly unwrapped) value to the name
                     let bind_id = self.alloc_local();
-                    self.locals.insert(name.clone(), bind_id);
-                    self.local_types.insert(bind_id, bind_ty.clone());
+                    self.scope.locals.insert(name.clone(), bind_id);
+                    self.scope.local_types.insert(bind_id, bind_ty.clone());
                     // Propagate AST type info so field access works inside the arm body
                     if let Some(ast_ty) = bind_ast_ty {
-                        self.local_ast_types.insert(name.clone(), ast_ty);
+                        self.scope.local_ast_types.insert(name.clone(), ast_ty);
                     }
                     then_body.push(FirStmt::Let {
                         name: bind_id,
@@ -217,6 +222,7 @@ impl Lowerer {
             } => {
                 // Compare tag of scrutinee to variant tag
                 let tag = self
+                    .ms
                     .enum_variants
                     .get(enum_name.as_str())
                     .and_then(|vs| vs.iter().find(|(n, _, _)| n == variant))
@@ -274,12 +280,12 @@ impl Lowerer {
         // Generate a constructor function for each variant
         for (tag, variant) in variants.iter().enumerate() {
             let ctor_name = format!("{}.{}", name, variant.name);
-            let id = if let Some(&existing_id) = self.functions.get(&ctor_name) {
+            let id = if let Some(&existing_id) = self.ms.functions.get(&ctor_name) {
                 existing_id
             } else {
-                let id = FunctionId(self.next_function);
-                self.next_function += 1;
-                self.functions.insert(ctor_name.clone(), id);
+                let id = FunctionId(self.ms.next_function);
+                self.ms.next_function += 1;
+                self.ms.functions.insert(ctor_name.clone(), id);
                 id
             };
 
@@ -339,7 +345,7 @@ impl Lowerer {
                 is_entry: false,
                 suspendable: false,
             };
-            self.module.add_function(func);
+            self.ms.module.add_function(func);
         }
 
         // Lower methods

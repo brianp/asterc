@@ -20,7 +20,7 @@ impl Lowerer {
         captures.sort();
         captures.dedup();
 
-        let lambda_name = format!("__lambda_{}", self.next_function);
+        let lambda_name = format!("__lambda_{}", self.ms.next_function);
 
         // Build the lifted function's params: __env: Ptr, then original params
         let mut lifted_params =
@@ -30,30 +30,32 @@ impl Lowerer {
         // Before lowering the lambda body, set up the capture mapping.
         // Save outer scope, then set up inner scope with env loads.
         let snapshot = self.save_scope();
-        self.next_local = 0;
-        self.current_return_type = Some(ret_type.clone());
+        self.scope.next_local = 0;
+        self.scope.current_return_type = Some(ret_type.clone());
 
         // Allocate __env as local 0
         let env_local = self.alloc_local(); // LocalId(0)
-        self.locals.insert("__env".to_string(), env_local);
-        self.local_types.insert(env_local, FirType::Ptr);
+        self.scope.locals.insert("__env".to_string(), env_local);
+        self.scope.local_types.insert(env_local, FirType::Ptr);
 
         // Allocate params as locals 1..N
         let mut fir_params = vec![("__env".to_string(), FirType::Ptr)];
         for (pname, pty) in params {
             let local_id = self.alloc_local();
             let fir_type = self.lower_type(pty);
-            self.locals.insert(pname.clone(), local_id);
-            self.local_types.insert(local_id, fir_type.clone());
-            self.local_ast_types.insert(pname.clone(), pty.clone());
+            self.scope.locals.insert(pname.clone(), local_id);
+            self.scope.local_types.insert(local_id, fir_type.clone());
+            self.scope
+                .local_ast_types
+                .insert(pname.clone(), pty.clone());
             fir_params.push((pname.clone(), fir_type));
         }
 
         // Implicit task scope for lambda (same as functions)
         let scope_id = self.alloc_local();
-        self.local_types.insert(scope_id, FirType::Ptr);
-        self.async_scope_stack.push(scope_id);
-        self.function_scope_id = Some(scope_id);
+        self.scope.local_types.insert(scope_id, FirType::Ptr);
+        self.scope.async_scope_stack.push(scope_id);
+        self.scope.function_scope_id = Some(scope_id);
 
         // Map captured variables to env loads
         for cap_name in &captures {
@@ -63,8 +65,8 @@ impl Lowerer {
                 .get(snapshot.locals.get(cap_name).unwrap_or(&LocalId(0)))
                 .cloned()
                 .unwrap_or(FirType::I64);
-            self.locals.insert(cap_name.clone(), local_id);
-            self.local_types.insert(local_id, cap_ty.clone());
+            self.scope.locals.insert(cap_name.clone(), local_id);
+            self.scope.local_types.insert(local_id, cap_ty.clone());
         }
 
         // Lower the body
@@ -72,7 +74,7 @@ impl Lowerer {
 
         // Emit env loads for captures at the start of the body
         for (i, cap_name) in captures.iter().enumerate() {
-            let local_id = match self.locals.get(cap_name) {
+            let local_id = match self.scope.locals.get(cap_name) {
                 Some(&id) => id,
                 None => {
                     return Err(LowerError::UnboundVariable(
@@ -82,6 +84,7 @@ impl Lowerer {
                 }
             };
             let cap_ty = self
+                .scope
                 .local_types
                 .get(&local_id)
                 .cloned()
@@ -108,7 +111,7 @@ impl Lowerer {
         self.restore_scope(snapshot);
 
         // Re-register the function name
-        self.functions.insert(lambda_name, func_id);
+        self.ms.functions.insert(lambda_name, func_id);
 
         if captures.is_empty() {
             // No captures: env is null. Return a ClosureCreate so the value
@@ -123,8 +126,8 @@ impl Lowerer {
             let env_size = captures.len() * 8;
             let env_id = self.alloc_local();
             let env_name = format!("__env_{}", func_id.0);
-            self.locals.insert(env_name.clone(), env_id);
-            self.local_types.insert(env_id, FirType::Ptr);
+            self.scope.locals.insert(env_name.clone(), env_id);
+            self.scope.local_types.insert(env_id, FirType::Ptr);
 
             self.pending_stmts.push(FirStmt::Let {
                 name: env_id,
@@ -138,8 +141,9 @@ impl Lowerer {
 
             // Store capture values into env
             for (i, cap_name) in captures.iter().enumerate() {
-                if let Some(&local_id) = self.locals.get(cap_name.as_str()) {
+                if let Some(&local_id) = self.scope.locals.get(cap_name.as_str()) {
                     let ty = self
+                        .scope
                         .local_types
                         .get(&local_id)
                         .cloned()
@@ -253,7 +257,9 @@ impl Lowerer {
     ) {
         match expr {
             Expr::Ident(name, _) => {
-                if !param_names.contains(name.as_str()) && self.locals.contains_key(name.as_str()) {
+                if !param_names.contains(name.as_str())
+                    && self.scope.locals.contains_key(name.as_str())
+                {
                     captures.push(name.clone());
                 }
             }

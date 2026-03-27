@@ -14,7 +14,8 @@ fn check_warnings(src: &str) -> Vec<Diagnostic> {
     let mut tc = TypeChecker::new();
     // The program should typecheck successfully — warnings are not errors.
     tc.check_module(&module).expect("typecheck ok");
-    tc.diagnostics
+    tc.reg
+        .diagnostics
         .into_iter()
         .filter(|d| d.severity == Severity::Warning && d.code() == Some("W004"))
         .collect()

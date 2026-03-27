@@ -55,7 +55,7 @@ pub fn check_warnings(src: &str) -> Vec<Diagnostic> {
     let mut tc = TypeChecker::new();
     let errors = tc.check_module_all(&module);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
-    tc.diagnostics
+    tc.reg.diagnostics
 }
 
 pub fn check_parse_err(src: &str) -> String {

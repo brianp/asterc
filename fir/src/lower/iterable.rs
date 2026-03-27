@@ -13,7 +13,7 @@ impl Lowerer {
             return expr;
         }
         let tmp_id = self.alloc_local();
-        self.local_types.insert(tmp_id, ty.clone());
+        self.scope.local_types.insert(tmp_id, ty.clone());
         stmts.push(FirStmt::Let {
             name: tmp_id,
             ty: ty.clone(),
@@ -39,23 +39,31 @@ impl Lowerer {
         fir_list: FirExpr,
         elem_ty: &FirType,
     ) -> (LocalId, LocalId, LocalId, LocalId) {
-        let uid = self.next_local;
+        let uid = self.scope.next_local;
 
         let list_id = self.alloc_local();
-        self.locals.insert(format!("__iter_list_{}", uid), list_id);
-        self.local_types.insert(list_id, FirType::Ptr);
+        self.scope
+            .locals
+            .insert(format!("__iter_list_{}", uid), list_id);
+        self.scope.local_types.insert(list_id, FirType::Ptr);
 
         let len_id = self.alloc_local();
-        self.locals.insert(format!("__iter_len_{}", uid), len_id);
-        self.local_types.insert(len_id, FirType::I64);
+        self.scope
+            .locals
+            .insert(format!("__iter_len_{}", uid), len_id);
+        self.scope.local_types.insert(len_id, FirType::I64);
 
         let idx_id = self.alloc_local();
-        self.locals.insert(format!("__iter_idx_{}", uid), idx_id);
-        self.local_types.insert(idx_id, FirType::I64);
+        self.scope
+            .locals
+            .insert(format!("__iter_idx_{}", uid), idx_id);
+        self.scope.local_types.insert(idx_id, FirType::I64);
 
         let elem_id = self.alloc_local();
-        self.locals.insert(format!("__iter_elem_{}", uid), elem_id);
-        self.local_types.insert(elem_id, elem_ty.clone());
+        self.scope
+            .locals
+            .insert(format!("__iter_elem_{}", uid), elem_id);
+        self.scope.local_types.insert(elem_id, elem_ty.clone());
 
         self.pending_stmts.push(FirStmt::Let {
             name: list_id,
@@ -150,7 +158,7 @@ impl Lowerer {
             builtin_method::MAP => {
                 // result = new list; for each elem: result.push(f(elem))
                 let result_id = self.alloc_local();
-                self.local_types.insert(result_id, FirType::Ptr);
+                self.scope.local_types.insert(result_id, FirType::Ptr);
                 self.pending_stmts.push(FirStmt::Let {
                     name: result_id,
                     ty: FirType::Ptr,
@@ -191,7 +199,7 @@ impl Lowerer {
             }
             builtin_method::FILTER => {
                 let result_id = self.alloc_local();
-                self.local_types.insert(result_id, FirType::Ptr);
+                self.scope.local_types.insert(result_id, FirType::Ptr);
                 self.pending_stmts.push(FirStmt::Let {
                     name: result_id,
                     ty: FirType::Ptr,
@@ -234,7 +242,9 @@ impl Lowerer {
                     variants: vec![elem_ty.clone(), FirType::Void],
                 };
                 let result_id = self.alloc_local();
-                self.local_types.insert(result_id, nullable_ty.clone());
+                self.scope
+                    .local_types
+                    .insert(result_id, nullable_ty.clone());
                 self.pending_stmts.push(FirStmt::Let {
                     name: result_id,
                     ty: nullable_ty.clone(),
@@ -275,7 +285,7 @@ impl Lowerer {
             }
             builtin_method::ANY => {
                 let result_id = self.alloc_local();
-                self.local_types.insert(result_id, FirType::Bool);
+                self.scope.local_types.insert(result_id, FirType::Bool);
                 self.pending_stmts.push(FirStmt::Let {
                     name: result_id,
                     ty: FirType::Bool,
@@ -308,7 +318,7 @@ impl Lowerer {
             }
             builtin_method::ALL => {
                 let result_id = self.alloc_local();
-                self.local_types.insert(result_id, FirType::Bool);
+                self.scope.local_types.insert(result_id, FirType::Bool);
                 self.pending_stmts.push(FirStmt::Let {
                     name: result_id,
                     ty: FirType::Bool,
@@ -391,8 +401,8 @@ impl Lowerer {
                 .first()
                 .map(|(n, _)| n.clone())
                 .unwrap_or_else(|| "__it".into());
-            self.locals.insert(param_name, elem_id);
-            self.local_types.insert(elem_id, elem_ty.clone());
+            self.scope.locals.insert(param_name, elem_id);
+            self.scope.local_types.insert(elem_id, elem_ty.clone());
             self.lower_inline_body(body)
         } else {
             // Fallback: identity (shouldn't happen for well-typed programs)
@@ -418,10 +428,10 @@ impl Lowerer {
                 .get(1)
                 .map(|(n, _)| n.clone())
                 .unwrap_or_else(|| "__it".into());
-            self.locals.insert(acc_name, acc_id);
-            self.local_types.insert(acc_id, acc_ty.clone());
-            self.locals.insert(elem_name, elem_id);
-            self.local_types.insert(elem_id, elem_ty.clone());
+            self.scope.locals.insert(acc_name, acc_id);
+            self.scope.local_types.insert(acc_id, acc_ty.clone());
+            self.scope.locals.insert(elem_name, elem_id);
+            self.scope.local_types.insert(elem_id, elem_ty.clone());
             self.lower_inline_body(body)
         } else {
             Ok(FirExpr::LocalVar(acc_id, acc_ty.clone()))
@@ -457,7 +467,7 @@ impl Lowerer {
         let (list_id, len_id, idx_id, elem_id) = self.iter_loop_scaffold(fir_list, elem_ty);
 
         let acc_id = self.alloc_local();
-        self.local_types.insert(acc_id, acc_ty.clone());
+        self.scope.local_types.insert(acc_id, acc_ty.clone());
         self.pending_stmts.push(FirStmt::Let {
             name: acc_id,
             ty: acc_ty.clone(),
@@ -496,7 +506,7 @@ impl Lowerer {
 
         // Store list in a local
         let list_id = self.alloc_local();
-        self.local_types.insert(list_id, FirType::Ptr);
+        self.scope.local_types.insert(list_id, FirType::Ptr);
         self.pending_stmts.push(FirStmt::Let {
             name: list_id,
             ty: FirType::Ptr,
@@ -510,7 +520,9 @@ impl Lowerer {
         };
 
         let result_id = self.alloc_local();
-        self.local_types.insert(result_id, nullable_ty.clone());
+        self.scope
+            .local_types
+            .insert(result_id, nullable_ty.clone());
         self.pending_stmts.push(FirStmt::Let {
             name: result_id,
             ty: nullable_ty.clone(),
@@ -559,7 +571,7 @@ impl Lowerer {
         };
 
         let list_id = self.alloc_local();
-        self.local_types.insert(list_id, FirType::Ptr);
+        self.scope.local_types.insert(list_id, FirType::Ptr);
         self.pending_stmts.push(FirStmt::Let {
             name: list_id,
             ty: FirType::Ptr,
@@ -567,7 +579,7 @@ impl Lowerer {
         });
 
         let len_id = self.alloc_local();
-        self.local_types.insert(len_id, FirType::I64);
+        self.scope.local_types.insert(len_id, FirType::I64);
         self.pending_stmts.push(FirStmt::Let {
             name: len_id,
             ty: FirType::I64,
@@ -579,7 +591,9 @@ impl Lowerer {
         });
 
         let result_id = self.alloc_local();
-        self.local_types.insert(result_id, nullable_ty.clone());
+        self.scope
+            .local_types
+            .insert(result_id, nullable_ty.clone());
         self.pending_stmts.push(FirStmt::Let {
             name: result_id,
             ty: nullable_ty.clone(),
@@ -633,7 +647,7 @@ impl Lowerer {
         let (list_id, len_id, idx_id, elem_id) = self.iter_loop_scaffold(fir_list, elem_ty);
 
         let result_id = self.alloc_local();
-        self.local_types.insert(result_id, FirType::Ptr);
+        self.scope.local_types.insert(result_id, FirType::Ptr);
         self.pending_stmts.push(FirStmt::Let {
             name: result_id,
             ty: FirType::Ptr,
@@ -682,7 +696,9 @@ impl Lowerer {
         let (list_id, len_id, idx_id, elem_id) = self.iter_loop_scaffold(fir_list, elem_ty);
 
         let result_id = self.alloc_local();
-        self.local_types.insert(result_id, nullable_ty.clone());
+        self.scope
+            .local_types
+            .insert(result_id, nullable_ty.clone());
         self.pending_stmts.push(FirStmt::Let {
             name: result_id,
             ty: nullable_ty.clone(),
@@ -694,7 +710,7 @@ impl Lowerer {
         });
 
         let best_id = self.alloc_local();
-        self.local_types.insert(best_id, elem_ty.clone());
+        self.scope.local_types.insert(best_id, elem_ty.clone());
         self.pending_stmts.push(FirStmt::Let {
             name: best_id,
             ty: elem_ty.clone(),
@@ -702,7 +718,7 @@ impl Lowerer {
         });
 
         let has_value_id = self.alloc_local();
-        self.local_types.insert(has_value_id, FirType::Bool);
+        self.scope.local_types.insert(has_value_id, FirType::Bool);
         self.pending_stmts.push(FirStmt::Let {
             name: has_value_id,
             ty: FirType::Bool,
@@ -782,7 +798,7 @@ impl Lowerer {
 
         // Build result list as a copy
         let result_id = self.alloc_local();
-        self.local_types.insert(result_id, FirType::Ptr);
+        self.scope.local_types.insert(result_id, FirType::Ptr);
         self.pending_stmts.push(FirStmt::Let {
             name: result_id,
             ty: FirType::Ptr,
@@ -815,10 +831,10 @@ impl Lowerer {
         });
 
         // Insertion sort: for i in 1..len: key=result[i]; j=i-1; while j>=0 && result[j]>key: result[j+1]=result[j]; j--; result[j+1]=key
-        let uid2 = self.next_local;
+        let uid2 = self.scope.next_local;
         let i_id = self.alloc_local();
-        self.locals.insert(format!("__sort_i_{}", uid2), i_id);
-        self.local_types.insert(i_id, FirType::I64);
+        self.scope.locals.insert(format!("__sort_i_{}", uid2), i_id);
+        self.scope.local_types.insert(i_id, FirType::I64);
         self.pending_stmts.push(FirStmt::Let {
             name: i_id,
             ty: FirType::I64,
@@ -826,12 +842,14 @@ impl Lowerer {
         });
 
         let key_id = self.alloc_local();
-        self.locals.insert(format!("__sort_key_{}", uid2), key_id);
-        self.local_types.insert(key_id, elem_ty.clone());
+        self.scope
+            .locals
+            .insert(format!("__sort_key_{}", uid2), key_id);
+        self.scope.local_types.insert(key_id, elem_ty.clone());
 
         let j_id = self.alloc_local();
-        self.locals.insert(format!("__sort_j_{}", uid2), j_id);
-        self.local_types.insert(j_id, FirType::I64);
+        self.scope.locals.insert(format!("__sort_j_{}", uid2), j_id);
+        self.scope.local_types.insert(j_id, FirType::I64);
 
         // Inner while: j >= 0 && result[j] > key
         let inner_body = vec![
@@ -972,7 +990,9 @@ impl Lowerer {
             variants: vec![elem_ty.clone(), FirType::Void],
         };
         let result_id = self.alloc_local();
-        self.local_types.insert(result_id, nullable_ty.clone());
+        self.scope
+            .local_types
+            .insert(result_id, nullable_ty.clone());
         self.pending_stmts.push(FirStmt::Let {
             name: result_id,
             ty: nullable_ty.clone(),
@@ -1026,7 +1046,7 @@ impl Lowerer {
     /// Returns the class name if so.
     pub(crate) fn resolve_iter_type(&self, iter: &Expr) -> Option<Type> {
         if let Expr::Ident(name, _) = iter {
-            self.local_ast_types.get(name.as_str()).cloned()
+            self.scope.local_ast_types.get(name.as_str()).cloned()
         } else {
             self.type_table.get(&iter.span()).cloned()
         }

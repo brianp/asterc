@@ -48,7 +48,7 @@ impl TypeChecker {
         }
 
         // Pre-register constructor so method bodies can call ClassName(field: val)
-        self.register_constructor(name, fields, generic_params, extends);
+        self.register_class_constructor(name, fields, generic_params, extends);
 
         let class_type = Type::Custom(
             name.to_string(),
@@ -92,98 +92,192 @@ impl TypeChecker {
         let mut overloaded_methods: HashMap<String, Vec<Type>> = HashMap::new();
         let mut pub_methods = std::collections::HashSet::new();
 
-        // Run the methods loop, capturing errors so we can always restore env
-        let methods_result: Result<(), Diagnostic> = (|| {
-            for m in methods {
-                if let Stmt::Let {
-                    name: mname,
-                    value,
-                    is_public: m_is_public,
-                    ..
-                } = m
-                {
-                    // Substitute Self -> class type in method lambda types before checking
-                    let resolved_value = Self::substitute_self_in_lambda(value, &class_type);
-                    let mty = method_checker.check_expr(&resolved_value)?;
-
-                    // Register method defaults for call-site resolution
-                    if let ast::Expr::Lambda {
-                        params: lp,
-                        defaults: ld,
-                        ..
-                    } = value
-                    {
-                        let mut default_set = std::collections::HashSet::new();
-                        for (i, d) in ld.iter().enumerate() {
-                            if d.is_some()
-                                && let Some((pname, _)) = lp.get(i)
-                            {
-                                default_set.insert(pname.clone());
-                            }
-                        }
-                        if !default_set.is_empty() {
-                            // Use the qualified name (e.g., "Calc.add")
-                            self.default_params.insert(mname.clone(), default_set);
-                        }
-                    }
-
-                    let short_name = mname
-                        .strip_prefix(&format!("{}.", name))
-                        .unwrap_or(mname)
-                        .to_string();
-                    if *m_is_public {
-                        pub_methods.insert(short_name.clone());
-                    }
-                    #[allow(clippy::map_entry)]
-                    if method_map.contains_key(&short_name) {
-                        // Allow duplicate if class has multiple parametric trait inclusions
-                        // (e.g., Into[Fahrenheit], Into[Kelvin] both produce into())
-                        if has_parametric_overloads {
-                            let existing = method_map
-                                .remove(&short_name)
-                                .expect("invariant: contains_key checked above");
-                            let overloads =
-                                overloaded_methods.entry(short_name.clone()).or_default();
-                            if overloads.is_empty() {
-                                overloads.push(existing);
-                            }
-                            overloads.push(mty);
-                        } else {
-                            return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
-                                TraitError {
-                                    message: format!(
-                                        "Duplicate method '{}' in class '{}'",
-                                        short_name, name
-                                    ),
-                                },
-                            ))
-                            .with_label(m.span(), "duplicate method"));
-                        }
-                    } else if overloaded_methods.contains_key(&short_name) {
-                        // Already moved to overloaded — add another
-                        overloaded_methods
-                            .get_mut(&short_name)
-                            .expect("invariant: contains_key checked above")
-                            .push(mty);
-                    } else {
-                        method_map.insert(short_name, mty);
-                    }
-                } else {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
-                        TraitError {
-                            message: format!("Unexpected stmt in class methods: {:?}", m),
-                        },
-                    ))
-                    .with_label(m.span(), "expected method definition"));
-                }
-            }
-            Ok(())
-        })();
+        let methods_result = self.check_class_methods(
+            name,
+            &class_type,
+            methods,
+            has_parametric_overloads,
+            &mut method_checker,
+            &mut method_map,
+            &mut overloaded_methods,
+            &mut pub_methods,
+        );
 
         // Always restore parent env, then propagate any error
         self.restore_from_child(method_checker);
         methods_result?;
 
+        let (includes_list, parametric_includes) = self.validate_trait_inclusions(
+            name,
+            &class_type,
+            &field_map,
+            includes,
+            &mut method_map,
+            &mut overloaded_methods,
+            &mut pub_methods,
+        )?;
+
+        self.inject_auto_derive(&mut method_map, &mut pub_methods, &includes_list);
+
+        let mut info = ClassInfo::new(class_type, field_map, method_map);
+        info.generic_params = generic_params.clone();
+        info.extends = extends.clone();
+        info.includes = includes_list;
+        info.overloaded_methods = overloaded_methods;
+        info.parametric_includes = parametric_includes;
+        info.pub_fields = pub_fields;
+        info.pub_methods = pub_methods;
+        self.env.set_class(name.to_string(), info);
+
+        // Validate extends
+        if let Some(parent_name) = extends {
+            if self.env.get_class(parent_name).is_none() {
+                return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
+                    TraitError {
+                        message: format!(
+                            "Class '{}' extends unknown class '{}'",
+                            name, parent_name
+                        ),
+                    },
+                )));
+            }
+            self.validate_circular_inheritance(name)?;
+        }
+
+        // Check for field shadowing
+        if extends.is_some() {
+            self.detect_field_shadowing(name, fields)?;
+        }
+
+        // Final constructor registration (may differ from pre-registration if
+        // field shadowing check above modified the picture, but keeps them in sync)
+        self.register_class_constructor(name, fields, generic_params, extends);
+
+        Ok(Type::Void)
+    }
+
+    /// Iterate through class method statements, type-check each one, and populate
+    /// `method_map`, `overloaded_methods`, and `pub_methods`.
+    ///
+    /// Runs inside a closure so the caller can always restore the child checker's
+    /// environment even when an error occurs.
+    #[allow(clippy::too_many_arguments)]
+    fn check_class_methods(
+        &mut self,
+        name: &str,
+        class_type: &Type,
+        methods: &[Stmt],
+        has_parametric_overloads: bool,
+        method_checker: &mut TypeChecker,
+        method_map: &mut HashMap<String, Type>,
+        overloaded_methods: &mut HashMap<String, Vec<Type>>,
+        pub_methods: &mut std::collections::HashSet<String>,
+    ) -> Result<(), Diagnostic> {
+        for m in methods {
+            if let Stmt::Let {
+                name: mname,
+                value,
+                is_public: m_is_public,
+                ..
+            } = m
+            {
+                // Substitute Self -> class type in method lambda types before checking
+                let resolved_value = Self::substitute_self_in_lambda(value, class_type);
+                let mty = method_checker.check_expr(&resolved_value)?;
+
+                // Register method defaults for call-site resolution
+                if let ast::Expr::Lambda {
+                    params: lp,
+                    defaults: ld,
+                    ..
+                } = value
+                {
+                    let mut default_set = std::collections::HashSet::new();
+                    for (i, d) in ld.iter().enumerate() {
+                        if d.is_some()
+                            && let Some((pname, _)) = lp.get(i)
+                        {
+                            default_set.insert(pname.clone());
+                        }
+                    }
+                    if !default_set.is_empty() {
+                        // Use the qualified name (e.g., "Calc.add")
+                        self.reg.default_params.insert(mname.clone(), default_set);
+                    }
+                }
+
+                let short_name = mname
+                    .strip_prefix(&format!("{}.", name))
+                    .unwrap_or(mname)
+                    .to_string();
+                if *m_is_public {
+                    pub_methods.insert(short_name.clone());
+                }
+                #[allow(clippy::map_entry)]
+                if method_map.contains_key(&short_name) {
+                    // Allow duplicate if class has multiple parametric trait inclusions
+                    // (e.g., Into[Fahrenheit], Into[Kelvin] both produce into())
+                    if has_parametric_overloads {
+                        let existing = method_map
+                            .remove(&short_name)
+                            .expect("invariant: contains_key checked above");
+                        let overloads = overloaded_methods.entry(short_name.clone()).or_default();
+                        if overloads.is_empty() {
+                            overloads.push(existing);
+                        }
+                        overloads.push(mty);
+                    } else {
+                        return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
+                            TraitError {
+                                message: format!(
+                                    "Duplicate method '{}' in class '{}'",
+                                    short_name, name
+                                ),
+                            },
+                        ))
+                        .with_label(m.span(), "duplicate method"));
+                    }
+                } else if overloaded_methods.contains_key(&short_name) {
+                    // Already moved to overloaded — add another
+                    overloaded_methods
+                        .get_mut(&short_name)
+                        .expect("invariant: contains_key checked above")
+                        .push(mty);
+                } else {
+                    method_map.insert(short_name, mty);
+                }
+            } else {
+                return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
+                    TraitError {
+                        message: format!("Unexpected stmt in class methods: {:?}", m),
+                    },
+                ))
+                .with_label(m.span(), "expected method definition"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Check that the class satisfies all trait inclusions and, where possible,
+    /// auto-derive missing required methods. Also handles Iterable inference and
+    /// the Ord-implies-Eq auto-inclusion rule.
+    ///
+    /// Mutates `method_map` (may inject auto-derived methods and Iterable vocabulary),
+    /// `overloaded_methods`, and `pub_methods`.
+    ///
+    /// Returns the computed `(includes_list, parametric_includes)` so the caller can
+    /// store them in `ClassInfo` (includes_list may include auto-added traits such as Eq).
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    fn validate_trait_inclusions(
+        &mut self,
+        name: &str,
+        class_type: &Type,
+        field_map: &IndexMap<String, Type>,
+        includes: &Option<Vec<(String, Vec<Type>)>>,
+        method_map: &mut HashMap<String, Type>,
+        overloaded_methods: &mut HashMap<String, Vec<Type>>,
+        pub_methods: &mut std::collections::HashSet<String>,
+    ) -> Result<(Vec<String>, Vec<(String, Vec<Type>)>), Diagnostic> {
         let includes_refs = includes.clone().unwrap_or_default();
 
         // Build includes list of base trait names
@@ -195,7 +289,7 @@ impl TypeChecker {
             includes_list.push("Eq".to_string());
             // Auto-import Eq from builtins if not already in scope
             if self.env.get_trait("Eq").is_none()
-                && let Some(eq_info) = self.builtin_traits.get("Eq")
+                && let Some(eq_info) = self.reg.builtin_traits.get("Eq")
             {
                 self.env.set_trait("Eq".into(), eq_info.clone());
             }
@@ -249,20 +343,7 @@ impl TypeChecker {
                     pub_methods.insert(vname);
                 }
             }
-            self.inject_iterable_vocabulary(&mut method_map, &elem_ty);
-        }
-
-        // Build parametric_includes list preserving duplicates with type args
-        let parametric_includes: Vec<(String, Vec<Type>)> = includes_refs
-            .iter()
-            .filter(|(_, targs)| !targs.is_empty())
-            .cloned()
-            .collect();
-
-        // For Iterable, inject inferred type arg so parametric trait validation passes
-        let mut iterable_parametric = parametric_includes.clone();
-        if let Some(ref elem_ty) = iterable_element_type {
-            iterable_parametric.push(("Iterable".to_string(), vec![elem_ty.clone()]));
+            self.inject_iterable_vocabulary(method_map, &elem_ty);
         }
 
         // Build set of already-validated trait+args combos to avoid re-validating
@@ -294,7 +375,7 @@ impl TypeChecker {
         for (trait_name, targs) in &all_inclusions {
             let trait_info = self.env.get_trait(trait_name).ok_or_else(|| {
                 // Check if it's a known stdlib trait — give helpful import suggestion
-                if self.builtin_traits.contains_key(trait_name) {
+                if self.reg.builtin_traits.contains_key(trait_name) {
                     let submod = match trait_name.as_str() {
                         "Eq" | "Ord" => "cmp",
                         "Printable" => "fmt",
@@ -351,7 +432,7 @@ impl TypeChecker {
                             .map(|(p, t)| (p.clone(), t.clone()))
                             .collect();
                         let resolved_trait_ty = Self::substitute_typevars(
-                            &Self::substitute_self(trait_method_ty, &class_type),
+                            &Self::substitute_self(trait_method_ty, class_type),
                             &param_bindings,
                         );
                         // Find the overload whose signature matches
@@ -387,7 +468,7 @@ impl TypeChecker {
                     if let Some(trait_method_ty) = trait_info.methods.get(method_name) {
                         // Substitute Self -> class type in trait method signature
                         let mut resolved_trait_ty =
-                            Self::substitute_self(trait_method_ty, &class_type);
+                            Self::substitute_self(trait_method_ty, class_type);
 
                         // Substitute trait type params -> concrete types
                         if let Some(ref gp) = trait_info.generic_params
@@ -449,8 +530,8 @@ impl TypeChecker {
                         name,
                         trait_name,
                         method_name,
-                        &field_map,
-                        &class_type,
+                        field_map,
+                        class_type,
                     )? {
                         pub_methods.insert(mname.clone());
                         method_map.insert(mname, mty);
@@ -469,51 +550,35 @@ impl TypeChecker {
             validated_traits.insert(trait_name.clone());
         }
 
+        // Build parametric_includes list preserving duplicates with type args
+        let parametric_includes: Vec<(String, Vec<Type>)> = includes_refs
+            .iter()
+            .filter(|(_, targs)| !targs.is_empty())
+            .cloned()
+            .collect();
+
+        Ok((includes_list, parametric_includes))
+    }
+
+    /// Inject auto-derived methods for traits that provide default implementations
+    /// when the class does not define them explicitly.
+    ///
+    /// Currently handles: Printable's `debug()` method (defaults to `to_string()` signature).
+    fn inject_auto_derive(
+        &self,
+        method_map: &mut HashMap<String, Type>,
+        pub_methods: &mut std::collections::HashSet<String>,
+        includes_list: &[String],
+    ) {
         // Printable: auto-add debug() defaulting to to_string() signature if not defined
         if includes_list.contains(&"Printable".to_string()) && !method_map.contains_key("debug") {
             method_map.insert("debug".into(), Type::func(vec![], vec![], Type::String));
             pub_methods.insert("debug".into());
         }
-
-        let mut info = ClassInfo::new(class_type, field_map, method_map);
-        info.generic_params = generic_params.clone();
-        info.extends = extends.clone();
-        info.includes = includes_list;
-        info.overloaded_methods = overloaded_methods;
-        info.parametric_includes = parametric_includes;
-        info.pub_fields = pub_fields;
-        info.pub_methods = pub_methods;
-        self.env.set_class(name.to_string(), info);
-
-        // Validate extends
-        if let Some(parent_name) = extends {
-            if self.env.get_class(parent_name).is_none() {
-                return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
-                    TraitError {
-                        message: format!(
-                            "Class '{}' extends unknown class '{}'",
-                            name, parent_name
-                        ),
-                    },
-                )));
-            }
-            self.validate_circular_inheritance(name)?;
-        }
-
-        // Check for field shadowing
-        if extends.is_some() {
-            self.detect_field_shadowing(name, fields)?;
-        }
-
-        // Final constructor registration (may differ from pre-registration if
-        // field shadowing check above modified the picture, but keeps them in sync)
-        self.register_constructor(name, fields, generic_params, extends);
-
-        Ok(Type::Void)
     }
 
     /// Build and register the constructor function for a class, including inherited fields.
-    fn register_constructor(
+    fn register_class_constructor(
         &mut self,
         name: &str,
         fields: &[(String, Type, bool)],

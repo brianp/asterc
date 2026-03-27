@@ -106,6 +106,159 @@ enum StringResult {
     Interpolated(Vec<Token>, usize),
 }
 
+/// Handle a single escape sequence inside a string literal. Called after the
+/// leading `\` has been consumed. Returns the escaped character and the updated
+/// column offset, or a diagnostic on an invalid or unterminated escape.
+fn lex_escape_char(
+    chars: &mut std::iter::Peekable<std::str::Chars>,
+    col: usize,
+    line_no: usize,
+    byte_offset: usize,
+) -> Result<(char, usize), Diagnostic> {
+    match chars.next() {
+        Some('n') => Ok(('\n', col + 1)),
+        Some('t') => Ok(('\t', col + 1)),
+        Some('\\') => Ok(('\\', col + 1)),
+        Some('"') => Ok(('"', col + 1)),
+        Some('r') => Ok(('\r', col + 1)),
+        Some('0') => Ok(('\0', col + 1)),
+        Some('{') => Ok(('{', col + 1)),
+        Some('}') => Ok(('}', col + 1)),
+        Some(c) => Err(Diagnostic::from_template(DiagnosticTemplate::InvalidEscape(
+            InvalidEscape {
+                sequence: c.to_string(),
+            },
+        ))
+        .with_label(
+            Span::new(byte_offset + col - 1, byte_offset + col + 1),
+            format!("invalid escape '\\{}'", c),
+        )),
+        None => Err(
+            Diagnostic::from_template(DiagnosticTemplate::UnterminatedString(UnterminatedString))
+                .with_note(format!("unterminated escape sequence at line {}", line_no)),
+        ),
+    }
+}
+
+/// Lex an interpolation expression `{expr}` inside a string literal. Called
+/// after the opening `{` has been consumed. Returns the expression tokens and
+/// the updated column offset, or a diagnostic on a malformed interpolation.
+fn lex_interpolation_expr(
+    chars: &mut std::iter::Peekable<std::str::Chars>,
+    mut col: usize,
+    line_no: usize,
+    ls: usize,
+) -> Result<(Vec<Token>, usize), Diagnostic> {
+    let mut expr_text = String::new();
+    let mut brace_depth = 1usize;
+    let expr_start_col = col;
+    while let Some(&ch) = chars.peek() {
+        if ch == '{' {
+            brace_depth += 1;
+            expr_text.push(ch);
+            chars.next();
+            col += 1;
+        } else if ch == '}' {
+            brace_depth -= 1;
+            if brace_depth == 0 {
+                chars.next();
+                col += 1;
+                break;
+            }
+            expr_text.push(ch);
+            chars.next();
+            col += 1;
+        } else if ch == '"' {
+            // Don't allow unescaped quotes inside interpolation.
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::UnterminatedString(
+                    UnterminatedString,
+                ))
+                .with_note(format!(
+                    "unexpected '\"' inside string interpolation at line {}",
+                    line_no
+                ))
+                .with_label(
+                    Span::new(ls + col, ls + col + 1),
+                    "unexpected quote in interpolation",
+                ),
+            );
+        } else {
+            expr_text.push(ch);
+            chars.next();
+            col += 1;
+        }
+    }
+    if brace_depth != 0 {
+        return Err(
+            Diagnostic::from_template(DiagnosticTemplate::UnterminatedString(UnterminatedString))
+                .with_note(format!(
+                    "unterminated string interpolation at line {}",
+                    line_no
+                )),
+        );
+    }
+    // Lex the expression text into tokens with correct positions.
+    let mut expr_chars = expr_text.chars().peekable();
+    let mut expr_col = expr_start_col;
+    let mut expr_tokens = Vec::new();
+    while let Some(&ech) = expr_chars.peek() {
+        if ech == ' ' || ech == '\t' {
+            expr_chars.next();
+            expr_col += 1;
+            continue;
+        }
+        let tok_start = ls + expr_col;
+        expr_col += 1;
+        expr_chars.next();
+        if let Some((kind, extra)) = match_operator(ech, &mut expr_chars) {
+            expr_col += extra;
+            expr_tokens.push(Token {
+                kind,
+                line: line_no,
+                col: expr_col,
+                start: tok_start,
+                end: tok_start + 1 + extra,
+            });
+        } else if ech.is_ascii_digit() {
+            let (kind, new_col) = lex_number(&mut expr_chars, ech, expr_col, line_no, tok_start)?;
+            expr_col = new_col;
+            expr_tokens.push(Token {
+                kind,
+                line: line_no,
+                col: expr_col,
+                start: tok_start,
+                end: ls + expr_col,
+            });
+        } else if ech.is_ascii_alphabetic() || ech == '_' {
+            let (kind, new_col) = lex_ident_or_keyword(&mut expr_chars, ech, expr_col);
+            expr_col = new_col;
+            expr_tokens.push(Token {
+                kind,
+                line: line_no,
+                col: expr_col,
+                start: tok_start,
+                end: ls + expr_col,
+            });
+        } else {
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::InterpolationError(
+                    InterpolationError,
+                ))
+                .with_note(format!(
+                    "unexpected character '{}' in string interpolation at line {}",
+                    ech, line_no
+                ))
+                .with_label(
+                    Span::new(tok_start, tok_start + 1),
+                    "unexpected character in interpolation",
+                ),
+            );
+        }
+    }
+    Ok((expr_tokens, col))
+}
+
 /// Lex a double-quoted string literal. Called after the opening `"` has been
 /// consumed. Returns the string contents and the updated column offset.
 /// If the string contains `{expr}` interpolations, returns an Interpolated result
@@ -131,171 +284,17 @@ fn lex_string_full(
             Some(&'\\') => {
                 chars.next();
                 col += 1;
-                match chars.next() {
-                    Some('n') => {
-                        s.push('\n');
-                        col += 1;
-                    }
-                    Some('t') => {
-                        s.push('\t');
-                        col += 1;
-                    }
-                    Some('\\') => {
-                        s.push('\\');
-                        col += 1;
-                    }
-                    Some('"') => {
-                        s.push('"');
-                        col += 1;
-                    }
-                    Some('r') => {
-                        s.push('\r');
-                        col += 1;
-                    }
-                    Some('0') => {
-                        s.push('\0');
-                        col += 1;
-                    }
-                    Some('{') => {
-                        s.push('{');
-                        col += 1;
-                    }
-                    Some('}') => {
-                        s.push('}');
-                        col += 1;
-                    }
-                    Some(c) => {
-                        return Err(Diagnostic::from_template(DiagnosticTemplate::InvalidEscape(
-                            InvalidEscape {
-                                sequence: c.to_string(),
-                            },
-                        ))
-                        .with_label(
-                            Span::new(byte_offset + col - 1, byte_offset + col + 1),
-                            format!("invalid escape '\\{}'", c),
-                        ));
-                    }
-                    None => {
-                        return Err(Diagnostic::from_template(
-                            DiagnosticTemplate::UnterminatedString(UnterminatedString),
-                        )
-                        .with_note(format!("unterminated escape sequence at line {}", line_no)));
-                    }
-                }
+                let (ch, new_col) = lex_escape_char(chars, col, line_no, byte_offset)?;
+                s.push(ch);
+                col = new_col;
             }
             Some(&'{') => {
                 chars.next();
                 col += 1;
                 has_interpolation = true;
-                // Collect the expression text until matching '}'
                 let literal_part = std::mem::take(&mut s);
-                let mut expr_text = String::new();
-                let mut brace_depth = 1;
-                let expr_start_col = col;
-                while let Some(&ch) = chars.peek() {
-                    if ch == '{' {
-                        brace_depth += 1;
-                        expr_text.push(ch);
-                        chars.next();
-                        col += 1;
-                    } else if ch == '}' {
-                        brace_depth -= 1;
-                        if brace_depth == 0 {
-                            chars.next();
-                            col += 1;
-                            break;
-                        }
-                        expr_text.push(ch);
-                        chars.next();
-                        col += 1;
-                    } else if ch == '"' {
-                        // Don't allow unescaped quotes inside interpolation
-                        return Err(Diagnostic::from_template(
-                            DiagnosticTemplate::UnterminatedString(UnterminatedString),
-                        )
-                        .with_note(format!(
-                            "unexpected '\"' inside string interpolation at line {}",
-                            line_no
-                        ))
-                        .with_label(
-                            Span::new(ls + col, ls + col + 1),
-                            "unexpected quote in interpolation",
-                        ));
-                    } else {
-                        expr_text.push(ch);
-                        chars.next();
-                        col += 1;
-                    }
-                }
-                if brace_depth != 0 {
-                    return Err(
-                        Diagnostic::from_template(DiagnosticTemplate::UnterminatedString(
-                            UnterminatedString,
-                        ))
-                        .with_note(format!(
-                            "unterminated string interpolation at line {}",
-                            line_no
-                        )),
-                    );
-                }
-                // Lex the expression text into tokens
-                // We need to produce tokens with correct positions
-                let mut expr_chars = expr_text.chars().peekable();
-                let mut expr_col = expr_start_col;
-                let mut expr_tokens = Vec::new();
-                while let Some(&ech) = expr_chars.peek() {
-                    if ech == ' ' || ech == '\t' {
-                        expr_chars.next();
-                        expr_col += 1;
-                        continue;
-                    }
-                    let tok_start = ls + expr_col;
-                    expr_col += 1;
-                    expr_chars.next();
-                    if let Some((kind, extra)) = match_operator(ech, &mut expr_chars) {
-                        expr_col += extra;
-                        expr_tokens.push(Token {
-                            kind,
-                            line: line_no,
-                            col: expr_col,
-                            start: tok_start,
-                            end: tok_start + 1 + extra,
-                        });
-                    } else if ech.is_ascii_digit() {
-                        let (kind, new_col) =
-                            lex_number(&mut expr_chars, ech, expr_col, line_no, tok_start)?;
-                        expr_col = new_col;
-                        expr_tokens.push(Token {
-                            kind,
-                            line: line_no,
-                            col: expr_col,
-                            start: tok_start,
-                            end: ls + expr_col,
-                        });
-                    } else if ech.is_ascii_alphabetic() || ech == '_' {
-                        let (kind, new_col) = lex_ident_or_keyword(&mut expr_chars, ech, expr_col);
-                        expr_col = new_col;
-                        expr_tokens.push(Token {
-                            kind,
-                            line: line_no,
-                            col: expr_col,
-                            start: tok_start,
-                            end: ls + expr_col,
-                        });
-                    } else {
-                        return Err(Diagnostic::from_template(
-                            DiagnosticTemplate::InterpolationError(InterpolationError),
-                        )
-                        .with_note(format!(
-                            "unexpected character '{}' in string interpolation at line {}",
-                            ech, line_no
-                        ))
-                        .with_label(
-                            Span::new(tok_start, tok_start + 1),
-                            "unexpected character in interpolation",
-                        ));
-                    }
-                }
+                let (expr_tokens, new_col) = lex_interpolation_expr(chars, col, line_no, ls)?;
+                col = new_col;
                 segments.push((literal_part, expr_tokens));
             }
             Some(&c) => {

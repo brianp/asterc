@@ -126,7 +126,7 @@ impl TypeChecker {
                             .with_label(func.span(), "expected 1 argument"));
                         }
                         let arg_ty = self.check_expr(&args[0].2)?;
-                        let throws_ty = self.throws_type.as_ref().ok_or_else(|| {
+                        let throws_ty = self.sc.throws_type.as_ref().ok_or_else(|| {
                             Diagnostic::from_template(DiagnosticTemplate::ErrorPropagation(ErrorPropagation {
                                 message: ".or_throw() can only be used in a function that declares 'throws'".to_string(),
                             }))
@@ -203,7 +203,7 @@ impl TypeChecker {
                     let promoted = Type::List(Box::new(arg_ty));
                     self.env.set_var(var_name.clone(), promoted.clone());
                     // Persist promotion across scope boundaries (if/while/for)
-                    self.nil_promotions.insert(var_name.clone(), promoted);
+                    self.reg.nil_promotions.insert(var_name.clone(), promoted);
                 }
                 return Ok(Type::Void);
             }
@@ -218,75 +218,17 @@ impl TypeChecker {
         bypass_throws_check: bool,
     ) -> Result<Type, Diagnostic> {
         // Handle Set[T]() constructor: parsed as Call(Index(Ident("Set"), type_expr), [])
-        if let Expr::Index {
-            object,
-            index,
-            span,
-        } = func
+        if let Expr::Index { object, .. } = func
             && let Expr::Ident(name, _) = object.as_ref()
             && name == "Set"
         {
-            if !args.is_empty() {
-                return Err(
-                    Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(
-                        ArgumentCountMismatch {
-                            expected: 0,
-                            actual: args.len(),
-                        },
-                    ))
-                    .with_label(*span, "expected no arguments"),
-                );
-            }
-            // Resolve the element type from the index expression
-            let elem_ty = self.resolve_type_from_expr(index)?;
-            if !self.type_is_hashable(&elem_ty) {
-                return Err(
-                    Diagnostic::from_template(DiagnosticTemplate::ConstraintError(
-                        ConstraintError {
-                            message: format!(
-                                "Set element type {} does not include Eq. \
-                                 Add 'includes Eq' to use as a Set element",
-                                elem_ty
-                            ),
-                        },
-                    ))
-                    .with_label(*span, "Set requires Eq on element type"),
-                );
-            }
-            return Ok(Type::Set(Box::new(elem_ty)));
+            return self.check_set_constructor(func, args);
         }
 
         // Handle polymorphic builtins that can't be expressed in the type system yet
         if let Expr::Ident(name, _) = func {
             match name.as_str() {
-                "len" => {
-                    if args.len() != 1 {
-                        return Err(Diagnostic::from_template(
-                            DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
-                                expected: 1,
-                                actual: args.len(),
-                            }),
-                        )
-                        .with_label(func.span(), "expected 1 argument"));
-                    }
-                    let aty = self.check_expr(&args[0].2)?;
-                    if aty.is_error() {
-                        return Ok(Type::Error);
-                    }
-                    match aty {
-                        Type::String | Type::List(_) | Type::Set(_) => return Ok(Type::Int),
-                        _ => {
-                            return Err(Diagnostic::from_template(
-                                DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
-                                    param: "_0".to_string(),
-                                    expected: Type::String,
-                                    actual: aty.clone(),
-                                }),
-                            )
-                            .with_label(args[0].2.span(), "expected String, List, or Set"));
-                        }
-                    }
-                }
+                "len" => return self.check_len_call(func, args),
                 "to_string" => {
                     if args.len() != 1 {
                         return Err(Diagnostic::from_template(
@@ -317,141 +259,13 @@ impl TypeChecker {
                         }
                     }
                 }
-                "log" | "say" => {
-                    if args.len() != 1 {
-                        return Err(Diagnostic::from_template(
-                            DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
-                                expected: 1,
-                                actual: args.len(),
-                            }),
-                        )
-                        .with_label(func.span(), "expected 1 argument"));
-                    }
-                    let aty = self.check_expr(&args[0].2)?;
-                    if aty.is_error() {
-                        return Ok(Type::Void);
-                    }
-                    match aty {
-                        Type::Int | Type::Float | Type::Bool | Type::String => {
-                            return Ok(Type::Void);
-                        }
-                        _ => {
-                            return Err(Diagnostic::from_template(
-                                DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
-                                    param: "_0".to_string(),
-                                    expected: Type::String,
-                                    actual: aty.clone(),
-                                }),
-                            )
-                            .with_label(args[0].2.span(), "unsupported type"));
-                        }
-                    }
-                }
-                "random" => {
-                    return self.check_random_call(func, args);
-                }
-                "resolve_all" => {
-                    return self.check_resolve_builtin(func, args, true);
-                }
-                "resolve_first" => {
-                    return self.check_resolve_builtin(func, args, false);
-                }
-                // Mutex(value) → Mutex[T]
-                "Mutex" => {
-                    if args.len() != 1 {
-                        return Err(Diagnostic::from_template(
-                            DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
-                                expected: 1,
-                                actual: args.len(),
-                            }),
-                        )
-                        .with_label(func.span(), "expected 1 argument"));
-                    }
-                    let val_ty = self.check_expr(&args[0].2)?;
-                    if val_ty.is_error() {
-                        return Ok(Type::Error);
-                    }
-                    return Ok(Type::Custom("Mutex".into(), vec![val_ty]));
-                }
-                // Channel(capacity: N) → Channel[T] (T inferred later from send/receive)
-                "Channel" => {
-                    if args.len() > 1 {
-                        return Err(Diagnostic::from_template(
-                            DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
-                                expected: 1,
-                                actual: args.len(),
-                            }),
-                        )
-                        .with_label(func.span(), "expected 0-1 arguments"));
-                    }
-                    if args.len() == 1 {
-                        let cap_ty = self.check_expr(&args[0].2)?;
-                        if cap_ty != Type::Int && !cap_ty.is_error() {
-                            return Err(Diagnostic::from_template(
-                                DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
-                                    param: "capacity".to_string(),
-                                    expected: Type::Int,
-                                    actual: cap_ty.clone(),
-                                }),
-                            )
-                            .with_label(args[0].2.span(), "expected Int"));
-                        }
-                    }
-                    // Type parameter inferred from expected type
-                    let elem_ty = if let Some(Type::Custom(_, ref type_args)) = self.expected_type
-                        && !type_args.is_empty()
-                    {
-                        type_args[0].clone()
-                    } else {
-                        return Err(Diagnostic::from_template(
-                            DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
-                                param: "element type".to_string(),
-                                expected: Type::String,
-                                actual: Type::Void,
-                            }),
-                        )
-                        .with_label(func.span(), "element type unknown"));
-                    };
-                    return Ok(Type::Custom("Channel".into(), vec![elem_ty]));
-                }
-                "MultiSend" | "MultiReceive" => {
-                    if args.len() > 1 {
-                        return Err(Diagnostic::from_template(
-                            DiagnosticTemplate::ArgumentCountMismatch(ArgumentCountMismatch {
-                                expected: 1,
-                                actual: args.len(),
-                            }),
-                        )
-                        .with_label(func.span(), "expected 0-1 arguments"));
-                    }
-                    if args.len() == 1 {
-                        let cap_ty = self.check_expr(&args[0].2)?;
-                        if cap_ty != Type::Int && !cap_ty.is_error() {
-                            return Err(Diagnostic::from_template(
-                                DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
-                                    param: "capacity".to_string(),
-                                    expected: Type::Int,
-                                    actual: cap_ty.clone(),
-                                }),
-                            )
-                            .with_label(args[0].2.span(), "expected Int"));
-                        }
-                    }
-                    let elem_ty = if let Some(Type::Custom(_, ref type_args)) = self.expected_type
-                        && !type_args.is_empty()
-                    {
-                        type_args[0].clone()
-                    } else {
-                        return Err(Diagnostic::from_template(
-                            DiagnosticTemplate::ArgumentTypeMismatch(ArgumentTypeMismatch {
-                                param: "element type".to_string(),
-                                expected: Type::String,
-                                actual: Type::Void,
-                            }),
-                        )
-                        .with_label(func.span(), "element type unknown"));
-                    };
-                    return Ok(Type::Custom(name.clone(), vec![elem_ty]));
+                "log" | "say" => return self.check_print_call(func, args),
+                "random" => return self.check_random_call(func, args),
+                "resolve_all" => return self.check_resolve_builtin(func, args, true),
+                "resolve_first" => return self.check_resolve_builtin(func, args, false),
+                "Mutex" => return self.check_mutex_constructor(func, args),
+                "Channel" | "MultiSend" | "MultiReceive" => {
+                    return self.check_channel_constructor(func, args);
                 }
                 _ => {}
             }
@@ -612,6 +426,202 @@ impl TypeChecker {
             return Ok(Type::Custom(type_name.clone(), Vec::new()));
         }
 
+        self.check_user_function_call(func, args, bypass_throws_check)
+    }
+
+    fn check_set_constructor(
+        &mut self,
+        func: &Expr,
+        args: &[(String, Span, Expr)],
+    ) -> Result<Type, Diagnostic> {
+        let Expr::Index {
+            object: _,
+            index,
+            span,
+        } = func
+        else {
+            unreachable!("check_set_constructor called with non-Index expr")
+        };
+        if !args.is_empty() {
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(
+                    ArgumentCountMismatch {
+                        expected: 0,
+                        actual: args.len(),
+                    },
+                ))
+                .with_label(*span, "expected no arguments"),
+            );
+        }
+        let elem_ty = self.resolve_type_from_expr(index)?;
+        if !self.type_is_hashable(&elem_ty) {
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::ConstraintError(ConstraintError {
+                    message: format!(
+                        "Set element type {} does not include Eq. \
+                                 Add 'includes Eq' to use as a Set element",
+                        elem_ty
+                    ),
+                }))
+                .with_label(*span, "Set requires Eq on element type"),
+            );
+        }
+        Ok(Type::Set(Box::new(elem_ty)))
+    }
+
+    fn check_len_call(
+        &mut self,
+        func: &Expr,
+        args: &[(String, Span, Expr)],
+    ) -> Result<Type, Diagnostic> {
+        if args.len() != 1 {
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(
+                    ArgumentCountMismatch {
+                        expected: 1,
+                        actual: args.len(),
+                    },
+                ))
+                .with_label(func.span(), "expected 1 argument"),
+            );
+        }
+        let aty = self.check_expr(&args[0].2)?;
+        if aty.is_error() {
+            return Ok(Type::Error);
+        }
+        match aty {
+            Type::String | Type::List(_) | Type::Set(_) => Ok(Type::Int),
+            _ => Err(
+                Diagnostic::from_template(DiagnosticTemplate::ArgumentTypeMismatch(
+                    ArgumentTypeMismatch {
+                        param: "_0".to_string(),
+                        expected: Type::String,
+                        actual: aty.clone(),
+                    },
+                ))
+                .with_label(args[0].2.span(), "expected String, List, or Set"),
+            ),
+        }
+    }
+
+    fn check_print_call(
+        &mut self,
+        func: &Expr,
+        args: &[(String, Span, Expr)],
+    ) -> Result<Type, Diagnostic> {
+        if args.len() != 1 {
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(
+                    ArgumentCountMismatch {
+                        expected: 1,
+                        actual: args.len(),
+                    },
+                ))
+                .with_label(func.span(), "expected 1 argument"),
+            );
+        }
+        let aty = self.check_expr(&args[0].2)?;
+        if aty.is_error() {
+            return Ok(Type::Void);
+        }
+        match aty {
+            Type::Int | Type::Float | Type::Bool | Type::String => Ok(Type::Void),
+            _ => Err(
+                Diagnostic::from_template(DiagnosticTemplate::ArgumentTypeMismatch(
+                    ArgumentTypeMismatch {
+                        param: "_0".to_string(),
+                        expected: Type::String,
+                        actual: aty.clone(),
+                    },
+                ))
+                .with_label(args[0].2.span(), "unsupported type"),
+            ),
+        }
+    }
+
+    fn check_mutex_constructor(
+        &mut self,
+        func: &Expr,
+        args: &[(String, Span, Expr)],
+    ) -> Result<Type, Diagnostic> {
+        if args.len() != 1 {
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(
+                    ArgumentCountMismatch {
+                        expected: 1,
+                        actual: args.len(),
+                    },
+                ))
+                .with_label(func.span(), "expected 1 argument"),
+            );
+        }
+        let val_ty = self.check_expr(&args[0].2)?;
+        if val_ty.is_error() {
+            return Ok(Type::Error);
+        }
+        Ok(Type::Custom("Mutex".into(), vec![val_ty]))
+    }
+
+    fn check_channel_constructor(
+        &mut self,
+        func: &Expr,
+        args: &[(String, Span, Expr)],
+    ) -> Result<Type, Diagnostic> {
+        let name = match func {
+            Expr::Ident(n, _) => n.clone(),
+            _ => unreachable!("check_channel_constructor called with non-Ident expr"),
+        };
+        if args.len() > 1 {
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(
+                    ArgumentCountMismatch {
+                        expected: 1,
+                        actual: args.len(),
+                    },
+                ))
+                .with_label(func.span(), "expected 0-1 arguments"),
+            );
+        }
+        if args.len() == 1 {
+            let cap_ty = self.check_expr(&args[0].2)?;
+            if cap_ty != Type::Int && !cap_ty.is_error() {
+                return Err(
+                    Diagnostic::from_template(DiagnosticTemplate::ArgumentTypeMismatch(
+                        ArgumentTypeMismatch {
+                            param: "capacity".to_string(),
+                            expected: Type::Int,
+                            actual: cap_ty.clone(),
+                        },
+                    ))
+                    .with_label(args[0].2.span(), "expected Int"),
+                );
+            }
+        }
+        let elem_ty = if let Some(Type::Custom(_, ref type_args)) = self.sc.expected_type
+            && !type_args.is_empty()
+        {
+            type_args[0].clone()
+        } else {
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::ArgumentTypeMismatch(
+                    ArgumentTypeMismatch {
+                        param: "element type".to_string(),
+                        expected: Type::String,
+                        actual: Type::Void,
+                    },
+                ))
+                .with_label(func.span(), "element type unknown"),
+            );
+        };
+        Ok(Type::Custom(name, vec![elem_ty]))
+    }
+
+    fn check_user_function_call(
+        &mut self,
+        func: &Expr,
+        args: &[(String, Span, Expr)],
+        bypass_throws_check: bool,
+    ) -> Result<Type, Diagnostic> {
         let fty = self.check_expr(func)?;
         if fty.is_error() {
             return Ok(Type::Error);
@@ -624,7 +634,7 @@ impl TypeChecker {
             suspendable,
         } = fty
         {
-            self.last_call_suspendable = suspendable;
+            self.sc.last_call_suspendable = suspendable;
             if suspendable && !bypass_throws_check {
                 return Err(
                     Diagnostic::from_template(DiagnosticTemplate::SuspensionError(
@@ -693,7 +703,7 @@ impl TypeChecker {
                 };
                 let default_param_names = func_name
                     .as_deref()
-                    .and_then(|n| self.default_params.get(n));
+                    .and_then(|n| self.reg.default_params.get(n));
 
                 let provided: std::collections::HashSet<&str> =
                     args.iter().map(|(n, _, _)| n.as_str()).collect();
@@ -800,15 +810,15 @@ impl TypeChecker {
                 // Substitute already-known bindings so lambda inference sees concrete types
                 let resolved_pty = Self::substitute_typevars(pty, &bindings);
                 // Set expected type for parametric trait resolution in args
-                let prev_expected = self.expected_type.take();
-                self.expected_type = Some(resolved_pty.clone());
+                let prev_expected = self.sc.expected_type.take();
+                self.sc.expected_type = Some(resolved_pty.clone());
                 // If arg is a lambda with Inferred types, resolve them from expected type
                 let aty = if let Expr::Lambda { .. } = arg_expr {
                     self.check_lambda_with_expected(arg_expr, Some(&resolved_pty))?
                 } else {
                     self.check_expr(arg_expr)?
                 };
-                self.expected_type = prev_expected;
+                self.sc.expected_type = prev_expected;
                 if aty.is_error() {
                     return Ok(Type::Error);
                 }
@@ -1243,7 +1253,7 @@ impl TypeChecker {
         func: &Expr,
         args: &[(String, Span, Expr)],
     ) -> Result<Type, Diagnostic> {
-        let target = self.expected_type.clone();
+        let target = self.sc.expected_type.clone();
 
         // If we have an explicit type context, use it
         if let Some(ref ty) = target {

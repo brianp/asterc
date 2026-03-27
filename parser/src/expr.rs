@@ -558,101 +558,15 @@ impl Parser {
             }
             LBracket => {
                 self.advance();
-                self.consume_newlines();
-                let mut elems = Vec::new();
-                if !self.at(&RBracket) {
-                    loop {
-                        self.consume_newlines();
-                        if self.at(&RBracket) {
-                            break; // trailing comma
-                        }
-                        elems.push(self.parse_expr()?);
-                        if elems.len() > MAX_COLLECTION_SIZE {
-                            return Err(Diagnostic::from_template(
-                                DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                                    expected: format!(
-                                        "at most {} elements in list literal",
-                                        MAX_COLLECTION_SIZE
-                                    ),
-                                    found: "too many elements".to_string(),
-                                }),
-                            ));
-                        }
-                        self.consume_newlines();
-                        if self.at(&Comma) {
-                            self.advance();
-                        } else {
-                            break;
-                        }
-                    }
-                }
-                self.consume_newlines();
-                self.expect(RBracket)?;
-                Ok(Expr::ListLiteral(elems, self.span_from(start)))
+                self.parse_list_literal(start)
             }
             LBrace => {
                 self.advance();
-                self.consume_newlines();
-                let mut entries = Vec::new();
-                if !self.at(&RBrace) {
-                    loop {
-                        self.consume_newlines();
-                        if self.at(&RBrace) {
-                            break; // trailing comma
-                        }
-                        let key = self.parse_expr()?;
-                        self.expect(Colon)?;
-                        let value = self.parse_expr()?;
-                        entries.push((key, value));
-                        if entries.len() > MAX_COLLECTION_SIZE {
-                            return Err(Diagnostic::from_template(
-                                DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
-                                    expected: format!(
-                                        "at most {} entries in map literal",
-                                        MAX_COLLECTION_SIZE
-                                    ),
-                                    found: "too many entries".to_string(),
-                                }),
-                            ));
-                        }
-                        self.consume_newlines();
-                        if self.at(&Comma) {
-                            self.advance();
-                        } else {
-                            break;
-                        }
-                    }
-                }
-                self.consume_newlines();
-                self.expect(RBrace)?;
-                Ok(Expr::Map {
-                    entries,
-                    span: self.span_from(start),
-                })
+                self.parse_map_literal(start)
             }
             Match => {
                 self.advance();
-                let scrutinee = self.parse_expr()?;
-                self.consume_newlines();
-                self.expect(Indent)?;
-                let mut arms = Vec::new();
-                while !self.at(&Dedent) && !self.at(&TokenKind::EOF) {
-                    self.consume_newlines();
-                    if self.at(&Dedent) || self.at(&TokenKind::EOF) {
-                        break;
-                    }
-                    let pattern = self.parse_match_pattern()?;
-                    self.expect(FatArrow)?;
-                    let value = self.parse_expr()?;
-                    arms.push((pattern, value));
-                    self.consume_newlines();
-                }
-                self.expect(Dedent)?;
-                Ok(Expr::Match {
-                    scrutinee: Box::new(scrutinee),
-                    arms,
-                    span: self.span_from(start),
-                })
+                self.parse_match_expr(start)
             }
             Resolve => {
                 self.advance();
@@ -729,6 +643,107 @@ impl Parser {
                 )
             }
         }
+    }
+
+    fn parse_list_literal(&mut self, start: usize) -> Result<Expr, Diagnostic> {
+        use TokenKind::*;
+        self.consume_newlines();
+        let mut elems = Vec::new();
+        if !self.at(&RBracket) {
+            loop {
+                self.consume_newlines();
+                if self.at(&RBracket) {
+                    break; // trailing comma
+                }
+                elems.push(self.parse_expr()?);
+                if elems.len() > MAX_COLLECTION_SIZE {
+                    return Err(Diagnostic::from_template(
+                        DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                            expected: format!(
+                                "at most {} elements in list literal",
+                                MAX_COLLECTION_SIZE
+                            ),
+                            found: "too many elements".to_string(),
+                        }),
+                    ));
+                }
+                self.consume_newlines();
+                if self.at(&Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+        self.consume_newlines();
+        self.expect(RBracket)?;
+        Ok(Expr::ListLiteral(elems, self.span_from(start)))
+    }
+
+    fn parse_map_literal(&mut self, start: usize) -> Result<Expr, Diagnostic> {
+        use TokenKind::*;
+        self.consume_newlines();
+        let mut entries = Vec::new();
+        if !self.at(&RBrace) {
+            loop {
+                self.consume_newlines();
+                if self.at(&RBrace) {
+                    break; // trailing comma
+                }
+                let key = self.parse_expr()?;
+                self.expect(Colon)?;
+                let value = self.parse_expr()?;
+                entries.push((key, value));
+                if entries.len() > MAX_COLLECTION_SIZE {
+                    return Err(Diagnostic::from_template(
+                        DiagnosticTemplate::UnexpectedToken(UnexpectedToken {
+                            expected: format!(
+                                "at most {} entries in map literal",
+                                MAX_COLLECTION_SIZE
+                            ),
+                            found: "too many entries".to_string(),
+                        }),
+                    ));
+                }
+                self.consume_newlines();
+                if self.at(&Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+        self.consume_newlines();
+        self.expect(RBrace)?;
+        Ok(Expr::Map {
+            entries,
+            span: self.span_from(start),
+        })
+    }
+
+    fn parse_match_expr(&mut self, start: usize) -> Result<Expr, Diagnostic> {
+        use TokenKind::*;
+        let scrutinee = self.parse_expr()?;
+        self.consume_newlines();
+        self.expect(Indent)?;
+        let mut arms = Vec::new();
+        while !self.at(&Dedent) && !self.at(&TokenKind::EOF) {
+            self.consume_newlines();
+            if self.at(&Dedent) || self.at(&TokenKind::EOF) {
+                break;
+            }
+            let pattern = self.parse_match_pattern()?;
+            self.expect(FatArrow)?;
+            let value = self.parse_expr()?;
+            arms.push((pattern, value));
+            self.consume_newlines();
+        }
+        self.expect(Dedent)?;
+        Ok(Expr::Match {
+            scrutinee: Box::new(scrutinee),
+            arms,
+            span: self.span_from(start),
+        })
     }
 
     /// Parse a postfix expression and require it to be a function call.
