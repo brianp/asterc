@@ -567,10 +567,12 @@ fn emit_indent_dedent_tokens(
             }
         }
         if indent_stack.last().copied().unwrap_or(0) != indent_width {
-            return Err(Diagnostic::from_template(
-                DiagnosticTemplate::InconsistentIndentation(InconsistentIndentation),
-            )
-            .with_label(Span::new(ls, ls + indent_width), "unexpected indent level"));
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::InconsistentIndentation(
+                    InconsistentIndentation,
+                ))
+                .with_label(Span::new(ls, ls + indent_width), "unexpected indent level"),
+            );
         }
     }
     Ok(())
@@ -625,13 +627,7 @@ pub fn lex(input: &str) -> Result<Vec<Token>, Diagnostic> {
         // Inside (), [], or {}, indentation changes are ignored (implicit
         // line continuation), matching Python's behavior.
         if bracket_depth == 0 {
-            emit_indent_dedent_tokens(
-                indent_width,
-                &mut indent_stack,
-                &mut tokens,
-                line_no,
-                ls,
-            )?;
+            emit_indent_dedent_tokens(indent_width, &mut indent_stack, &mut tokens, line_no, ls)?;
         }
 
         // Tokenize the line content.

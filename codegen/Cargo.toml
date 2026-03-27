@@ -3,6 +3,9 @@ name = "codegen"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+crate-type = ["lib", "staticlib"]
+
 [dependencies]
 fir = { path = "../fir" }
 cranelift-codegen = "0.129"

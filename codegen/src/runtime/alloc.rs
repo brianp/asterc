@@ -1,5 +1,6 @@
 /// Allocate `size` bytes on the heap, 8-byte aligned.
 /// Aborts on zero-size allocations or OOM.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_alloc(size: usize) -> *mut u8 {
     if size == 0 {
         // Zero-size alloc is UB per the global allocator contract.
@@ -37,6 +38,7 @@ pub(super) unsafe fn aster_dealloc(ptr: *mut u8, size: usize) {
 /// Allocate a class instance. Size is in bytes.
 /// Conservative fallback: marks all fields as potential pointers.
 /// Used by enum constructors and any code that doesn't supply a ptr_count.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_class_alloc(size: usize) -> *mut u8 {
     use super::gc::{OBJ_CLASS, gc_alloc_inner, payload_header};
     let ptr = gc_alloc_inner(size, OBJ_CLASS);
@@ -51,6 +53,7 @@ pub extern "C" fn aster_class_alloc(size: usize) -> *mut u8 {
 /// Allocate a class instance with a precise pointer-field count.
 /// `ptr_count` is the number of leading fields that are GC-traceable pointers.
 /// The GC will only trace the first `ptr_count` slots, skipping value fields.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_class_alloc_typed(size: usize, ptr_count: i64) -> *mut u8 {
     use super::gc::{OBJ_CLASS, gc_alloc_inner, payload_header};
     let ptr = gc_alloc_inner(size, OBJ_CLASS);
@@ -64,6 +67,7 @@ pub extern "C" fn aster_class_alloc_typed(size: usize, ptr_count: i64) -> *mut u
 /// Allocate a closure object. Size is in bytes.
 /// Stamps the header with OBJ_CLOSURE so the GC only traces
 /// the env pointer (slot 1), not the function pointer (slot 0).
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_closure_alloc(size: usize) -> *mut u8 {
     use super::gc::{OBJ_CLOSURE, gc_alloc_inner};
     gc_alloc_inner(size, OBJ_CLOSURE)

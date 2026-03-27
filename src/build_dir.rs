@@ -34,16 +34,6 @@ impl BuildPaths {
         self.bin_dir.join(stem.to_string())
     }
 
-    /// Runtime C source path.
-    pub fn runtime_c(&self) -> PathBuf {
-        self.gen_dir.join("runtime.c")
-    }
-
-    /// Compiled runtime object path.
-    pub fn runtime_o(&self) -> PathBuf {
-        self.gen_dir.join("runtime.o")
-    }
-
     /// Manifest path.
     pub fn manifest(&self) -> PathBuf {
         self.root.join("manifest.json")
@@ -139,17 +129,6 @@ mod tests {
             Some(Path::new("/tmp/build")),
         );
         assert_eq!(paths.binary_for("main.aster"), paths.bin_dir.join("main"));
-    }
-
-    #[test]
-    fn runtime_paths() {
-        let paths = resolve_build_paths(
-            Path::new("/tmp/test/main.aster"),
-            Profile::Debug,
-            Some(Path::new("/tmp/build")),
-        );
-        assert_eq!(paths.runtime_c(), paths.gen_dir.join("runtime.c"));
-        assert_eq!(paths.runtime_o(), paths.gen_dir.join("runtime.o"));
     }
 
     #[test]

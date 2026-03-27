@@ -7,6 +7,7 @@ use super::gc::gc_alloc_string;
 
 /// Create a new heap-allocated string from a pointer and length.
 /// Returns a pointer to the string object [len: i64][data: u8...].
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_string_new(data: *const u8, len: usize) -> *mut u8 {
     if len > 0 && data.is_null() {
         eprintln!("aster_string_new: null data pointer with nonzero length");
@@ -16,6 +17,7 @@ pub extern "C" fn aster_string_new(data: *const u8, len: usize) -> *mut u8 {
 }
 
 /// Concatenate two heap strings. Returns a new heap string.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_string_concat(a: *const u8, b: *const u8) -> *mut u8 {
     unsafe {
         let a_len = if a.is_null() {
@@ -30,6 +32,14 @@ pub extern "C" fn aster_string_concat(a: *const u8, b: *const u8) -> *mut u8 {
             let raw = *(b as *const i64);
             if raw < 0 { 0usize } else { raw as usize }
         };
+        debug_assert!(
+            !a.is_null() || a_len == 0,
+            "aster_string_concat: null `a` with nonzero length"
+        );
+        debug_assert!(
+            !b.is_null() || b_len == 0,
+            "aster_string_concat: null `b` with nonzero length"
+        );
         let concat_len = a_len.checked_add(b_len).unwrap_or_else(|| {
             eprintln!("aster_string_concat: combined string length overflow");
             std::process::abort();
@@ -37,9 +47,17 @@ pub extern "C" fn aster_string_concat(a: *const u8, b: *const u8) -> *mut u8 {
         let result = gc_alloc_string(std::ptr::null(), concat_len);
         // Manually fill data (gc_alloc_string zero-inits since data is null)
         if a_len > 0 {
+            debug_assert!(
+                !a.add(8).is_null(),
+                "aster_string_concat: `a` data pointer is null"
+            );
             std::ptr::copy_nonoverlapping(a.add(8), result.add(8), a_len);
         }
         if b_len > 0 {
+            debug_assert!(
+                !b.add(8).is_null(),
+                "aster_string_concat: `b` data pointer is null"
+            );
             std::ptr::copy_nonoverlapping(b.add(8), result.add(8 + a_len), b_len);
         }
         result
@@ -47,6 +65,7 @@ pub extern "C" fn aster_string_concat(a: *const u8, b: *const u8) -> *mut u8 {
 }
 
 /// Get the byte length of a heap string.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_string_len(ptr: *const u8) -> i64 {
     if ptr.is_null() {
         return 0;
@@ -56,33 +75,65 @@ pub extern "C" fn aster_string_len(ptr: *const u8) -> i64 {
 }
 
 /// Get the character (Unicode scalar) length of a heap string.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_string_char_len(ptr: *const u8) -> i64 {
     let s = unsafe { aster_string_to_rust(ptr) };
     s.chars().count() as i64
 }
 
+/// Return the byte slice of a heap string without allocating.
+/// Caller must ensure `ptr` is a valid Aster heap string pointer.
+/// Returns an empty slice for null or zero-length strings.
+unsafe fn string_bytes(ptr: *const u8) -> &'static [u8] {
+    if ptr.is_null() {
+        return &[];
+    }
+    unsafe {
+        let len = *(ptr as *const i64);
+        if len <= 0 {
+            return &[];
+        }
+        debug_assert!(
+            len as usize <= isize::MAX as usize,
+            "string_bytes: length exceeds isize::MAX"
+        );
+        std::slice::from_raw_parts(ptr.add(8), len as usize)
+    }
+}
+
 /// Check if a heap string contains a substring.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_string_contains(haystack: *const u8, needle: *const u8) -> i8 {
-    let h = unsafe { aster_string_to_rust(haystack) };
-    let n = unsafe { aster_string_to_rust(needle) };
-    if h.contains(&n) { 1 } else { 0 }
+    let h = unsafe { string_bytes(haystack) };
+    let n = unsafe { string_bytes(needle) };
+    if n.is_empty() {
+        return 1;
+    }
+    if h.windows(n.len()).any(|w| w == n) {
+        1
+    } else {
+        0
+    }
 }
 
 /// Check if a heap string starts with a prefix.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_string_starts_with(s: *const u8, prefix: *const u8) -> i8 {
-    let s = unsafe { aster_string_to_rust(s) };
-    let p = unsafe { aster_string_to_rust(prefix) };
-    if s.starts_with(&p) { 1 } else { 0 }
+    let s = unsafe { string_bytes(s) };
+    let p = unsafe { string_bytes(prefix) };
+    if s.starts_with(p) { 1 } else { 0 }
 }
 
 /// Check if a heap string ends with a suffix.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_string_ends_with(s: *const u8, suffix: *const u8) -> i8 {
-    let s = unsafe { aster_string_to_rust(s) };
-    let sf = unsafe { aster_string_to_rust(suffix) };
-    if s.ends_with(&sf) { 1 } else { 0 }
+    let s = unsafe { string_bytes(s) };
+    let sf = unsafe { string_bytes(suffix) };
+    if s.ends_with(sf) { 1 } else { 0 }
 }
 
 /// Trim leading and trailing whitespace from a heap string.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_string_trim(ptr: *const u8) -> *mut u8 {
     let s = unsafe { aster_string_to_rust(ptr) };
     let trimmed = s.trim();
@@ -90,6 +141,7 @@ pub extern "C" fn aster_string_trim(ptr: *const u8) -> *mut u8 {
 }
 
 /// Convert a heap string to uppercase.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_string_to_upper(ptr: *const u8) -> *mut u8 {
     let s = unsafe { aster_string_to_rust(ptr) };
     let upper = s.to_uppercase();
@@ -97,6 +149,7 @@ pub extern "C" fn aster_string_to_upper(ptr: *const u8) -> *mut u8 {
 }
 
 /// Convert a heap string to lowercase.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_string_to_lower(ptr: *const u8) -> *mut u8 {
     let s = unsafe { aster_string_to_rust(ptr) };
     let lower = s.to_lowercase();
@@ -104,6 +157,7 @@ pub extern "C" fn aster_string_to_lower(ptr: *const u8) -> *mut u8 {
 }
 
 /// Slice a heap string by character indices [from, to), clamped to bounds.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_string_slice(ptr: *const u8, from: i64, to: i64) -> *mut u8 {
     let s = unsafe { aster_string_to_rust(ptr) };
     let char_count = s.chars().count();
@@ -128,6 +182,7 @@ pub extern "C" fn aster_string_slice(ptr: *const u8, from: i64, to: i64) -> *mut
 }
 
 /// Replace all occurrences of `old` with `new` in a heap string.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_string_replace(ptr: *const u8, old: *const u8, new: *const u8) -> *mut u8 {
     let s = unsafe { aster_string_to_rust(ptr) };
     let old_s = unsafe { aster_string_to_rust(old) };
@@ -137,6 +192,7 @@ pub extern "C" fn aster_string_replace(ptr: *const u8, old: *const u8, new: *con
 }
 
 /// Split a heap string by a separator, returning a list of heap strings.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_string_split(ptr: *const u8, sep: *const u8) -> *mut u8 {
     use super::alloc::aster_alloc;
     let s = unsafe { aster_string_to_rust(ptr) };
@@ -164,12 +220,14 @@ pub extern "C" fn aster_string_split(ptr: *const u8, sep: *const u8) -> *mut u8 
 }
 
 /// Compare two heap strings by content. Returns 1 (equal) or 0 (not equal).
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_string_eq(a: *const u8, b: *const u8) -> i8 {
     if unsafe { string_eq(a, b) } { 1 } else { 0 }
 }
 
 /// Lexicographic comparison of two heap strings.
 /// Returns -1, 0, or 1 (like C strcmp).
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_string_compare(a: *const u8, b: *const u8) -> i64 {
     unsafe {
         let (a_data, a_len) = if a.is_null() {
@@ -252,18 +310,21 @@ pub(super) fn aster_string_new_from_rust(s: &str) -> *mut u8 {
 }
 
 /// Convert an integer to a heap string.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_int_to_string(val: i64) -> *mut u8 {
     let s = val.to_string();
     aster_string_new(s.as_ptr(), s.len())
 }
 
 /// Convert a float to a heap string.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_float_to_string(val: f64) -> *mut u8 {
     let s = val.to_string();
     aster_string_new(s.as_ptr(), s.len())
 }
 
 /// Convert a bool to a heap string.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_bool_to_string(val: i8) -> *mut u8 {
     let s = if val != 0 { "true" } else { "false" };
     aster_string_new(s.as_ptr(), s.len())

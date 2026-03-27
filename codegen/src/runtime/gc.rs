@@ -372,6 +372,7 @@ fn gc_collect_inner() {
 
 /// Push a shadow stack frame. Layout: [prev: *mut u8][count: i64][roots: [i64; count]]
 /// The frame must live on the caller's stack (passed as a pointer).
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_gc_push_roots(frame: *mut u8, count: i64) {
     if frame.is_null() || !(0..=MAX_GC_ROOTS).contains(&count) {
         return;
@@ -392,6 +393,7 @@ pub extern "C" fn aster_gc_push_roots(frame: *mut u8, count: i64) {
 }
 
 /// Pop the top shadow stack frame.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_gc_pop_roots() {
     SHADOW_STACK.with(|ss| {
         let top = ss.get();
@@ -403,6 +405,7 @@ pub extern "C" fn aster_gc_pop_roots() {
 }
 
 /// Force a garbage collection cycle.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_gc_collect() {
     gc_collect_inner();
 }

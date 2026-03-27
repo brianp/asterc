@@ -1,5 +1,6 @@
 /// Say a string (ptr to heap string object).
 /// String layout: [len: i64][data: u8...]
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_say_str(ptr: *const u8) {
     if ptr.is_null() {
         println!("nil");
@@ -23,16 +24,19 @@ pub extern "C" fn aster_say_str(ptr: *const u8) {
 }
 
 /// Say an integer.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_say_int(val: i64) {
     println!("{}", val);
 }
 
 /// Say a float.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_say_float(val: f64) {
     println!("{}", val);
 }
 
 /// Say a bool.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_say_bool(val: i8) {
     println!("{}", if val != 0 { "true" } else { "false" });
 }

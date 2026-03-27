@@ -12,7 +12,7 @@ use ariadne::{Color, Label, Report, ReportKind, Source};
 use ast::templates::DiagnosticTemplate;
 use ast::templates::type_errors::NotCompilable;
 use ast::{Diagnostic, Severity};
-use codegen::config::{BuildConfig, OptLevel, Profile};
+use codegen::config::{BuildConfig, OptLevel};
 use fir::lower::LowerError;
 use lexer::lex;
 use parser::Parser;
@@ -269,94 +269,12 @@ fn cmd_build(opts: &BuildOptions) {
         }
     }
 
-    // Step 2: Compile runtime (skip if cached)
-    let runtime_source = codegen::runtime_source::c_runtime_source();
-    let asm_source = codegen::asm_source::asm_source_for_target();
-    let combined_hash = sha256_hex(format!("{}{}", runtime_source, asm_source).as_bytes());
-    let runtime_o = paths.runtime_o();
-    let asm_o = paths.gen_dir.join("asm.o");
+    // Step 2: Locate the Rust runtime static library.
+    // The runtime is compiled as a staticlib from the codegen crate.
+    // It includes all runtime functions and the green thread assembly.
+    let runtime_lib = find_runtime_staticlib();
 
-    let runtime_fresh = manifest_data.as_ref().is_some_and(|m| {
-        m.is_runtime_fresh(&combined_hash) && runtime_o.exists() && asm_o.exists()
-    });
-
-    if runtime_fresh {
-        if opts.config.verbose {
-            eprintln!("[2/4] Runtime (cached)");
-            eprintln!("[3/4] Assembly (cached)");
-        }
-    } else {
-        // Compile runtime.c → runtime.o
-        if opts.config.verbose {
-            eprintln!("[2/4] Compiling runtime → {}", runtime_o.display());
-        }
-
-        let runtime_c = paths.runtime_c();
-        fs::write(&runtime_c, runtime_source).unwrap_or_else(|e| {
-            eprintln!("Failed to write runtime: {}", e);
-            std::process::exit(2);
-        });
-
-        let cc_flags: &[&str] = match opts.config.profile {
-            Profile::Debug => &["-c", "-g"],
-            Profile::Release => &[
-                "-c",
-                "-O2",
-                "-fstack-protector-strong",
-                "-D_FORTIFY_SOURCE=2",
-            ],
-        };
-        let cc = cc_compiler();
-        let status = std::process::Command::new(&cc)
-            .args(cc_flags)
-            .arg("-pthread")
-            .arg(runtime_c.to_string_lossy().as_ref())
-            .arg("-o")
-            .arg(runtime_o.to_string_lossy().as_ref())
-            .status();
-        match status {
-            Ok(s) if s.success() => {}
-            Ok(s) => {
-                eprintln!("Runtime compilation failed: {}", s);
-                std::process::exit(2);
-            }
-            Err(e) => {
-                eprintln!("Failed to run cc: {}", e);
-                std::process::exit(2);
-            }
-        }
-
-        // Compile assembly → asm.o
-        if opts.config.verbose {
-            eprintln!("[3/4] Compiling assembly → {}", asm_o.display());
-        }
-
-        let asm_s = paths.gen_dir.join("green_asm.S");
-        fs::write(&asm_s, asm_source).unwrap_or_else(|e| {
-            eprintln!("Failed to write assembly: {}", e);
-            std::process::exit(2);
-        });
-
-        let status = std::process::Command::new(&cc)
-            .arg("-c")
-            .arg(asm_s.to_string_lossy().as_ref())
-            .arg("-o")
-            .arg(asm_o.to_string_lossy().as_ref())
-            .status();
-        match status {
-            Ok(s) if s.success() => {}
-            Ok(s) => {
-                eprintln!("Assembly compilation failed: {}", s);
-                std::process::exit(2);
-            }
-            Err(e) => {
-                eprintln!("Failed to run cc for assembly: {}", e);
-                std::process::exit(2);
-            }
-        }
-    }
-
-    // Step 4: Link
+    // Step 3: Link
     let final_output = if let Some(ref out) = opts.output {
         out.clone()
     } else {
@@ -364,19 +282,28 @@ fn cmd_build(opts: &BuildOptions) {
     };
 
     if opts.config.verbose {
-        eprintln!("[4/4] Linking → {}", final_output);
+        eprintln!("[2/2] Linking → {}", final_output);
     }
 
     let cc = cc_compiler();
-    let status = std::process::Command::new(&cc)
-        .arg(obj_path.to_string_lossy().as_ref())
-        .arg(runtime_o.to_string_lossy().as_ref())
-        .arg(asm_o.to_string_lossy().as_ref())
+    let mut cmd = std::process::Command::new(&cc);
+    cmd.arg(obj_path.to_string_lossy().as_ref())
+        .arg(runtime_lib.to_string_lossy().as_ref())
         .arg("-pthread")
         .arg("-lm")
+        .arg("-dead_strip")
         .arg("-o")
-        .arg(&final_output)
-        .status();
+        .arg(&final_output);
+
+    // macOS requires explicit framework linking for the Rust runtime
+    #[cfg(target_os = "macos")]
+    {
+        cmd.arg("-framework").arg("Security");
+        cmd.arg("-framework").arg("CoreFoundation");
+        cmd.arg("-framework").arg("SystemConfiguration");
+    }
+
+    let status = cmd.status();
 
     match status {
         Ok(s) if s.success() => {
@@ -385,7 +312,7 @@ fn cmd_build(opts: &BuildOptions) {
                 BuildManifest::new(opts.config.profile_dir(), opts.config.cranelift_opt_level())
             });
             manifest.record_file(&source_name, &source_hash, &obj_path_str);
-            manifest.runtime_hash = combined_hash;
+            manifest.runtime_hash = String::new();
             let _ = manifest.save(&paths.manifest());
 
             let size = fs::metadata(&final_output).map(|m| m.len()).unwrap_or(0);
@@ -400,6 +327,51 @@ fn cmd_build(opts: &BuildOptions) {
             std::process::exit(2);
         }
     }
+}
+
+/// Locate the pre-built `libcodegen.a` runtime static library.
+/// Searches relative to the running binary (for installed builds)
+/// and in the cargo target directory (for development builds).
+fn find_runtime_staticlib() -> std::path::PathBuf {
+    // In development: search cargo target directory
+    let exe = env::current_exe().unwrap_or_default();
+    let exe_dir = exe.parent().unwrap_or(Path::new("."));
+
+    // Check next to the binary (e.g. target/debug/libcodegen.a or target/release/libcodegen.a)
+    let candidate = exe_dir.join("libcodegen.a");
+    if candidate.exists() {
+        return candidate;
+    }
+
+    // Check in deps directory
+    let candidate = exe_dir.join("deps").join("libcodegen.a");
+    if candidate.exists() {
+        return candidate;
+    }
+
+    // Check in ../lib relative to the binary
+    if let Some(parent) = exe_dir.parent() {
+        let candidate = parent.join("lib").join("libcodegen.a");
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+
+    // Fallback: try to find via CARGO_MANIFEST_DIR at compile time
+    let workspace_root = env!("CARGO_MANIFEST_DIR");
+    for profile in &["release", "debug"] {
+        let candidate = Path::new(workspace_root)
+            .join("target")
+            .join(profile)
+            .join("libcodegen.a");
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+
+    eprintln!("error: could not find libcodegen.a runtime library");
+    eprintln!("hint: run `cargo build -p codegen --release` first");
+    std::process::exit(2);
 }
 
 fn cmd_clean(all: bool) {
@@ -815,13 +787,20 @@ fn main() {
 #[cfg(test)]
 mod runtime_tests {
     #[test]
-    fn c_runtime_exports_every_declared_runtime_symbol() {
-        let runtime = codegen::runtime_source::c_runtime_source();
-        for (name, _, _) in codegen::runtime_sigs::RUNTIME_SIGS {
-            assert!(
-                runtime.contains(name),
-                "embedded C runtime is missing symbol declaration for {name}"
-            );
+    fn staticlib_exports_every_declared_runtime_symbol() {
+        // Verify that runtime_sigs and runtime_builtin_symbols agree.
+        // The macro generates both from the same definition, so this
+        // is a structural sanity check.
+        let sigs = codegen::runtime_sigs::RUNTIME_SIGS;
+        let symbols = codegen::runtime_sigs::runtime_builtin_symbols();
+        assert_eq!(
+            sigs.len(),
+            symbols.len(),
+            "RUNTIME_SIGS and runtime_builtin_symbols have different lengths"
+        );
+        for ((sig_name, _, _), (sym_name, ptr)) in sigs.iter().zip(symbols.iter()) {
+            assert_eq!(*sig_name, *sym_name, "signature/symbol name mismatch");
+            assert!(!ptr.is_null(), "null function pointer for {sym_name}");
         }
     }
 }

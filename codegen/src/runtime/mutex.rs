@@ -22,6 +22,7 @@ struct AsterMutexState {
 }
 
 /// Allocate a new Mutex wrapping the given value.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_mutex_new(value: i64) -> *mut u8 {
     let m = Box::new(AsterMutex {
         inner: Mutex::new(AsterMutexState {
@@ -36,6 +37,7 @@ pub extern "C" fn aster_mutex_new(value: i64) -> *mut u8 {
 
 /// Acquire the mutex. If contended, suspend the current green thread.
 /// Returns the inner value.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_mutex_lock(mutex: *mut u8) -> i64 {
     if mutex.is_null() {
         aster_error_set();
@@ -80,6 +82,7 @@ pub extern "C" fn aster_mutex_lock(mutex: *mut u8) -> i64 {
 }
 
 /// Release the mutex and store the updated value. Wakes the first waiter.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_mutex_unlock(mutex: *mut u8, value: i64) {
     if mutex.is_null() {
         return;
@@ -99,6 +102,7 @@ pub extern "C" fn aster_mutex_unlock(mutex: *mut u8, value: i64) {
 }
 
 /// Read the current value without locking (for debug/inspection only).
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_mutex_get_value(mutex: *mut u8) -> i64 {
     if mutex.is_null() {
         return 0;

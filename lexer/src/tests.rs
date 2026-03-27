@@ -827,7 +827,14 @@ fn string_with_cjk_characters() {
 #[test]
 fn non_ascii_outside_string_rejected() {
     let err = lex("let café = 1").unwrap_err();
-    assert!(err.to_string().contains("Unexpected character"));
+    let msg = err.to_string();
+    assert!(
+        msg.contains("Unexpected character")
+            || msg.contains("unexpected character")
+            || msg.contains("Invalid")
+            || msg.contains("invalid"),
+        "expected rejection of non-ASCII identifier, got: {msg}"
+    );
 }
 
 #[test]

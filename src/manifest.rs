@@ -60,6 +60,8 @@ impl BuildManifest {
     }
 
     /// Check if the runtime object is up-to-date.
+    /// Retained for backward compatibility with existing manifest files.
+    #[allow(dead_code)]
     pub fn is_runtime_fresh(&self, runtime_hash: &str) -> bool {
         !self.runtime_hash.is_empty() && self.runtime_hash == runtime_hash
     }

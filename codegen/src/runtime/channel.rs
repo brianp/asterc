@@ -22,6 +22,7 @@ struct AsterChannelState {
 }
 
 /// Create a new channel with the given capacity (0 = unbounded, default 64).
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_channel_new(capacity: i64) -> *mut u8 {
     let cap = if capacity <= 0 { 64 } else { capacity as usize };
     let ch = Box::new(AsterChannel {
@@ -37,6 +38,7 @@ pub extern "C" fn aster_channel_new(capacity: i64) -> *mut u8 {
 }
 
 /// Non-blocking send. Drops the value silently if buffer is full or channel is closed.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_channel_send(ch: *mut u8, value: i64) {
     if ch.is_null() {
         return;
@@ -66,6 +68,7 @@ pub extern "C" fn aster_channel_send(ch: *mut u8, value: i64) {
 }
 
 /// Blocking send. Suspends if buffer is full.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_channel_wait_send(ch: *mut u8, value: i64) {
     if ch.is_null() {
         aster_error_set();
@@ -122,6 +125,7 @@ pub extern "C" fn aster_channel_wait_send(ch: *mut u8, value: i64) {
 }
 
 /// Try-send. Sets error flag if buffer full or closed.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_channel_try_send(ch: *mut u8, value: i64) {
     if ch.is_null() {
         aster_error_set();
@@ -150,6 +154,7 @@ pub extern "C" fn aster_channel_try_send(ch: *mut u8, value: i64) {
 
 /// Non-blocking receive. Returns 0 and sets error_flag=false if empty (nil semantics).
 /// Returns value if available.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_channel_receive(ch: *mut u8) -> i64 {
     if ch.is_null() {
         return 0;
@@ -169,6 +174,7 @@ pub extern "C" fn aster_channel_receive(ch: *mut u8) -> i64 {
 }
 
 /// Blocking receive. Suspends if buffer is empty.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_channel_wait_receive(ch: *mut u8) -> i64 {
     if ch.is_null() {
         aster_error_set();
@@ -217,6 +223,7 @@ pub extern "C" fn aster_channel_wait_receive(ch: *mut u8) -> i64 {
 }
 
 /// Try-receive. Sets error flag if empty or closed.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_channel_try_receive(ch: *mut u8) -> i64 {
     if ch.is_null() {
         aster_error_set();
@@ -237,6 +244,7 @@ pub extern "C" fn aster_channel_try_receive(ch: *mut u8) -> i64 {
 }
 
 /// Close the channel. Wake all waiters with errors.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_channel_close(ch: *mut u8) {
     if ch.is_null() {
         return;
