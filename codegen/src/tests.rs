@@ -11,10 +11,9 @@ use crate::async_runtime::{
 use crate::jit::CraneliftJIT;
 use crate::runtime::{
     aster_int_add, aster_int_mul, aster_int_sub, aster_task_from_i64, aster_task_is_ready,
-    aster_task_resolve_i64, runtime_builtin_symbols,
+    aster_task_resolve_i64,
 };
-use crate::runtime_sigs::RUNTIME_SIGS;
-use crate::runtime_source::c_runtime_source;
+use crate::runtime_sigs::{RUNTIME_SIGS, runtime_builtin_symbols};
 
 // ---------------------------------------------------------------------------
 // Helper: source → FIR → JIT compile
@@ -621,18 +620,6 @@ fn stop_the_world_gc_traces_stack_roots_from_multiple_suspended_tasks() {
     assert!(runtime.heap_object_is_live(first_root));
     assert!(runtime.heap_object_is_live(second_root));
     assert!(!runtime.heap_object_is_live(garbage));
-}
-
-#[test]
-fn c_runtime_source_covers_runtime_signatures() {
-    let source = c_runtime_source();
-    for (name, _, _) in RUNTIME_SIGS {
-        let needle = format!("{name}(");
-        assert!(
-            source.contains(&needle),
-            "runtime source is missing {name} from the shared symbol table"
-        );
-    }
 }
 
 #[test]
@@ -3047,18 +3034,28 @@ def main() -> Int
 }
 
 #[test]
-fn pow_int_overflow_wraps() {
-    // 3 ** 40 overflows i64 — should wrap (matching JIT wrapping_mul behavior)
-    let src = "\
-def main() -> Int
-  3 ** 40
-";
-    let fir = compile_and_run(src);
-    let jit = jit_compile(&fir);
-    let result = jit.call_i64(fir.entry.unwrap());
-    // Compute expected: 3i64.wrapping_pow(40)
-    let expected = 3i64.wrapping_pow(40);
-    assert_eq!(result, expected);
+fn pow_int_overflow_aborts() {
+    // 3 ** 40 overflows i64. With checked overflow, this aborts.
+    // Run in a subprocess so the abort doesn't kill the test harness.
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "tests::pow_int_overflow_aborts_inner",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "3 ** 40 should have aborted on overflow"
+    );
+}
+
+#[test]
+#[ignore] // run only via the wrapper test above
+fn pow_int_overflow_aborts_inner() {
+    use crate::runtime::numeric::aster_pow_int;
+    aster_pow_int(3, 40);
 }
 
 // ===========================================================================
@@ -4808,7 +4805,7 @@ fn closure_alloc_uses_obj_closure_header() {
     // Verify aster_closure_alloc is present in the runtime symbol table.
     // The JIT backend must resolve it so closures receive OBJ_CLOSURE headers
     // rather than OBJ_CLASS, ensuring the GC only traces the env pointer.
-    let symbols = crate::runtime::runtime_builtin_symbols();
+    let symbols = runtime_builtin_symbols();
     assert!(
         symbols
             .iter()
