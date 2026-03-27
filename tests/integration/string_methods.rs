@@ -1,4 +1,3 @@
-
 // ─── String Methods ────────────────────────────────────────────────
 //
 // Built-in methods on String type:
@@ -373,7 +372,11 @@ fn e2e_string_to_upper() {
     )
     .unwrap();
     let output = crate::common::cli(&["run", src.to_str().unwrap()]);
-    assert!(output.status.success(), "{}", crate::common::output_text(&output));
+    assert!(
+        output.status.success(),
+        "{}",
+        crate::common::output_text(&output)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.trim(), "HELLO", "to_upper should produce HELLO");
 }
@@ -391,7 +394,11 @@ fn e2e_string_to_lower() {
     )
     .unwrap();
     let output = crate::common::cli(&["run", src.to_str().unwrap()]);
-    assert!(output.status.success(), "{}", crate::common::output_text(&output));
+    assert!(
+        output.status.success(),
+        "{}",
+        crate::common::output_text(&output)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.trim(), "hello", "to_lower should produce hello");
 }
@@ -481,7 +488,11 @@ fn e2e_string_replace() {
     )
     .unwrap();
     let output = crate::common::cli(&["run", src.to_str().unwrap()]);
-    assert!(output.status.success(), "{}", crate::common::output_text(&output));
+    assert!(
+        output.status.success(),
+        "{}",
+        crate::common::output_text(&output)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.trim(), "hello there");
 }
@@ -499,7 +510,11 @@ fn e2e_string_slice() {
     )
     .unwrap();
     let output = crate::common::cli(&["run", src.to_str().unwrap()]);
-    assert!(output.status.success(), "{}", crate::common::output_text(&output));
+    assert!(
+        output.status.success(),
+        "{}",
+        crate::common::output_text(&output)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.trim(), "hello");
 }

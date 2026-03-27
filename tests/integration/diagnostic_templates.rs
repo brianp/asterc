@@ -1,4 +1,3 @@
-
 // ─── Phase 2: DiagnosticTemplate specification as tests ─────────────
 //
 // These tests define the contract for the DiagnosticTemplate system

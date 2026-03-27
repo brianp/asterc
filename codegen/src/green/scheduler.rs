@@ -183,7 +183,10 @@ fn worker_loop(_id: usize, local: Worker<ThreadPtr>) {
         }
         WORKER_CURRENT_THREAD.set(std::ptr::null());
 
-        match WORKER_YIELD_REASON.replace(None).unwrap_or(YieldReason::None) {
+        match WORKER_YIELD_REASON
+            .replace(None)
+            .unwrap_or(YieldReason::None)
+        {
             YieldReason::Preempted => {
                 thread.state.lock().unwrap().status = ThreadStatus::Runnable;
                 local.push(ThreadPtr(arc));

@@ -1,4 +1,3 @@
-
 // ─── AOT compilation and green thread execution ────────────────────
 
 #[test]
@@ -162,7 +161,11 @@ def main() -> Int
 #[test]
 fn build_executes_hello_example() {
     let output = crate::common::build_and_run("examples/executable/hello.aster");
-    assert!(output.status.success(), "{}", crate::common::output_text(&output));
+    assert!(
+        output.status.success(),
+        "{}",
+        crate::common::output_text(&output)
+    );
     assert_eq!(String::from_utf8_lossy(&output.stdout), "Hello\nYes\n");
 }
 

@@ -1,25 +1,55 @@
-pub mod bad_float_literal;
-pub mod bad_integer_literal;
-pub mod inconsistent_indentation;
-pub mod input_too_large;
-pub mod integer_overflow;
-pub mod interpolation_error;
-pub mod invalid_escape;
-pub mod missing_newline;
-pub mod string_too_long;
-pub mod tab_indentation;
-pub mod unexpected_character;
-pub mod unterminated_string;
-
-pub use bad_float_literal::BadFloatLiteral;
-pub use bad_integer_literal::BadIntegerLiteral;
-pub use inconsistent_indentation::InconsistentIndentation;
-pub use input_too_large::InputTooLarge;
-pub use integer_overflow::IntegerOverflow;
-pub use interpolation_error::InterpolationError;
-pub use invalid_escape::InvalidEscape;
-pub use missing_newline::MissingNewline;
-pub use string_too_long::StringTooLong;
-pub use tab_indentation::TabIndentation;
-pub use unexpected_character::UnexpectedCharacter;
-pub use unterminated_string::UnterminatedString;
+define_diagnostic!(
+    InterpolationError,
+    "L001",
+    "Unexpected character in string interpolation"
+);
+define_diagnostic!(
+    UnterminatedString,
+    "L002",
+    "Unterminated string or escape sequence"
+);
+define_diagnostic!(
+    TabIndentation,
+    "L003",
+    "Tab character found (use spaces for indentation)"
+);
+define_diagnostic!(InvalidEscape { sequence: String }, "L004", |self| format!(
+    "Invalid escape sequence '\\{}'",
+    self.sequence
+));
+define_diagnostic!(StringTooLong, "L005", "String exceeds maximum length");
+define_diagnostic!(BadFloatLiteral { line: usize }, "L006", |self| format!(
+    "Bad float literal at line {}",
+    self.line
+));
+define_diagnostic!(
+    IntegerOverflow,
+    "L007",
+    "Integer literal overflows i64 range"
+);
+define_diagnostic!(MissingNewline, "L008", "File must end with newline");
+define_diagnostic!(
+    InputTooLarge {
+        size: usize,
+        limit: usize
+    },
+    "L009",
+    |self| format!(
+        "input is {} bytes, exceeding the maximum of {} bytes",
+        self.size, self.limit
+    )
+);
+define_diagnostic!(
+    InconsistentIndentation,
+    "L010",
+    "indentation does not match any previous indentation level"
+);
+define_diagnostic!(UnexpectedCharacter { ch: char }, "L011", |self| format!(
+    "unexpected character '{}'",
+    self.ch
+));
+define_diagnostic!(
+    BadIntegerLiteral { literal: String },
+    "L012",
+    |self| format!("invalid integer literal '{}'", self.literal)
+);

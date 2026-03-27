@@ -1,4 +1,3 @@
-
 // ─── Iterable Protocol ──────────────────────────────────────────────
 //
 // Implement each(), get the full vocabulary for free.

@@ -211,13 +211,15 @@ impl Parser {
             None
         };
 
-        // Push generic params into scope for field/method type resolution
+        self.consume_newlines();
+        self.expect(Indent)?;
+
+        // Push generic params into scope for field/method type resolution.
+        // Must happen after expect(Indent) so that an error there doesn't
+        // leak params (pop_type_params would never run).
         if let Some(ref gp) = generic_params {
             self.push_type_params(gp);
         }
-
-        self.consume_newlines();
-        self.expect(Indent)?;
 
         let mut fields = Vec::new();
         let mut methods = Vec::new();

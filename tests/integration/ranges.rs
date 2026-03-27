@@ -1,4 +1,3 @@
-
 // ─── Range Type ─────────────────────────────────────────────────────
 //
 // `1..10` (exclusive), `1..=10` (inclusive)
@@ -133,7 +132,11 @@ fn range_random_returns_int() {
 #[test]
 fn run_range_for_inclusive_sum() {
     let output = crate::common::cli(&["run", "examples/executable/range_for.aster"]);
-    assert!(output.status.success(), "{}", crate::common::output_text(&output));
+    assert!(
+        output.status.success(),
+        "{}",
+        crate::common::output_text(&output)
+    );
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
         "55",

@@ -30,7 +30,6 @@ fn render_diagnostic(source: &str, filename: &str, diag: &Diagnostic) {
     let kind = match diag.severity {
         Severity::Error => ReportKind::Error,
         Severity::Warning => ReportKind::Warning,
-        Severity::Hint => ReportKind::Advice,
     };
 
     let offset = diag.labels.first().map(|l| l.span.start).unwrap_or(0);
@@ -291,16 +290,20 @@ fn cmd_build(opts: &BuildOptions) {
         .arg(runtime_lib.to_string_lossy().as_ref())
         .arg("-pthread")
         .arg("-lm")
-        .arg("-dead_strip")
         .arg("-o")
         .arg(&final_output);
 
-    // macOS requires explicit framework linking for the Rust runtime
     #[cfg(target_os = "macos")]
     {
+        cmd.arg("-dead_strip");
         cmd.arg("-framework").arg("Security");
         cmd.arg("-framework").arg("CoreFoundation");
         cmd.arg("-framework").arg("SystemConfiguration");
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        cmd.arg("-Wl,--gc-sections");
     }
 
     let status = cmd.status();

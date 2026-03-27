@@ -1,4 +1,3 @@
-
 use ast::{Expr, Stmt};
 use aster_fmt::{config::FormatConfig, format_source};
 use lexer::{TokenKind, lex};

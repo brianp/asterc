@@ -1,4 +1,3 @@
-
 // ─── Rich error messages: spans, codes, and notes ───────────────────
 
 #[test]

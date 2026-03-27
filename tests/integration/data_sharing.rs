@@ -1,4 +1,3 @@
-
 // ─── Async data sharing warnings ────────────────────────────────────
 
 // Variable used after async pass → warning

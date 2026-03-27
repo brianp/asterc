@@ -1,4 +1,3 @@
-
 // ─── Set type annotation and construction ────────────────────────────
 
 #[test]

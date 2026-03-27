@@ -1,4 +1,3 @@
-
 // ─── Must-consume Task[T] enforcement ───────────────────────────────
 
 // Consumed via resolve — no error

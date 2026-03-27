@@ -1,4 +1,3 @@
-
 // ─── Generic Constraints: T extends Class, T includes Trait ──────────
 //
 // Syntax:

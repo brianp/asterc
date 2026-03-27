@@ -1,4 +1,3 @@
-
 #[test]
 fn example_01_literals() {
     crate::common::compile_file("examples/01_literals.aster");

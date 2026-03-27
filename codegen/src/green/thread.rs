@@ -66,7 +66,9 @@ impl GreenThread {
     /// # Safety
     /// Caller must have exclusive access.
     pub(crate) unsafe fn set_error_flag(&self, val: bool) {
-        unsafe { *self.error_flag.get() = val; }
+        unsafe {
+            *self.error_flag.get() = val;
+        }
     }
 
     /// # Safety
@@ -78,7 +80,9 @@ impl GreenThread {
     /// # Safety
     /// Caller must have exclusive access.
     pub(crate) unsafe fn set_shadow_stack(&self, val: *mut u8) {
-        unsafe { *self.shadow_stack_top.get() = val; }
+        unsafe {
+            *self.shadow_stack_top.get() = val;
+        }
     }
 
     /// # Safety

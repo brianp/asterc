@@ -1,4 +1,3 @@
-
 // ─── Generics and traits ────────────────────────────────────────────
 
 #[test]
@@ -202,7 +201,8 @@ fn while_scope_doesnt_leak() {
 
 #[test]
 fn for_var_doesnt_leak() {
-    let err = crate::common::check_err("let xs = [1, 2]\nfor x in xs\n  let inner = 1\nlet y = x\n");
+    let err =
+        crate::common::check_err("let xs = [1, 2]\nfor x in xs\n  let inner = 1\nlet y = x\n");
     assert!(err.contains("Unknown") || err.contains("x"));
 }
 

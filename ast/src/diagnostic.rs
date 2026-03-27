@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 pub enum Severity {
     Error,
     Warning,
-    Hint,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

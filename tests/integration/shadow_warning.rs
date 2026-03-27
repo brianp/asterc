@@ -1,4 +1,3 @@
-
 use ast::Severity;
 
 /// Return only W003 (variable shadowing) warnings from the given source.

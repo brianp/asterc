@@ -1,4 +1,3 @@
-
 // ─── Async call-site error handling ─────────────────────────────────
 
 // Async calls work anywhere (no context restriction)

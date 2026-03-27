@@ -22,7 +22,7 @@ pub fn is_float(ty: &FirType) -> bool {
     matches!(ty, FirType::F64)
 }
 
-/// Returns true if this FIR type is a heap string pointer.
+/// Returns true if this FIR type is a heap pointer.
 pub fn is_ptr(ty: &FirType) -> bool {
     matches!(ty, FirType::Ptr)
 }

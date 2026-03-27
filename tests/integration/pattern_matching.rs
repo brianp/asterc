@@ -1,4 +1,3 @@
-
 // ─── Match expression: literal patterns ─────────────────────────────
 
 #[test]

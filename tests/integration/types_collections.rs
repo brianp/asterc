@@ -1,4 +1,3 @@
-
 // ─── Collections and type annotations ───────────────────────────────
 
 // ─── Let with type annotation ───────────────────────────────────────
@@ -237,7 +236,8 @@ fn list_remove_typecheck() {
 
 #[test]
 fn list_remove_returns_element_type() {
-    let err = crate::common::check_err("let xs = [1, 2, 3]\nlet removed: String = xs.remove(at: 0)\n");
+    let err =
+        crate::common::check_err("let xs = [1, 2, 3]\nlet removed: String = xs.remove(at: 0)\n");
     assert!(
         err.contains("mismatch") || err.contains("String") || err.contains("Int"),
         "Expected type mismatch error, got: {}",
@@ -267,7 +267,9 @@ fn list_remove_first_typecheck() {
 
 #[test]
 fn list_remove_first_returns_nullable() {
-    crate::common::check_ok("let xs = [1, 2, 3]\nlet found: Int? = xs.remove_first(f: -> x : x > 1)\n");
+    crate::common::check_ok(
+        "let xs = [1, 2, 3]\nlet found: Int? = xs.remove_first(f: -> x : x > 1)\n",
+    );
 }
 
 #[test]
@@ -287,7 +289,9 @@ fn list_contains_item_wrong_type_error() {
 
 #[test]
 fn list_contains_predicate_typecheck() {
-    crate::common::check_ok("let xs = [1, 2, 3]\nlet has_big: Bool = xs.contains(f: -> x : x > 2)\n");
+    crate::common::check_ok(
+        "let xs = [1, 2, 3]\nlet has_big: Bool = xs.contains(f: -> x : x > 2)\n",
+    );
 }
 
 #[test]

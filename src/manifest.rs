@@ -59,13 +59,6 @@ impl BuildManifest {
             .is_some_and(|entry| entry.source_hash == source_hash)
     }
 
-    /// Check if the runtime object is up-to-date.
-    /// Retained for backward compatibility with existing manifest files.
-    #[allow(dead_code)]
-    pub fn is_runtime_fresh(&self, runtime_hash: &str) -> bool {
-        !self.runtime_hash.is_empty() && self.runtime_hash == runtime_hash
-    }
-
     /// Record a compiled file.
     pub fn record_file(&mut self, source_name: &str, source_hash: &str, object_path: &str) {
         self.files.insert(
@@ -170,28 +163,6 @@ mod tests {
         assert!(!m.is_file_fresh("unknown.aster", "abc123"));
     }
 
-    // -- Runtime freshness --
-
-    #[test]
-    fn fresh_runtime() {
-        let mut m = BuildManifest::new("debug", "none");
-        m.runtime_hash = "rt_hash".to_string();
-        assert!(m.is_runtime_fresh("rt_hash"));
-    }
-
-    #[test]
-    fn stale_runtime() {
-        let mut m = BuildManifest::new("debug", "none");
-        m.runtime_hash = "old_hash".to_string();
-        assert!(!m.is_runtime_fresh("new_hash"));
-    }
-
-    #[test]
-    fn empty_runtime_hash_is_stale() {
-        let m = BuildManifest::new("debug", "none");
-        assert!(!m.is_runtime_fresh("any_hash"));
-    }
-
     // -- Serialization round-trip --
 
     #[test]
@@ -208,7 +179,6 @@ mod tests {
         assert_eq!(loaded.profile, "release");
         assert_eq!(loaded.opt_level, "speed");
         assert!(loaded.is_file_fresh("main.aster", "hash1"));
-        assert!(loaded.is_runtime_fresh("rt_hash"));
 
         let _ = std::fs::remove_file(&tmp);
     }

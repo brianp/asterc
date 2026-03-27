@@ -1,4 +1,3 @@
-
 // ─── Mutex[T] type-checking ─────────────────────────────────────────
 
 // Mutex constructor

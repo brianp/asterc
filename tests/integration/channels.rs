@@ -1,4 +1,3 @@
-
 // ─── Channel[T] type-checking ───────────────────────────────────────
 
 // Channel constructor

@@ -79,6 +79,27 @@ impl<M: Module> CompileState<M> {
         Ok(())
     }
 
+    /// Declare runtime functions, declare async entry shims, compile all
+    /// user functions and their async shims. This is the shared pipeline
+    /// used by both AOT and JIT after backend-specific declaration.
+    pub fn compile_declared_functions(&mut self, functions: &[FirFunction]) -> Result<(), String> {
+        self.declare_runtime_functions()?;
+        self.declare_async_entry_shims(functions)?;
+
+        for func in functions {
+            if !func.name.is_empty() {
+                self.compile_function(func)?;
+            }
+        }
+        for func in functions {
+            if !func.name.is_empty() {
+                self.compile_async_entry_shim(func)?;
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn declare_runtime_functions(&mut self) -> Result<(), String> {
         for &(name, params, ret) in crate::runtime_sigs::RUNTIME_SIGS {
             let mut sig = self.module.make_signature();

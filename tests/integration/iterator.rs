@@ -1,4 +1,3 @@
-
 // ─── Iterator[T] Protocol ──────────────────────────────────────────
 //
 // Parametric trait: `trait Iterator[T]` with required `next() -> T?`

@@ -1,3 +1,33 @@
+/// Define a diagnostic template struct with `code()` and `render()` methods.
+///
+/// Unit variant (no fields, static message):
+///   `define_diagnostic!(Name, "CODE", "message");`
+///
+/// Struct variant (with fields, formatted message):
+///   `define_diagnostic!(Name { field: Type }, "CODE", |self| format!(...));`
+macro_rules! define_diagnostic {
+    ($name:ident, $code:literal, $msg:expr) => {
+        #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+        pub struct $name;
+
+        impl $name {
+            pub fn code(&self) -> &'static str { $code }
+            pub fn render(&self) -> String { ($msg).to_string() }
+        }
+    };
+    ($name:ident { $($field:ident : $ty:ty),* $(,)? }, $code:literal, |$s:ident| $render:expr) => {
+        #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+        pub struct $name {
+            $(pub $field: $ty,)*
+        }
+
+        impl $name {
+            pub fn code(&self) -> &'static str { $code }
+            pub fn render(&$s) -> String { $render }
+        }
+    };
+}
+
 pub mod lex_errors;
 pub mod module_errors;
 pub mod parse_errors;

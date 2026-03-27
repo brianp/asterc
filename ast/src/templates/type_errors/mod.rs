@@ -1,62 +1,180 @@
-// Note: error code E022 is unassigned (gap between E021 ConstraintError and E023 PrintableError).
-pub mod argument_count_mismatch;
-pub mod argument_type_mismatch;
-pub mod binary_op_error;
-pub mod collection_constraint_error;
-pub mod comparison_error;
-pub mod condition_type_error;
-pub mod const_reassignment;
-pub mod constraint_error;
-pub mod control_flow_error;
-pub mod error_propagation;
-pub mod inconsistent_list_type;
-pub mod index_type_error;
-pub mod invalid_assignment;
-pub mod logical_op_error;
-pub mod match_error;
-pub mod missing_iterable;
-pub mod not_compilable;
-pub mod printable_error;
-pub mod return_type_mismatch;
-pub mod suspension_error;
-pub mod task_already_consumed;
-pub mod task_not_resolved;
-pub mod trait_error;
-pub mod type_constraint_error;
-pub mod type_mismatch;
-pub mod unary_op_error;
-pub mod undeclared_assignment;
-pub mod undefined_variable;
-pub mod unknown_field;
-pub mod visibility_error;
+use crate::types::Type;
 
-pub use argument_count_mismatch::ArgumentCountMismatch;
-pub use argument_type_mismatch::ArgumentTypeMismatch;
-pub use binary_op_error::BinaryOpError;
-pub use collection_constraint_error::CollectionConstraintError;
-pub use comparison_error::ComparisonError;
-pub use condition_type_error::ConditionTypeError;
-pub use const_reassignment::ConstReassignment;
-pub use constraint_error::ConstraintError;
-pub use control_flow_error::ControlFlowError;
-pub use error_propagation::ErrorPropagation;
-pub use inconsistent_list_type::InconsistentListType;
-pub use index_type_error::IndexTypeError;
-pub use invalid_assignment::InvalidAssignment;
-pub use logical_op_error::LogicalOpError;
-pub use match_error::MatchError;
-pub use missing_iterable::MissingIterable;
-pub use not_compilable::NotCompilable;
-pub use printable_error::PrintableError;
-pub use return_type_mismatch::ReturnTypeMismatch;
-pub use suspension_error::SuspensionError;
-pub use task_already_consumed::TaskAlreadyConsumed;
-pub use task_not_resolved::TaskNotResolved;
-pub use trait_error::TraitError;
-pub use type_constraint_error::TypeConstraintError;
-pub use type_mismatch::TypeMismatch;
-pub use unary_op_error::UnaryOpError;
-pub use undeclared_assignment::UndeclaredAssignment;
-pub use undefined_variable::UndefinedVariable;
-pub use unknown_field::UnknownField;
-pub use visibility_error::VisibilityError;
+define_diagnostic!(
+    TypeMismatch {
+        expected: Type,
+        actual: Type
+    },
+    "E001",
+    |self| format!(
+        "Type annotation mismatch: expected {}, got {}",
+        self.expected, self.actual
+    )
+);
+define_diagnostic!(UndefinedVariable { name: String }, "E002", |self| format!(
+    "Unknown identifier '{}'",
+    self.name
+));
+define_diagnostic!(
+    BinaryOpError {
+        op: String,
+        left: Type,
+        right: Type
+    },
+    "E003",
+    |self| format!(
+        "'{}' used outside of a valid context or with incompatible types {} and {}",
+        self.op, self.left, self.right
+    )
+);
+define_diagnostic!(
+    ReturnTypeMismatch {
+        function: String,
+        expected: Type,
+        actual: Type
+    },
+    "E004",
+    |self| format!(
+        "Return type mismatch in '{}': expected {}, got {}",
+        self.function, self.expected, self.actual
+    )
+);
+define_diagnostic!(
+    ArgumentTypeMismatch {
+        param: String,
+        expected: Type,
+        actual: Type
+    },
+    "E005",
+    |self| format!(
+        "Argument '{}' expects {}, got {}",
+        self.param, self.expected, self.actual
+    )
+);
+define_diagnostic!(
+    ArgumentCountMismatch {
+        expected: usize,
+        actual: usize
+    },
+    "E006",
+    |self| format!(
+        "Function parameter count mismatch: expected {}, got {}",
+        self.expected, self.actual
+    )
+);
+define_diagnostic!(
+    MissingIterable { type_name: String },
+    "E007",
+    |self| format!(
+        "Class '{}' does not have required each() method",
+        self.type_name
+    )
+);
+define_diagnostic!(InvalidAssignment, "E008", "Invalid assignment target");
+define_diagnostic!(
+    UndeclaredAssignment { name: String },
+    "E009",
+    |self| format!("Assignment to undeclared variable '{}'", self.name)
+);
+define_diagnostic!(
+    UnknownField {
+        field: String,
+        type_name: String
+    },
+    "E010",
+    |self| format!(
+        "Unknown field '{}' on type '{}'",
+        self.field, self.type_name
+    )
+);
+define_diagnostic!(MatchError { message: String }, "E011", |self| self
+    .message
+    .clone());
+define_diagnostic!(
+    TaskAlreadyConsumed { name: String },
+    "E012",
+    |self| format!("Task '{}' is already consumed", self.name)
+);
+define_diagnostic!(ErrorPropagation { message: String }, "E013", |self| self
+    .message
+    .clone());
+define_diagnostic!(TraitError { message: String }, "E014", |self| self
+    .message
+    .clone());
+define_diagnostic!(ConditionTypeError { actual: Type }, "E015", |self| format!(
+    "Condition must be Bool, got {}",
+    self.actual
+));
+define_diagnostic!(IndexTypeError { actual: Type }, "E016", |self| format!(
+    "Index must be Int, got {}",
+    self.actual
+));
+define_diagnostic!(
+    InconsistentListType {
+        expected: Type,
+        actual: Type
+    },
+    "E017",
+    |self| format!(
+        "List elements have inconsistent types: expected {}, got {}",
+        self.expected, self.actual
+    )
+);
+define_diagnostic!(
+    UnaryOpError {
+        op: String,
+        actual: Type
+    },
+    "E018",
+    |self| format!(
+        "Cannot apply '{}' to {} (expected Bool)",
+        self.op, self.actual
+    )
+);
+define_diagnostic!(ComparisonError { message: String }, "E019", |self| self
+    .message
+    .clone());
+define_diagnostic!(LogicalOpError, "E020", "'and'/'or' operands must be Bool");
+define_diagnostic!(ConstraintError { message: String }, "E021", |self| self
+    .message
+    .clone());
+// Note: error code E022 is unassigned.
+define_diagnostic!(PrintableError, "E023", "Expression must be Printable");
+define_diagnostic!(TypeConstraintError { message: String }, "E024", |self| self
+    .message
+    .clone());
+define_diagnostic!(
+    CollectionConstraintError { message: String },
+    "E025",
+    |self| self.message.clone()
+);
+define_diagnostic!(ConstReassignment { name: String }, "E026", |self| format!(
+    "const binding '{}' cannot be reassigned",
+    self.name
+));
+define_diagnostic!(TaskNotResolved { name: String }, "E027", |self| format!(
+    "Task '{}' created but never resolved",
+    self.name
+));
+define_diagnostic!(NotCompilable { message: String }, "E028", |self| self
+    .message
+    .clone());
+define_diagnostic!(
+    ControlFlowError { keyword: String },
+    "E029",
+    |self| format!("`{}` can only be used inside a loop", self.keyword)
+);
+define_diagnostic!(SuspensionError { message: String }, "E030", |self| self
+    .message
+    .clone());
+define_diagnostic!(
+    VisibilityError {
+        member: String,
+        class_name: String
+    },
+    "E031",
+    |self| format!(
+        "'{}' is private in '{}' and cannot be accessed from outside the module",
+        self.member, self.class_name
+    )
+);

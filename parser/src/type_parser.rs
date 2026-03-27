@@ -22,7 +22,7 @@ impl Parser {
             );
         }
 
-        let (name, _) = self.expect_ident("type name")?;
+        let (name, name_span) = self.expect_ident("type name")?;
 
         // Catch lowercase built-in type names early with a clear error
         let correct = match name.as_str() {
@@ -45,10 +45,7 @@ impl Parser {
                     expected: format!("'{}'", correct),
                     found: format!("'{}'", name),
                 }))
-                .with_label(
-                    self.span_from(self.pos - 1),
-                    format!("use '{}' instead", correct),
-                ),
+                .with_label(name_span, format!("use '{}' instead", correct)),
             );
         }
 

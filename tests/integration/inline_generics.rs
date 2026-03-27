@@ -1,4 +1,3 @@
-
 // ─── BC-5: Inline generic syntax for functions ──────────────────────
 //
 // New syntax: def identity(x: T) -> T
@@ -30,7 +29,9 @@ fn inline_generic_multi_params() {
 
 #[test]
 fn inline_generic_second_param() {
-    crate::common::check_ok("def second(a: A, b: B) -> B\n  b\nlet y = second(a: 1, b: \"hello\")\n");
+    crate::common::check_ok(
+        "def second(a: A, b: B) -> B\n  b\nlet y = second(a: 1, b: \"hello\")\n",
+    );
 }
 
 // ─── Generics with container types ──────────────────────────────────

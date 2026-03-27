@@ -64,9 +64,99 @@ fn import_group(path: &[String]) -> u8 {
     }
 }
 
+struct ImportEntry {
+    group: u8,
+    path_str: String,
+    doc: Doc,
+}
+
+/// Merge, sort, and group import statements into a list of `ImportEntry` values.
+fn merge_imports(imports: &[&Stmt]) -> Vec<ImportEntry> {
+    let mut merged: BTreeMap<(bool, Vec<String>), Vec<String>> = BTreeMap::new();
+    let mut aliases: Vec<&Stmt> = Vec::new();
+
+    for imp in imports {
+        if let Stmt::Use {
+            path,
+            names,
+            alias,
+            is_public,
+            ..
+        } = imp
+        {
+            if alias.is_some() || names.is_none() {
+                aliases.push(imp);
+                continue;
+            }
+            let key = (*is_public, path.clone());
+            let entry = merged.entry(key).or_default();
+            if let Some(ns) = names {
+                for n in ns {
+                    if !entry.contains(n) {
+                        entry.push(n.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    for names in merged.values_mut() {
+        names.sort();
+    }
+
+    let mut entries: Vec<ImportEntry> = Vec::new();
+
+    for ((is_public, path), names) in &merged {
+        let doc = if names.is_empty() {
+            format_use(path, &None, &None, *is_public)
+        } else {
+            format_use(path, &Some(names.clone()), &None, *is_public)
+        };
+        entries.push(ImportEntry {
+            group: import_group(path),
+            path_str: path.join("/"),
+            doc,
+        });
+    }
+
+    for imp in &aliases {
+        if let Stmt::Use {
+            path,
+            names,
+            alias,
+            is_public,
+            ..
+        } = imp
+        {
+            let doc = format_use(path, names, alias, *is_public);
+            entries.push(ImportEntry {
+                group: import_group(path),
+                path_str: path.join("/"),
+                doc,
+            });
+        }
+    }
+
+    entries.sort_by(|a, b| a.group.cmp(&b.group).then(a.path_str.cmp(&b.path_str)));
+    entries
+}
+
+/// Emit merged import entries as docs, inserting blank lines between groups.
+fn emit_import_entries(entries: &[ImportEntry], docs: &mut Vec<Doc>) {
+    let mut last_group: Option<u8> = None;
+    for entry in entries {
+        if let Some(lg) = last_group
+            && lg != entry.group
+        {
+            docs.push(hardline());
+        }
+        docs.push(entry.doc.clone());
+        last_group = Some(entry.group);
+    }
+}
+
 /// Format an entire module, with import merging/sorting/grouping.
 pub(crate) fn format_module(module: &Module, config: &FormatConfig) -> Doc {
-    // Separate imports from other statements
     let mut imports: Vec<&Stmt> = Vec::new();
     let mut others: Vec<&Stmt> = Vec::new();
 
@@ -81,99 +171,10 @@ pub(crate) fn format_module(module: &Module, config: &FormatConfig) -> Doc {
     let mut result_docs: Vec<Doc> = Vec::new();
 
     if !imports.is_empty() {
-        // Merge imports by (is_public, path) → combined names
-        let mut merged: BTreeMap<(bool, Vec<String>), Vec<String>> = BTreeMap::new();
-        let mut aliases: Vec<&Stmt> = Vec::new(); // imports with aliases can't be merged
-
-        for imp in &imports {
-            if let Stmt::Use {
-                path,
-                names,
-                alias,
-                is_public,
-                ..
-            } = imp
-            {
-                if alias.is_some() || names.is_none() {
-                    // Aliased imports and wildcard imports (no names) can't be merged
-                    aliases.push(imp);
-                    continue;
-                }
-                let key = (*is_public, path.clone());
-                let entry = merged.entry(key).or_default();
-                if let Some(ns) = names {
-                    for n in ns {
-                        if !entry.contains(n) {
-                            entry.push(n.clone());
-                        }
-                    }
-                }
-            }
-        }
-
-        // Sort names within each import
-        for names in merged.values_mut() {
-            names.sort();
-        }
-
-        // Build import docs grouped by category
-        struct ImportEntry {
-            group: u8,
-            path_str: String,
-            doc: Doc,
-        }
-
-        let mut entries: Vec<ImportEntry> = Vec::new();
-
-        for ((is_public, path), names) in &merged {
-            let doc = if names.is_empty() {
-                format_use(path, &None, &None, *is_public)
-            } else {
-                format_use(path, &Some(names.clone()), &None, *is_public)
-            };
-            entries.push(ImportEntry {
-                group: import_group(path),
-                path_str: path.join("/"),
-                doc,
-            });
-        }
-
-        // Add aliased imports
-        for imp in &aliases {
-            if let Stmt::Use {
-                path,
-                names,
-                alias,
-                is_public,
-                ..
-            } = imp
-            {
-                let doc = format_use(path, names, alias, *is_public);
-                entries.push(ImportEntry {
-                    group: import_group(path),
-                    path_str: path.join("/"),
-                    doc,
-                });
-            }
-        }
-
-        // Sort by group, then by path
-        entries.sort_by(|a, b| a.group.cmp(&b.group).then(a.path_str.cmp(&b.path_str)));
-
-        // Emit with blank lines between groups
-        let mut last_group: Option<u8> = None;
-        for entry in &entries {
-            if let Some(lg) = last_group
-                && lg != entry.group
-            {
-                result_docs.push(hardline()); // blank line between groups
-            }
-            result_docs.push(entry.doc.clone());
-            last_group = Some(entry.group);
-        }
+        let entries = merge_imports(&imports);
+        emit_import_entries(&entries, &mut result_docs);
     }
 
-    // Add non-import statements
     for stmt in &others {
         if !result_docs.is_empty() {
             result_docs.push(hardline());
@@ -199,11 +200,9 @@ pub(crate) fn format_module_with_comments(
         return format_module(module, config);
     }
 
-    // Get statement spans for comment assignment.
     let stmt_spans: Vec<ast::Span> = module.body.iter().map(stmt_span).collect();
     let assigned = trivia::assign_comments_to_stmts(comments, &stmt_spans, source);
 
-    // Separate imports from other statements (same as format_module).
     let mut imports: Vec<(usize, &Stmt)> = Vec::new();
     let mut others: Vec<(usize, &Stmt)> = Vec::new();
 
@@ -218,108 +217,22 @@ pub(crate) fn format_module_with_comments(
     let mut result_docs: Vec<Doc> = Vec::new();
 
     if !imports.is_empty() {
-        // Same import merging/sorting logic as format_module.
-        let mut merged: BTreeMap<(bool, Vec<String>), Vec<String>> = BTreeMap::new();
-        let mut aliases: Vec<&Stmt> = Vec::new();
-        let mut first_import_idx: Option<usize> = None;
-
-        for &(i, imp) in &imports {
-            if first_import_idx.is_none() {
-                first_import_idx = Some(i);
-            }
-            if let Stmt::Use {
-                path,
-                names,
-                alias,
-                is_public,
-                ..
-            } = imp
-            {
-                if alias.is_some() || names.is_none() {
-                    aliases.push(imp);
-                    continue;
-                }
-                let key = (*is_public, path.clone());
-                let entry = merged.entry(key).or_default();
-                if let Some(ns) = names {
-                    for n in ns {
-                        if !entry.contains(n) {
-                            entry.push(n.clone());
-                        }
-                    }
-                }
-            }
-        }
-
-        for names in merged.values_mut() {
-            names.sort();
-        }
-
-        struct ImportEntry {
-            group: u8,
-            path_str: String,
-            doc: Doc,
-        }
-
-        let mut entries: Vec<ImportEntry> = Vec::new();
-
-        for ((is_public, path), names) in &merged {
-            let doc = if names.is_empty() {
-                format_use(path, &None, &None, *is_public)
-            } else {
-                format_use(path, &Some(names.clone()), &None, *is_public)
-            };
-            entries.push(ImportEntry {
-                group: import_group(path),
-                path_str: path.join("/"),
-                doc,
-            });
-        }
-
-        for imp in &aliases {
-            if let Stmt::Use {
-                path,
-                names,
-                alias,
-                is_public,
-                ..
-            } = imp
-            {
-                let doc = format_use(path, names, alias, *is_public);
-                entries.push(ImportEntry {
-                    group: import_group(path),
-                    path_str: path.join("/"),
-                    doc,
-                });
-            }
-        }
-
-        entries.sort_by(|a, b| a.group.cmp(&b.group).then(a.path_str.cmp(&b.path_str)));
+        let first_import_idx = imports[0].0;
+        let import_stmts: Vec<&Stmt> = imports.iter().map(|(_, s)| *s).collect();
+        let entries = merge_imports(&import_stmts);
 
         // Insert comments before the first import.
-        if let Some(idx) = first_import_idx {
-            for c in &assigned[idx] {
-                result_docs.push(text(c.trim()));
-            }
+        for c in &assigned[first_import_idx] {
+            result_docs.push(text(c.trim()));
         }
 
-        let mut last_group: Option<u8> = None;
-        for entry in &entries {
-            if let Some(lg) = last_group
-                && lg != entry.group
-            {
-                result_docs.push(hardline());
-            }
-            result_docs.push(entry.doc.clone());
-            last_group = Some(entry.group);
-        }
+        emit_import_entries(&entries, &mut result_docs);
     }
 
     for &(i, stmt) in &others {
         if !result_docs.is_empty() {
             result_docs.push(hardline());
         }
-        // Insert comments that belong before this statement.
         for c in &assigned[i] {
             result_docs.push(text(c.trim()));
             result_docs.push(hardline());

@@ -1,8 +1,11 @@
-
 #[test]
 fn run_executes_hello_example() {
     let output = crate::common::cli(&["run", "examples/executable/hello.aster"]);
-    assert!(output.status.success(), "{}", crate::common::output_text(&output));
+    assert!(
+        output.status.success(),
+        "{}",
+        crate::common::output_text(&output)
+    );
     assert_eq!(String::from_utf8_lossy(&output.stdout), "Hello\nYes\n");
 }
 

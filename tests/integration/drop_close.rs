@@ -1,4 +1,3 @@
-
 // ─── Drop and Close trait registration ──────────────────────────────
 
 // Drop and Close are registered in the virtual stdlib

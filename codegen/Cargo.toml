@@ -26,7 +26,3 @@ ast = { path = "../ast" }
 lexer = { path = "../lexer" }
 parser = { path = "../parser" }
 typecheck = { path = "../typecheck" }
-
-[[bench]]
-name = "async_runtime_matrix"
-harness = false

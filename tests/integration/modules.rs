@@ -1,4 +1,3 @@
-
 use std::collections::HashMap;
 
 // ─── Module system: imports and visibility ───────────────────────────
@@ -401,7 +400,8 @@ fn namespace_private_member_not_accessible() {
         "mixed".to_string(),
         "class Hidden\n  x: Int\npub class Visible\n  y: Int\n".to_string(),
     );
-    let err = crate::common::check_err_with_files("use mixed as m\nlet h = m.Hidden(x: 1)\n", files);
+    let err =
+        crate::common::check_err_with_files("use mixed as m\nlet h = m.Hidden(x: 1)\n", files);
     assert!(
         err.contains("M004")
             || err.contains("not found in namespace")

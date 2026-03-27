@@ -53,19 +53,8 @@ impl CraneliftJIT {
                     .declare_function_with_linkage(func, &func.name, Linkage::Local)?;
             }
         }
-        self.state.declare_runtime_functions()?;
-        self.state.declare_async_entry_shims(&fir.functions)?;
 
-        for func in &fir.functions {
-            if !func.name.is_empty() {
-                self.state.compile_function(func)?;
-            }
-        }
-        for func in &fir.functions {
-            if !func.name.is_empty() {
-                self.state.compile_async_entry_shim(func)?;
-            }
-        }
+        self.state.compile_declared_functions(&fir.functions)?;
 
         self.state
             .module

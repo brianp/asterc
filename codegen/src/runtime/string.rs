@@ -194,29 +194,18 @@ pub extern "C" fn aster_string_replace(ptr: *const u8, old: *const u8, new: *con
 /// Split a heap string by a separator, returning a list of heap strings.
 #[unsafe(no_mangle)]
 pub extern "C" fn aster_string_split(ptr: *const u8, sep: *const u8) -> *mut u8 {
-    use super::alloc::aster_alloc;
+    use super::list::{aster_list_new, aster_list_push};
     let s = unsafe { aster_string_to_rust(ptr) };
     let sep_s = unsafe { aster_string_to_rust(sep) };
     let parts: Vec<&str> = s.split(&sep_s).collect();
-    let count = parts.len();
 
-    // Create a list handle -> block: [len: i64][cap: i64][elems: i64...]
-    let block_size = 8 + 8 + count * 8; // len + cap + elements
-    let block = aster_alloc(block_size) as *mut i64;
-    unsafe {
-        *block = count as i64; // len
-        *block.add(1) = count as i64; // cap
-        for (i, part) in parts.iter().enumerate() {
-            let heap_str = aster_string_new(part.as_ptr(), part.len());
-            *block.add(2 + i) = heap_str as i64;
-        }
+    // ptr_elems = 1 because elements are heap string pointers
+    let handle = aster_list_new(parts.len() as i64, 1);
+    for part in &parts {
+        let heap_str = aster_string_new(part.as_ptr(), part.len());
+        aster_list_push(handle, heap_str as i64);
     }
-    // Wrap in a handle (pointer to block pointer)
-    let handle = aster_alloc(8) as *mut *mut i64;
-    unsafe {
-        *handle = block;
-    }
-    handle as *mut u8
+    handle
 }
 
 /// Compare two heap strings by content. Returns 1 (equal) or 0 (not equal).

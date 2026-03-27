@@ -50,21 +50,8 @@ impl CraneliftAOT {
                     .declare_function_with_linkage(func, &export_name, linkage)?;
             }
         }
-        self.state.declare_runtime_functions()?;
-        self.state.declare_async_entry_shims(&fir.functions)?;
 
-        for func in &fir.functions {
-            if !func.name.is_empty() {
-                self.state.compile_function(func)?;
-            }
-        }
-        for func in &fir.functions {
-            if !func.name.is_empty() {
-                self.state.compile_async_entry_shim(func)?;
-            }
-        }
-
-        Ok(())
+        self.state.compile_declared_functions(&fir.functions)
     }
 
     pub fn emit_object(self) -> Result<Vec<u8>, String> {

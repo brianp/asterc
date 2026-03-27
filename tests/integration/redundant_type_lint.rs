@@ -1,4 +1,3 @@
-
 use ast::{Diagnostic, Severity};
 use lexer::lex;
 use parser::Parser;

@@ -1,4 +1,3 @@
-
 // ─── Self type in trait methods ──────────────────────────────────────
 
 #[test]
