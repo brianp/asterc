@@ -125,72 +125,17 @@ impl Lowerer {
 
         // Lower body, converting last expression to implicit return
         let mut fir_body = self.lower_body(body)?;
-        let mut emitted_cleanup = false;
-        if let Some(last) = fir_body.last() {
-            // If the last statement is an Expr (not Return), make it a Return
-            if matches!(last, FirStmt::Expr(_))
-                && *ret_type != Type::Void
-                && *ret_type != Type::Inferred
-                && let Some(FirStmt::Expr(expr)) = fir_body.pop()
-            {
-                // Emit cleanup calls before implicit return
-                self.emit_cleanup_calls();
-                self.emit_scope_exit(scope_id);
-                fir_body.append(&mut self.pending_stmts);
-                fir_body.push(FirStmt::Return(expr));
-                emitted_cleanup = true;
-            }
-        }
-        // For void functions (or functions whose last stmt isn't an expr),
-        // emit cleanup + scope exit at the end of the body
-        if !emitted_cleanup {
-            self.emit_cleanup_calls();
-            self.emit_scope_exit(scope_id);
-            fir_body.append(&mut self.pending_stmts);
-        }
+        self.finalize_function_body(&mut fir_body, ret_type, scope_id, true, true);
 
-        self.async_scope_stack.pop();
-
-        // Prepend scope_enter + global value definitions
-        let mut prologue = vec![FirStmt::Let {
-            name: scope_id,
-            ty: FirType::Ptr,
-            value: FirExpr::RuntimeCall {
-                name: "aster_async_scope_enter".to_string(),
-                args: vec![],
-                ret_ty: FirType::Ptr,
-            },
-        }];
+        // Prepend global value definitions after scope_enter
         if !global_prelude.is_empty() {
-            prologue.append(&mut global_prelude);
+            // scope_enter is at index 0; insert globals right after it
+            let rest = fir_body.split_off(1);
+            fir_body.extend(global_prelude);
+            fir_body.extend(rest);
         }
-        prologue.append(&mut fir_body);
-        fir_body = prologue;
 
-        // Get or create function ID
-        let id = if let Some(&existing_id) = self.functions.get(name) {
-            existing_id
-        } else {
-            let id = FunctionId(self.next_function);
-            self.next_function += 1;
-            self.functions.insert(name.to_string(), id);
-            id
-        };
-
-        let func = FirFunction {
-            id,
-            name: name.to_string(),
-            params: fir_params,
-            ret_type: self.lower_type(ret_type),
-            body: fir_body,
-            is_entry: name == "main",
-            suspendable: self.function_is_suspendable(name),
-        };
-        self.module.add_function(func);
-
-        if name == "main" {
-            self.module.entry = Some(id);
-        }
+        let id = self.register_function(name, fir_params, ret_type, fir_body);
 
         self.restore_scope(snapshot);
 
@@ -414,6 +359,94 @@ impl Lowerer {
                 }));
             }
         }
+    }
+
+    /// Finalize a function or lambda body: convert trailing expr to return,
+    /// emit scope_exit, pop async scope, and prepend scope_enter.
+    /// If `emit_cleanup` is true, also emits cleanup calls (for regular functions).
+    /// If `skip_inferred_return` is true, trailing exprs with Type::Inferred are not
+    /// converted to returns (used by lower_function where Inferred should be resolved).
+    pub(crate) fn finalize_function_body(
+        &mut self,
+        fir_body: &mut Vec<FirStmt>,
+        ret_type: &Type,
+        scope_id: LocalId,
+        emit_cleanup: bool,
+        skip_inferred_return: bool,
+    ) {
+        let mut emitted = false;
+        if let Some(last) = fir_body.last()
+            && matches!(last, FirStmt::Expr(_))
+            && *ret_type != Type::Void
+            && (!skip_inferred_return || *ret_type != Type::Inferred)
+            && let Some(FirStmt::Expr(expr)) = fir_body.pop()
+        {
+            if emit_cleanup {
+                self.emit_cleanup_calls();
+            }
+            self.emit_scope_exit(scope_id);
+            fir_body.append(&mut self.pending_stmts);
+            fir_body.push(FirStmt::Return(expr));
+            emitted = true;
+        }
+        if !emitted {
+            if emit_cleanup {
+                self.emit_cleanup_calls();
+            }
+            self.emit_scope_exit(scope_id);
+            fir_body.append(&mut self.pending_stmts);
+        }
+
+        self.async_scope_stack.pop();
+
+        // Prepend scope_enter
+        fir_body.insert(
+            0,
+            FirStmt::Let {
+                name: scope_id,
+                ty: FirType::Ptr,
+                value: FirExpr::RuntimeCall {
+                    name: "aster_async_scope_enter".to_string(),
+                    args: vec![],
+                    ret_ty: FirType::Ptr,
+                },
+            },
+        );
+    }
+
+    /// Create a FirFunction and register it in the module.
+    pub(crate) fn register_function(
+        &mut self,
+        name: &str,
+        params: Vec<(String, FirType)>,
+        ret_type: &Type,
+        body: Vec<FirStmt>,
+    ) -> FunctionId {
+        let id = if let Some(&existing_id) = self.functions.get(name) {
+            existing_id
+        } else {
+            let id = FunctionId(self.next_function);
+            self.next_function += 1;
+            self.functions.insert(name.to_string(), id);
+            id
+        };
+
+        let func = FirFunction {
+            id,
+            name: name.to_string(),
+            params,
+            ret_type: self.lower_type(ret_type),
+            body,
+            is_entry: name == "main",
+            suspendable: self.function_is_suspendable(name),
+        };
+        self.module.add_function(func);
+
+        if name == "main" {
+            self.module.entry = Some(id);
+        }
+
+        id
     }
 
     fn lower_top_level_binding(

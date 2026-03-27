@@ -101,57 +101,9 @@ impl Lowerer {
         let user_body = self.lower_body(body)?;
         fir_body.extend(user_body);
 
-        // Convert last expression to return (like lower_function does)
-        if let Some(last) = fir_body.last()
-            && matches!(last, FirStmt::Expr(_))
-            && *ret_type != Type::Void
-            && let Some(FirStmt::Expr(expr)) = fir_body.pop()
-        {
-            self.emit_scope_exit(scope_id);
-            fir_body.append(&mut self.pending_stmts);
-            fir_body.push(FirStmt::Return(expr));
-        } else {
-            // Void lambda or no trailing expr — emit scope exit at end
-            self.emit_scope_exit(scope_id);
-            fir_body.append(&mut self.pending_stmts);
-        }
+        self.finalize_function_body(&mut fir_body, ret_type, scope_id, false, false);
 
-        self.async_scope_stack.pop();
-
-        // Prepend scope_enter
-        fir_body.insert(
-            0,
-            FirStmt::Let {
-                name: scope_id,
-                ty: FirType::Ptr,
-                value: FirExpr::RuntimeCall {
-                    name: "aster_async_scope_enter".to_string(),
-                    args: vec![],
-                    ret_ty: FirType::Ptr,
-                },
-            },
-        );
-
-        // Get or create function ID
-        let func_id = if let Some(&existing_id) = self.functions.get(&lambda_name) {
-            existing_id
-        } else {
-            let id = FunctionId(self.next_function);
-            self.next_function += 1;
-            self.functions.insert(lambda_name.clone(), id);
-            id
-        };
-
-        let func = FirFunction {
-            id: func_id,
-            name: lambda_name.clone(),
-            params: fir_params,
-            ret_type: self.lower_type(ret_type),
-            body: fir_body,
-            is_entry: false,
-            suspendable: false,
-        };
-        self.module.add_function(func);
+        let func_id = self.register_function(&lambda_name, fir_params, ret_type, fir_body);
 
         self.restore_scope(snapshot);
 
