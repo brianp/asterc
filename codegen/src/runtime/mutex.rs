@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::green::scheduler;
 use crate::green::thread::GreenThread;
@@ -18,7 +18,7 @@ struct AsterMutexState {
     locked: bool,
     owner: usize,
     value: i64,
-    wait_queue: Vec<*mut GreenThread>,
+    wait_queue: Vec<Arc<GreenThread>>,
 }
 
 /// Allocate a new Mutex wrapping the given value.
@@ -51,9 +51,8 @@ pub extern "C" fn aster_mutex_lock(mutex: *mut u8) -> i64 {
         return state.value;
     }
     // Contended — suspend on the wait queue
-    let current = scheduler::current_green_thread();
-    if !current.is_null() {
-        state.wait_queue.push(current);
+    if let Some(current_arc) = scheduler::current_green_thread_arc() {
+        state.wait_queue.push(current_arc);
         drop(state);
         scheduler::suspend_for_mutex();
         // Re-read value after wakeup — we now own the lock

@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::green::scheduler;
 use crate::green::thread::GreenThread;
@@ -17,8 +17,8 @@ struct AsterChannelState {
     buffer: std::collections::VecDeque<i64>,
     capacity: usize,
     closed: bool,
-    send_waiters: Vec<(*mut GreenThread, i64)>,
-    recv_waiters: Vec<*mut GreenThread>,
+    send_waiters: Vec<(Arc<GreenThread>, i64)>,
+    recv_waiters: Vec<Arc<GreenThread>>,
 }
 
 /// Create a new channel with the given capacity (0 = unbounded, default 64).
@@ -97,9 +97,8 @@ pub extern "C" fn aster_channel_wait_send(ch: *mut u8, value: i64) {
         return;
     }
     // Buffer full — suspend
-    let current = scheduler::current_green_thread();
-    if !current.is_null() {
-        state.send_waiters.push((current, value));
+    if let Some(current_arc) = scheduler::current_green_thread_arc() {
+        state.send_waiters.push((current_arc, value));
         drop(state);
         scheduler::suspend_for_channel_send();
     } else {
@@ -195,9 +194,8 @@ pub extern "C" fn aster_channel_wait_receive(ch: *mut u8) -> i64 {
         return 0;
     }
     // Empty — suspend
-    let current = scheduler::current_green_thread();
-    if !current.is_null() {
-        state.recv_waiters.push(current);
+    if let Some(current_arc) = scheduler::current_green_thread_arc() {
+        state.recv_waiters.push(current_arc);
         drop(state);
         return scheduler::suspend_for_channel_receive();
     }

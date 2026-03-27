@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::green::scheduler;
 use crate::green::thread::GreenThread;
@@ -70,8 +70,14 @@ pub extern "C" fn aster_panic() {
 // ---------------------------------------------------------------------------
 
 struct AsyncScopeState {
-    tasks: Vec<*mut GreenThread>,
+    /// Raw pointers from Arc::into_raw. Each represents one Arc reference
+    /// owned by the scope. Freed in aster_async_scope_exit via free_scoped_thread.
+    tasks: Vec<*const GreenThread>,
 }
+
+// SAFETY: *const GreenThread pointers are backed by Arc references and are valid
+// until free_scoped_thread consumes them.
+unsafe impl Send for AsyncScopeState {}
 
 struct AsyncScopeHandle {
     state: Mutex<AsyncScopeState>,
@@ -85,11 +91,13 @@ fn live_scope(scope: *const u8) -> Option<&'static AsyncScopeHandle> {
     }
 }
 
-pub(super) fn register_task_with_scope(scope: *mut u8, task: *mut GreenThread) {
+pub(super) fn register_task_with_scope(scope: *mut u8, task: *const GreenThread) {
     if let Some(scope) = live_scope(scope) {
         // Mark the task as scoped so consume_thread_result defers freeing to scope exit.
         let thread = unsafe { &*task };
         thread.state.lock().unwrap().scoped = true;
+        // Increment the Arc refcount so the scope owns an independent reference.
+        unsafe { Arc::increment_strong_count(task) };
         let mut state = scope.state.lock().unwrap();
         state.tasks.push(task);
     }
@@ -118,8 +126,8 @@ pub extern "C" fn aster_async_scope_exit(scope: *mut u8) {
     for &task in &tasks {
         scheduler::wait_cancel_thread(task);
     }
-    // Free all scoped task structs. Scoped tasks defer freeing to scope exit,
-    // so even consumed tasks still need their struct freed here.
+    // Free all scoped task Arc references. free_scoped_thread consumes the scope's
+    // Arc reference; when the refcount reaches zero, the struct is freed.
     for task in tasks {
         scheduler::free_scoped_thread(task);
     }

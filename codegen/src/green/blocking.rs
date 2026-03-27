@@ -6,11 +6,9 @@ use super::thread::GreenThread;
 type BlockingWork = Box<dyn FnOnce() -> i64 + Send>;
 
 struct Job {
-    task_ptr: *mut GreenThread,
+    task: Arc<GreenThread>,
     work: BlockingWork,
 }
-
-unsafe impl Send for Job {}
 
 pub(crate) struct BlockingPool {
     sender: Mutex<Vec<Job>>,
@@ -35,9 +33,9 @@ impl BlockingPool {
         pool
     }
 
-    pub(crate) fn submit(&self, task_ptr: *mut GreenThread, work: BlockingWork) {
+    pub(crate) fn submit(&self, task: Arc<GreenThread>, work: BlockingWork) {
         let mut queue = self.sender.lock().unwrap();
-        queue.push(Job { task_ptr, work });
+        queue.push(Job { task, work });
         self.cv.notify_one();
     }
 }
@@ -61,15 +59,14 @@ fn blocking_worker(pool: Arc<BlockingPool>) {
         // The thread yielded via blocking_submit and expects to continue
         // execution after the yield point. Setting Runnable (not Ready)
         // and pushing to the injector matches wake_thread_with_value semantics.
-        let thread = unsafe { &*job.task_ptr };
         {
-            let mut st = thread.state.lock().unwrap();
+            let mut st = job.task.state.lock().unwrap();
             st.result = result;
             st.failed = false;
             st.status = super::thread::ThreadStatus::Runnable;
         }
         let sc = super::scheduler::sched();
-        sc.injector.push(super::thread::ThreadPtr(job.task_ptr));
+        sc.injector.push(super::thread::ThreadPtr(job.task));
         sc.park_cv.notify_all();
     }
 }

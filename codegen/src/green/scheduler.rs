@@ -18,8 +18,10 @@ use super::thread::{GreenThread, TaskState, ThreadPtr, ThreadStatus, YieldReason
 
 thread_local! {
     static WORKER_SCHEDULER_CTX: Cell<*mut MachineContext> = const { Cell::new(std::ptr::null_mut()) };
-    static WORKER_CURRENT_THREAD: Cell<*mut GreenThread> = const { Cell::new(std::ptr::null_mut()) };
-    static WORKER_YIELD_REASON: Cell<YieldReason> = const { Cell::new(YieldReason::None) };
+    // Stores a raw pointer to the current GreenThread. Does NOT own an Arc reference.
+    // The Arc is kept alive by the worker loop's local `arc` variable during execution.
+    static WORKER_CURRENT_THREAD: Cell<*const GreenThread> = const { Cell::new(std::ptr::null()) };
+    static WORKER_YIELD_REASON: Cell<Option<YieldReason>> = const { Cell::new(None) };
     static PREEMPT_TICKS: Cell<u32> = const { Cell::new(0) };
     static IS_WORKER: Cell<bool> = const { Cell::new(false) };
 }
@@ -40,7 +42,7 @@ pub(crate) struct GreenScheduler {
     pub(crate) park_mutex: Mutex<()>,
     pub(crate) park_cv: Condvar,
     poller: Mutex<Box<dyn Poller>>,
-    blocking_pool: Arc<BlockingPool>,
+    pub(crate) blocking_pool: Arc<BlockingPool>,
 }
 
 static SCHEDULER: OnceLock<GreenScheduler> = OnceLock::new();
@@ -103,7 +105,7 @@ fn worker_loop(_id: usize, local: Worker<ThreadPtr>) {
     loop {
         let task = find_task(&local, sc);
 
-        let Some(ThreadPtr(thread_ptr)) = task else {
+        let Some(ThreadPtr(arc)) = task else {
             // Idle path: poll I/O before parking
             poll_io(sc);
             let guard = sc.park_mutex.lock().unwrap();
@@ -114,7 +116,7 @@ fn worker_loop(_id: usize, local: Worker<ThreadPtr>) {
             continue;
         };
 
-        let thread = unsafe { &mut *thread_ptr };
+        let thread = &*arc;
 
         // Check cancel or already-terminal before running
         {
@@ -154,37 +156,43 @@ fn worker_loop(_id: usize, local: Worker<ThreadPtr>) {
             std::process::abort();
         }
 
-        // Set TLS for the green thread
-        WORKER_CURRENT_THREAD.set(thread_ptr);
-        WORKER_YIELD_REASON.set(YieldReason::None);
+        // Set TLS for the green thread. The raw pointer is valid as long as `arc` is alive.
+        let thread_raw: *const GreenThread = Arc::as_ptr(&arc);
+        WORKER_CURRENT_THREAD.set(thread_raw);
+        WORKER_YIELD_REASON.set(None);
         PREEMPT_TICKS.set(0);
 
         // Restore per-green-thread TLS state
-        crate::runtime::error_flag_set(thread.error_flag);
-        crate::runtime::shadow_stack_set(thread.shadow_stack_top);
+        unsafe {
+            crate::runtime::error_flag_set(thread.get_error_flag());
+            crate::runtime::shadow_stack_set(thread.get_shadow_stack());
+        }
 
         // Context switch to green thread
         unsafe {
-            aster_context_switch(&raw mut scheduler_ctx, &raw const thread.context);
+            aster_context_switch(&raw mut scheduler_ctx, thread.context_mut());
         }
 
         // Green thread yielded back — save per-green-thread TLS state
         thread
             .running_on_worker
             .store(false, std::sync::atomic::Ordering::Relaxed);
-        thread.error_flag = crate::runtime::error_flag_get();
-        thread.shadow_stack_top = crate::runtime::shadow_stack_get();
-        WORKER_CURRENT_THREAD.set(std::ptr::null_mut());
+        unsafe {
+            thread.set_error_flag(crate::runtime::error_flag_get());
+            thread.set_shadow_stack(crate::runtime::shadow_stack_get());
+        }
+        WORKER_CURRENT_THREAD.set(std::ptr::null());
 
-        match WORKER_YIELD_REASON.get() {
+        match WORKER_YIELD_REASON.replace(None).unwrap_or(YieldReason::None) {
             YieldReason::Preempted => {
                 thread.state.lock().unwrap().status = ThreadStatus::Runnable;
-                local.push(ThreadPtr(thread_ptr));
+                local.push(ThreadPtr(arc));
             }
 
             YieldReason::Completed { result, failed } => {
                 complete_thread(thread, result, failed);
                 recycle_stack(thread);
+                // arc drops here, decrementing refcount
             }
 
             YieldReason::Cancelled => {
@@ -195,21 +203,22 @@ fn worker_loop(_id: usize, local: Worker<ThreadPtr>) {
                 drop(st);
                 wake_waiters(waiters);
                 recycle_stack(thread);
+                // arc drops here, decrementing refcount
             }
 
-            YieldReason::WaitingOnTask(target_ptr) => {
-                let target = unsafe { &*target_ptr };
-                let mut target_st = target.state.lock().unwrap();
+            YieldReason::WaitingOnTask(target_arc) => {
+                let mut target_st = target_arc.state.lock().unwrap();
                 if is_terminal(target_st.status) {
                     // Target already done — re-enqueue immediately
                     drop(target_st);
                     thread.state.lock().unwrap().status = ThreadStatus::Runnable;
-                    local.push(ThreadPtr(thread_ptr));
+                    local.push(ThreadPtr(arc));
                 } else {
                     // Park until target completes
-                    target_st.green_waiters.push(thread_ptr);
+                    target_st.green_waiters.push(arc.clone());
                     drop(target_st);
                     thread.state.lock().unwrap().status = ThreadStatus::Suspended;
+                    // arc drops here, but a clone was stored in green_waiters
                 }
             }
 
@@ -218,14 +227,17 @@ fn worker_loop(_id: usize, local: Worker<ThreadPtr>) {
             | YieldReason::WaitingOnMutex
             | YieldReason::WaitingOnChannelSend
             | YieldReason::WaitingOnChannelRecv => {
-                // Thread is suspended — the runtime will re-enqueue it when ready
+                // Thread is suspended — the runtime will re-enqueue it when ready.
+                // The Arc was transferred to the suspending subsystem (poller/blocking/mutex/channel)
+                // which will push it back when the event fires.
                 thread.state.lock().unwrap().status = ThreadStatus::Suspended;
+                // arc drops here — the subsystem holds the reference it acquired
             }
 
             YieldReason::None => {
                 // Should not happen — treat as preempted
                 thread.state.lock().unwrap().status = ThreadStatus::Runnable;
-                local.push(ThreadPtr(thread_ptr));
+                local.push(ThreadPtr(arc));
             }
         }
     }
@@ -273,9 +285,12 @@ fn poll_io(sc: &GreenScheduler) {
         return;
     }
     for event in events {
-        let thread_ptr = event.token.0 as *mut GreenThread;
-        if !thread_ptr.is_null() {
-            sc.injector.push(ThreadPtr(thread_ptr));
+        let ptr = event.token.0 as *const GreenThread;
+        if !ptr.is_null() {
+            // Reconstruct the Arc from the raw pointer. The extra refcount was
+            // incremented in io_wait_readable/io_wait_writable before registration.
+            let arc = unsafe { Arc::from_raw(ptr) };
+            sc.injector.push(ThreadPtr(arc));
         }
     }
     sc.park_cv.notify_all();
@@ -298,7 +313,7 @@ fn complete_thread(thread: &GreenThread, result: i64, failed: bool) {
     wake_waiters(waiters);
 }
 
-fn wake_waiters(waiters: Vec<*mut GreenThread>) {
+fn wake_waiters(waiters: Vec<Arc<GreenThread>>) {
     if waiters.is_empty() {
         return;
     }
@@ -309,8 +324,8 @@ fn wake_waiters(waiters: Vec<*mut GreenThread>) {
     sc.park_cv.notify_all();
 }
 
-fn recycle_stack(thread: &mut GreenThread) {
-    if let Some(stack) = thread.stack.take() {
+fn recycle_stack(thread: &GreenThread) {
+    if let Some(stack) = unsafe { thread.take_stack() } {
         sched().stack_pool.put(stack);
     }
 }
@@ -319,16 +334,16 @@ fn recycle_stack(thread: &mut GreenThread) {
 // Public API — called from runtime.rs
 // ---------------------------------------------------------------------------
 
-pub(crate) fn spawn_green_thread(entry: usize, args: usize) -> *mut GreenThread {
+pub(crate) fn spawn_green_thread(entry: usize, args: usize) -> *const GreenThread {
     let sc = sched();
     let stack = sc.stack_pool.get();
     let stack_top = stack.top();
 
-    let thread = Box::into_raw(Box::new(GreenThread {
-        context: MachineContext::new(),
-        stack: Some(stack),
-        error_flag: false,
-        shadow_stack_top: std::ptr::null_mut(),
+    let arc = Arc::new(GreenThread {
+        context: std::cell::UnsafeCell::new(super::context::MachineContext::new()),
+        stack: std::cell::UnsafeCell::new(Some(stack)),
+        error_flag: std::cell::UnsafeCell::new(false),
+        shadow_stack_top: std::cell::UnsafeCell::new(std::ptr::null_mut()),
         state: Mutex::new(TaskState {
             status: ThreadStatus::Runnable,
             cancel_requested: false,
@@ -340,30 +355,32 @@ pub(crate) fn spawn_green_thread(entry: usize, args: usize) -> *mut GreenThread 
         }),
         cv: std::sync::Condvar::new(),
         running_on_worker: std::sync::atomic::AtomicBool::new(false),
-    }));
+    });
 
     unsafe {
-        aster_context_init(&raw mut (*thread).context, stack_top, entry, args);
+        aster_context_init(arc.context_mut(), stack_top, entry, args);
     }
 
-    sc.injector.push(ThreadPtr(thread));
+    // The raw pointer represents the caller's Arc reference.
+    let raw = Arc::into_raw(arc.clone());
+    sc.injector.push(ThreadPtr(arc));
     sc.park_cv.notify_all();
 
-    thread
+    raw
 }
 
-pub(crate) fn allocate_terminal_thread(result: i64, failed: bool) -> *mut GreenThread {
+pub(crate) fn allocate_terminal_thread(result: i64, failed: bool) -> *const GreenThread {
     let status = if failed {
         ThreadStatus::Failed
     } else {
         ThreadStatus::Ready
     };
 
-    Box::into_raw(Box::new(GreenThread {
-        context: MachineContext::new(),
-        stack: None,
-        error_flag: false,
-        shadow_stack_top: std::ptr::null_mut(),
+    let arc = Arc::new(GreenThread {
+        context: std::cell::UnsafeCell::new(super::context::MachineContext::new()),
+        stack: std::cell::UnsafeCell::new(None),
+        error_flag: std::cell::UnsafeCell::new(false),
+        shadow_stack_top: std::cell::UnsafeCell::new(std::ptr::null_mut()),
         state: Mutex::new(TaskState {
             status,
             cancel_requested: false,
@@ -375,10 +392,12 @@ pub(crate) fn allocate_terminal_thread(result: i64, failed: bool) -> *mut GreenT
         }),
         cv: Condvar::new(),
         running_on_worker: std::sync::atomic::AtomicBool::new(false),
-    }))
+    });
+
+    Arc::into_raw(arc)
 }
 
-pub(crate) fn cancel_thread(thread_ptr: *mut GreenThread) {
+pub(crate) fn cancel_thread(thread_ptr: *const GreenThread) {
     let thread = unsafe { &*thread_ptr };
     let mut st = thread.state.lock().unwrap();
     st.cancel_requested = true;
@@ -400,7 +419,7 @@ pub(crate) fn cancel_thread(thread_ptr: *mut GreenThread) {
             let waiters = std::mem::take(&mut st.green_waiters);
             drop(st);
             wake_waiters(waiters);
-            recycle_stack(unsafe { &mut *thread_ptr });
+            recycle_stack(thread);
         }
         _ => {
             // Already terminal — nothing to do
@@ -408,7 +427,7 @@ pub(crate) fn cancel_thread(thread_ptr: *mut GreenThread) {
     }
 }
 
-pub(crate) fn wait_cancel_thread(thread_ptr: *mut GreenThread) {
+pub(crate) fn wait_cancel_thread(thread_ptr: *const GreenThread) {
     cancel_thread(thread_ptr);
     wait_for_terminal(thread_ptr);
 }
@@ -421,9 +440,9 @@ pub(crate) fn is_thread_ready(thread_ptr: *const GreenThread) -> bool {
 
 /// Consume the result of a terminal green thread.
 /// Sets the error flag if the task failed or was cancelled.
-/// Frees the GreenThread struct after extracting the result; the handle
-/// is invalid after this call.
-pub(crate) fn consume_thread_result(thread_ptr: *mut GreenThread) -> i64 {
+/// Reconstructs the Arc from the raw pointer and drops it; if this was
+/// the last reference, the GreenThread struct is freed automatically.
+pub(crate) fn consume_thread_result(thread_ptr: *const GreenThread) -> i64 {
     wait_for_terminal(thread_ptr);
 
     let thread = unsafe { &*thread_ptr };
@@ -449,16 +468,11 @@ pub(crate) fn consume_thread_result(thread_ptr: *mut GreenThread) -> i64 {
     drop(st);
 
     // Recycle the stack (64KB) now that the result is consumed.
-    recycle_stack(unsafe { &mut *thread_ptr });
+    recycle_stack(thread);
 
-    // Note: we intentionally do NOT free the GreenThread struct here.
-    // The ThreadPtr may still be in a worker's local deque or the global
-    // injector. If a worker pops it after we free, it dereferences freed
-    // memory (use-after-free → SIGSEGV). The worker loop handles terminal
-    // threads by skipping them, so leaving the struct alive is safe.
-    // The ~200 byte struct is effectively leaked; the 64KB stack was
-    // already recycled above. Scoped tasks are freed by scope exit.
-    // See also: is_ready() callers that reference the pointer after consume.
+    // Reconstruct and drop the caller's Arc reference. If no other references
+    // remain (deque, waiters, etc.), the struct is freed here.
+    let _arc = unsafe { Arc::from_raw(thread_ptr) };
 
     result
 }
@@ -466,15 +480,15 @@ pub(crate) fn consume_thread_result(thread_ptr: *mut GreenThread) -> i64 {
 /// Clean up a scoped GreenThread. Called by async scope cleanup.
 /// Scoped tasks are never freed by consume_thread_result (they defer to scope exit).
 /// The stack may already be recycled if the task was consumed.
-pub(crate) fn free_scoped_thread(thread_ptr: *mut GreenThread) {
+pub(crate) fn free_scoped_thread(thread_ptr: *const GreenThread) {
+    let thread = unsafe { &*thread_ptr };
     // Recycle the stack if it hasn't been recycled already (unconsumed tasks).
-    recycle_stack(unsafe { &mut *thread_ptr });
-    // Do not free the GreenThread struct: its ThreadPtr may still be in a
-    // worker's local deque or the global injector. The worker loop handles
-    // terminal threads by skipping them. See consume_thread_result.
+    recycle_stack(thread);
+    // Consume the scope's Arc reference. When refcount reaches zero, the struct is freed.
+    let _arc = unsafe { Arc::from_raw(thread_ptr) };
 }
 
-fn wait_for_terminal(thread_ptr: *mut GreenThread) {
+fn wait_for_terminal(thread_ptr: *const GreenThread) {
     let thread = unsafe { &*thread_ptr };
 
     if IS_WORKER.get() {
@@ -486,7 +500,10 @@ fn wait_for_terminal(thread_ptr: *mut GreenThread) {
                     return;
                 }
             }
-            yield_to_scheduler(YieldReason::WaitingOnTask(thread_ptr));
+            // Increment refcount so that the WaitingOnTask arc is valid
+            unsafe { Arc::increment_strong_count(thread_ptr) };
+            let wait_arc = unsafe { Arc::from_raw(thread_ptr) };
+            yield_to_scheduler(YieldReason::WaitingOnTask(wait_arc));
         }
     } else {
         // On a non-worker thread (e.g., main) — block with Condvar
@@ -510,10 +527,14 @@ pub(crate) fn io_wait_readable(fd: RawFd) {
     let sc = sched();
     {
         let mut poller = sc.poller.lock().unwrap();
+        // Increment refcount for the token stored in the poller. poll_io will
+        // reconstruct the Arc via Arc::from_raw, consuming this extra count.
+        unsafe { Arc::increment_strong_count(current) };
         poller.register(fd, Interest::Read, Token(current as usize));
     }
     yield_to_scheduler(YieldReason::WaitingOnIo);
-    // Resumed here when fd is readable
+    // Resumed here when fd is readable. The poller already consumed its Arc
+    // reference via poll_io, so no cleanup needed here.
     {
         let mut poller = sc.poller.lock().unwrap();
         poller.deregister(fd);
@@ -529,10 +550,12 @@ pub(crate) fn io_wait_writable(fd: RawFd) {
     let sc = sched();
     {
         let mut poller = sc.poller.lock().unwrap();
+        // Increment refcount for the token stored in the poller.
+        unsafe { Arc::increment_strong_count(current) };
         poller.register(fd, Interest::Write, Token(current as usize));
     }
     yield_to_scheduler(YieldReason::WaitingOnIo);
-    // Resumed here when fd is writable
+    // Resumed here when fd is writable.
     {
         let mut poller = sc.poller.lock().unwrap();
         poller.deregister(fd);
@@ -545,7 +568,10 @@ pub(crate) fn blocking_submit(work: Box<dyn FnOnce() -> i64 + Send>) {
     assert!(!current.is_null(), "blocking_submit outside green thread");
 
     let sc = sched();
-    sc.blocking_pool.submit(current, work);
+    // Increment refcount: the BlockingPool job holds a reference.
+    unsafe { Arc::increment_strong_count(current) };
+    let arc = unsafe { Arc::from_raw(current) };
+    sc.blocking_pool.submit(arc, work);
     yield_to_scheduler(YieldReason::WaitingOnBlockingPool);
     // Resumed here when the blocking pool completes
 }
@@ -555,13 +581,15 @@ pub(crate) fn blocking_submit(work: Box<dyn FnOnce() -> i64 + Send>) {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn yield_to_scheduler(reason: YieldReason) {
-    WORKER_YIELD_REASON.set(reason);
+    WORKER_YIELD_REASON.set(Some(reason));
     let scheduler_ctx = WORKER_SCHEDULER_CTX.get();
     let current = WORKER_CURRENT_THREAD.get();
     assert!(!scheduler_ctx.is_null(), "yield outside worker thread");
     assert!(!current.is_null(), "yield with no current green thread");
+    // SAFETY: current is non-null and the UnsafeCell pointer is valid while the
+    // worker holds the Arc for the current green thread.
     unsafe {
-        aster_context_switch(&raw mut (*current).context, scheduler_ctx);
+        aster_context_switch((*current).context.get(), scheduler_ctx);
     }
     // Execution resumes here when the scheduler switches back to us
 }
@@ -605,11 +633,6 @@ pub(crate) fn safepoint() {
 // Mutex / Channel support — Phase 7-8
 // ---------------------------------------------------------------------------
 
-/// Get the current green thread pointer (null if not on a worker).
-pub(crate) fn current_green_thread() -> *mut GreenThread {
-    WORKER_CURRENT_THREAD.get()
-}
-
 /// Get a numeric ID for the current green thread (pointer value).
 pub(crate) fn current_thread_id() -> usize {
     WORKER_CURRENT_THREAD.get() as usize
@@ -637,32 +660,36 @@ pub(crate) fn suspend_for_channel_receive() -> i64 {
     st.result
 }
 
-/// Wake a suspended green thread by re-enqueueing it.
-pub(crate) fn wake_thread(thread_ptr: *mut GreenThread) {
-    if thread_ptr.is_null() {
-        return;
+/// Get an Arc for the current green thread, incrementing the refcount.
+/// The caller is responsible for consuming or dropping the returned Arc.
+pub(crate) fn current_green_thread_arc() -> Option<Arc<GreenThread>> {
+    let current = WORKER_CURRENT_THREAD.get();
+    if current.is_null() {
+        return None;
     }
-    let thread = unsafe { &*thread_ptr };
+    // Increment refcount and reconstruct Arc without consuming the TLS pointer.
+    unsafe { Arc::increment_strong_count(current) };
+    Some(unsafe { Arc::from_raw(current) })
+}
+
+/// Wake a suspended green thread by re-enqueueing it.
+pub(crate) fn wake_thread(arc: Arc<GreenThread>) {
     {
-        let mut st = thread.state.lock().unwrap();
+        let mut st = arc.state.lock().unwrap();
         if is_terminal(st.status) {
             return;
         }
         st.status = ThreadStatus::Runnable;
     }
     let sc = sched();
-    sc.injector.push(ThreadPtr(thread_ptr));
+    sc.injector.push(ThreadPtr(arc));
     sc.park_cv.notify_all();
 }
 
 /// Wake a suspended green thread and deliver a value (for channel receive).
-pub(crate) fn wake_thread_with_value(thread_ptr: *mut GreenThread, value: i64) {
-    if thread_ptr.is_null() {
-        return;
-    }
-    let thread = unsafe { &*thread_ptr };
+pub(crate) fn wake_thread_with_value(arc: Arc<GreenThread>, value: i64) {
     {
-        let mut st = thread.state.lock().unwrap();
+        let mut st = arc.state.lock().unwrap();
         if is_terminal(st.status) {
             return;
         }
@@ -670,27 +697,23 @@ pub(crate) fn wake_thread_with_value(thread_ptr: *mut GreenThread, value: i64) {
         st.status = ThreadStatus::Runnable;
     }
     let sc = sched();
-    sc.injector.push(ThreadPtr(thread_ptr));
+    sc.injector.push(ThreadPtr(arc));
     sc.park_cv.notify_all();
 }
 
 /// Wake a suspended green thread with an error (sets error flag).
-pub(crate) fn wake_thread_with_error(thread_ptr: *mut GreenThread) {
-    if thread_ptr.is_null() {
-        return;
-    }
-    let thread = unsafe { &mut *thread_ptr };
+pub(crate) fn wake_thread_with_error(arc: Arc<GreenThread>) {
     {
-        let mut st = thread.state.lock().unwrap();
+        let mut st = arc.state.lock().unwrap();
         if is_terminal(st.status) {
             return;
         }
         // Set error flag inside the lock, before making thread eligible for pickup
-        thread.error_flag = true;
+        unsafe { arc.set_error_flag(true) };
         st.status = ThreadStatus::Runnable;
     }
     let sc = sched();
-    sc.injector.push(ThreadPtr(thread_ptr));
+    sc.injector.push(ThreadPtr(arc));
     sc.park_cv.notify_all();
 }
 

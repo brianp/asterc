@@ -18,7 +18,7 @@ pub extern "C" fn aster_task_spawn(entry: usize, args: *mut u8, scope: *mut u8) 
 #[unsafe(no_mangle)]
 pub extern "C" fn aster_task_block_on(entry: usize, args: *mut u8) -> i64 {
     let task = aster_task_spawn(entry, args, std::ptr::null_mut());
-    scheduler::consume_thread_result(task as *mut GreenThread)
+    scheduler::consume_thread_result(task as *const GreenThread)
 }
 
 #[unsafe(no_mangle)]
@@ -47,7 +47,7 @@ pub extern "C" fn aster_task_is_ready(task: *const u8) -> i8 {
 #[unsafe(no_mangle)]
 pub extern "C" fn aster_task_cancel(task: *mut u8) -> i64 {
     if !task.is_null() {
-        scheduler::cancel_thread(task as *mut GreenThread);
+        scheduler::cancel_thread(task as *const GreenThread);
     }
     0
 }
@@ -55,7 +55,7 @@ pub extern "C" fn aster_task_cancel(task: *mut u8) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn aster_task_wait_cancel(task: *mut u8) -> i64 {
     if !task.is_null() {
-        scheduler::wait_cancel_thread(task as *mut GreenThread);
+        scheduler::wait_cancel_thread(task as *const GreenThread);
     }
     0
 }
@@ -66,7 +66,7 @@ pub extern "C" fn aster_task_resolve_i64(task: *mut u8) -> i64 {
         aster_error_set();
         return 0;
     }
-    scheduler::consume_thread_result(task as *mut GreenThread)
+    scheduler::consume_thread_result(task as *const GreenThread)
 }
 
 #[unsafe(no_mangle)]
@@ -75,7 +75,7 @@ pub extern "C" fn aster_task_resolve_f64(task: *mut u8) -> f64 {
         aster_error_set();
         return 0.0;
     }
-    let bits = scheduler::consume_thread_result(task as *mut GreenThread) as u64;
+    let bits = scheduler::consume_thread_result(task as *const GreenThread) as u64;
     f64::from_bits(bits)
 }
 
@@ -85,7 +85,7 @@ pub extern "C" fn aster_task_resolve_i8(task: *mut u8) -> i8 {
         aster_error_set();
         return 0;
     }
-    scheduler::consume_thread_result(task as *mut GreenThread) as i8
+    scheduler::consume_thread_result(task as *const GreenThread) as i8
 }
 
 #[unsafe(no_mangle)]
@@ -129,7 +129,7 @@ pub extern "C" fn aster_task_resolve_first_i64(tasks: *mut u8) -> i64 {
             if scheduler::is_thread_ready(task as *const GreenThread) {
                 for (index, other) in task_handles.iter().enumerate() {
                     if index != winner_index && !other.is_null() {
-                        scheduler::cancel_thread(*other as *mut GreenThread);
+                        scheduler::cancel_thread(*other as *const GreenThread);
                     }
                 }
                 return aster_task_resolve_i64(task);
