@@ -514,6 +514,69 @@ fn compute_line_starts(input: &str) -> Vec<usize> {
 }
 
 // ---------------------------------------------------------------------------
+// Indentation helpers
+// ---------------------------------------------------------------------------
+
+/// Reject tab indentation and return the indent width (number of leading spaces).
+fn reject_tabs_and_measure_indent(raw: &str, ls: usize) -> Result<usize, Diagnostic> {
+    if raw.starts_with('\t')
+        || (raw.starts_with(' ') && raw.contains('\t') && {
+            let leading: String = raw.chars().take_while(|c| c.is_whitespace()).collect();
+            leading.contains('\t')
+        })
+    {
+        return Err(
+            Diagnostic::from_template(DiagnosticTemplate::TabIndentation(TabIndentation))
+                .with_label(Span::new(ls, ls + 1), "tab character found here"),
+        );
+    }
+    Ok(raw.chars().take_while(|c| *c == ' ').count())
+}
+
+/// Emit Indent/Dedent tokens based on indentation change from the previous line.
+fn emit_indent_dedent_tokens(
+    indent_width: usize,
+    indent_stack: &mut Vec<usize>,
+    tokens: &mut Vec<Token>,
+    line_no: usize,
+    ls: usize,
+) -> Result<(), Diagnostic> {
+    let prev = indent_stack.last().copied().unwrap_or(0);
+    if indent_width > prev {
+        indent_stack.push(indent_width);
+        tokens.push(Token {
+            kind: TokenKind::Indent,
+            line: line_no,
+            col: 1,
+            start: ls,
+            end: ls + indent_width,
+        });
+    } else if indent_width < prev {
+        while let Some(&top) = indent_stack.last() {
+            if indent_width < top {
+                indent_stack.pop();
+                tokens.push(Token {
+                    kind: TokenKind::Dedent,
+                    line: line_no,
+                    col: 1,
+                    start: ls,
+                    end: ls,
+                });
+            } else {
+                break;
+            }
+        }
+        if indent_stack.last().copied().unwrap_or(0) != indent_width {
+            return Err(Diagnostic::from_template(
+                DiagnosticTemplate::InconsistentIndentation(InconsistentIndentation),
+            )
+            .with_label(Span::new(ls, ls + indent_width), "unexpected indent level"));
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
 
@@ -543,20 +606,7 @@ pub fn lex(input: &str) -> Result<Vec<Token>, Diagnostic> {
         let line_no = line_idx + 1;
         let ls = line_starts[line_idx]; // byte offset of line start
 
-        // Reject tab indentation.
-        if raw.starts_with('\t')
-            || (raw.starts_with(' ') && raw.contains('\t') && {
-                let leading: String = raw.chars().take_while(|c| c.is_whitespace()).collect();
-                leading.contains('\t')
-            })
-        {
-            return Err(
-                Diagnostic::from_template(DiagnosticTemplate::TabIndentation(TabIndentation))
-                    .with_label(Span::new(ls, ls + 1), "tab character found here"),
-            );
-        }
-
-        let indent_width = raw.chars().take_while(|c| *c == ' ').count();
+        let indent_width = reject_tabs_and_measure_indent(raw, ls)?;
         let trimmed = raw.trim_end();
         let rest = trimmed.trim_start();
 
@@ -575,38 +625,13 @@ pub fn lex(input: &str) -> Result<Vec<Token>, Diagnostic> {
         // Inside (), [], or {}, indentation changes are ignored (implicit
         // line continuation), matching Python's behavior.
         if bracket_depth == 0 {
-            let prev = indent_stack.last().copied().unwrap_or(0);
-            if indent_width > prev {
-                indent_stack.push(indent_width);
-                tokens.push(Token {
-                    kind: Indent,
-                    line: line_no,
-                    col: 1,
-                    start: ls,
-                    end: ls + indent_width,
-                });
-            } else if indent_width < prev {
-                while let Some(&top) = indent_stack.last() {
-                    if indent_width < top {
-                        indent_stack.pop();
-                        tokens.push(Token {
-                            kind: Dedent,
-                            line: line_no,
-                            col: 1,
-                            start: ls,
-                            end: ls,
-                        });
-                    } else {
-                        break;
-                    }
-                }
-                if indent_stack.last().copied().unwrap_or(0) != indent_width {
-                    return Err(Diagnostic::from_template(
-                        DiagnosticTemplate::InconsistentIndentation(InconsistentIndentation),
-                    )
-                    .with_label(Span::new(ls, ls + indent_width), "unexpected indent level"));
-                }
-            }
+            emit_indent_dedent_tokens(
+                indent_width,
+                &mut indent_stack,
+                &mut tokens,
+                line_no,
+                ls,
+            )?;
         }
 
         // Tokenize the line content.

@@ -66,6 +66,49 @@ impl TranslationState {
     }
 }
 
+/// Guard integer division/modulo against division by zero and i64::MIN / -1 overflow.
+/// Both cause hardware traps (SIGFPE) with no recovery path. Returns 0 for trap cases.
+fn guarded_int_div_op(
+    builder: &mut FunctionBuilder,
+    lhs: Value,
+    rhs: Value,
+    op: impl FnOnce(&mut FunctionBuilder, Value, Value) -> Value,
+) -> Value {
+    let zero = builder.ins().iconst(types::I64, 0);
+    let is_zero = builder.ins().icmp(IntCC::Equal, rhs, zero);
+    let neg_one = builder.ins().iconst(types::I64, -1i64);
+    let is_neg_one = builder.ins().icmp(IntCC::Equal, rhs, neg_one);
+    let min_val = builder.ins().iconst(types::I64, i64::MIN);
+    let is_min = builder.ins().icmp(IntCC::Equal, lhs, min_val);
+    let is_overflow = builder.ins().band(is_neg_one, is_min);
+    let is_trap = builder.ins().bor(is_zero, is_overflow);
+
+    let safe_block = builder.create_block();
+    let trap_block = builder.create_block();
+    let merge_block = builder.create_block();
+    builder.append_block_param(merge_block, types::I64);
+
+    builder
+        .ins()
+        .brif(is_trap, trap_block, &[], safe_block, &[]);
+
+    builder.switch_to_block(trap_block);
+    builder.seal_block(trap_block);
+    let zero_result = builder.ins().iconst(types::I64, 0);
+    builder
+        .ins()
+        .jump(merge_block, &[BlockArg::Value(zero_result)]);
+
+    builder.switch_to_block(safe_block);
+    builder.seal_block(safe_block);
+    let result = op(builder, lhs, rhs);
+    builder.ins().jump(merge_block, &[BlockArg::Value(result)]);
+
+    builder.switch_to_block(merge_block);
+    builder.seal_block(merge_block);
+    builder.block_params(merge_block)[0]
+}
+
 fn pack_async_arg(
     builder: &mut FunctionBuilder,
     state: &mut TranslationState,
@@ -935,43 +978,7 @@ fn translate_binop(
             builder.inst_results(call)[0]
         }
         BinOp::Div if is_f => builder.ins().fdiv(lhs, rhs),
-        BinOp::Div => {
-            // Guard against division by zero and i64::MIN / -1 overflow.
-            // Both cause hardware traps (SIGFPE) with no recovery path.
-            let zero = builder.ins().iconst(types::I64, 0);
-            let is_zero = builder.ins().icmp(IntCC::Equal, rhs, zero);
-            let neg_one = builder.ins().iconst(types::I64, -1i64);
-            let is_neg_one = builder.ins().icmp(IntCC::Equal, rhs, neg_one);
-            let min_val = builder.ins().iconst(types::I64, i64::MIN);
-            let is_min = builder.ins().icmp(IntCC::Equal, lhs, min_val);
-            let is_overflow = builder.ins().band(is_neg_one, is_min);
-            let is_trap = builder.ins().bor(is_zero, is_overflow);
-
-            let safe_block = builder.create_block();
-            let trap_block = builder.create_block();
-            let merge_block = builder.create_block();
-            builder.append_block_param(merge_block, types::I64);
-
-            builder
-                .ins()
-                .brif(is_trap, trap_block, &[], safe_block, &[]);
-
-            builder.switch_to_block(trap_block);
-            builder.seal_block(trap_block);
-            let zero_result = builder.ins().iconst(types::I64, 0);
-            builder
-                .ins()
-                .jump(merge_block, &[BlockArg::Value(zero_result)]);
-
-            builder.switch_to_block(safe_block);
-            builder.seal_block(safe_block);
-            let result = builder.ins().sdiv(lhs, rhs);
-            builder.ins().jump(merge_block, &[BlockArg::Value(result)]);
-
-            builder.switch_to_block(merge_block);
-            builder.seal_block(merge_block);
-            builder.block_params(merge_block)[0]
-        }
+        BinOp::Div => guarded_int_div_op(builder, lhs, rhs, |b, l, r| b.ins().sdiv(l, r)),
         BinOp::Mod if is_f => {
             // Float modulo: a - floor(a/b) * b
             let div = builder.ins().fdiv(lhs, rhs);
@@ -979,43 +986,7 @@ fn translate_binop(
             let prod = builder.ins().fmul(floored, rhs);
             builder.ins().fsub(lhs, prod)
         }
-        BinOp::Mod => {
-            // Guard against modulo by zero and i64::MIN % -1 overflow.
-            // Both cause hardware traps (SIGFPE) with no recovery path.
-            let zero = builder.ins().iconst(types::I64, 0);
-            let is_zero = builder.ins().icmp(IntCC::Equal, rhs, zero);
-            let neg_one = builder.ins().iconst(types::I64, -1i64);
-            let is_neg_one = builder.ins().icmp(IntCC::Equal, rhs, neg_one);
-            let min_val = builder.ins().iconst(types::I64, i64::MIN);
-            let is_min = builder.ins().icmp(IntCC::Equal, lhs, min_val);
-            let is_overflow = builder.ins().band(is_neg_one, is_min);
-            let is_trap = builder.ins().bor(is_zero, is_overflow);
-
-            let safe_block = builder.create_block();
-            let trap_block = builder.create_block();
-            let merge_block = builder.create_block();
-            builder.append_block_param(merge_block, types::I64);
-
-            builder
-                .ins()
-                .brif(is_trap, trap_block, &[], safe_block, &[]);
-
-            builder.switch_to_block(trap_block);
-            builder.seal_block(trap_block);
-            let zero_result = builder.ins().iconst(types::I64, 0);
-            builder
-                .ins()
-                .jump(merge_block, &[BlockArg::Value(zero_result)]);
-
-            builder.switch_to_block(safe_block);
-            builder.seal_block(safe_block);
-            let result = builder.ins().srem(lhs, rhs);
-            builder.ins().jump(merge_block, &[BlockArg::Value(result)]);
-
-            builder.switch_to_block(merge_block);
-            builder.seal_block(merge_block);
-            builder.block_params(merge_block)[0]
-        }
+        BinOp::Mod => guarded_int_div_op(builder, lhs, rhs, |b, l, r| b.ins().srem(l, r)),
         BinOp::Eq if is_f => builder.ins().fcmp(FloatCC::Equal, lhs, rhs),
         BinOp::Eq if is_p => {
             let eq_ref = state
