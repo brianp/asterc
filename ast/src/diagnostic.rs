@@ -46,9 +46,10 @@ impl Diagnostic {
     }
 
     pub fn from_template(template: DiagnosticTemplate) -> Self {
+        let severity = template.severity();
         let message = template.render();
         Diagnostic {
-            severity: Severity::Error,
+            severity,
             message,
             labels: Vec::new(),
             notes: Vec::new(),

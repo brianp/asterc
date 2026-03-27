@@ -664,8 +664,7 @@ impl Parser {
             }
             Async => {
                 self.advance();
-                let Expr::Call { func, args, .. } = self.parse_keyword_call("async", start)?
-                else {
+                let Expr::Call { func, args, .. } = self.parse_keyword_call("async", start)? else {
                     unreachable!()
                 };
                 Ok(Expr::AsyncCall {

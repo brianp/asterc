@@ -2,9 +2,9 @@ use ast::templates::DiagnosticTemplate;
 use ast::templates::module_errors::InvalidImportAlias;
 use ast::templates::type_errors::{
     ArgumentCountMismatch, ArgumentTypeMismatch, BinaryOpError, CollectionConstraintError,
-    ConstReassignment, InconsistentListType, IndexTypeError, MatchError, PrintableError,
-    ReturnTypeMismatch, TaskAlreadyConsumed, TaskNotResolved, TraitError, TypeConstraintError,
-    TypeMismatch, UnaryOpError, UndefinedVariable, UnknownField,
+    InconsistentListType, IndexTypeError, MatchError, PrintableError, ReturnTypeMismatch,
+    SuspensionError, TaskNotResolved, TraitError, TypeConstraintError, TypeMismatch, UnaryOpError,
+    UndefinedVariable, UnknownField, VisibilityError,
 };
 use ast::templates::warnings::UseAfterMove;
 use ast::{BinOp, Diagnostic, Expr, MatchPattern, Span, Type, UnaryOp};
@@ -1232,8 +1232,9 @@ impl TypeChecker {
                         if self.imported_classes.contains(cname) && !info.pub_fields.contains(field)
                         {
                             return Err(Diagnostic::from_template(
-                                DiagnosticTemplate::ConstReassignment(ConstReassignment {
-                                    name: field.to_string(),
+                                DiagnosticTemplate::VisibilityError(VisibilityError {
+                                    member: field.to_string(),
+                                    class_name: cname.to_string(),
                                 }),
                             )
                             .with_label(
@@ -1250,8 +1251,9 @@ impl TypeChecker {
                             && !info.pub_methods.contains(field)
                         {
                             return Err(Diagnostic::from_template(
-                                DiagnosticTemplate::ConstReassignment(ConstReassignment {
-                                    name: field.to_string(),
+                                DiagnosticTemplate::VisibilityError(VisibilityError {
+                                    member: field.to_string(),
+                                    class_name: cname.to_string(),
                                 }),
                             )
                             .with_label(
@@ -2228,11 +2230,9 @@ impl TypeChecker {
         let ret_ty = self.check_call_inner(func, args, true)?;
         if !self.last_call_suspendable {
             return Err(
-                Diagnostic::from_template(DiagnosticTemplate::TaskAlreadyConsumed(
-                    TaskAlreadyConsumed {
-                        name: "suspendable callee".to_string(),
-                    },
-                ))
+                Diagnostic::from_template(DiagnosticTemplate::SuspensionError(SuspensionError {
+                    message: "callee does not suspend".to_string(),
+                }))
                 .with_label(func.span(), "callee does not suspend"),
             );
         }
@@ -2248,20 +2248,18 @@ impl TypeChecker {
             Type::Task(_) => {
                 // Bare resolve without ! is an error — CancelledError is always possible
                 Err(
-                    Diagnostic::from_template(DiagnosticTemplate::TaskAlreadyConsumed(
-                        TaskAlreadyConsumed {
-                            name: "resolve".to_string(),
+                    Diagnostic::from_template(DiagnosticTemplate::SuspensionError(
+                        SuspensionError {
+                            message: "bare resolve requires error propagation".to_string(),
                         },
                     ))
                     .with_label(expr.span(), "add ! to propagate CancelledError"),
                 )
             }
             _ => Err(
-                Diagnostic::from_template(DiagnosticTemplate::TaskAlreadyConsumed(
-                    TaskAlreadyConsumed {
-                        name: ty.to_string(),
-                    },
-                ))
+                Diagnostic::from_template(DiagnosticTemplate::SuspensionError(SuspensionError {
+                    message: format!("expected Task[T], got {}", ty),
+                }))
                 .with_label(expr.span(), "expected Task[T]"),
             ),
         }

@@ -1,5 +1,5 @@
 use ast::templates::DiagnosticTemplate;
-use ast::templates::type_errors::{ErrorPropagation, TaskAlreadyConsumed};
+use ast::templates::type_errors::{ErrorPropagation, SuspensionError, TaskAlreadyConsumed};
 use ast::{Diagnostic, Expr, Type};
 
 use crate::typechecker::TypeChecker;
@@ -47,9 +47,9 @@ impl TypeChecker {
                 return Ok(*inner_ty);
             } else {
                 return Err(
-                    Diagnostic::from_template(DiagnosticTemplate::TaskAlreadyConsumed(
-                        TaskAlreadyConsumed {
-                            name: ty.to_string(),
+                    Diagnostic::from_template(DiagnosticTemplate::SuspensionError(
+                        SuspensionError {
+                            message: format!("expected Task[T], got {}", ty),
                         },
                     ))
                     .with_label(expr.span(), "expected Task[T]"),
@@ -265,9 +265,9 @@ impl TypeChecker {
                 return Ok(*inner_ty);
             } else {
                 return Err(
-                    Diagnostic::from_template(DiagnosticTemplate::TaskAlreadyConsumed(
-                        TaskAlreadyConsumed {
-                            name: ty.to_string(),
+                    Diagnostic::from_template(DiagnosticTemplate::SuspensionError(
+                        SuspensionError {
+                            message: format!("expected Task[T], got {}", ty),
                         },
                     ))
                     .with_label(inner.span(), "expected Task[T]"),

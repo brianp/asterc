@@ -4,7 +4,7 @@ use ast::templates::DiagnosticTemplate;
 use ast::templates::parse_errors::UnexpectedToken;
 use ast::templates::type_errors::{
     ArgumentCountMismatch, ArgumentTypeMismatch, ConstraintError, ErrorPropagation,
-    TaskAlreadyConsumed, TraitError, TypeConstraintError, TypeMismatch, UnaryOpError,
+    SuspensionError, TraitError, TypeConstraintError, TypeMismatch, UnaryOpError,
     UndefinedVariable,
 };
 use ast::{Diagnostic, Expr, Span, Type, TypeEnv};
@@ -711,9 +711,9 @@ impl TypeChecker {
             self.last_call_suspendable = suspendable;
             if suspendable && !bypass_throws_check {
                 return Err(
-                    Diagnostic::from_template(DiagnosticTemplate::TaskAlreadyConsumed(
-                        TaskAlreadyConsumed {
-                            name: format!(
+                    Diagnostic::from_template(DiagnosticTemplate::SuspensionError(
+                        SuspensionError {
+                            message: format!(
                                 "Plain call crosses a suspension boundary. {}",
                                 Self::suspendable_call_fix(func)
                             ),

@@ -6,6 +6,8 @@ pub mod warnings;
 
 use serde::{Deserialize, Serialize};
 
+use crate::diagnostic::Severity;
+
 macro_rules! diagnostic_template_enum {
     (
         $(
@@ -33,8 +35,20 @@ macro_rules! diagnostic_template_enum {
     };
 }
 
+impl DiagnosticTemplate {
+    pub fn severity(&self) -> Severity {
+        match self {
+            Self::UnusedDefaultParam(_)
+            | Self::UseAfterMove(_)
+            | Self::ShadowedVariable(_)
+            | Self::RedundantTypeAnnotation(_) => Severity::Warning,
+            _ => Severity::Error,
+        }
+    }
+}
+
 diagnostic_template_enum! {
-    // Type errors (E001-E028)
+    // Type errors (E001-E031)
     TypeMismatch(type_errors::TypeMismatch),
     UndefinedVariable(type_errors::UndefinedVariable),
     BinaryOpError(type_errors::BinaryOpError),
@@ -62,6 +76,9 @@ diagnostic_template_enum! {
     ConstReassignment(type_errors::ConstReassignment),
     TaskNotResolved(type_errors::TaskNotResolved),
     NotCompilable(type_errors::NotCompilable),
+    ControlFlowError(type_errors::ControlFlowError),
+    SuspensionError(type_errors::SuspensionError),
+    VisibilityError(type_errors::VisibilityError),
 
     // Parse errors (P001-P003)
     UnexpectedToken(parse_errors::UnexpectedToken),
@@ -80,7 +97,7 @@ diagnostic_template_enum! {
     UseAfterMove(warnings::UseAfterMove),
     ShadowedVariable(warnings::ShadowedVariable),
 
-    // Lex errors (L001-L008)
+    // Lex errors (L001-L012)
     InterpolationError(lex_errors::InterpolationError),
     UnterminatedString(lex_errors::UnterminatedString),
     TabIndentation(lex_errors::TabIndentation),
@@ -89,4 +106,8 @@ diagnostic_template_enum! {
     BadFloatLiteral(lex_errors::BadFloatLiteral),
     IntegerOverflow(lex_errors::IntegerOverflow),
     MissingNewline(lex_errors::MissingNewline),
+    InputTooLarge(lex_errors::InputTooLarge),
+    InconsistentIndentation(lex_errors::InconsistentIndentation),
+    UnexpectedCharacter(lex_errors::UnexpectedCharacter),
+    BadIntegerLiteral(lex_errors::BadIntegerLiteral),
 }

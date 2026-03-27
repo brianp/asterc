@@ -1,7 +1,7 @@
 use ast::templates::DiagnosticTemplate;
 use ast::templates::module_errors::{CircularImport, InvalidImportAlias, SymbolNotExported};
 use ast::templates::type_errors::{
-    ArgumentTypeMismatch, BinaryOpError, ConditionTypeError, ConstReassignment, ConstraintError,
+    ArgumentTypeMismatch, ConditionTypeError, ConstReassignment, ConstraintError, ControlFlowError,
     IndexTypeError, InvalidAssignment, MissingIterable, ReturnTypeMismatch, TraitError,
     TypeMismatch, UndeclaredAssignment, UndefinedVariable, UnknownField,
 };
@@ -1430,27 +1430,27 @@ impl TypeChecker {
             }
             Stmt::Break(span) => {
                 if self.loop_depth == 0 {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::BinaryOpError(
-                        BinaryOpError {
-                            op: "break".to_string(),
-                            left: Type::Void,
-                            right: Type::Void,
-                        },
-                    ))
-                    .with_label(*span, "not inside a loop"));
+                    return Err(
+                        Diagnostic::from_template(DiagnosticTemplate::ControlFlowError(
+                            ControlFlowError {
+                                keyword: "break".to_string(),
+                            },
+                        ))
+                        .with_label(*span, "not inside a loop"),
+                    );
                 }
                 Ok(Type::Void)
             }
             Stmt::Continue(span) => {
                 if self.loop_depth == 0 {
-                    return Err(Diagnostic::from_template(DiagnosticTemplate::BinaryOpError(
-                        BinaryOpError {
-                            op: "continue".to_string(),
-                            left: Type::Void,
-                            right: Type::Void,
-                        },
-                    ))
-                    .with_label(*span, "not inside a loop"));
+                    return Err(
+                        Diagnostic::from_template(DiagnosticTemplate::ControlFlowError(
+                            ControlFlowError {
+                                keyword: "continue".to_string(),
+                            },
+                        ))
+                        .with_label(*span, "not inside a loop"),
+                    );
                 }
                 Ok(Type::Void)
             }

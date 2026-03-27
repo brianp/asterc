@@ -1,17 +1,25 @@
 pub mod bad_float_literal;
+pub mod bad_integer_literal;
+pub mod inconsistent_indentation;
+pub mod input_too_large;
 pub mod integer_overflow;
 pub mod interpolation_error;
 pub mod invalid_escape;
 pub mod missing_newline;
 pub mod string_too_long;
 pub mod tab_indentation;
+pub mod unexpected_character;
 pub mod unterminated_string;
 
 pub use bad_float_literal::BadFloatLiteral;
+pub use bad_integer_literal::BadIntegerLiteral;
+pub use inconsistent_indentation::InconsistentIndentation;
+pub use input_too_large::InputTooLarge;
 pub use integer_overflow::IntegerOverflow;
 pub use interpolation_error::InterpolationError;
 pub use invalid_escape::InvalidEscape;
 pub use missing_newline::MissingNewline;
 pub use string_too_long::StringTooLong;
 pub use tab_indentation::TabIndentation;
+pub use unexpected_character::UnexpectedCharacter;
 pub use unterminated_string::UnterminatedString;

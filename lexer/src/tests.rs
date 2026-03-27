@@ -444,8 +444,8 @@ def x
     let err = lex(src).unwrap_err();
     assert_eq!(
         err.code(),
-        Some("L003"),
-        "expected L003 (TabIndentation), got: {}",
+        Some("L010"),
+        "expected L010 (InconsistentIndentation), got: {}",
         err
     );
 }
