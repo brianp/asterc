@@ -18,8 +18,9 @@ pub(super) unsafe fn list_block(handle: *const u8) -> *mut u8 {
 }
 
 /// Allocate a new list. Returns a handle (pointer-to-pointer).
-/// `ptr_elems`: 0 = value-type elements (Int/Float/Bool — GC won't scan them),
-///              1 = pointer-type elements (String/Class — GC will trace them).
+/// `ptr_elems`: 0 = value-type elements (Int/Float/Bool, GC won't scan them),
+///              1 = pointer-type elements (String/Class, GC will trace them).
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_list_new(cap: i64, ptr_elems: i64) -> *mut u8 {
     let cap = cap.max(4) as usize;
     let alloc_size = match cap.checked_mul(8).and_then(|n| n.checked_add(16)) {
@@ -47,6 +48,7 @@ pub extern "C" fn aster_list_new(cap: i64, ptr_elems: i64) -> *mut u8 {
 }
 
 /// Get an element from a list by index. Returns the i64 value at that index.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_list_get(handle: *const u8, index: i64) -> i64 {
     if handle.is_null() {
         eprintln!("aster_list_get: null list handle");
@@ -65,6 +67,7 @@ pub extern "C" fn aster_list_get(handle: *const u8, index: i64) -> i64 {
 }
 
 /// Pick a random element from a list.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_list_random(handle: *const u8) -> i64 {
     if handle.is_null() {
         eprintln!("aster_list_random: null list handle");
@@ -84,6 +87,7 @@ pub extern "C" fn aster_list_random(handle: *const u8) -> i64 {
 }
 
 /// Set an element in a list by index.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_list_set(handle: *mut u8, index: i64, value: i64) {
     if handle.is_null() {
         eprintln!("aster_list_set: null list handle");
@@ -103,6 +107,7 @@ pub extern "C" fn aster_list_set(handle: *mut u8, index: i64, value: i64) {
 
 /// Push an element to a list. Handle stays stable; data block may move.
 /// Returns the same handle so callers don't need to track reallocation.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_list_push(handle: *mut u8, value: i64) -> *mut u8 {
     if handle.is_null() {
         eprintln!("aster_list_push: null list handle");
@@ -140,6 +145,7 @@ pub extern "C" fn aster_list_push(handle: *mut u8, value: i64) -> *mut u8 {
 }
 
 /// Get the length of a list.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_list_len(handle: *const u8) -> i64 {
     if handle.is_null() {
         return 0;
@@ -151,6 +157,7 @@ pub extern "C" fn aster_list_len(handle: *const u8) -> i64 {
 }
 
 /// Insert an element at a given index, shifting subsequent elements right.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_list_insert(handle: *mut u8, index: i64, value: i64) {
     if handle.is_null() {
         eprintln!("aster_list_insert: null list handle");
@@ -191,6 +198,7 @@ pub extern "C" fn aster_list_insert(handle: *mut u8, index: i64, value: i64) {
 }
 
 /// Remove an element at a given index, shifting subsequent elements left. Returns the removed value.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_list_remove(handle: *mut u8, index: i64) -> i64 {
     if handle.is_null() {
         eprintln!("aster_list_remove: null list handle");
@@ -214,6 +222,7 @@ pub extern "C" fn aster_list_remove(handle: *mut u8, index: i64) -> i64 {
 }
 
 /// Remove and return the last element. Aborts on empty list.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_list_pop(handle: *mut u8) -> i64 {
     if handle.is_null() {
         eprintln!("aster_list_pop: null list handle");
@@ -234,6 +243,7 @@ pub extern "C" fn aster_list_pop(handle: *mut u8) -> i64 {
 }
 
 /// Check if a list contains a value. `is_string`: 1 = use string equality, 0 = bitwise i64.
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_list_contains(handle: *const u8, item: i64, is_string: i64) -> i8 {
     if handle.is_null() {
         return 0;
@@ -257,6 +267,7 @@ pub extern "C" fn aster_list_contains(handle: *const u8, item: i64, is_string: i
 
 /// Convert a List[Int] to a heap string like "[1, 2, 3]".
 /// Handle layout: [block_ptr] -> block: [len: i64][cap: i64][elems: i64...]
+#[unsafe(no_mangle)]
 pub extern "C" fn aster_list_to_string(handle: *const u8) -> *mut u8 {
     use super::string::aster_string_new;
     if handle.is_null() {
