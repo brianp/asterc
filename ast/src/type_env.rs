@@ -198,6 +198,26 @@ impl TypeEnv {
         Rc::make_mut(&mut self.namespaces).insert(name, info);
     }
 
+    /// Find all classes whose `extends` field equals `parent_name`.
+    /// Walks the full scope chain (current + all parents).
+    pub fn find_children(&self, parent_name: &str) -> Vec<String> {
+        let mut children = Vec::new();
+        for (name, info) in self.classes.iter() {
+            if info.extends.as_deref() == Some(parent_name) {
+                children.push(name.clone());
+            }
+        }
+        if let Some(ref parent) = self.parent {
+            for name in parent.find_children(parent_name) {
+                if !children.contains(&name) {
+                    children.push(name);
+                }
+            }
+        }
+        children.sort();
+        children
+    }
+
     pub fn all_var_names(&self) -> Vec<&str> {
         let mut names: Vec<&str> = self.variables.keys().map(|s| s.as_str()).collect();
         if let Some(ref parent) = self.parent {

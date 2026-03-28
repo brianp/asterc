@@ -854,6 +854,17 @@ impl Lowerer {
             }
         }
 
+        // Type.to_string(): Type values are strings at runtime, but the FIR type
+        // might be I64 (e.g., from list indexing). Emit an identity runtime call
+        // that produces Ptr type so say() dispatches to aster_say_str.
+        if method == builtin_method::TO_STRING && self.is_type_valued_expr(object) {
+            return Ok(FirExpr::RuntimeCall {
+                name: "aster_introspect_class_name".to_string(),
+                args: vec![fir_object],
+                ret_ty: FirType::Ptr,
+            });
+        }
+
         Err(LowerError::UnsupportedFeature(
             UnsupportedFeatureKind::Other(format!("method call: .{}()", method)),
             object.span(),

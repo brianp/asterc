@@ -117,6 +117,51 @@ pub struct Lowerer {
 
 impl Lowerer {
     pub fn new(type_env: TypeEnv, type_table: TypeTable) -> Self {
+        use crate::types::{ClassId, FirType};
+
+        // Pre-register built-in introspection classes so field access works.
+        // Use sentinel ClassIds (high values) that won't collide with user classes.
+        // Layouts must match runtime construction (ptr fields first, then values).
+        let mut classes = HashMap::new();
+        let mut class_fields: HashMap<ClassId, Vec<(String, FirType, usize)>> = HashMap::new();
+
+        // FieldInfo: name(ptr,0), type_name(ptr,8), is_public(val,16)
+        let fi_id = ClassId(u32::MAX);
+        classes.insert("FieldInfo".to_string(), fi_id);
+        class_fields.insert(
+            fi_id,
+            vec![
+                ("name".into(), FirType::Ptr, 0),
+                ("type_name".into(), FirType::Ptr, 8),
+                ("is_public".into(), FirType::Bool, 16),
+            ],
+        );
+
+        // ParamInfo: name(ptr,0), param_type(ptr,8), has_default(val,16)
+        let pi_id = ClassId(u32::MAX - 1);
+        classes.insert("ParamInfo".to_string(), pi_id);
+        class_fields.insert(
+            pi_id,
+            vec![
+                ("name".into(), FirType::Ptr, 0),
+                ("param_type".into(), FirType::Ptr, 8),
+                ("has_default".into(), FirType::Bool, 16),
+            ],
+        );
+
+        // MethodInfo: name(ptr,0), params(ptr,8), return_type(ptr,16), is_public(val,24)
+        let mi_id = ClassId(u32::MAX - 2);
+        classes.insert("MethodInfo".to_string(), mi_id);
+        class_fields.insert(
+            mi_id,
+            vec![
+                ("name".into(), FirType::Ptr, 0),
+                ("params".into(), FirType::Ptr, 8),
+                ("return_type".into(), FirType::Ptr, 16),
+                ("is_public".into(), FirType::Bool, 24),
+            ],
+        );
+
         Self {
             type_env,
             type_table,
@@ -124,8 +169,8 @@ impl Lowerer {
             ms: ModuleState {
                 module: FirModule::new(),
                 functions: HashMap::new(),
-                classes: HashMap::new(),
-                class_fields: HashMap::new(),
+                classes,
+                class_fields,
                 enum_variants: HashMap::new(),
                 function_defaults: HashMap::new(),
                 next_function: 0,
@@ -955,7 +1000,13 @@ impl Lowerer {
             // List index: points[i] — element type from list's AST type
             Expr::Index { object, .. } => {
                 if let Expr::Ident(name, _) = object.as_ref() {
-                    let elem_class = match self.scope.local_ast_types.get(name.as_str()) {
+                    // Check local AST types first, then fall back to type_env
+                    let list_type = self
+                        .scope
+                        .local_ast_types
+                        .get(name.as_str())
+                        .or_else(|| self.type_env.get_var(name));
+                    let elem_class = match list_type {
                         Some(Type::List(inner)) => {
                             if let Type::Custom(class_name, _) = inner.as_ref() {
                                 Some(class_name.clone())
@@ -970,6 +1021,20 @@ impl Lowerer {
                                 None
                             }
                         }
+                        _ => None,
+                    };
+                    if let Some(class_name) = elem_class
+                        && self.ms.classes.contains_key(class_name.as_str())
+                    {
+                        return Ok(class_name);
+                    }
+                }
+                // Chained index: expr.methods[0] or expr.fields[0]
+                if let Expr::Member { field, .. } = object.as_ref() {
+                    let elem_class = match field.as_str() {
+                        "fields" => Some("FieldInfo".to_string()),
+                        "methods" => Some("MethodInfo".to_string()),
+                        "params" => Some("ParamInfo".to_string()),
                         _ => None,
                     };
                     if let Some(class_name) = elem_class
