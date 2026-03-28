@@ -1,8 +1,6 @@
 use cranelift_jit::JITBuilder;
 
 pub mod alloc;
-#[cfg(not(test))]
-pub mod aot_main;
 pub mod channel;
 pub mod error;
 pub mod gc;
