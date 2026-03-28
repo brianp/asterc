@@ -116,11 +116,12 @@ diagnostic_template_enum! {
     ExpectedIndentedBlock(parse_errors::ExpectedIndentedBlock),
     NestingTooDeep(parse_errors::NestingTooDeep),
 
-    // Module errors (M001-M004)
+    // Module errors (M001-M005)
     ModuleNotFound(module_errors::ModuleNotFound),
     SymbolNotExported(module_errors::SymbolNotExported),
     CircularImport(module_errors::CircularImport),
     InvalidImportAlias(module_errors::InvalidImportAlias),
+    UnstableRequired(module_errors::UnstableRequired),
 
     // Warnings (W001-W004)
     RedundantTypeAnnotation(warnings::RedundantTypeAnnotation),

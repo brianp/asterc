@@ -45,4 +45,5 @@ mod stdlib;
 mod string_interpolation;
 mod string_methods;
 mod types_collections;
+mod unstable_flag;
 mod visibility;

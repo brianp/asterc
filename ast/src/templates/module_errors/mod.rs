@@ -22,3 +22,8 @@ define_diagnostic!(
     "M004",
     "Cannot use both selective import and 'as' alias"
 );
+define_diagnostic!(
+    UnstableRequired,
+    "M005",
+    "Importing from std/unstable requires the --unstable compiler flag or ASTER_UNSTABLE=1 environment variable"
+);

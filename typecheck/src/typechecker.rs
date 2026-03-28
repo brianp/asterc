@@ -1,5 +1,7 @@
 use ast::templates::DiagnosticTemplate;
-use ast::templates::module_errors::{CircularImport, InvalidImportAlias, SymbolNotExported};
+use ast::templates::module_errors::{
+    CircularImport, InvalidImportAlias, SymbolNotExported, UnstableRequired,
+};
 use ast::templates::type_errors::{
     ArgumentTypeMismatch, ConditionTypeError, ConstReassignment, ConstraintError, ControlFlowError,
     IndexTypeError, InvalidAssignment, MissingIterable, ReturnTypeMismatch, TraitError,
@@ -1871,6 +1873,9 @@ impl TypeChecker {
             "collections" => Some(self.builtin_exports_from(&["Iterable", "Iterator"], &[])),
             "convert" => Some(self.builtin_exports_from(&["From", "Into"], &[])),
             "random" => Some(self.builtin_exports_from(&["Random"], &[])),
+            // std/unstable is an empty module for now. FieldAccessible will be
+            // registered here once Feature 3 is implemented.
+            "unstable" => Some(self.builtin_exports_from(&[], &[])),
             _ => None,
         }
     }
@@ -1914,6 +1919,21 @@ impl TypeChecker {
                     .with_label(*span, "bare `use std` is not supported");
                 diag.message = hint;
                 return Err(diag);
+            }
+            // Gate std/unstable imports behind the --unstable flag.
+            if path.len() >= 2 && path[1] == "unstable" {
+                let unstable_enabled = self
+                    .module_loader
+                    .as_ref()
+                    .is_some_and(|loader| loader.borrow().unstable);
+                if !unstable_enabled {
+                    return Err(
+                        Diagnostic::from_template(DiagnosticTemplate::UnstableRequired(
+                            UnstableRequired {},
+                        ))
+                        .with_label(*span, "requires --unstable flag or ASTER_UNSTABLE=1"),
+                    );
+                }
             }
             if path.len() == 2 {
                 // `use std/cmp { Eq }` etc.

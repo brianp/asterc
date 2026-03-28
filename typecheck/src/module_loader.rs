@@ -66,6 +66,9 @@ pub struct ModuleLoader {
     resolver: Box<dyn FileResolver>,
     pub(crate) cache: HashMap<String, ModuleExports>,
     in_progress: HashSet<String>,
+    /// Whether the --unstable flag is enabled. Propagated to child TypeCheckers
+    /// so imported modules can also use `std/unstable`.
+    pub unstable: bool,
 }
 
 impl ModuleLoader {
@@ -74,6 +77,7 @@ impl ModuleLoader {
             resolver,
             cache: HashMap::new(),
             in_progress: HashSet::new(),
+            unstable: false,
         }
     }
 
@@ -136,8 +140,13 @@ impl ModuleLoader {
             diag
         })?;
 
-        // Typecheck with the same module loader
+        // Typecheck with the same module loader.
+        // The unstable flag is read from the loader so child modules inherit it.
         let mut tc = crate::typechecker::TypeChecker::with_loader(Rc::clone(loader_rc));
+        // TODO(transitivity): When the package system exists, enforce that
+        // dependencies declaring `unstable(enabled: true)` in their Seedfile
+        // propagate the requirement transitively. For now, the flag is inherited
+        // from the ModuleLoader, which is shared across the entire compilation.
         let diagnostics = tc.check_module_all(&module_ast);
 
         // Remove from in-progress
