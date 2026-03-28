@@ -18,6 +18,7 @@ mod expressions;
 mod generic_constraints;
 mod generics_traits;
 mod inline_generics;
+mod introspection;
 mod io_primitives;
 mod iterable;
 mod iterator;

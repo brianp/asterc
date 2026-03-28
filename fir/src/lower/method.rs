@@ -9,6 +9,11 @@ impl Lowerer {
         method: &str,
         args: &[(String, ast::Span, Expr)],
     ) -> Result<FirExpr, LowerError> {
+        // Introspection method calls: is_a, responds_to
+        if let Some(result) = self.lower_introspection_call(object, method, args)? {
+            return Ok(result);
+        }
+
         // Check for enum variant constructor with fields: EnumName.Variant(fields)
         if let Expr::Ident(name, _) = object
             && self.ms.enum_variants.contains_key(name.as_str())

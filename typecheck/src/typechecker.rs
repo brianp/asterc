@@ -258,6 +258,66 @@ impl TypeChecker {
             info
         });
 
+        // ── Introspection built-in types ────────────────────────────────
+        // Type: represents a class/type as a runtime value (comparable, stringifiable)
+        env.set_class(
+            "Type".into(),
+            ClassInfo::new(
+                Type::Custom("Type".into(), Vec::new()),
+                IndexMap::new(),
+                HashMap::from([("to_string".into(), Type::func(vec![], vec![], Type::String))]),
+            ),
+        );
+
+        // FieldInfo: describes a field on a class instance
+        env.set_class(
+            "FieldInfo".into(),
+            ClassInfo::new(
+                Type::Custom("FieldInfo".into(), Vec::new()),
+                IndexMap::from([
+                    ("name".into(), Type::String),
+                    ("type_name".into(), Type::Custom("Type".into(), Vec::new())),
+                    ("is_public".into(), Type::Bool),
+                ]),
+                HashMap::new(),
+            ),
+        );
+
+        // ParamInfo: describes a parameter on a method
+        env.set_class(
+            "ParamInfo".into(),
+            ClassInfo::new(
+                Type::Custom("ParamInfo".into(), Vec::new()),
+                IndexMap::from([
+                    ("name".into(), Type::String),
+                    ("param_type".into(), Type::Custom("Type".into(), Vec::new())),
+                    ("has_default".into(), Type::Bool),
+                ]),
+                HashMap::new(),
+            ),
+        );
+
+        // MethodInfo: describes a method on a class instance
+        env.set_class(
+            "MethodInfo".into(),
+            ClassInfo::new(
+                Type::Custom("MethodInfo".into(), Vec::new()),
+                IndexMap::from([
+                    ("name".into(), Type::String),
+                    (
+                        "params".into(),
+                        Type::List(Box::new(Type::Custom("ParamInfo".into(), Vec::new()))),
+                    ),
+                    (
+                        "return_type".into(),
+                        Type::Custom("Type".into(), Vec::new()),
+                    ),
+                    ("is_public".into(), Type::Bool),
+                ]),
+                HashMap::new(),
+            ),
+        );
+
         // Build protocol traits and supporting enums — stored in builtin maps.
         // In prelude mode (no loader), also installed in env.
         let mut builtin_traits: HashMap<String, TraitInfo> = HashMap::new();

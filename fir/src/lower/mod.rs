@@ -14,6 +14,7 @@ use crate::types::{ClassId, FirType, FunctionId, LocalId};
 mod closure;
 mod expr;
 mod for_loop;
+mod introspection;
 mod iterable;
 mod match_lower;
 mod method;

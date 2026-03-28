@@ -84,6 +84,14 @@ impl TypeChecker {
             if is_namespace {
                 return self.check_call_inner(func, args, false);
             }
+            // ── Introspection method calls: is_a, responds_to ──────────
+            if field == "is_a" {
+                return self.check_is_a_call(object, args, func);
+            }
+            if field == "responds_to" {
+                return self.check_responds_to_call(object, args, func);
+            }
+
             let obj_ty = self.check_expr(object)?;
             if obj_ty.is_error() {
                 return Ok(Type::Error);
@@ -1457,5 +1465,104 @@ impl TypeChecker {
                 .with_label(expr.span(), "expected type name"),
             ),
         }
+    }
+
+    /// Check `obj.is_a(ClassName)` introspection call.
+    /// The argument must be a bare identifier naming a known type or class.
+    fn check_is_a_call(
+        &mut self,
+        object: &Expr,
+        args: &[(String, Span, Expr)],
+        func: &Expr,
+    ) -> Result<Type, Diagnostic> {
+        // First, check that the object itself is valid (but don't need the type for is_a checking)
+        let obj_ty = self.check_expr(object)?;
+        if obj_ty.is_error() {
+            return Ok(Type::Error);
+        }
+        // Check that the object type supports introspection (check_builtin_member would accept it)
+        // All types support introspection, so no filtering needed.
+
+        if args.len() != 1 {
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(
+                    ArgumentCountMismatch {
+                        expected: 1,
+                        actual: args.len(),
+                    },
+                ))
+                .with_label(func.span(), "is_a takes exactly 1 argument"),
+            );
+        }
+
+        let (_, _, arg_expr) = &args[0];
+
+        // The argument must be a bare identifier naming a known type
+        if let Expr::Ident(name, span) = arg_expr {
+            let is_known_type = self.env.get_class(name).is_some()
+                || matches!(name.as_str(), "Int" | "Float" | "String" | "Bool" | "Nil");
+            if is_known_type {
+                return Ok(Type::Bool);
+            }
+            return Err(
+                Diagnostic::error(format!("'{}' is not a known class or type", name))
+                    .with_label(*span, "expected a class or type name"),
+            );
+        }
+
+        Err(
+            Diagnostic::error("is_a() requires a class or type name as argument".to_string())
+                .with_label(
+                    arg_expr.span(),
+                    "expected a class or type name, not an expression",
+                ),
+        )
+    }
+
+    /// Check `obj.responds_to("method_name")` introspection call.
+    /// The argument must be a String.
+    fn check_responds_to_call(
+        &mut self,
+        object: &Expr,
+        args: &[(String, Span, Expr)],
+        func: &Expr,
+    ) -> Result<Type, Diagnostic> {
+        let obj_ty = self.check_expr(object)?;
+        if obj_ty.is_error() {
+            return Ok(Type::Error);
+        }
+
+        if args.len() != 1 {
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::ArgumentCountMismatch(
+                    ArgumentCountMismatch {
+                        expected: 1,
+                        actual: args.len(),
+                    },
+                ))
+                .with_label(func.span(), "responds_to takes exactly 1 argument"),
+            );
+        }
+
+        let (_, _, arg_expr) = &args[0];
+        let arg_ty = self.check_expr(arg_expr)?;
+        if arg_ty.is_error() {
+            return Ok(Type::Error);
+        }
+
+        if arg_ty != Type::String {
+            return Err(
+                Diagnostic::from_template(DiagnosticTemplate::ArgumentTypeMismatch(
+                    ArgumentTypeMismatch {
+                        param: "method_name".to_string(),
+                        expected: Type::String,
+                        actual: arg_ty,
+                    },
+                ))
+                .with_label(arg_expr.span(), "expected String"),
+            );
+        }
+
+        Ok(Type::Bool)
     }
 }

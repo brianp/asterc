@@ -6,6 +6,7 @@ pub mod aot_main;
 pub mod channel;
 pub mod error;
 pub mod gc;
+pub mod introspection;
 pub mod io;
 pub mod list;
 pub mod map;
@@ -66,6 +67,12 @@ pub use io::{
 };
 
 pub use print::{aster_say_bool, aster_say_float, aster_say_int, aster_say_str};
+
+pub use introspection::{
+    aster_introspect_ancestors, aster_introspect_children, aster_introspect_class_name,
+    aster_introspect_fields, aster_introspect_is_a, aster_introspect_methods,
+    aster_introspect_responds_to,
+};
 
 pub use numeric::{
     aster_float_abs, aster_float_ceil, aster_float_clamp, aster_float_floor, aster_float_max,

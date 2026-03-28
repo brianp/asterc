@@ -191,4 +191,12 @@ runtime_functions! {
     fn aster_random_int(I64) -> I64;
     fn aster_random_float(F64) -> F64;
     fn aster_random_bool() -> I8;
+    // Introspection
+    fn aster_introspect_class_name(I64) -> I64;
+    fn aster_introspect_fields(I64) -> I64;
+    fn aster_introspect_methods(I64) -> I64;
+    fn aster_introspect_ancestors(I64) -> I64;
+    fn aster_introspect_children(I64) -> I64;
+    fn aster_introspect_is_a(I64, I64) -> I8;
+    fn aster_introspect_responds_to(I64, I64) -> I8;
 }

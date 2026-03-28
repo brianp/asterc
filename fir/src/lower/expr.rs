@@ -313,6 +313,10 @@ impl Lowerer {
                         });
                     }
                 }
+                // Introspection property access (class_name, fields, methods, ancestors, children)
+                if let Some(result) = self.lower_introspection_member(object, field)? {
+                    return Ok(result);
+                }
                 let fir_object = self.lower_expr(object)?;
                 // Determine the class of the object to find field offset and type
                 let (offset, field_ty) = self.resolve_field_access(object, field)?;

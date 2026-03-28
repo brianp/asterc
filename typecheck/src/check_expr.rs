@@ -867,7 +867,9 @@ impl TypeChecker {
                 }
                 if lt == rt {
                     // Same type — check if user type includes Eq
+                    // Type values are always comparable (pointer equality)
                     if let Type::Custom(ref class_name, _) = lt
+                        && class_name != "Type"
                         && !self.type_includes_eq(&lt)
                     {
                         return Err(Diagnostic::from_template(DiagnosticTemplate::ComparisonError(ast::templates::type_errors::ComparisonError {
@@ -1078,6 +1080,19 @@ impl TypeChecker {
     }
 
     pub(crate) fn check_member(&mut self, object: &Expr, field: &str) -> Result<Type, Diagnostic> {
+        // Try normal member resolution first; fall back to introspection on unknown-field errors.
+        let result = self.check_member_inner(object, field);
+        if result.is_err()
+            && let Some(intro_result) = Self::check_introspection_member(field)
+        {
+            // Validate that the object expression is well-typed before returning introspection
+            let _ = self.check_expr(object)?;
+            return intro_result;
+        }
+        result
+    }
+
+    fn check_member_inner(&mut self, object: &Expr, field: &str) -> Result<Type, Diagnostic> {
         // Check for namespace member access: ns.ExportedName
         if let Expr::Ident(name, _) = object
             && let Some(ns) = self.env.get_namespace(name).cloned()
@@ -1361,7 +1376,54 @@ impl TypeChecker {
         if let Type::Set(inner) = obj_ty {
             return Some(self.check_set_member(field, inner, object));
         }
+        // Handle Type built-in methods (to_string)
+        if let Type::Custom(name, _) = obj_ty
+            && name == "Type"
+        {
+            return Some(Self::check_type_member(field, object));
+        }
         None
+    }
+
+    /// Check member access on a Type value (comparable, stringifiable).
+    fn check_type_member(field: &str, object: &Expr) -> Result<Type, Diagnostic> {
+        match field {
+            "to_string" => Ok(Type::func(vec![], vec![], Type::String)),
+            _ => Err(
+                Diagnostic::from_template(DiagnosticTemplate::UnknownField(UnknownField {
+                    field: field.to_string(),
+                    type_name: "Type".to_string(),
+                }))
+                .with_label(object.span(), "no such member on Type"),
+            ),
+        }
+    }
+
+    /// Introspection methods available on every instance.
+    /// Returns Some if the field is a recognized introspection method, None otherwise.
+    fn check_introspection_member(field: &str) -> Option<Result<Type, Diagnostic>> {
+        let type_ty = Type::Custom("Type".into(), Vec::new());
+        let field_info_ty = Type::Custom("FieldInfo".into(), Vec::new());
+        let method_info_ty = Type::Custom("MethodInfo".into(), Vec::new());
+
+        match field {
+            "class_name" => Some(Ok(type_ty)),
+            "fields" => Some(Ok(Type::List(Box::new(field_info_ty)))),
+            "methods" => Some(Ok(Type::List(Box::new(method_info_ty)))),
+            "ancestors" => Some(Ok(Type::List(Box::new(type_ty)))),
+            "children" => Some(Ok(Type::List(Box::new(type_ty)))),
+            "is_a" => Some(Ok(Type::func(
+                vec!["type".into()],
+                vec![type_ty],
+                Type::Bool,
+            ))),
+            "responds_to" => Some(Ok(Type::func(
+                vec!["method_name".into()],
+                vec![Type::String],
+                Type::Bool,
+            ))),
+            _ => None,
+        }
     }
 
     /// Resolve an overloaded method (e.g., multiple into() from Into[A], Into[B])
