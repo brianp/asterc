@@ -41,6 +41,9 @@ pub struct ScopeContext {
     /// Maps variable name to the span where the crossing happened.
     /// Used for data sharing warnings (W002).
     pub(crate) boundary_crossed: HashMap<String, Span>,
+    /// Current class being checked (set during check_class_methods).
+    /// Used for DynamicReceiver bare-call routing.
+    pub(crate) current_class: Option<String>,
 }
 
 pub struct TypeRegistry {
@@ -109,6 +112,7 @@ impl TypeChecker {
                 task_bindings: HashMap::new(),
                 boundary_crossed: HashMap::new(),
                 last_call_suspendable: false,
+                current_class: None,
             },
             reg: TypeRegistry {
                 diagnostics: Vec::new(),
@@ -226,6 +230,25 @@ impl TypeChecker {
                 ),
             );
         }
+
+        // FunctionNotFound — built-in error thrown by method_missing to signal a closed set
+        env.set_class("FunctionNotFound".into(), {
+            let mut info = ClassInfo::new(
+                Type::Custom("FunctionNotFound".into(), Vec::new()),
+                IndexMap::from([("name".into(), Type::String)]),
+                HashMap::new(),
+            );
+            info.extends = Some("Error".into());
+            info
+        });
+        env.set_var(
+            "FunctionNotFound".into(),
+            Type::func(
+                vec!["message".into(), "name".into()],
+                vec![Type::String, Type::String],
+                Type::Custom("FunctionNotFound".into(), Vec::new()),
+            ),
+        );
 
         // I/O namespaces — static methods only, no instances
         for name in ["File", "TcpListener", "TcpStream"] {
@@ -489,6 +512,30 @@ impl TypeChecker {
             },
         );
 
+        // DynamicReceiver — opt-in trait for dynamic dispatch via method_missing.
+        // The required method signature is validated structurally in check_class.rs
+        // (first param must be String, second must be Map[String, T]).
+        builtin_traits.insert(
+            "DynamicReceiver".into(),
+            TraitInfo {
+                name: "DynamicReceiver".into(),
+                methods: HashMap::from([(
+                    "method_missing".into(),
+                    // Placeholder type: actual validation is structural (check_class.rs)
+                    Type::func(
+                        vec!["fn_name".into(), "args".into()],
+                        vec![
+                            Type::String,
+                            Type::Map(Box::new(Type::String), Box::new(Type::String)),
+                        ],
+                        Type::Void,
+                    ),
+                )]),
+                required_methods: vec!["method_missing".into()],
+                generic_params: None,
+            },
+        );
+
         // Prelude mode: install all protocol traits and enums in env
         for (name, info) in &builtin_traits {
             env.set_trait(name.clone(), info.clone());
@@ -541,6 +588,7 @@ impl TypeChecker {
                 task_bindings: self.sc.task_bindings.clone(),
                 boundary_crossed: HashMap::new(),
                 last_call_suspendable: false,
+                current_class: self.sc.current_class.clone(),
             },
             reg: TypeRegistry {
                 diagnostics: Vec::new(),

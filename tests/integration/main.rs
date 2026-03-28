@@ -10,6 +10,7 @@ mod default_params;
 mod diagnostic_templates;
 mod diagnostics;
 mod drop_close;
+mod dynamic_receiver;
 mod eq_protocol;
 mod error_handling;
 mod examples;

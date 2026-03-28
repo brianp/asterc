@@ -178,3 +178,14 @@ define_diagnostic!(
         self.member, self.class_name
     )
 );
+define_diagnostic!(
+    DynamicMethodConflict {
+        method_name: String,
+        class_name: String
+    },
+    "E032",
+    |self| format!(
+        "Dynamic method '{}' in method_missing conflicts with an existing method on class '{}'",
+        self.method_name, self.class_name
+    )
+);

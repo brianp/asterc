@@ -23,6 +23,19 @@ pub struct ClassInfo {
     pub pub_fields: HashSet<String>,
     /// Methods marked `pub` — accessible from outside the defining module.
     pub pub_methods: HashSet<String>,
+    /// DynamicReceiver info: present when class includes DynamicReceiver.
+    pub dynamic_receiver: Option<DynamicReceiverInfo>,
+}
+
+/// Info extracted from a DynamicReceiver class's method_missing implementation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DynamicReceiverInfo {
+    /// The Map value type from method_missing's second parameter (Map[String, T] -> T).
+    pub args_value_ty: Type,
+    /// The return type of method_missing.
+    pub return_ty: Type,
+    /// Known dynamic method names. Some = catch-all throws FunctionNotFound (closed set). None = any name accepted.
+    pub known_names: Option<HashSet<String>>,
 }
 
 impl ClassInfo {
@@ -38,6 +51,7 @@ impl ClassInfo {
             parametric_includes: Vec::new(),
             pub_fields: HashSet::new(),
             pub_methods: HashSet::new(),
+            dynamic_receiver: None,
         }
     }
 }

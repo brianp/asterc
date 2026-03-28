@@ -1,8 +1,8 @@
 use ast::templates::DiagnosticTemplate;
 use ast::templates::type_errors::{
-    CollectionConstraintError, ConstraintError, PrintableError, TraitError,
+    CollectionConstraintError, ConstraintError, DynamicMethodConflict, PrintableError, TraitError,
 };
-use ast::{ClassInfo, Diagnostic, Stmt, Type};
+use ast::{ClassInfo, Diagnostic, Expr, Span, Stmt, Type};
 use indexmap::IndexMap;
 use std::collections::HashMap;
 
@@ -62,6 +62,21 @@ impl TypeChecker {
                 .unwrap_or_default(),
         );
 
+        // Pre-scan: if class includes DynamicReceiver, extract preliminary info from
+        // method_missing AST so that bare calls inside other methods can resolve.
+        let includes_dynamic_receiver = includes
+            .as_ref()
+            .map(|inc| inc.iter().any(|(n, _)| n == "DynamicReceiver"))
+            .unwrap_or(false);
+        if includes_dynamic_receiver
+            && let Some(pre_info) = Self::prescan_dynamic_receiver(name, methods)
+            && let Some(info) = self.env.get_class(name).cloned()
+        {
+            let mut updated = info;
+            updated.dynamic_receiver = Some(pre_info);
+            self.env.set_class(name.to_string(), updated);
+        }
+
         // Create a child checker with class fields in scope for method body checking
         let mut method_checker = self.child_checker();
         for (fname, fty, _) in fields {
@@ -92,6 +107,9 @@ impl TypeChecker {
         let mut overloaded_methods: HashMap<String, Vec<Type>> = HashMap::new();
         let mut pub_methods = std::collections::HashSet::new();
 
+        // Set current_class so bare calls inside methods can resolve via DynamicReceiver
+        method_checker.sc.current_class = Some(name.to_string());
+
         let methods_result = self.check_class_methods(
             name,
             &class_type,
@@ -119,6 +137,13 @@ impl TypeChecker {
 
         self.inject_auto_derive(&mut method_map, &mut pub_methods, &includes_list);
 
+        // ── DynamicReceiver validation ──────────────────────────────────
+        let dynamic_receiver = if includes_list.contains(&"DynamicReceiver".to_string()) {
+            Some(self.validate_dynamic_receiver(name, methods, &method_map)?)
+        } else {
+            None
+        };
+
         let mut info = ClassInfo::new(class_type, field_map, method_map);
         info.generic_params = generic_params.clone();
         info.extends = extends.clone();
@@ -127,6 +152,7 @@ impl TypeChecker {
         info.parametric_includes = parametric_includes;
         info.pub_fields = pub_fields;
         info.pub_methods = pub_methods;
+        info.dynamic_receiver = dynamic_receiver;
         self.env.set_class(name.to_string(), info);
 
         // Validate extends
@@ -373,6 +399,11 @@ impl TypeChecker {
         };
 
         for (trait_name, targs) in &all_inclusions {
+            // DynamicReceiver is validated separately in validate_dynamic_receiver
+            if trait_name == "DynamicReceiver" {
+                validated_traits.insert(trait_name.clone());
+                continue;
+            }
             let trait_info = self.env.get_trait(trait_name).ok_or_else(|| {
                 // Check if it's a known stdlib trait — give helpful import suggestion
                 if self.reg.builtin_traits.contains_key(trait_name) {
@@ -912,6 +943,269 @@ impl TypeChecker {
             return Some(*inner.clone());
         }
         None
+    }
+
+    /// Pre-scan method_missing from raw AST (before type-checking) to extract
+    /// DynamicReceiverInfo. This enables bare calls in other methods to resolve.
+    fn prescan_dynamic_receiver(
+        class_name: &str,
+        methods: &[Stmt],
+    ) -> Option<ast::DynamicReceiverInfo> {
+        let mm_key = format!("{}.method_missing", class_name);
+        let mm_stmt = methods.iter().find(
+            |m| matches!(m, Stmt::Let { name, .. } if name == &mm_key || name == "method_missing"),
+        )?;
+        let Stmt::Let { value, .. } = mm_stmt else {
+            return None;
+        };
+        let Expr::Lambda {
+            params, ret_type, ..
+        } = value
+        else {
+            return None;
+        };
+        if params.len() < 2 {
+            return None;
+        }
+        if params[0].1 != Type::String {
+            return None;
+        }
+        let value_ty = match &params[1].1 {
+            Type::Map(k, v) if **k == Type::String => *v.clone(),
+            _ => return None,
+        };
+        let return_ty = ret_type.clone();
+
+        // Extract known dynamic method names (strip spans for the pre-scan info)
+        let known_names = Self::extract_dynamic_method_names(class_name, methods)
+            .map(|m| m.into_keys().collect::<std::collections::HashSet<String>>());
+
+        Some(ast::DynamicReceiverInfo {
+            args_value_ty: value_ty,
+            return_ty,
+            known_names,
+        })
+    }
+
+    /// Validate a DynamicReceiver inclusion: check method_missing signature,
+    /// extract known dynamic method names from the body, and check for conflicts.
+    fn validate_dynamic_receiver(
+        &self,
+        class_name: &str,
+        methods: &[Stmt],
+        method_map: &HashMap<String, Type>,
+    ) -> Result<ast::DynamicReceiverInfo, Diagnostic> {
+        // Find method_missing in the method_map (typechecked type)
+        let mm_type = method_map.get("method_missing").ok_or_else(|| {
+            Diagnostic::from_template(DiagnosticTemplate::TraitError(TraitError {
+                message: format!(
+                    "Class '{}' includes DynamicReceiver but does not define method_missing",
+                    class_name
+                ),
+            }))
+        })?;
+
+        // Validate signature shape: (String, Map[String, T]) -> R
+        let (args_value_ty, return_ty) = match mm_type {
+            Type::Function { params, ret, .. } => {
+                if params.len() < 2 {
+                    return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
+                        TraitError {
+                            message: "method_missing must take at least 2 parameters: (fn_name: String, args: Map[String, T])".to_string(),
+                        },
+                    )));
+                }
+                if params[0] != Type::String {
+                    return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
+                        TraitError {
+                            message: format!(
+                                "method_missing first parameter must be String, got {}",
+                                params[0]
+                            ),
+                        },
+                    )));
+                }
+                let value_ty = match &params[1] {
+                    Type::Map(k, v) => {
+                        if **k != Type::String {
+                            return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
+                                TraitError {
+                                    message: format!(
+                                        "method_missing second parameter must be Map[String, T], got Map[{}, {}]",
+                                        k, v
+                                    ),
+                                },
+                            )));
+                        }
+                        *v.clone()
+                    }
+                    other => {
+                        return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
+                            TraitError {
+                                message: format!(
+                                    "method_missing second parameter must be Map[String, T], got {}",
+                                    other
+                                ),
+                            },
+                        )));
+                    }
+                };
+                (value_ty, *ret.clone())
+            }
+            _ => {
+                return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
+                    TraitError {
+                        message: "method_missing must be a function".to_string(),
+                    },
+                )));
+            }
+        };
+
+        // Extract known dynamic method names from the method_missing AST body
+        let known_names_with_spans = Self::extract_dynamic_method_names(class_name, methods);
+
+        // If closed set, check for conflicts with real methods
+        if let Some(ref names) = known_names_with_spans {
+            for (dyn_name, dyn_span) in names {
+                if dyn_name == "method_missing" {
+                    continue;
+                }
+                if method_map.contains_key(dyn_name) {
+                    // Find the span of the real method definition
+                    let real_method_span = Self::find_method_span(class_name, dyn_name, methods);
+                    let mut diag = Diagnostic::from_template(
+                        DiagnosticTemplate::DynamicMethodConflict(DynamicMethodConflict {
+                            method_name: dyn_name.clone(),
+                            class_name: class_name.to_string(),
+                        }),
+                    )
+                    .with_label(
+                        *dyn_span,
+                        format!("'{}' declared as dynamic method here", dyn_name),
+                    );
+                    if let Some(real_span) = real_method_span {
+                        diag = diag.with_label(
+                            real_span,
+                            format!("'{}' already defined as a real method here", dyn_name),
+                        );
+                    }
+                    return Err(diag);
+                }
+            }
+        }
+
+        let known_names = known_names_with_spans
+            .map(|m| m.into_keys().collect::<std::collections::HashSet<String>>());
+
+        Ok(ast::DynamicReceiverInfo {
+            args_value_ty,
+            return_ty,
+            known_names,
+        })
+    }
+
+    /// Inspect the method_missing body to extract known dynamic method names and their spans.
+    /// Returns Some(map) if the catch-all throws FunctionNotFound (closed set), None otherwise.
+    fn extract_dynamic_method_names(
+        class_name: &str,
+        methods: &[Stmt],
+    ) -> Option<HashMap<String, Span>> {
+        // Find the method_missing Stmt::Let in the AST
+        let mm_key = format!("{}.method_missing", class_name);
+        let mm_stmt = methods.iter().find(
+            |m| matches!(m, Stmt::Let { name, .. } if name == &mm_key || name == "method_missing"),
+        )?;
+
+        let Stmt::Let { value, .. } = mm_stmt else {
+            return None;
+        };
+        let ast::Expr::Lambda { body, params, .. } = value else {
+            return None;
+        };
+
+        // The first parameter name (fn_name)
+        let fn_name_param = params.first().map(|(n, _)| n.as_str()).unwrap_or("fn_name");
+
+        // Look for a match expression on the fn_name parameter in the body
+        for stmt in body {
+            if let Stmt::Expr(
+                ast::Expr::Match {
+                    scrutinee, arms, ..
+                },
+                _,
+            )
+            | Stmt::Return(
+                ast::Expr::Match {
+                    scrutinee, arms, ..
+                },
+                _,
+            ) = stmt
+            {
+                // Check if the scrutinee is the fn_name parameter
+                if let ast::Expr::Ident(ref sname, _) = **scrutinee {
+                    if sname != fn_name_param {
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+
+                // Collect string literal arms and check the catch-all
+                let mut names: HashMap<String, Span> = HashMap::new();
+                let mut has_throwing_catchall = false;
+
+                for (pattern, arm_body) in arms {
+                    match pattern {
+                        ast::MatchPattern::Literal(expr, pat_span) => {
+                            if let Expr::Str(s, _) = expr.as_ref() {
+                                names.insert(s.clone(), *pat_span);
+                            }
+                        }
+                        ast::MatchPattern::Wildcard(_) | ast::MatchPattern::Ident(_, _) => {
+                            // Check if the catch-all throws FunctionNotFound
+                            has_throwing_catchall = Self::body_throws_function_not_found(arm_body);
+                        }
+                        _ => {}
+                    }
+                }
+
+                if has_throwing_catchall && !names.is_empty() {
+                    return Some(names);
+                }
+                // Catch-all doesn't throw FunctionNotFound, so any name is valid
+                return None;
+            }
+        }
+
+        // No match on fn_name found, so any name is valid
+        None
+    }
+
+    /// Find the span of a method definition in the class AST.
+    fn find_method_span(class_name: &str, method_name: &str, methods: &[Stmt]) -> Option<Span> {
+        let qualified = format!("{}.{}", class_name, method_name);
+        for m in methods {
+            if let Stmt::Let { name, span, .. } = m {
+                let short = name
+                    .strip_prefix(&format!("{}.", class_name))
+                    .unwrap_or(name);
+                if short == method_name || name == &qualified {
+                    return Some(*span);
+                }
+            }
+        }
+        None
+    }
+
+    /// Check if an expression (match arm body) contains a throw of FunctionNotFound.
+    fn body_throws_function_not_found(expr: &Expr) -> bool {
+        if let Expr::Throw(inner, _) = expr
+            && let Expr::Call { func, .. } = inner.as_ref()
+            && let Expr::Ident(name, _) = func.as_ref()
+        {
+            return name == "FunctionNotFound";
+        }
+        false
     }
 }
 

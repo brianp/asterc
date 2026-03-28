@@ -13,7 +13,7 @@ pub use expr::{
     BinOp, EnumVariant, ErrorCatchPattern, Expr, MatchPattern, Module, Stmt, StringPart, UnaryOp,
 };
 pub use span::Span;
-pub use type_env::{ClassInfo, EnumInfo, NamespaceInfo, TraitInfo, TypeEnv};
+pub use type_env::{ClassInfo, DynamicReceiverInfo, EnumInfo, NamespaceInfo, TraitInfo, TypeEnv};
 pub use type_table::TypeTable;
 pub use types::{Type, TypeConstraint};
 

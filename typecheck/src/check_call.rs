@@ -215,6 +215,13 @@ impl TypeChecker {
                 }
                 return Ok(Type::Void);
             }
+
+            // ── DynamicReceiver fallback for method calls ──────────────
+            // If the method doesn't exist on the class, check if the class
+            // includes DynamicReceiver before falling through to the normal path.
+            if let Some(result) = self.try_dynamic_receiver_call(object, field, args, &obj_ty) {
+                return result;
+            }
         }
         self.check_call_inner(func, args, false)
     }
@@ -275,7 +282,58 @@ impl TypeChecker {
                 "Channel" | "MultiSend" | "MultiReceive" => {
                     return self.check_channel_constructor(func, args);
                 }
-                _ => {}
+                _ => {
+                    // ── DynamicReceiver bare call fallback ──────────────
+                    // Inside a DynamicReceiver class body, bare calls to unknown
+                    // names route through method_missing (implicit self).
+                    if self.env.get_var(name).is_none()
+                        && let Some(ref current_class) = self.sc.current_class.clone()
+                        && !self.is_real_member(current_class, name)
+                        && let Some(dr_info) = self.find_dynamic_receiver_info(current_class)
+                    {
+                        // Route through DynamicReceiver
+                        if let Some(ref known_names) = dr_info.known_names
+                            && !known_names.contains(name)
+                        {
+                            return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
+                                TraitError {
+                                    message: format!(
+                                        "'{}' is not a known dynamic method on '{}'",
+                                        name, current_class
+                                    ),
+                                },
+                            ))
+                            .with_label(func.span(), "not a known dynamic method"));
+                        }
+                        // Validate arg types against Map value type
+                        let value_ty = &dr_info.args_value_ty;
+                        for (_, _, arg_expr) in args {
+                            let aty = self.check_expr(arg_expr)?;
+                            if aty.is_error() {
+                                return Ok(Type::Error);
+                            }
+                            if aty != *value_ty
+                                && !Self::is_nullable_compatible(value_ty, &aty)
+                                && !Self::is_subtype_compatible(&aty, value_ty, &self.env)
+                            {
+                                return Err(Diagnostic::from_template(
+                                    DiagnosticTemplate::TypeMismatch(TypeMismatch {
+                                        expected: value_ty.clone(),
+                                        actual: aty.clone(),
+                                    }),
+                                )
+                                .with_label(
+                                    arg_expr.span(),
+                                    format!(
+                                        "dynamic call args must match Map value type {}",
+                                        value_ty
+                                    ),
+                                ));
+                            }
+                        }
+                        return Ok(dr_info.return_ty.clone());
+                    }
+                }
             }
         }
 
@@ -1564,5 +1622,109 @@ impl TypeChecker {
         }
 
         Ok(Type::Bool)
+    }
+
+    /// Try to dispatch a method call via DynamicReceiver.
+    /// Returns Some(result) if the class has DynamicReceiver and the method is not a real method.
+    /// Returns None if normal method dispatch should handle it.
+    fn try_dynamic_receiver_call(
+        &mut self,
+        object: &Expr,
+        field: &str,
+        args: &[(String, Span, Expr)],
+        obj_ty: &Type,
+    ) -> Option<Result<Type, Diagnostic>> {
+        let Type::Custom(class_name, _) = obj_ty else {
+            return None;
+        };
+
+        // Walk the class hierarchy to find DynamicReceiver info
+        let dr_info = self.find_dynamic_receiver_info(class_name)?;
+
+        // Check if the field is a real method on the class (real methods always win)
+        if self.is_real_member(class_name, field) {
+            return None; // Let normal dispatch handle it
+        }
+
+        // If method_missing declares a closed set, reject names not in it
+        if let Some(ref known_names) = dr_info.known_names
+            && !known_names.contains(field)
+        {
+            return Some(Err(Diagnostic::from_template(
+                DiagnosticTemplate::TraitError(TraitError {
+                    message: format!(
+                        "'{}' is not a known dynamic method on '{}'. Known methods: {}",
+                        field,
+                        class_name,
+                        known_names.iter().cloned().collect::<Vec<_>>().join(", ")
+                    ),
+                }),
+            )
+            .with_label(object.span(), "not a known dynamic method")));
+        }
+
+        // Validate arg types against the Map value type
+        let value_ty = &dr_info.args_value_ty;
+        for (_, _, arg_expr) in args {
+            let aty = match self.check_expr(arg_expr) {
+                Ok(t) => t,
+                Err(e) => return Some(Err(e)),
+            };
+            if aty.is_error() {
+                return Some(Ok(Type::Error));
+            }
+            if aty != *value_ty
+                && !Self::is_nullable_compatible(value_ty, &aty)
+                && !Self::is_subtype_compatible(&aty, value_ty, &self.env)
+            {
+                return Some(Err(Diagnostic::from_template(
+                    DiagnosticTemplate::TypeMismatch(TypeMismatch {
+                        expected: value_ty.clone(),
+                        actual: aty.clone(),
+                    }),
+                )
+                .with_label(
+                    arg_expr.span(),
+                    format!("dynamic call args must match Map value type {}", value_ty),
+                )));
+            }
+        }
+
+        Some(Ok(dr_info.return_ty.clone()))
+    }
+
+    /// Walk the class hierarchy to find DynamicReceiver info.
+    fn find_dynamic_receiver_info(&self, class_name: &str) -> Option<ast::DynamicReceiverInfo> {
+        let mut current = Some(class_name.to_string());
+        while let Some(ref cname) = current {
+            if let Some(info) = self.env.get_class(cname) {
+                if let Some(ref dr) = info.dynamic_receiver {
+                    return Some(dr.clone());
+                }
+                current = info.extends.clone();
+            } else {
+                return None;
+            }
+        }
+        None
+    }
+
+    /// Check if a field/method exists as a real member on a class (not dynamic).
+    fn is_real_member(&self, class_name: &str, field: &str) -> bool {
+        let mut current = Some(class_name.to_string());
+        while let Some(ref cname) = current {
+            if let Some(info) = self.env.get_class(cname) {
+                if info.fields.contains_key(field)
+                    || info.methods.contains_key(field)
+                    || info.overloaded_methods.contains_key(field)
+                {
+                    return true;
+                }
+                current = info.extends.clone();
+            } else {
+                return false;
+            }
+        }
+        false
     }
 }

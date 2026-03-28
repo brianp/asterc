@@ -78,7 +78,7 @@ impl DiagnosticTemplate {
 }
 
 diagnostic_template_enum! {
-    // Type errors (E001-E031)
+    // Type errors (E001-E032)
     TypeMismatch(type_errors::TypeMismatch),
     UndefinedVariable(type_errors::UndefinedVariable),
     BinaryOpError(type_errors::BinaryOpError),
@@ -109,6 +109,7 @@ diagnostic_template_enum! {
     ControlFlowError(type_errors::ControlFlowError),
     SuspensionError(type_errors::SuspensionError),
     VisibilityError(type_errors::VisibilityError),
+    DynamicMethodConflict(type_errors::DynamicMethodConflict),
 
     // Parse errors (P001-P003)
     UnexpectedToken(parse_errors::UnexpectedToken),
