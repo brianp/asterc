@@ -417,3 +417,221 @@ let same = a == b
 "#,
     );
 }
+
+// ─── std/sys — system primitives ────────────────────────────────────
+
+#[test]
+fn std_sys_import_args() {
+    crate::common::check_ok_with_files("use std/sys { args }\n\nlet a = args()\n", HashMap::new());
+}
+
+#[test]
+fn std_sys_import_env() {
+    crate::common::check_ok_with_files(
+        "use std/sys { env }\n\nlet val = env(key: \"HOME\")\n",
+        HashMap::new(),
+    );
+}
+
+#[test]
+fn std_sys_import_set_env() {
+    crate::common::check_ok_with_files(
+        "use std/sys { set_env }\n\nset_env(key: \"FOO\", value: \"bar\")\n",
+        HashMap::new(),
+    );
+}
+
+#[test]
+fn std_sys_import_exit() {
+    crate::common::check_ok_with_files(
+        "use std/sys { exit }\n\ndef main() -> Int\n  exit(code: 0)\n  0\n",
+        HashMap::new(),
+    );
+}
+
+#[test]
+fn std_sys_import_multiple() {
+    crate::common::check_ok_with_files(
+        "use std/sys { args, env, set_env, exit }\n\nlet a = args()\nlet v = env(key: \"PATH\")\n",
+        HashMap::new(),
+    );
+}
+
+#[test]
+fn std_sys_import_nonexistent_fails() {
+    let err = crate::common::check_err_with_files("use std/sys { nonexistent }\n", HashMap::new());
+    assert!(
+        err.contains("not found") || err.contains("not exported"),
+        "expected not found error, got: {err}"
+    );
+}
+
+#[test]
+fn std_sys_args_returns_list_string() {
+    crate::common::check_ok_with_files(
+        "use std/sys { args }\n\nlet a: List[String] = args()\n",
+        HashMap::new(),
+    );
+}
+
+#[test]
+fn std_sys_env_returns_nullable_string() {
+    crate::common::check_ok_with_files(
+        r#"use std/sys { env }
+
+let val = env(key: "HOME")
+"#,
+        HashMap::new(),
+    );
+}
+
+#[test]
+fn std_sys_wildcard_import() {
+    crate::common::check_ok_with_files("use std/sys\n\nlet a = args()\n", HashMap::new());
+}
+
+// ─── std/fs — filesystem primitives ─────────────────────────────────
+
+#[test]
+fn std_fs_import_read_file() {
+    crate::common::check_ok_with_files(
+        "use std/fs { read_file }\n\ndef main() throws IOError -> Int\n  let c = read_file(path: \"test.txt\")!\n  0\n",
+        HashMap::new(),
+    );
+}
+
+#[test]
+fn std_fs_import_write_file() {
+    crate::common::check_ok_with_files(
+        "use std/fs { write_file }\n\ndef main() throws IOError -> Int\n  write_file(path: \"test.txt\", content: \"hello\")!\n  0\n",
+        HashMap::new(),
+    );
+}
+
+#[test]
+fn std_fs_import_exists() {
+    crate::common::check_ok_with_files(
+        "use std/fs { exists }\n\nlet e: Bool = exists(path: \"/tmp\")\n",
+        HashMap::new(),
+    );
+}
+
+#[test]
+fn std_fs_import_is_dir() {
+    crate::common::check_ok_with_files(
+        "use std/fs { is_dir }\n\nlet d: Bool = is_dir(path: \"/tmp\")\n",
+        HashMap::new(),
+    );
+}
+
+#[test]
+fn std_fs_import_mkdir() {
+    crate::common::check_ok_with_files(
+        "use std/fs { mkdir }\n\ndef main() throws IOError -> Int\n  mkdir(path: \"/tmp/test\")!\n  0\n",
+        HashMap::new(),
+    );
+}
+
+#[test]
+fn std_fs_import_list_dir() {
+    crate::common::check_ok_with_files(
+        "use std/fs { list_dir }\n\ndef main() throws IOError -> Int\n  let entries: List[String] = list_dir(path: \"/tmp\")!\n  0\n",
+        HashMap::new(),
+    );
+}
+
+#[test]
+fn std_fs_import_multiple() {
+    crate::common::check_ok_with_files(
+        "use std/fs { read_file, write_file, exists, mkdir, list_dir, remove, copy, rename }\n",
+        HashMap::new(),
+    );
+}
+
+#[test]
+fn std_fs_import_nonexistent_fails() {
+    let err = crate::common::check_err_with_files("use std/fs { nonexistent }\n", HashMap::new());
+    assert!(
+        err.contains("not found") || err.contains("not exported"),
+        "expected not found error, got: {err}"
+    );
+}
+
+#[test]
+fn std_fs_wildcard_import() {
+    crate::common::check_ok_with_files(
+        "use std/fs\n\nlet e = exists(path: \"/tmp\")\n",
+        HashMap::new(),
+    );
+}
+
+// ─── std/process — process spawning ─────────────────────────────────
+
+#[test]
+fn std_process_import_run() {
+    crate::common::check_ok_with_files(
+        "\
+use std/process { run }
+
+def main() throws ProcessError -> Int
+  let result = run(cmd: \"echo\", args: [\"hello\"])!
+  0
+",
+        HashMap::new(),
+    );
+}
+
+#[test]
+fn std_process_result_fields() {
+    crate::common::check_ok_with_files(
+        "\
+use std/process { run }
+
+def main() throws ProcessError -> Int
+  let result = run(cmd: \"echo\", args: [\"hello\"])!
+  let code: Int = result.exit_code
+  let out: String = result.stdout
+  let err: String = result.stderr
+  0
+",
+        HashMap::new(),
+    );
+}
+
+#[test]
+fn std_process_import_nonexistent_fails() {
+    let err =
+        crate::common::check_err_with_files("use std/process { nonexistent }\n", HashMap::new());
+    assert!(
+        err.contains("not found") || err.contains("not exported"),
+        "expected not found error, got: {err}"
+    );
+}
+
+// ─── std/crypto — hashing ───────────────────────────────────────────
+
+#[test]
+fn std_crypto_import_sha256() {
+    crate::common::check_ok_with_files(
+        "use std/crypto { sha256 }\n\nlet hash: String = sha256(data: \"hello\")\n",
+        HashMap::new(),
+    );
+}
+
+#[test]
+fn std_crypto_import_nonexistent_fails() {
+    let err =
+        crate::common::check_err_with_files("use std/crypto { nonexistent }\n", HashMap::new());
+    assert!(
+        err.contains("not found") || err.contains("not exported"),
+        "expected not found error, got: {err}"
+    );
+}
+
+#[test]
+fn std_crypto_wildcard_import() {
+    crate::common::check_ok_with_files(
+        "use std/crypto\n\nlet h = sha256(data: \"hello\")\n",
+        HashMap::new(),
+    );
+}

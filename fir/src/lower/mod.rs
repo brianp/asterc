@@ -252,6 +252,18 @@ impl Lowerer {
             }
         }
 
+        // Inject ProcessResult builtin class if std/process is imported.
+        let needs_process_result = module.body.iter().any(|stmt| {
+            if let Stmt::Use { path, .. } = stmt {
+                path.len() == 2 && path[0] == "std" && path[1] == "process"
+            } else {
+                false
+            }
+        });
+        if needs_process_result && !self.ms.classes.contains_key("ProcessResult") {
+            self.inject_process_result_builtin();
+        }
+
         // Inject built-in Ordering enum only if some class includes Ord.
         // This ensures synthesize_cmp can reference Ordering constructors
         // without polluting programs that don't use Ord.

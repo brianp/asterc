@@ -17,6 +17,7 @@ cranelift-native = "0.129"
 crossbeam-deque = "0.8"
 getrandom = "0.2"
 libc = "0.2"
+sha2 = "0.10"
 
 [build-dependencies]
 cc = "1"

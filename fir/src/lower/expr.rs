@@ -703,6 +703,17 @@ impl Lowerer {
                 args: fir_args?,
                 ret_ty,
             })
+        } else if let Some((runtime_name, ret_ty)) = Self::stdlib_runtime_mapping(name) {
+            // Stdlib function imported via `use std/...`
+            let fir_args: Result<Vec<_>, _> = args
+                .iter()
+                .map(|(_, _, arg)| self.lower_expr(arg))
+                .collect();
+            Ok(FirExpr::RuntimeCall {
+                name: runtime_name.to_string(),
+                args: fir_args?,
+                ret_ty,
+            })
         } else {
             // Runtime call (say, etc.)
             let fir_args: Result<Vec<_>, _> = args
@@ -714,6 +725,33 @@ impl Lowerer {
                 args: fir_args?,
                 ret_ty: FirType::Void,
             })
+        }
+    }
+
+    /// Map stdlib function names (from `use std/...`) to their runtime call names and return types.
+    fn stdlib_runtime_mapping(name: &str) -> Option<(&'static str, FirType)> {
+        match name {
+            // std/sys
+            "args" => Some(("aster_sys_args", FirType::Ptr)),
+            "env" => Some(("aster_sys_env_get", FirType::Ptr)),
+            "set_env" => Some(("aster_sys_env_set", FirType::Void)),
+            "exit" => Some(("aster_sys_exit", FirType::Void)),
+            // std/fs
+            "read_file" => Some(("aster_fs_read_file", FirType::Ptr)),
+            "write_file" => Some(("aster_fs_write_file", FirType::Void)),
+            "append_file" => Some(("aster_fs_append_file", FirType::Void)),
+            "exists" => Some(("aster_fs_exists", FirType::Bool)),
+            "is_dir" => Some(("aster_fs_is_dir", FirType::Bool)),
+            "mkdir" => Some(("aster_fs_mkdir", FirType::Void)),
+            "remove" => Some(("aster_fs_remove", FirType::Void)),
+            "list_dir" => Some(("aster_fs_list_dir", FirType::Ptr)),
+            "copy" => Some(("aster_fs_copy", FirType::Void)),
+            "rename" => Some(("aster_fs_rename", FirType::Void)),
+            // std/process
+            "run" => Some(("aster_process_run", FirType::Ptr)),
+            // std/crypto
+            "sha256" => Some(("aster_crypto_sha256", FirType::Ptr)),
+            _ => None,
         }
     }
 

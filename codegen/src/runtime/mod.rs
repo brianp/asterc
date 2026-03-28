@@ -2,7 +2,9 @@ use cranelift_jit::JITBuilder;
 
 pub mod alloc;
 pub mod channel;
+pub mod crypto;
 pub mod error;
+pub mod fs;
 pub mod gc;
 pub mod introspection;
 pub mod io;
@@ -11,7 +13,9 @@ pub mod map;
 pub mod mutex;
 pub mod numeric;
 pub mod print;
+pub mod process;
 pub mod string;
+pub mod sys;
 pub mod task;
 
 // Re-export everything so external code can use `crate::runtime::*` or
@@ -71,6 +75,17 @@ pub use introspection::{
     aster_introspect_fields, aster_introspect_is_a, aster_introspect_methods,
     aster_introspect_responds_to,
 };
+
+pub use sys::{aster_sys_args, aster_sys_env_get, aster_sys_env_set, aster_sys_exit};
+
+pub use fs::{
+    aster_fs_append_file, aster_fs_copy, aster_fs_exists, aster_fs_is_dir, aster_fs_list_dir,
+    aster_fs_mkdir, aster_fs_read_file, aster_fs_remove, aster_fs_rename, aster_fs_write_file,
+};
+
+pub use process::aster_process_run;
+
+pub use crypto::aster_crypto_sha256;
 
 pub use numeric::{
     aster_float_abs, aster_float_ceil, aster_float_clamp, aster_float_floor, aster_float_max,

@@ -324,6 +324,29 @@ impl Lowerer {
     /// Inject the built-in `Ordering` enum (Less/Equal/Greater) into the FIR.
     /// This must run before any user code is lowered so that synthesize_cmp can
     /// reference `Ordering.Less`, `Ordering.Equal`, and `Ordering.Greater`.
+    /// Inject ProcessResult as a built-in class so field access works.
+    /// Layout: [exit_code: i64, stdout: Ptr, stderr: Ptr]
+    /// Fields are sorted pointer-first for GC: stdout(0), stderr(1), exit_code(2).
+    /// But ProcessResult is returned from runtime as [exit_code(0), stdout(1), stderr(2)].
+    /// We match the runtime layout: exit_code at offset 0, stdout at offset 1, stderr at offset 2.
+    pub(crate) fn inject_process_result_builtin(&mut self) {
+        let class_id = ClassId(self.ms.next_class);
+        self.ms.next_class += 1;
+        self.ms
+            .classes
+            .insert("ProcessResult".to_string(), class_id);
+        // Field layout matches runtime: [exit_code: i64][stdout: Ptr][stderr: Ptr]
+        // Offsets are in bytes (each field is 8 bytes)
+        self.ms.class_fields.insert(
+            class_id,
+            vec![
+                ("exit_code".to_string(), FirType::I64, 0),
+                ("stdout".to_string(), FirType::Ptr, 8),
+                ("stderr".to_string(), FirType::Ptr, 16),
+            ],
+        );
+    }
+
     pub(crate) fn inject_ordering_builtin(&mut self) {
         // Ordering is a unit enum: each variant is a struct with a single tag field.
         // Layout: alloc 8 bytes, store tag at offset 0.

@@ -252,6 +252,39 @@ impl TypeChecker {
             ),
         );
 
+        // ProcessError — thrown by std/process run() on spawn failure
+        env.set_class("ProcessError".into(), {
+            let mut info = ClassInfo::new(
+                Type::Custom("ProcessError".into(), Vec::new()),
+                IndexMap::from([("command".into(), Type::String)]),
+                HashMap::new(),
+            );
+            info.extends = Some("Error".into());
+            info
+        });
+        env.set_var(
+            "ProcessError".into(),
+            Type::func(
+                vec!["message".into(), "command".into()],
+                vec![Type::String, Type::String],
+                Type::Custom("ProcessError".into(), Vec::new()),
+            ),
+        );
+
+        // ProcessResult — returned by std/process run()
+        env.set_class(
+            "ProcessResult".into(),
+            ClassInfo::new(
+                Type::Custom("ProcessResult".into(), Vec::new()),
+                IndexMap::from([
+                    ("exit_code".into(), Type::Int),
+                    ("stdout".into(), Type::String),
+                    ("stderr".into(), Type::String),
+                ]),
+                HashMap::new(),
+            ),
+        );
+
         // I/O namespaces — static methods only, no instances
         for name in ["File", "TcpListener", "TcpStream"] {
             env.set_var(name.into(), Type::Custom(name.into(), Vec::new()));
@@ -1892,8 +1925,163 @@ impl TypeChecker {
             "convert" => Some(self.builtin_exports_from(&["From", "Into"], &[])),
             "random" => Some(self.builtin_exports_from(&["Random"], &[])),
             "unstable" => Some(self.builtin_exports_from(&["FieldAccessible"], &[])),
+            "sys" => Some(self.builtin_function_exports(&[
+                (
+                    "args",
+                    Type::func(vec![], vec![], Type::List(Box::new(Type::String))),
+                ),
+                (
+                    "env",
+                    Type::Function {
+                        param_names: vec!["key".into()],
+                        params: vec![Type::String],
+                        ret: Box::new(Type::Nullable(Box::new(Type::String))),
+                        throws: None,
+                        suspendable: false,
+                    },
+                ),
+                (
+                    "set_env",
+                    Type::func(
+                        vec!["key".into(), "value".into()],
+                        vec![Type::String, Type::String],
+                        Type::Void,
+                    ),
+                ),
+                (
+                    "exit",
+                    Type::func(vec!["code".into()], vec![Type::Int], Type::Void),
+                ),
+            ])),
+            "fs" => {
+                let io_err = || Some(Box::new(Type::Custom("IOError".into(), Vec::new())));
+                Some(self.builtin_function_exports(&[
+                    (
+                        "read_file",
+                        Type::Function {
+                            param_names: vec!["path".into()],
+                            params: vec![Type::String],
+                            ret: Box::new(Type::String),
+                            throws: io_err(),
+                            suspendable: false,
+                        },
+                    ),
+                    (
+                        "write_file",
+                        Type::Function {
+                            param_names: vec!["path".into(), "content".into()],
+                            params: vec![Type::String, Type::String],
+                            ret: Box::new(Type::Void),
+                            throws: io_err(),
+                            suspendable: false,
+                        },
+                    ),
+                    (
+                        "append_file",
+                        Type::Function {
+                            param_names: vec!["path".into(), "content".into()],
+                            params: vec![Type::String, Type::String],
+                            ret: Box::new(Type::Void),
+                            throws: io_err(),
+                            suspendable: false,
+                        },
+                    ),
+                    (
+                        "exists",
+                        Type::func(vec!["path".into()], vec![Type::String], Type::Bool),
+                    ),
+                    (
+                        "is_dir",
+                        Type::func(vec!["path".into()], vec![Type::String], Type::Bool),
+                    ),
+                    (
+                        "mkdir",
+                        Type::Function {
+                            param_names: vec!["path".into()],
+                            params: vec![Type::String],
+                            ret: Box::new(Type::Void),
+                            throws: io_err(),
+                            suspendable: false,
+                        },
+                    ),
+                    (
+                        "remove",
+                        Type::Function {
+                            param_names: vec!["path".into()],
+                            params: vec![Type::String],
+                            ret: Box::new(Type::Void),
+                            throws: io_err(),
+                            suspendable: false,
+                        },
+                    ),
+                    (
+                        "list_dir",
+                        Type::Function {
+                            param_names: vec!["path".into()],
+                            params: vec![Type::String],
+                            ret: Box::new(Type::List(Box::new(Type::String))),
+                            throws: io_err(),
+                            suspendable: false,
+                        },
+                    ),
+                    (
+                        "copy",
+                        Type::Function {
+                            param_names: vec!["src".into(), "dst".into()],
+                            params: vec![Type::String, Type::String],
+                            ret: Box::new(Type::Void),
+                            throws: io_err(),
+                            suspendable: false,
+                        },
+                    ),
+                    (
+                        "rename",
+                        Type::Function {
+                            param_names: vec!["src".into(), "dst".into()],
+                            params: vec![Type::String, Type::String],
+                            ret: Box::new(Type::Void),
+                            throws: io_err(),
+                            suspendable: false,
+                        },
+                    ),
+                ]))
+            }
+            "process" => {
+                let proc_err = || Some(Box::new(Type::Custom("ProcessError".into(), Vec::new())));
+                Some(self.builtin_function_exports(&[(
+                    "run",
+                    Type::Function {
+                        param_names: vec!["cmd".into(), "args".into()],
+                        params: vec![Type::String, Type::List(Box::new(Type::String))],
+                        ret: Box::new(Type::Custom("ProcessResult".into(), Vec::new())),
+                        throws: proc_err(),
+                        suspendable: false,
+                    },
+                )]))
+            }
+            "crypto" => Some(self.builtin_function_exports(&[(
+                "sha256",
+                Type::func(vec!["data".into()], vec![Type::String], Type::String),
+            )])),
             _ => None,
         }
+    }
+
+    /// Build a ModuleExports containing only function variables (no traits/enums/classes).
+    fn builtin_function_exports(
+        &self,
+        functions: &[(&str, Type)],
+    ) -> crate::module_loader::ModuleExports {
+        let mut exports = crate::module_loader::ModuleExports {
+            variables: HashMap::new(),
+            classes: HashMap::new(),
+            traits: HashMap::new(),
+            enums: HashMap::new(),
+        };
+        for (name, ty) in functions {
+            exports.variables.insert((*name).to_string(), ty.clone());
+        }
+        exports
     }
 
     /// Resolve a `use` statement by loading the target module and injecting exports.
@@ -1926,7 +2114,7 @@ impl TypeChecker {
                             .collect();
                         format!("Import from a submodule instead: {}", suggestions.join(", "))
                     }
-                    None => "Import from a submodule: use std/cmp { Eq }, use std/fmt { Printable }, use std/collections { Iterable }, use std/convert { From }, use std/random { Random }".to_string(),
+                    None => "Import from a submodule: use std/cmp { Eq }, use std/fmt { Printable }, use std/collections { Iterable }, use std/convert { From }, use std/random { Random }, use std/sys { args }, use std/fs { read_file }, use std/process { run }, use std/crypto { sha256 }".to_string(),
                 };
                 let mut diag =
                     Diagnostic::from_template(DiagnosticTemplate::CircularImport(CircularImport {

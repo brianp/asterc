@@ -62,6 +62,8 @@ impl Lowerer {
                 self.tl.top_level_stmts.push(stmt.clone());
                 Ok(())
             }
+            // Use statements are handled by the typechecker; the lowerer just skips them.
+            Stmt::Use { .. } => Ok(()),
             _ => Err(unsupported_top_level_stmt(stmt)),
         }
     }
@@ -604,6 +606,17 @@ impl Lowerer {
                         name.clone(),
                         Type::Custom(builtin_class::RANGE.into(), vec![]),
                     );
+                } else if let Expr::Propagate(inner, _) = value {
+                    // Unwrap propagate to find the underlying type
+                    if let Some(inner_ty) = self.type_table.get(&inner.span()) {
+                        self.scope
+                            .local_ast_types
+                            .insert(name.clone(), inner_ty.clone());
+                    } else if let Some(outer_ty) = self.type_table.get(&value.span()) {
+                        self.scope
+                            .local_ast_types
+                            .insert(name.clone(), outer_ty.clone());
+                    }
                 } else if let Expr::AsyncCall { func, .. } = value {
                     if let Some(async_ty) = self.resolve_async_call_ast_type(func) {
                         self.scope.local_ast_types.insert(name.clone(), async_ty);
@@ -778,6 +791,8 @@ impl Lowerer {
                 self.lower_enum(name, variants, methods)?;
                 Ok(FirStmt::NoOp)
             }
+            // Use statements are handled by the typechecker; the lowerer skips them.
+            Stmt::Use { .. } => Ok(FirStmt::NoOp),
             _ => Err(unsupported_stmt(stmt)),
         }
     }

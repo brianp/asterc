@@ -87,7 +87,9 @@ impl TypeChecker {
                         .with_label(inner.span(), "incompatible error type"));
                     }
                 }
-                return self.check_call_inner(func, args, true);
+                let ret_ty = self.check_call_inner(func, args, true)?;
+                self.type_table.insert(inner.span(), ret_ty.clone());
+                return Ok(ret_ty);
             }
         }
         Err(Diagnostic::from_template(DiagnosticTemplate::ErrorPropagation(ErrorPropagation {

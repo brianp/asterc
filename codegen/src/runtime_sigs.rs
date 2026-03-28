@@ -199,4 +199,24 @@ runtime_functions! {
     fn aster_introspect_children(I64) -> I64;
     fn aster_introspect_is_a(I64, I64) -> I8;
     fn aster_introspect_responds_to(I64, I64) -> I8;
+    // std/sys
+    fn aster_sys_args() -> I64;
+    fn aster_sys_env_get(I64) -> I64;
+    fn aster_sys_env_set(I64, I64);
+    fn aster_sys_exit(I64);
+    // std/fs
+    fn aster_fs_read_file(I64) -> I64;
+    fn aster_fs_write_file(I64, I64);
+    fn aster_fs_append_file(I64, I64);
+    fn aster_fs_exists(I64) -> I8;
+    fn aster_fs_is_dir(I64) -> I8;
+    fn aster_fs_mkdir(I64);
+    fn aster_fs_remove(I64);
+    fn aster_fs_list_dir(I64) -> I64;
+    fn aster_fs_copy(I64, I64);
+    fn aster_fs_rename(I64, I64);
+    // std/process
+    fn aster_process_run(I64, I64) -> I64;
+    // std/crypto
+    fn aster_crypto_sha256(I64) -> I64;
 }

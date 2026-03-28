@@ -67,9 +67,7 @@ impl CraneliftAOT {
 
         // Declare aster_main() -> i64 (already emitted above)
         let mut aster_main_sig = self.state.module.make_signature();
-        aster_main_sig
-            .returns
-            .push(AbiParam::new(ir::types::I64));
+        aster_main_sig.returns.push(AbiParam::new(ir::types::I64));
         let aster_main_id = self
             .state
             .module
