@@ -144,6 +144,18 @@ impl TypeChecker {
             None
         };
 
+        // ── FieldAccessible validation + auto-generation ────────────────
+        if includes_list.contains(&"FieldAccessible".to_string()) {
+            self.validate_and_generate_field_accessible(
+                name,
+                &field_map,
+                generic_params,
+                extends,
+                &mut method_map,
+                &mut pub_methods,
+            )?;
+        }
+
         let mut info = ClassInfo::new(class_type, field_map, method_map);
         info.generic_params = generic_params.clone();
         info.extends = extends.clone();
@@ -399,8 +411,8 @@ impl TypeChecker {
         };
 
         for (trait_name, targs) in &all_inclusions {
-            // DynamicReceiver is validated separately in validate_dynamic_receiver
-            if trait_name == "DynamicReceiver" {
+            // DynamicReceiver and FieldAccessible are validated separately
+            if trait_name == "DynamicReceiver" || trait_name == "FieldAccessible" {
                 validated_traits.insert(trait_name.clone());
                 continue;
             }
@@ -413,6 +425,7 @@ impl TypeChecker {
                         "Iterable" | "Iterator" => "collections",
                         "From" | "Into" => "convert",
                         "Drop" | "Close" => "lifecycle",
+                        "FieldAccessible" => "unstable",
                         _ => "std",
                     };
                     Diagnostic::from_template(DiagnosticTemplate::TraitError(TraitError {
@@ -1179,6 +1192,142 @@ impl TypeChecker {
 
         // No match on fn_name found, so any name is valid
         None
+    }
+
+    /// Validate and auto-generate FieldAccessible support for a class.
+    /// Creates a `ClassNameFieldValue` enum with one variant per field (own + inherited),
+    /// and injects a `field_value(name: String) -> ClassNameFieldValue?` method.
+    fn validate_and_generate_field_accessible(
+        &mut self,
+        class_name: &str,
+        field_map: &IndexMap<String, Type>,
+        generic_params: &Option<Vec<String>>,
+        extends: &Option<String>,
+        method_map: &mut HashMap<String, Type>,
+        pub_methods: &mut std::collections::HashSet<String>,
+    ) -> Result<(), Diagnostic> {
+        // Verify FieldAccessible is in scope (imported via use std/unstable)
+        if self.env.get_trait("FieldAccessible").is_none() {
+            if self.reg.builtin_traits.contains_key("FieldAccessible") {
+                return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
+                    TraitError {
+                        message: "Unknown trait 'FieldAccessible'. Add `use std/unstable { FieldAccessible }` to import it".to_string(),
+                    },
+                )));
+            }
+            return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
+                TraitError {
+                    message: format!(
+                        "Unknown trait 'FieldAccessible' in includes for class '{}'",
+                        class_name
+                    ),
+                },
+            )));
+        }
+
+        // Reject generic classes
+        if let Some(gp) = generic_params
+            && !gp.is_empty()
+        {
+            return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
+                TraitError {
+                    message: format!(
+                        "FieldAccessible cannot be used on generic class '{}'. \
+                         Remove generic parameters or remove FieldAccessible.",
+                        class_name
+                    ),
+                },
+            )));
+        }
+
+        // Reject user-defined field_value
+        if method_map.contains_key("field_value") {
+            return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
+                TraitError {
+                    message: format!(
+                        "Class '{}' includes FieldAccessible but also defines field_value manually. \
+                         The field_value method is auto-generated and cannot be overridden.",
+                        class_name
+                    ),
+                },
+            )));
+        }
+
+        // Collect all fields: inherited (in ancestor order) + own
+        let mut all_fields: Vec<(String, Type)> = Vec::new();
+        if extends.is_some() {
+            let ancestors = self.walk_ancestors(class_name);
+            for ancestor in ancestors.into_iter().rev() {
+                for (fname, fty) in ancestor.fields.iter() {
+                    all_fields.push((fname.clone(), fty.clone()));
+                }
+            }
+        }
+        for (fname, fty) in field_map.iter() {
+            all_fields.push((fname.clone(), fty.clone()));
+        }
+
+        // Generate enum name and variant names
+        let enum_name = format!("{}FieldValue", class_name);
+        let mut variant_names: Vec<String> = Vec::new();
+
+        for (fname, _fty) in &all_fields {
+            // Capitalize the field name for the variant
+            let variant_name = {
+                let mut chars = fname.chars();
+                match chars.next() {
+                    None => fname.clone(),
+                    Some(c) => format!("{}{}", c.to_uppercase(), chars.as_str()),
+                }
+            };
+            variant_names.push(variant_name);
+        }
+
+        // Check for name collision with user-defined enum
+        if self.env.get_enum(&enum_name).is_some() {
+            return Err(Diagnostic::from_template(DiagnosticTemplate::TraitError(
+                TraitError {
+                    message: format!(
+                        "Cannot generate '{}' enum for FieldAccessible: a type with that name already exists",
+                        enum_name
+                    ),
+                },
+            )));
+        }
+
+        // Register the enum in the type environment
+        let enum_info = ast::EnumInfo {
+            name: enum_name.clone(),
+            variants: variant_names.clone(),
+            includes: Vec::new(),
+        };
+        self.env.set_enum(enum_name.clone(), enum_info);
+
+        // Register enum variant constructors as functions in the environment
+        let enum_type = Type::Custom(enum_name.clone(), Vec::new());
+        for (i, (fname, fty)) in all_fields.iter().enumerate() {
+            let variant_name = &variant_names[i];
+            let ctor_name = format!("{}.{}", enum_name, variant_name);
+            // Constructor: ClassName.FieldValue.VariantName(value: FieldType) -> EnumType
+            self.env.set_var(
+                ctor_name,
+                Type::func(vec![fname.clone()], vec![fty.clone()], enum_type.clone()),
+            );
+        }
+
+        // Inject the field_value method: (name: String) -> ClassNameFieldValue?
+        let return_type = Type::Nullable(Box::new(enum_type));
+        let method_type = Type::Function {
+            param_names: vec!["name".into()],
+            params: vec![Type::String],
+            ret: Box::new(return_type),
+            throws: None,
+            suspendable: false,
+        };
+        method_map.insert("field_value".into(), method_type);
+        pub_methods.insert("field_value".into());
+
+        Ok(())
     }
 
     /// Find the span of a method definition in the class AST.

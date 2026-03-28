@@ -538,6 +538,23 @@ impl TypeChecker {
             },
         );
 
+        // FieldAccessible — unstable trait for dynamic field access by name.
+        // Auto-generates a FieldValue enum and field_value(name: String) -> FieldValue? method.
+        // Validated structurally in check_class.rs (like DynamicReceiver).
+        builtin_traits.insert(
+            "FieldAccessible".into(),
+            TraitInfo {
+                name: "FieldAccessible".into(),
+                methods: HashMap::from([(
+                    "field_value".into(),
+                    // Placeholder type: actual return type is class-specific (auto-generated)
+                    Type::func(vec!["name".into()], vec![Type::String], Type::Void),
+                )]),
+                required_methods: vec!["field_value".into()],
+                generic_params: None,
+            },
+        );
+
         // Prelude mode: install all protocol traits and enums in env
         for (name, info) in &builtin_traits {
             env.set_trait(name.clone(), info.clone());
@@ -564,6 +581,7 @@ impl TypeChecker {
             "Iterable",
             "Iterator",
             "Random",
+            "FieldAccessible",
             // Drop and Close stay in prelude — they're fundamental lifecycle traits
         ] {
             tc.env.remove_trait(name);
@@ -1873,9 +1891,7 @@ impl TypeChecker {
             "collections" => Some(self.builtin_exports_from(&["Iterable", "Iterator"], &[])),
             "convert" => Some(self.builtin_exports_from(&["From", "Into"], &[])),
             "random" => Some(self.builtin_exports_from(&["Random"], &[])),
-            // std/unstable is an empty module for now. FieldAccessible will be
-            // registered here once Feature 3 is implemented.
-            "unstable" => Some(self.builtin_exports_from(&[], &[])),
+            "unstable" => Some(self.builtin_exports_from(&["FieldAccessible"], &[])),
             _ => None,
         }
     }

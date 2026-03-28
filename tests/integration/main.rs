@@ -16,6 +16,7 @@ mod error_handling;
 mod examples;
 mod execution_cli;
 mod expressions;
+mod field_accessible;
 mod generic_constraints;
 mod generics_traits;
 mod inline_generics;
