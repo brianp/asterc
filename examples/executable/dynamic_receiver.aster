@@ -1,0 +1,23 @@
+# DynamicReceiver end-to-end: method_missing, field mutation, runtime behavior
+
+class Config includes DynamicReceiver
+  project_name: String
+  project_version: String
+  deps: List[String]
+
+  def package(n: String, v: String) -> Void
+    project_name = n
+    project_version = v
+
+  def method_missing(fn_name: String, args: Map[String, String]) -> Void
+    deps.push(item: fn_name)
+
+def main() -> Int
+  let c = Config(project_name: "", project_version: "", deps: [])
+  c.package(n: "my-app", v: "0.1.0")
+  c.http()
+  c.json()
+  say(message: c.project_name)
+  say(message: c.project_version)
+  say(message: c.deps.len())
+  0

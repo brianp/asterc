@@ -1129,3 +1129,197 @@ let result = describe(v: p.field_value(name: "name"))
         HashMap::new(),
     );
 }
+
+// =====================================================================
+//
+//   PART 4: DynamicReceiver Runtime (JIT + AOT)
+//
+// =====================================================================
+
+// ─── method_missing executes through JIT ─────────────────────────────
+
+#[test]
+fn dynamic_receiver_method_missing_runtime() {
+    let dir = crate::common::make_temp_dir("dr-method-missing");
+    let src = dir.join("test.aster");
+    std::fs::write(
+        &src,
+        "\
+class Logger includes DynamicReceiver
+  entries: List[String]
+
+  def method_missing(fn_name: String, args: Map[String, String]) -> Void
+    entries.push(item: fn_name)
+
+def main() -> Int
+  let log = Logger(entries: [])
+  log.info()
+  log.warn()
+  log.error()
+  say(message: log.entries.len())
+  0
+",
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", &src.to_string_lossy()]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("3"),
+        "method_missing should capture 3 calls, got: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+// ─── field mutation through real methods + method_missing ────────────
+
+#[test]
+fn dynamic_receiver_field_mutation_runtime() {
+    let dir = crate::common::make_temp_dir("dr-field-mutation");
+    let src = dir.join("test.aster");
+    std::fs::write(
+        &src,
+        "\
+class Config includes DynamicReceiver
+  project_name: String
+  project_version: String
+  deps: List[String]
+
+  def package(n: String, v: String) -> Void
+    project_name = n
+    project_version = v
+
+  def method_missing(fn_name: String, args: Map[String, String]) -> Void
+    deps.push(item: fn_name)
+
+def main() -> Int
+  let c = Config(project_name: \"\", project_version: \"\", deps: [])
+  c.package(n: \"my-app\", v: \"0.1.0\")
+  c.http()
+  c.json()
+  c.crypto()
+  say(message: c.project_name)
+  say(message: c.project_version)
+  say(message: c.deps.len())
+  0
+",
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", &src.to_string_lossy()]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("my-app") && stdout.contains("0.1.0") && stdout.contains("3"),
+        "Config should have name, version, and 3 deps, got: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+// ─── method_missing with return values ──────────────────────────────
+
+#[test]
+fn dynamic_receiver_return_value_runtime() {
+    let dir = crate::common::make_temp_dir("dr-return-value");
+    let src = dir.join("test.aster");
+    std::fs::write(
+        &src,
+        "\
+class Proxy includes DynamicReceiver
+  last: String
+
+  def method_missing(fn_name: String, args: Map[String, String]) -> String
+    last = fn_name
+    fn_name
+
+def main() -> Int
+  let p = Proxy(last: \"\")
+  let result = p.greet()
+  say(message: result)
+  say(message: p.last)
+  0
+",
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", &src.to_string_lossy()]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("greet"),
+        "method_missing should return the method name, got: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+// ─── real methods take priority over method_missing ─────────────────
+
+#[test]
+fn dynamic_receiver_real_method_priority_runtime() {
+    let dir = crate::common::make_temp_dir("dr-priority");
+    let src = dir.join("test.aster");
+    std::fs::write(
+        &src,
+        "\
+class Handler includes DynamicReceiver
+  log: List[String]
+
+  def handle() -> String
+    \"real\"
+
+  def method_missing(fn_name: String, args: Map[String, String]) -> String
+    log.push(item: fn_name)
+    \"dynamic\"
+
+def main() -> Int
+  let h = Handler(log: [])
+  let r1 = h.handle()
+  let r2 = h.unknown()
+  say(message: r1)
+  say(message: r2)
+  0
+",
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", &src.to_string_lossy()]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("real") && stdout.contains("dynamic"),
+        "real method should win over method_missing, got: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+// ─── AOT parity ─────────────────────────────────────────────────────
+
+#[test]
+fn dynamic_receiver_aot() {
+    let dir = crate::common::make_temp_dir("dr-aot");
+    let src = dir.join("test.aster");
+    std::fs::write(
+        &src,
+        "\
+class Config includes DynamicReceiver
+  project_name: String
+  deps: List[String]
+
+  def package(n: String) -> Void
+    project_name = n
+
+  def method_missing(fn_name: String, args: Map[String, String]) -> Void
+    deps.push(item: fn_name)
+
+def main() -> Int
+  let c = Config(project_name: \"\", deps: [])
+  c.package(n: \"test\")
+  c.http()
+  c.json()
+  say(message: c.project_name)
+  say(message: c.deps.len())
+  0
+",
+    )
+    .unwrap();
+    let output = crate::common::build_and_run(&src);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("test") && stdout.contains("2"),
+        "AOT: Config should have name and 2 deps, got: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

@@ -1,0 +1,36 @@
+# DynamicReceiver: method_missing, field mutation, dynamic dispatch
+
+# Basic DynamicReceiver: accumulates unknown calls into a list
+class Logger includes DynamicReceiver
+  entries: List[String]
+
+  def method_missing(fn_name: String, args: Map[String, String]) -> Void
+    entries.push(item: fn_name)
+
+# Field mutation in a method
+class Counter
+  value: Int
+
+  def increment() -> Void
+    value = value + 1
+
+# DynamicReceiver with field mutation (Seedfile-style pattern)
+class Config includes DynamicReceiver
+  project_name: String
+  project_version: String
+  deps: List[String]
+
+  def package(n: String, v: String) -> Void
+    project_name = n
+    project_version = v
+
+  def method_missing(fn_name: String, args: Map[String, String]) -> Void
+    deps.push(item: fn_name)
+
+# DynamicReceiver with return values
+class Router includes DynamicReceiver
+  last_route: String
+
+  def method_missing(fn_name: String, args: Map[String, String]) -> String
+    last_route = fn_name
+    fn_name

@@ -865,6 +865,41 @@ impl Lowerer {
             });
         }
 
+        // DynamicReceiver fallback: rewrite obj.unknown() to obj.method_missing("unknown", {})
+        if let Ok(class_name) = self.resolve_class_name(object) {
+            // Extract DynamicReceiver info and return type before mutable borrows
+            let dr_dispatch = self.type_env.get_class(&class_name).and_then(|ci| {
+                let dr = ci.dynamic_receiver.as_ref()?;
+                let ret_ty = dr.return_ty.clone();
+                Some(ret_ty)
+            });
+            if let Some(dr_return_ty) = dr_dispatch {
+                let qualified = format!("{}.method_missing", class_name);
+                if let Some(&func_id) = self.ms.functions.get(&qualified) {
+                    let fn_name_str = FirExpr::StringLit(method.to_string());
+                    let mut map_expr = FirExpr::RuntimeCall {
+                        name: "aster_map_new".to_string(),
+                        args: vec![FirExpr::IntLit(4)],
+                        ret_ty: FirType::Ptr,
+                    };
+                    for (arg_name, _, arg_expr) in args {
+                        let fir_val = self.lower_expr(arg_expr)?;
+                        map_expr = FirExpr::RuntimeCall {
+                            name: "aster_map_set".to_string(),
+                            args: vec![map_expr, FirExpr::StringLit(arg_name.clone()), fir_val],
+                            ret_ty: FirType::Ptr,
+                        };
+                    }
+                    let ret_ty = self.lower_type(&dr_return_ty);
+                    return Ok(FirExpr::Call {
+                        func: func_id,
+                        args: vec![fir_object, fn_name_str, map_expr],
+                        ret_ty,
+                    });
+                }
+            }
+        }
+
         Err(LowerError::UnsupportedFeature(
             UnsupportedFeatureKind::Other(format!("method call: .{}()", method)),
             object.span(),
