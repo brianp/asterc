@@ -387,3 +387,115 @@ def fail() throws AppError -> Int
 "#,
     );
 }
+
+// ─── Return type inference for named defs and inline lambdas ────────
+//
+// Named `def` functions can omit `-> RetType` and have it inferred from body.
+// Inline lambdas (`-> params: expr`) always infer return type.
+
+#[test]
+fn def_with_return_type_still_valid() {
+    check_ok(
+        "\
+def add(x: Int, y: Int) -> Int
+  x + y
+",
+    );
+}
+
+#[test]
+fn def_in_class_with_return_type_still_valid() {
+    check_ok(
+        "\
+class Math
+  def add(x: Int, y: Int) -> Int
+    x + y
+",
+    );
+}
+
+#[test]
+fn def_with_throws_and_return_type_still_valid() {
+    check_ok(
+        "\
+def parse(s: String) throws ParseError -> Int
+  42
+",
+    );
+}
+
+#[test]
+fn def_without_return_type_infers_int() {
+    check_ok(
+        "\
+def square(x: Int)
+  x * x
+let result: Int = square(x: 4)
+",
+    );
+}
+
+#[test]
+fn def_without_return_type_infers_string() {
+    check_ok(
+        "\
+def greet(name: String)
+  \"hello\"
+let msg: String = greet(name: \"world\")
+",
+    );
+}
+
+#[test]
+fn def_without_return_type_void() {
+    check_ok(
+        "\
+def log(msg: String)
+  say(message: msg)
+",
+    );
+}
+
+#[test]
+fn inline_lambda_arrow_form_works() {
+    check_ok(
+        "\
+def apply(x: Int, f: Fn(Int) -> Int) -> Int
+  f(_0: x)
+let result = apply(x: 5, f: -> x: x * 2)
+",
+    );
+}
+
+#[test]
+fn inline_lambda_multi_param_works() {
+    check_ok(
+        "\
+def apply2(a: Int, b: Int, f: Fn(Int, Int) -> Int) -> Int
+  f(_0: a, _1: b)
+let result = apply2(a: 1, b: 2, f: -> a, b: a + b)
+",
+    );
+}
+
+#[test]
+fn inline_lambda_zero_param_works() {
+    check_ok(
+        "\
+def run(f: Fn() -> Int) -> Int
+  f()
+let result = run(f: -> : 42)
+",
+    );
+}
+
+#[test]
+fn let_typed_with_def_no_return_type() {
+    check_ok(
+        "\
+def increment(x: Int)
+  x + 1
+let result: Int = increment(x: 5)
+",
+    );
+}
