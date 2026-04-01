@@ -117,6 +117,9 @@ pub enum MatchPattern {
     EnumVariant {
         enum_name: String,
         variant: String,
+        /// Optional field bindings for destructuring: (field_name, binding_name).
+        /// For positional patterns like `Circle(r)`, field_name is the enum's field name.
+        bindings: Vec<(String, String)>,
         span: Span,
     },
 }

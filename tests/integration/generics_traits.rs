@@ -598,3 +598,66 @@ fn class_method_with_class_type_param() {
 "#,
     );
 }
+
+// ─── Trait with default method integration tests ───────────────────────
+
+#[test]
+fn trait_with_default_method_compiles() {
+    // Basic typechecker test for trait with a default method
+    crate::common::check_ok(
+        r#"trait Greeter
+  def name() -> String
+  def greet() -> String
+    "hello"
+"#,
+    );
+}
+
+#[test]
+fn trait_default_method_not_required() {
+    // Class includes trait but doesn't override the default method
+    crate::common::check_ok(
+        r#"trait Describable
+  def describe() -> String
+    "unknown"
+
+class Widget includes Describable
+  label: String
+"#,
+    );
+}
+
+#[test]
+fn trait_abstract_method_still_required() {
+    // Class includes trait but doesn't implement the abstract method
+    let err = crate::common::check_err(
+        r#"trait Showable
+  def show() -> String
+
+class Item includes Showable
+  name: String
+"#,
+    );
+    assert!(
+        err.contains("show") || err.contains("implement") || err.contains("missing"),
+        "expected missing method error, got: {}",
+        err
+    );
+}
+
+#[test]
+fn trait_generic_with_default_method() {
+    // Parametric trait with a default method
+    crate::common::check_ok(
+        r#"trait Container[T]
+  def size() -> Int
+    0
+  def empty() -> Bool
+
+class Bucket includes Container[Int]
+  items: List[Int]
+  def empty() -> Bool
+    true
+"#,
+    );
+}

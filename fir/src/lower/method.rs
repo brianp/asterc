@@ -659,6 +659,88 @@ impl Lowerer {
             }
         }
 
+        // Check for set built-in methods
+        if matches!(&object_ast_ty, Some(Type::Set(_))) {
+            match method {
+                builtin_method::LEN => {
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_set_len".to_string(),
+                        args: vec![fir_object],
+                        ret_ty: FirType::I64,
+                    });
+                }
+                builtin_method::PUSH => {
+                    let mut call_args = vec![fir_object];
+                    for (_, _, arg) in args {
+                        call_args.push(self.lower_expr(arg)?);
+                    }
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_set_add".to_string(),
+                        args: call_args,
+                        ret_ty: FirType::Ptr,
+                    });
+                }
+                builtin_method::REMOVE => {
+                    let item_arg = args
+                        .iter()
+                        .find(|(n, _, _)| n == "item")
+                        .or_else(|| args.first())
+                        .map(|(_, _, e)| e);
+                    let fir_item = self.lower_expr(item_arg.unwrap())?;
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_set_remove".to_string(),
+                        args: vec![fir_object, fir_item],
+                        ret_ty: FirType::Void,
+                    });
+                }
+                builtin_method::POP => {
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_set_pop".to_string(),
+                        args: vec![fir_object],
+                        ret_ty: FirType::I64,
+                    });
+                }
+                builtin_method::CONTAINS => {
+                    let is_predicate = args.first().is_some_and(|(n, _, _)| n == "f");
+                    if is_predicate {
+                        let elem_ty = if let Some(Type::Set(inner)) = &object_ast_ty {
+                            self.lower_type(inner)
+                        } else {
+                            FirType::I64
+                        };
+                        return self.lower_iterable_with_callback(
+                            builtin_method::ANY,
+                            fir_object,
+                            args,
+                            &elem_ty,
+                            object,
+                        );
+                    }
+                    let item_arg = args
+                        .iter()
+                        .find(|(n, _, _)| n == "item")
+                        .or_else(|| args.first())
+                        .map(|(_, _, e)| e);
+                    let fir_item = self.lower_expr(item_arg.unwrap())?;
+                    let is_string = if let Some(Type::Set(inner)) = &object_ast_ty {
+                        if **inner == Type::String {
+                            FirExpr::IntLit(1)
+                        } else {
+                            FirExpr::IntLit(0)
+                        }
+                    } else {
+                        FirExpr::IntLit(0)
+                    };
+                    return Ok(FirExpr::RuntimeCall {
+                        name: "aster_set_contains".to_string(),
+                        args: vec![fir_object, fir_item, is_string],
+                        ret_ty: FirType::Bool,
+                    });
+                }
+                _ => {}
+            }
+        }
+
         // Check for list built-in methods
         match method {
             builtin_method::LEN => {

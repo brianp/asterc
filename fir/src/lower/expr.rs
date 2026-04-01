@@ -502,6 +502,18 @@ impl Lowerer {
             return self.lower_method_call(object, field, args);
         }
 
+        // Set[T]() constructor: Set[T]() → aster_set_new(cap)
+        if let Expr::Index { object, .. } = func
+            && let Expr::Ident(type_name, _) = object.as_ref()
+            && type_name == "Set"
+        {
+            return Ok(FirExpr::RuntimeCall {
+                name: "aster_set_new".to_string(),
+                args: vec![FirExpr::IntLit(4)],
+                ret_ty: FirType::Ptr,
+            });
+        }
+
         let Expr::Ident(name, _) = func else {
             // Indirect call: arbitrary expression as call target (e.g. get_handler()(x))
             let callee = self.lower_expr(func)?;

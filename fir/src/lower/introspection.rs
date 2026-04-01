@@ -421,7 +421,7 @@ impl Lowerer {
             }
             // Fallback: check typechecker's type environment for variables
             // (covers top-level bindings not yet in local_ast_types)
-            if let Some(ty) = self.type_env.get_var(name) {
+            if let Some(ty) = self.type_env.get_var_type(name) {
                 return Some(Self::type_to_name(ty));
             }
         }
@@ -470,7 +470,7 @@ impl Lowerer {
                     .scope
                     .local_ast_types
                     .get(name.as_str())
-                    .or_else(|| self.type_env.get_var(name))
+                    .or_else(|| self.type_env.get_var_type(name))
                 && let Type::Custom(tname, _) = inner.as_ref()
                 && tname == "Type"
             {

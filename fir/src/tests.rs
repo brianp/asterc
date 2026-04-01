@@ -2392,14 +2392,6 @@ def main() -> Int
 // ===========================================================================
 
 #[test]
-fn error_unsupported_top_level_trait_has_span() {
-    let src = "trait Foo\n  def bar() -> Int\n";
-    let err = lower_err(src);
-    let span = err.span();
-    assert!(span.start < span.end, "span must be non-empty: {:?}", span);
-}
-
-#[test]
 fn nested_class_in_function_no_longer_errors() {
     // Previously nested classes caused a lowering error; now they are supported (GH #11)
     let src = "\
@@ -2459,12 +2451,8 @@ def main() -> Int
 }
 
 #[test]
-fn error_unbound_variable_has_span() {
-    // Use a variable that passes typecheck but not lowering.
-    // We need a case where the lowerer can't find the variable.
-    // A top-level `use` statement triggers UnsupportedFeature, not UnboundVariable.
-    // For now, test that UnsupportedFeature from top-level `use` has a span.
-    let src = "use std/cmp { Eq }\ndef main() -> Int\n  0\n";
+fn error_unsupported_top_level_return_has_span() {
+    let src = "return 0\n";
     let err = lower_err(src);
     let span = err.span();
     assert!(span.start < span.end, "span must be non-empty: {:?}", span);
@@ -3081,5 +3069,462 @@ def f() -> Record
         ptr_count,
         Some(1),
         "Record has 1 pointer field (name: String)"
+    );
+}
+
+// ===========================================================================
+// Set type lowering tests
+// ===========================================================================
+
+#[test]
+fn set_constructor_lowers_to_runtime_call() {
+    let fir = lower_ok("let s: Set[Int] = Set[Int]()\ndef main() -> Int\n  0\n");
+    // The top-level let should produce an aster_set_new runtime call
+    assert!(
+        fir.functions.iter().any(|f| {
+            f.body.iter().any(|stmt| {
+                matches!(stmt, FirStmt::Let { value: FirExpr::RuntimeCall { name, .. }, .. } if name == "aster_set_new")
+            })
+        }),
+        "Set constructor should lower to aster_set_new runtime call"
+    );
+}
+
+#[test]
+fn set_push_lowers_to_runtime_call() {
+    let fir = lower_ok(
+        r#"def main() -> Int
+  let s: Set[Int] = Set[Int]()
+  s.push(item: 1)
+  0
+"#,
+    );
+    let main_fn = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    let has_set_add = main_fn.body.iter().any(|stmt| {
+        matches!(stmt, FirStmt::Expr(FirExpr::RuntimeCall { name, .. }) if name == "aster_set_add")
+    });
+    assert!(has_set_add, "s.push() should lower to aster_set_add");
+}
+
+#[test]
+fn set_contains_lowers_to_runtime_call() {
+    let fir = lower_ok(
+        r#"def main() -> Bool
+  let s: Set[Int] = Set[Int]()
+  s.contains(item: 1)
+"#,
+    );
+    let main_fn = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    let has_set_contains = main_fn.body.iter().any(|stmt| {
+        matches!(
+            stmt,
+            FirStmt::Expr(FirExpr::RuntimeCall { name, .. })
+            | FirStmt::Return(FirExpr::RuntimeCall { name, .. })
+                if name == "aster_set_contains"
+        )
+    });
+    assert!(
+        has_set_contains,
+        "s.contains() should lower to aster_set_contains"
+    );
+}
+
+#[test]
+fn set_len_lowers_to_runtime_call() {
+    let fir = lower_ok(
+        r#"def main() -> Int
+  let s: Set[Int] = Set[Int]()
+  s.len()
+"#,
+    );
+    let main_fn = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    let has_set_len = main_fn.body.iter().any(|stmt| {
+        matches!(
+            stmt,
+            FirStmt::Expr(FirExpr::RuntimeCall { name, .. })
+            | FirStmt::Return(FirExpr::RuntimeCall { name, .. })
+                if name == "aster_set_len"
+        )
+    });
+    assert!(has_set_len, "s.len() should lower to aster_set_len");
+}
+
+#[test]
+fn set_remove_lowers_to_runtime_call() {
+    let fir = lower_ok(
+        r#"def main() -> Int
+  let s: Set[Int] = Set[Int]()
+  s.push(item: 1)
+  s.remove(item: 1)
+  0
+"#,
+    );
+    let main_fn = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    let has_set_remove = main_fn.body.iter().any(|stmt| {
+        matches!(stmt, FirStmt::Expr(FirExpr::RuntimeCall { name, .. }) if name == "aster_set_remove")
+    });
+    assert!(
+        has_set_remove,
+        "s.remove() should lower to aster_set_remove"
+    );
+}
+
+#[test]
+fn set_pop_lowers_to_runtime_call() {
+    let fir = lower_ok(
+        r#"def main() -> Int
+  let s: Set[Int] = Set[Int]()
+  s.push(item: 1)
+  s.pop()
+"#,
+    );
+    let main_fn = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    let has_set_pop = main_fn.body.iter().any(|stmt| {
+        matches!(
+            stmt,
+            FirStmt::Expr(FirExpr::RuntimeCall { name, .. })
+            | FirStmt::Return(FirExpr::RuntimeCall { name, .. })
+                if name == "aster_set_pop"
+        )
+    });
+    assert!(has_set_pop, "s.pop() should lower to aster_set_pop");
+}
+
+// ===========================================================================
+// Enum variant destructuring tests
+// ===========================================================================
+
+#[test]
+fn enum_variant_destructuring_lowers_ok() {
+    lower_ok(
+        r#"enum Shape
+  Circle(radius: Float)
+  Rect(w: Float, h: Float)
+
+def area(s: Shape) -> Float
+  match s
+    Shape.Circle(radius) => radius * 3.14
+    Shape.Rect(w, h) => w * h
+"#,
+    );
+}
+
+#[test]
+fn enum_variant_destructuring_binds_field() {
+    let fir = lower_ok(
+        r#"enum Wrapper
+  Val(x: Int)
+
+def unwrap(w: Wrapper) -> Int
+  match w
+    Wrapper.Val(x) => x
+"#,
+    );
+    // The unwrap function should exist and produce a result
+    assert!(fir.functions.iter().any(|f| f.name == "unwrap"));
+}
+
+#[test]
+fn enum_variant_no_destructuring_still_works() {
+    lower_ok(
+        r#"enum Color
+  Red
+  Blue
+
+def name(c: Color) -> String
+  match c
+    Color.Red => "red"
+    Color.Blue => "blue"
+"#,
+    );
+}
+
+#[test]
+fn enum_variant_named_destructuring_lowers_ok() {
+    lower_ok(
+        r#"enum Pair
+  Two(a: Int, b: Int)
+
+def sum(p: Pair) -> Int
+  match p
+    Pair.Two(a: x, b: y) => x + y
+"#,
+    );
+}
+
+// ===========================================================================
+// Trait lowering tests
+// ===========================================================================
+
+#[test]
+fn trait_abstract_methods_lowers_ok() {
+    // Trait with only abstract methods should lower without error
+    lower_ok(
+        r#"trait Printable
+  def to_string() -> String
+"#,
+    );
+}
+
+#[test]
+fn trait_with_default_method_lowers_ok() {
+    // Trait with a default method implementation should lower the function
+    lower_ok(
+        r#"trait Greetable
+  def greet() -> String
+    "hello"
+"#,
+    );
+}
+
+#[test]
+fn trait_and_class_lowers_ok() {
+    // A class that includes a trait with abstract methods should lower fine
+    lower_ok(
+        r#"trait Showable
+  def show() -> String
+
+class Item includes Showable
+  name: String
+  def show() -> String
+    "item"
+"#,
+    );
+}
+
+#[test]
+fn trait_default_method_inherited_by_class() {
+    // A class that includes a trait with a default method and doesn't override it
+    // should inherit the default method as ClassName.method
+    let fir = lower_ok(
+        r#"trait Describable
+  def describe() -> String
+    "unknown"
+
+class Widget includes Describable
+  label: String
+"#,
+    );
+    // The class should have Widget.describe as a function
+    assert!(
+        fir.functions.iter().any(|f| f.name == "Widget.describe"),
+        "Widget.describe should be inherited from trait default"
+    );
+}
+
+#[test]
+fn trait_default_method_overridden_by_class() {
+    // When a class overrides a trait default method, use the class version
+    let fir = lower_ok(
+        r#"trait Describable
+  def describe() -> String
+    "unknown"
+
+class Widget includes Describable
+  label: String
+  def describe() -> String
+    "widget"
+"#,
+    );
+    // The class should have Widget.describe
+    assert!(
+        fir.functions.iter().any(|f| f.name == "Widget.describe"),
+        "Widget.describe should exist from class override"
+    );
+}
+
+#[test]
+fn trait_with_multiple_abstract_methods() {
+    // Trait with several abstract methods and no bodies
+    lower_ok(
+        r#"trait Serializable
+  def to_json() -> String
+  def to_xml() -> String
+  def to_yaml() -> String
+"#,
+    );
+}
+
+#[test]
+fn trait_with_mixed_methods() {
+    // Some abstract, some with default implementations
+    lower_ok(
+        r#"trait Formatter
+  def format() -> String
+  def prefix() -> String
+    ">> "
+  def suffix() -> String
+"#,
+    );
+}
+
+#[test]
+fn trait_default_method_has_body_stmts() {
+    // Default method with actual statements, not just a return expression
+    let fir = lower_ok(
+        r#"trait Logger
+  def log_level() -> Int
+    let base = 1
+    let extra = 2
+    base + extra
+"#,
+    );
+    // The default method should be lowered as a function
+    assert!(
+        fir.functions.iter().any(|f| f.name.contains("log_level")),
+        "trait default method with body statements should be lowered"
+    );
+}
+
+#[test]
+fn trait_inside_function_lowers_ok() {
+    // Trait defined inside a function body (Stmt::Trait in lower_stmt_inner)
+    lower_ok(
+        r#"def setup() -> Int
+  trait InnerTrait
+    def value() -> Int
+  0
+"#,
+    );
+}
+
+// ===========================================================================
+// Additional Set type lowering tests
+// ===========================================================================
+
+#[test]
+fn set_for_loop_uses_set_runtime() {
+    let fir = lower_ok(
+        r#"def main() -> Int
+  let s: Set[Int] = Set[Int]()
+  s.push(item: 1)
+  for x in s
+    let y = x + 1
+  0
+"#,
+    );
+    let main_fn = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    fn has_runtime_call(stmts: &[FirStmt], target: &str) -> bool {
+        stmts.iter().any(|stmt| match stmt {
+            FirStmt::Let {
+                value: FirExpr::RuntimeCall { name, .. },
+                ..
+            } if name == target => true,
+            FirStmt::Block(inner) => has_runtime_call(inner, target),
+            _ => false,
+        })
+    }
+    assert!(
+        has_runtime_call(&main_fn.body, "aster_set_len"),
+        "for-in over Set should use aster_set_len"
+    );
+}
+
+#[test]
+fn set_constructor_inside_function() {
+    // Set[Int]() inside a def body should lower to aster_set_new
+    let fir = lower_ok(
+        r#"def make() -> Int
+  let s: Set[Int] = Set[Int]()
+  s.len()
+"#,
+    );
+    let make_fn = fir.functions.iter().find(|f| f.name == "make").unwrap();
+    let has_set_new = make_fn.body.iter().any(|stmt| {
+        matches!(
+            stmt,
+            FirStmt::Let { value: FirExpr::RuntimeCall { name, .. }, .. }
+                if name == "aster_set_new"
+        )
+    });
+    assert!(
+        has_set_new,
+        "Set constructor inside function should lower to aster_set_new"
+    );
+}
+
+#[test]
+fn set_contains_string_flag() {
+    // Set[String] passes is_string=1 to aster_set_contains
+    let fir = lower_ok(
+        r#"def check() -> Bool
+  let s: Set[String] = Set[String]()
+  s.contains(item: "hello")
+"#,
+    );
+    let check_fn = fir.functions.iter().find(|f| f.name == "check").unwrap();
+    let has_string_flag = check_fn.body.iter().any(|stmt| {
+        match stmt {
+            FirStmt::Return(FirExpr::RuntimeCall { name, args, .. })
+            | FirStmt::Expr(FirExpr::RuntimeCall { name, args, .. })
+                if name == "aster_set_contains" =>
+            {
+                // Third arg should be IntLit(1) for is_string
+                matches!(args.get(2), Some(FirExpr::IntLit(1)))
+            }
+            _ => false,
+        }
+    });
+    assert!(
+        has_string_flag,
+        "Set[String].contains() should pass is_string=1"
+    );
+}
+
+// ===========================================================================
+// Additional enum variant destructuring tests
+// ===========================================================================
+
+#[test]
+fn enum_destructuring_field_offset_correct() {
+    // Verify that the destructured field is loaded from the right offset
+    // For a single-field variant, the field should be at offset 8 (tag is at 0)
+    let fir = lower_ok(
+        r#"enum Wrapper
+  Val(x: Int)
+
+def get(b: Wrapper) -> Int
+  match b
+    Wrapper.Val(x) => x
+"#,
+    );
+    let get_fn = fir.functions.iter().find(|f| f.name == "get").unwrap();
+    // Look for a FieldGet with offset 8 (first field after the tag)
+    let has_field_get_at_8 = get_fn.body.iter().any(|stmt| {
+        fn check_expr(e: &FirExpr) -> bool {
+            matches!(e, FirExpr::FieldGet { offset: 8, .. })
+        }
+        fn check_stmt(s: &FirStmt) -> bool {
+            match s {
+                FirStmt::Let { value, .. } => check_expr(value),
+                FirStmt::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => then_body.iter().any(check_stmt) || else_body.iter().any(check_stmt),
+                _ => false,
+            }
+        }
+        check_stmt(stmt)
+    });
+    assert!(
+        has_field_get_at_8,
+        "destructured field should load from offset 8 (after tag at 0)"
+    );
+}
+
+#[test]
+fn enum_destructuring_multiple_arms() {
+    // Match with destructuring in multiple arms
+    lower_ok(
+        r#"enum Token
+  Num(val: Int)
+  Neg(inner: Int)
+
+def process(e: Token) -> Int
+  match e
+    Token.Num(val) => val
+    Token.Neg(inner) => 0 - inner
+"#,
     );
 }

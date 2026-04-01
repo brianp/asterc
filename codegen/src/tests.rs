@@ -3545,8 +3545,8 @@ fn unsupported_feature_audit() {
     let actual_call_sites = lower_count - 2;
 
     assert_eq!(
-        actual_call_sites, 17,
-        "UnsupportedFeature call site count changed in lower.rs (expected 17, got {}). \
+        actual_call_sites, 16,
+        "UnsupportedFeature call site count changed in lower.rs (expected 16, got {}). \
          If you added a new UnsupportedFeature, document it in STATUS.md parity matrix. \
          If you closed a gap, update this count and STATUS.md.",
         actual_call_sites

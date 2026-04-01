@@ -452,3 +452,184 @@ fn negative_int_match_pattern() {
 "#,
     );
 }
+
+// ─── Enum variant destructuring ─────────────────────────────────────
+
+#[test]
+fn enum_destructuring_single_field() {
+    crate::common::check_ok(
+        r#"enum Wrapper
+  Val(x: Int)
+
+def unwrap(w: Wrapper) -> Int
+  match w
+    Wrapper.Val(x) => x
+"#,
+    );
+}
+
+#[test]
+fn enum_destructuring_multiple_fields() {
+    crate::common::check_ok(
+        r#"enum Shape
+  Circle(radius: Float)
+  Rect(w: Float, h: Float)
+
+def area(s: Shape) -> Float
+  match s
+    Shape.Circle(radius) => radius * 3.14
+    Shape.Rect(w, h) => w * h
+"#,
+    );
+}
+
+#[test]
+fn enum_destructuring_named_bindings() {
+    crate::common::check_ok(
+        r#"enum Pair
+  Two(a: Int, b: Int)
+
+def sum(p: Pair) -> Int
+  match p
+    Pair.Two(a: x, b: y) => x + y
+"#,
+    );
+}
+
+#[test]
+fn enum_destructuring_mixed_with_fieldless() {
+    crate::common::check_ok(
+        r#"enum Result
+  Ok(value: Int)
+  Err
+
+def get_or_default(r: Result) -> Int
+  match r
+    Result.Ok(value) => value
+    Result.Err => 0
+"#,
+    );
+}
+
+#[test]
+fn enum_destructuring_wrong_field_name_error() {
+    let err = crate::common::check_err(
+        r#"enum Wrapper
+  Val(x: Int)
+
+def unwrap(w: Wrapper) -> Int
+  match w
+    Wrapper.Val(y) => y
+"#,
+    );
+    // "y" is not a field name on Val, should error
+    // (positional binding uses the name as field name too)
+    assert!(
+        err.contains("y") || err.contains("field") || err.contains("undefined"),
+        "expected field error, got: {}",
+        err
+    );
+}
+
+#[test]
+fn enum_destructuring_too_many_bindings_error() {
+    let err = crate::common::check_err(
+        r#"enum Wrapper
+  Val(x: Int)
+
+def unwrap(w: Wrapper) -> Int
+  match w
+    Wrapper.Val(x, extra) => x
+"#,
+    );
+    assert!(
+        err.contains("field") || err.contains("binding") || err.contains("1"),
+        "expected too-many-bindings error, got: {}",
+        err
+    );
+}
+
+// ─── Additional enum destructuring tests ───────────────────────────────
+
+#[test]
+fn enum_destructuring_binding_used_in_arm_body() {
+    // Verify the bound variable can be used in the arm expression
+    crate::common::check_ok(
+        r#"enum Wrapper
+  Val(x: Int)
+
+def double(w: Wrapper) -> Int
+  match w
+    Wrapper.Val(x) => x + x
+"#,
+    );
+}
+
+#[test]
+fn enum_destructuring_partial_fields() {
+    // Only destructure some fields of a multi-field variant
+    crate::common::check_ok(
+        r#"enum Record
+  Entry(a: Int, b: Int, c: Int)
+
+def first(r: Record) -> Int
+  match r
+    Record.Entry(a) => a
+"#,
+    );
+}
+
+#[test]
+fn enum_destructuring_on_fieldless_variant_error() {
+    // Trying to destructure a fieldless variant like Color.Red(x) should error
+    let err = crate::common::check_err(
+        r#"enum Color
+  Red
+  Blue
+
+def test(c: Color) -> Int
+  match c
+    Color.Red(x) => x
+    Color.Blue => 0
+"#,
+    );
+    assert!(
+        err.contains("field")
+            || err.contains("binding")
+            || err.contains("no fields")
+            || err.contains("destructure"),
+        "expected error for destructuring fieldless variant, got: {}",
+        err
+    );
+}
+
+#[test]
+fn enum_destructuring_with_wildcard_arm() {
+    // Mix destructured arm with wildcard fallback
+    crate::common::check_ok(
+        r#"enum Result
+  Ok(value: Int)
+  Err
+  Unknown
+
+def get_or_zero(r: Result) -> Int
+  match r
+    Result.Ok(value) => value
+    _ => 0
+"#,
+    );
+}
+
+#[test]
+fn enum_destructuring_type_inferred_from_field() {
+    // Verify the bound variable gets the right type from the field declaration
+    crate::common::check_ok(
+        r#"enum Container
+  Str(value: String)
+
+def get_len(c: Container) -> Int
+  match c
+    Container.Str(value) => value.len()
+"#,
+    );
+}

@@ -464,10 +464,42 @@ impl Parser {
                     if let Ident(v) = &self.peek().kind {
                         let variant = v.clone();
                         self.advance();
+                        // Optional field destructuring: Color.Circle(r) or Color.Circle(radius: r)
+                        let bindings = if self.at(&LParen) {
+                            self.advance();
+                            let mut bs = Vec::new();
+                            if !self.at(&RParen) {
+                                loop {
+                                    let (first_name, _) =
+                                        self.expect_ident("binding name in enum pattern")?;
+                                    // Check for named binding: field_name: binding_name
+                                    if self.at(&Colon) {
+                                        self.advance();
+                                        let (bind_name, _) = self.expect_ident(
+                                            "binding name after ':' in enum pattern",
+                                        )?;
+                                        bs.push((first_name, bind_name));
+                                    } else {
+                                        // Positional: binding name matches field name
+                                        bs.push((first_name.clone(), first_name));
+                                    }
+                                    if self.at(&Comma) {
+                                        self.advance();
+                                    } else {
+                                        break;
+                                    }
+                                }
+                            }
+                            self.expect(RParen)?;
+                            bs
+                        } else {
+                            vec![]
+                        };
                         let span = self.span_from(start);
                         return Ok(MatchPattern::EnumVariant {
                             enum_name: name,
                             variant,
+                            bindings,
                             span,
                         });
                     } else {

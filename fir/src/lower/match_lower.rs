@@ -218,22 +218,53 @@ impl Lowerer {
                 })
             }
             MatchPattern::EnumVariant {
-                enum_name, variant, ..
+                enum_name,
+                variant,
+                bindings,
+                ..
             } => {
                 // Compare tag of scrutinee to variant tag
-                let tag = self
+                let variant_info = self
                     .ms
                     .enum_variants
                     .get(enum_name.as_str())
-                    .and_then(|vs| vs.iter().find(|(n, _, _)| n == variant))
-                    .map(|(_, tag, _)| *tag)
-                    .unwrap_or(0);
+                    .and_then(|vs| vs.iter().find(|(n, _, _)| n == variant));
+                let tag = variant_info.map(|(_, tag, _)| *tag).unwrap_or(0);
+                let variant_fields: Vec<(String, FirType)> = variant_info
+                    .map(|(_, _, fields)| fields.clone())
+                    .unwrap_or_default();
+
+                // Bind destructured fields before lowering the arm body
+                let mut then_body = Vec::new();
+                for (field_name, bind_name) in bindings {
+                    if let Some((field_idx, (_, field_ty))) = variant_fields
+                        .iter()
+                        .enumerate()
+                        .find(|(_, (n, _))| n == field_name)
+                    {
+                        let bind_id = self.alloc_local();
+                        self.scope.locals.insert(bind_name.clone(), bind_id);
+                        self.scope.local_types.insert(bind_id, field_ty.clone());
+                        then_body.push(FirStmt::Let {
+                            name: bind_id,
+                            ty: field_ty.clone(),
+                            value: FirExpr::FieldGet {
+                                object: Box::new(FirExpr::LocalVar(
+                                    scrutinee_id,
+                                    scrutinee_ty.clone(),
+                                )),
+                                offset: 8 + field_idx * 8,
+                                ty: field_ty.clone(),
+                            },
+                        });
+                    }
+                }
 
                 let fir_body = self.lower_expr(&arms[index].1)?;
-                let body_assign = FirStmt::Assign {
+                then_body.push(FirStmt::Assign {
                     target: FirPlace::Local(result_id),
                     value: fir_body,
-                };
+                });
 
                 // Tag is at offset 0 of the enum ptr
                 let tag_load = FirExpr::FieldGet {
@@ -257,7 +288,7 @@ impl Lowerer {
                 )?];
                 Ok(FirStmt::If {
                     cond,
-                    then_body: vec![body_assign],
+                    then_body,
                     else_body,
                 })
             }

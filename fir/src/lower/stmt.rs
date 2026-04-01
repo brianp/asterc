@@ -64,6 +64,7 @@ impl Lowerer {
             }
             // Use statements are handled by the typechecker; the lowerer just skips them.
             Stmt::Use { .. } => Ok(()),
+            Stmt::Trait { name, methods, .. } => self.lower_trait(name, methods),
             _ => Err(unsupported_top_level_stmt(stmt)),
         }
     }
@@ -305,6 +306,74 @@ impl Lowerer {
             }
         }
 
+        // Install default methods from included traits.
+        // For each trait the class includes, if the trait has a default method
+        // (TraitName.method registered as a function) and the class doesn't
+        // override it, copy the function under the class-qualified name.
+        if let Some(ci) = self.type_env.get_class(name) {
+            let trait_names: Vec<String> = ci.includes.clone();
+            for trait_name in &trait_names {
+                if let Some(trait_info) = self.type_env.get_trait(trait_name) {
+                    let method_names: Vec<String> = trait_info.methods.keys().cloned().collect();
+                    for method_name in &method_names {
+                        let class_qualified = format!("{}.{}", name, method_name);
+                        if self.ms.functions.contains_key(&class_qualified) {
+                            continue;
+                        }
+                        let trait_qualified = format!("{}.{}", trait_name, method_name);
+                        if let Some(&trait_func_id) = self.ms.functions.get(&trait_qualified) {
+                            // Copy the trait's function under the class name
+                            if let Some(trait_func) = self
+                                .ms
+                                .module
+                                .functions
+                                .iter()
+                                .find(|f| f.id == trait_func_id)
+                            {
+                                let mut class_func = trait_func.clone();
+                                let new_id = FunctionId(self.ms.next_function);
+                                self.ms.next_function += 1;
+                                class_func.id = new_id;
+                                class_func.name = class_qualified.clone();
+                                self.ms.functions.insert(class_qualified, new_id);
+                                self.ms.module.add_function(class_func);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn lower_trait(&mut self, name: &str, methods: &[Stmt]) -> Result<(), LowerError> {
+        // Lower default method implementations (non-empty bodies).
+        // These are registered as TraitName.method functions so classes
+        // that include the trait can alias them.
+        for method_stmt in methods {
+            if let Stmt::Let {
+                name: method_name,
+                value:
+                    Expr::Lambda {
+                        params,
+                        ret_type,
+                        body,
+                        ..
+                    },
+                ..
+            } = method_stmt
+            {
+                if body.is_empty() {
+                    continue;
+                }
+                // Prepend `self` as the first parameter (same pattern as class methods)
+                let mut full_params =
+                    vec![("self".to_string(), Type::Custom(name.to_string(), vec![]))];
+                full_params.extend(params.iter().cloned());
+                self.lower_function(method_name, &full_params, ret_type, body)?;
+            }
+        }
         Ok(())
     }
 
@@ -649,7 +718,8 @@ impl Lowerer {
                             .insert(name.clone(), Type::Custom(class_name.clone(), vec![]));
                     // Infer class type from function call that returns a class instance
                     } else if let Expr::Ident(func_name, _) = func.as_ref()
-                        && let Some(Type::Function { ret, .. }) = self.type_env.get_var(func_name)
+                        && let Some(Type::Function { ret, .. }) =
+                            self.type_env.get_var_type(func_name)
                         && let Type::Custom(class_name, type_args) = ret.as_ref()
                         && self.ms.classes.contains_key(class_name.as_str())
                     {
@@ -793,7 +863,10 @@ impl Lowerer {
             }
             // Use statements are handled by the typechecker; the lowerer skips them.
             Stmt::Use { .. } => Ok(FirStmt::NoOp),
-            _ => Err(unsupported_stmt(stmt)),
+            Stmt::Trait { name, methods, .. } => {
+                self.lower_trait(name, methods)?;
+                Ok(FirStmt::NoOp)
+            }
         }
     }
 
@@ -837,7 +910,6 @@ impl Lowerer {
 
 pub(crate) fn unsupported_top_level_stmt(stmt: &Stmt) -> LowerError {
     let name = match stmt {
-        Stmt::Trait { .. } => "trait",
         Stmt::Return(..) => "return",
         Stmt::Break(..) => "break",
         Stmt::Continue(..) => "continue",
@@ -845,16 +917,4 @@ pub(crate) fn unsupported_top_level_stmt(stmt: &Stmt) -> LowerError {
         _ => "statement",
     };
     LowerError::UnsupportedFeature(UnsupportedFeatureKind::TopLevelStatement(name), stmt.span())
-}
-
-pub(crate) fn unsupported_stmt(stmt: &Stmt) -> LowerError {
-    let name = match stmt {
-        Stmt::Class { .. } => "class",
-        Stmt::Trait { .. } => "trait",
-        Stmt::Use { .. } => "use",
-        Stmt::Enum { .. } => "enum",
-        Stmt::Const { .. } => "const",
-        _ => "statement",
-    };
-    LowerError::UnsupportedFeature(UnsupportedFeatureKind::Statement(name), stmt.span())
 }

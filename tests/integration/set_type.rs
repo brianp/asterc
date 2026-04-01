@@ -333,3 +333,112 @@ let filtered = s.filter(f: -> x : x > 0)
 ",
     );
 }
+
+// ─── Additional Set type integration tests ──────────────────────────────
+
+#[test]
+fn set_push_multiple_items() {
+    // Push several items to a set
+    crate::common::check_ok(
+        "\
+let s = Set[Int]()
+s.push(item: 1)
+s.push(item: 2)
+s.push(item: 3)
+let n: Int = s.len()
+",
+    );
+}
+
+#[test]
+fn set_contains_returns_bool_binding() {
+    // Verify contains result can be bound and used as Bool
+    crate::common::check_ok(
+        "\
+let s = Set[Int]()
+s.push(item: 1)
+let found: Bool = s.contains(item: 1)
+if found
+  log(message: \"yes\")
+",
+    );
+}
+
+#[test]
+fn set_remove_wrong_element_type_error() {
+    // Removing wrong type from Set[String]
+    let err = crate::common::check_err(
+        "\
+let s = Set[String]()
+s.remove(item: 42)
+",
+    );
+    assert!(
+        err.contains("mismatch") || err.contains("expected") || err.contains("String"),
+        "expected type mismatch for wrong remove type, got: {}",
+        err
+    );
+}
+
+#[test]
+fn set_len_in_expression() {
+    // Use len() result in an arithmetic expression
+    crate::common::check_ok(
+        "\
+let s = Set[Int]()
+s.push(item: 1)
+let total: Int = s.len() + 10
+",
+    );
+}
+
+#[test]
+fn set_push_string_wrong_type_error() {
+    // Push Int into Set[String] -> error
+    let err = crate::common::check_err(
+        "\
+let s = Set[String]()
+s.push(item: 42)
+",
+    );
+    assert!(
+        err.contains("mismatch") || err.contains("expected") || err.contains("String"),
+        "expected type mismatch, got: {}",
+        err
+    );
+}
+
+#[test]
+fn set_for_loop_element_type_correct() {
+    // Verify that for-loop variable has the correct element type
+    crate::common::check_ok(
+        "\
+let s = Set[String]()
+s.push(item: \"hello\")
+for x in s
+  let y: String = x
+",
+    );
+}
+
+#[test]
+fn set_of_set_without_eq_error() {
+    // Set[Set[Int]] should fail because Set[Int] doesn't include Eq
+    let err = crate::common::check_err("let s: Set[Set[Int]] = Set[Set[Int]]()");
+    assert!(
+        err.contains("Eq") || err.contains("does not include"),
+        "expected Eq constraint error for Set[Set[Int]], got: {}",
+        err
+    );
+}
+
+#[test]
+fn set_in_function_return() {
+    // Function that accepts and returns a Set
+    crate::common::check_ok(
+        "\
+def process(items: Set[Int]) -> Set[Int]
+  items
+",
+    );
+}

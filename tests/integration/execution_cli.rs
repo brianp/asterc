@@ -21,25 +21,21 @@ fn run_returns_exit_code_from_main() {
 }
 
 #[test]
-fn run_reports_not_executable_yet_for_spec_example() {
-    // Spec file with trait definitions at top level — still not executable
+fn run_reports_no_main_for_spec_example() {
+    // Spec file with trait definitions at top level — compiles FIR but has no main()
     let output = crate::common::cli(&["run", "examples/spec/11_generics_and_traits.aster"]);
+    // Traits are now supported in FIR lowering, so the error is "no main() found" (exit 1)
+    // rather than the old "not executable yet" (exit 2).
     assert_eq!(
         output.status.code(),
-        Some(2),
+        Some(1),
         "{}",
         crate::common::output_text(&output)
     );
 
     let text = crate::common::output_text(&output);
-    assert!(text.contains("not executable yet"), "{text}");
-    assert!(text.contains("top-level `trait`"), "{text}");
+    assert!(text.contains("no main()"), "{text}");
     assert!(!text.contains("Discriminant("), "{text}");
-    // E028 errors must point at a source location (span), not just a message
-    assert!(
-        text.contains(":16:"),
-        "E028 should include a source location: {text}"
-    );
 }
 
 #[test]
