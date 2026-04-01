@@ -8,6 +8,9 @@ crate-type = ["lib", "staticlib"]
 
 [dependencies]
 fir = { path = "../fir" }
+lexer = { path = "../lexer" }
+parser = { path = "../parser" }
+typecheck = { path = "../typecheck" }
 cranelift-codegen = "0.129"
 cranelift-frontend = "0.129"
 cranelift-jit = "0.129"
@@ -24,6 +27,3 @@ cc = "1"
 
 [dev-dependencies]
 ast = { path = "../ast" }
-lexer = { path = "../lexer" }
-parser = { path = "../parser" }
-typecheck = { path = "../typecheck" }
