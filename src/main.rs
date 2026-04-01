@@ -161,8 +161,22 @@ fn frontend_and_lower(source: &str, filename: &str, unstable: bool) -> fir::FirM
         Err(()) => std::process::exit(1),
     };
 
+    // Merge FIR data from imported modules before lowering the main module.
+    // This ensures methods/functions defined in imported files are available
+    // at codegen time for cross-module calls.
+    let imported_fir_caches = checker
+        .module_loader
+        .as_ref()
+        .map(|loader| loader.borrow_mut().take_fir_caches())
+        .unwrap_or_default();
+
     // Lower AST → FIR
     let mut lowerer = fir::Lowerer::new(checker.env, checker.type_table);
+
+    for cache in &imported_fir_caches {
+        lowerer.merge_imported(cache);
+    }
+
     if let Err(e) = lowerer.lower_module(&module_ast) {
         render_execution_error(source, filename, &e);
         std::process::exit(2);

@@ -9,7 +9,7 @@ pub mod types;
 pub mod validate;
 
 pub use exprs::{BinOp, FirExpr, UnaryOp};
-pub use lower::{LowerError, Lowerer};
+pub use lower::{FirCache, LowerError, Lowerer};
 pub use module::{FirClass, FirFunction, FirModule};
 pub use stmts::{FirPlace, FirStmt};
 pub use types::{ClassId, FirType, FunctionId, LocalId};

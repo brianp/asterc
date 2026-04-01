@@ -1,0 +1,18 @@
+# Aster package manager
+package(pkg_name: "aster-pkg", version: "0.1.0")
+compiler(ver: "0.1.0")
+quarantine(days: 3)
+
+# Dependencies
+http(version: "1.2.0")
+json(version: "0.4.0")
+toml(version: "0.5.0")
+aster_fmt(name: "aster-fmt", path: "aster-fmt")
+serde_json(version: "1.0.0", dev: "true")
+
+# Tasks
+task(task_name: "test", cmd: "aster test --release")
+task(task_name: "bench", cmd: "aster test --bench")
+
+# Overrides
+override(dep_name: "json", version: "0.3.0")

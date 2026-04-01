@@ -35,7 +35,20 @@ impl Lowerer {
             return self.lower_iterator_for_loop(var, iter, body, &class_name);
         }
 
-        // Default: list-based iteration
+        // Default: list/set-based iteration
+        // Determine if iterating over a Set to use correct runtime functions
+        let is_set = matches!(self.resolve_iter_type(iter), Some(Type::Set(_)));
+        let rt_len = if is_set {
+            "aster_set_len"
+        } else {
+            "aster_list_len"
+        };
+        let rt_get = if is_set {
+            "aster_set_get"
+        } else {
+            "aster_list_get"
+        };
+
         // Lower the iterable expression
         let fir_iter = self.lower_expr(iter)?;
 
@@ -66,20 +79,26 @@ impl Lowerer {
         // Resolve element type from AST type info when available
         let elem_ty = self.resolve_list_elem_type(iter).unwrap_or(FirType::I64);
 
+        // Also resolve the AST-level element type so resolve_class_name works
+        // for imported class instances accessed through for-loop variables.
+        let ast_elem_ty = self.resolve_list_ast_elem_type(iter);
+
         // let var = aster_list_get(__iter, __idx)
         let var_id = self.alloc_local();
         self.scope.locals.insert(var.to_string(), var_id);
         self.scope.local_types.insert(var_id, elem_ty.clone());
+        if let Some(ast_ty) = ast_elem_ty {
+            self.scope.local_ast_types.insert(var.to_string(), ast_ty);
+        }
 
         // Build the while loop body
         let mut while_body = Vec::new();
 
-        // let var = aster_list_get(__iter, __idx)
         while_body.push(FirStmt::Let {
             name: var_id,
             ty: elem_ty.clone(),
             value: FirExpr::RuntimeCall {
-                name: "aster_list_get".to_string(),
+                name: rt_get.to_string(),
                 args: vec![
                     FirExpr::LocalVar(iter_id, FirType::Ptr),
                     FirExpr::LocalVar(idx_id, FirType::I64),
@@ -100,7 +119,7 @@ impl Lowerer {
                 name: len_id,
                 ty: FirType::I64,
                 value: FirExpr::RuntimeCall {
-                    name: "aster_list_len".to_string(),
+                    name: rt_len.to_string(),
                     args: vec![FirExpr::LocalVar(iter_id, FirType::Ptr)],
                     ret_ty: FirType::I64,
                 },

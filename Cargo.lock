@@ -681,6 +681,7 @@ name = "typecheck"
 version = "0.1.0"
 dependencies = [
  "ast",
+ "fir",
  "indexmap",
  "lexer",
  "parser",

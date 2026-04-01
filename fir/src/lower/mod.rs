@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use ast::Span;
-use ast::type_env::TypeEnv;
+use ast::type_env::{Binding, TypeEnv};
 use ast::type_table::TypeTable;
 use ast::{EnumVariant, Expr, MatchPattern, Module, Stmt, Type};
 
@@ -20,6 +20,28 @@ mod match_lower;
 mod method;
 mod stmt;
 mod synthesize;
+
+/// Cached FIR data from a compiled imported module.
+/// Stored alongside `ModuleExports` in the module loader cache.
+#[derive(Debug, Clone)]
+pub struct FirCache {
+    /// All FIR functions compiled from this module (indexed by FunctionId).
+    pub functions: Vec<FirFunction>,
+    /// All FIR class layouts from this module.
+    pub classes: Vec<FirClass>,
+    /// Name-to-FunctionId mapping (e.g. "double", "Greeter.greet").
+    pub function_names: HashMap<String, FunctionId>,
+    /// Name-to-ClassId mapping (e.g. "Greeter").
+    pub class_names: HashMap<String, ClassId>,
+    /// Class field layouts.
+    pub class_fields: HashMap<ClassId, Vec<(String, FirType, usize)>>,
+    /// Enum variant metadata.
+    #[allow(clippy::type_complexity)]
+    pub enum_variants: HashMap<String, Vec<(String, i64, Vec<(String, FirType)>)>>,
+    /// Default parameter values for functions/methods.
+    #[allow(clippy::type_complexity)]
+    pub function_defaults: HashMap<String, Vec<(String, Option<Expr>)>>,
+}
 
 #[derive(Debug)]
 pub enum UnsupportedFeatureKind {
@@ -228,6 +250,22 @@ impl Lowerer {
                     self.ms.next_class += 1;
                     self.ms.classes.insert(name.clone(), id);
                 }
+                Stmt::Trait { methods, .. } => {
+                    // Register default method implementations (non-empty bodies)
+                    for m in methods {
+                        if let Stmt::Let {
+                            name: mname,
+                            value: Expr::Lambda { body, .. },
+                            ..
+                        } = m
+                            && !body.is_empty()
+                        {
+                            let id = FunctionId(self.ms.next_function);
+                            self.ms.next_function += 1;
+                            self.ms.functions.insert(mname.clone(), id);
+                        }
+                    }
+                }
                 Stmt::Enum { name, variants, .. } => {
                     // Register enum variant metadata for match lowering
                     let mut variant_info = Vec::new();
@@ -320,6 +358,390 @@ impl Lowerer {
         Ok(id)
     }
 
+    /// Export the FIR cache from this lowerer (after lowering a module).
+    /// Used to cache imported module FIR data for merging into the main module.
+    pub fn export_cache(&self) -> FirCache {
+        FirCache {
+            functions: self.ms.module.functions.clone(),
+            classes: self.ms.module.classes.clone(),
+            function_names: self.ms.functions.clone(),
+            class_names: self.ms.classes.clone(),
+            class_fields: self.ms.class_fields.clone(),
+            enum_variants: self.ms.enum_variants.clone(),
+            function_defaults: self.ms.function_defaults.clone(),
+        }
+    }
+
+    /// Merge imported module FIR data into this lowerer's state.
+    /// Builds per-ID remap tables that handle deduplication: if a function
+    /// or class with the same name already exists, references are remapped
+    /// to the existing ID instead of creating a duplicate.
+    pub fn merge_imported(&mut self, cache: &FirCache) {
+        // Build lookup tables for existing functions/classes by name
+        let existing_funcs: HashMap<String, FunctionId> = self
+            .ms
+            .module
+            .functions
+            .iter()
+            .filter(|f| !f.name.is_empty())
+            .map(|f| (f.name.clone(), f.id))
+            .collect();
+        let existing_classes: HashMap<String, ClassId> = self
+            .ms
+            .module
+            .classes
+            .iter()
+            .map(|c| (c.name.clone(), c.id))
+            .collect();
+
+        // Use module array length (not next_* counters) as offsets, since
+        // next_* includes pre-registered IDs that haven't been added to the module array yet.
+        let func_offset = self.ms.module.functions.len() as u32;
+        let class_offset = self.ms.module.classes.len() as u32;
+
+        // Build remap tables: for each old ID in the cache, determine the new ID.
+        // Duplicates map to the already-existing ID; new items get sequential IDs
+        // starting from the current class/function count (not old_id + offset, since
+        // skipping duplicates would leave gaps in the sequential ID space).
+        let mut func_remap: HashMap<u32, FunctionId> = HashMap::new();
+        let mut class_remap: HashMap<u32, ClassId> = HashMap::new();
+
+        let mut next_func_id = func_offset;
+        for func in &cache.functions {
+            if !func.name.is_empty()
+                && let Some(&existing_id) = existing_funcs.get(&func.name)
+            {
+                // Duplicate: map to existing
+                func_remap.insert(func.id.0, existing_id);
+                continue;
+            }
+            // New function: assign next sequential ID
+            func_remap.insert(func.id.0, FunctionId(next_func_id));
+            next_func_id += 1;
+        }
+
+        let mut next_class_id = class_offset;
+        for class in &cache.classes {
+            if let Some(&existing_id) = existing_classes.get(&class.name) {
+                class_remap.insert(class.id.0, existing_id);
+                continue;
+            }
+            if class.id.0 >= u32::MAX - 10 {
+                class_remap.insert(class.id.0, class.id);
+            } else {
+                // New class: assign next sequential ID
+                class_remap.insert(class.id.0, ClassId(next_class_id));
+                next_class_id += 1;
+            }
+        }
+
+        let resolve_func = |old: FunctionId| -> FunctionId {
+            func_remap
+                .get(&old.0)
+                .copied()
+                .unwrap_or(FunctionId(old.0 + func_offset))
+        };
+        let resolve_class = |old: ClassId| -> ClassId {
+            if old.0 >= u32::MAX - 10 {
+                return old;
+            }
+            class_remap
+                .get(&old.0)
+                .copied()
+                .unwrap_or(ClassId(old.0 + class_offset))
+        };
+
+        // Merge functions (skip duplicates)
+        for func in &cache.functions {
+            if !func.name.is_empty() && existing_funcs.contains_key(&func.name) {
+                continue;
+            }
+            let new_id = resolve_func(func.id);
+            let mut new_func = func.clone();
+            new_func.id = new_id;
+            Self::remap_stmts_with(
+                &mut new_func.body,
+                &func_remap,
+                &class_remap,
+                func_offset,
+                class_offset,
+            );
+            self.ms.module.add_function(new_func);
+        }
+
+        // Merge classes (skip duplicates)
+        for class in &cache.classes {
+            if existing_classes.contains_key(&class.name) {
+                continue;
+            }
+            let new_id = resolve_class(class.id);
+            let mut new_class = class.clone();
+            new_class.id = new_id;
+            new_class.methods = class.methods.iter().map(|&f| resolve_func(f)).collect();
+            new_class.vtable = class
+                .vtable
+                .iter()
+                .map(|(name, fid)| (name.clone(), resolve_func(*fid)))
+                .collect();
+            new_class.parent = class.parent.map(&resolve_class);
+            self.ms.module.add_class(new_class);
+        }
+
+        // Merge name mappings (skip if already present)
+        for (name, &func_id) in &cache.function_names {
+            let new_id = resolve_func(func_id);
+            self.ms.functions.entry(name.clone()).or_insert(new_id);
+        }
+
+        for (name, &class_id) in &cache.class_names {
+            let new_id = resolve_class(class_id);
+            self.ms.classes.entry(name.clone()).or_insert(new_id);
+        }
+
+        // Merge class_fields with remapped ClassIds
+        for (&class_id, fields) in &cache.class_fields {
+            let new_id = resolve_class(class_id);
+            self.ms
+                .class_fields
+                .entry(new_id)
+                .or_insert_with(|| fields.clone());
+        }
+
+        // Merge enum variants
+        for (name, variants) in &cache.enum_variants {
+            self.ms
+                .enum_variants
+                .entry(name.clone())
+                .or_insert_with(|| variants.clone());
+        }
+
+        // Merge function defaults
+        for (name, defaults) in &cache.function_defaults {
+            self.ms
+                .function_defaults
+                .entry(name.clone())
+                .or_insert_with(|| defaults.clone());
+        }
+
+        // Update counters to reflect the actual module array lengths after merging.
+        // This ensures the next lowering pass assigns correct IDs.
+        self.ms.next_function = self
+            .ms
+            .next_function
+            .max(self.ms.module.functions.len() as u32);
+        self.ms.next_class = self.ms.next_class.max(self.ms.module.classes.len() as u32);
+    }
+
+    /// Recursively remap FunctionId and ClassId references in FIR statements
+    /// using per-ID remap tables for dedup-aware remapping.
+    fn remap_stmts_with(
+        stmts: &mut [FirStmt],
+        func_remap: &HashMap<u32, FunctionId>,
+        class_remap: &HashMap<u32, ClassId>,
+        func_offset: u32,
+        class_offset: u32,
+    ) {
+        for stmt in stmts.iter_mut() {
+            Self::remap_stmt_with(stmt, func_remap, class_remap, func_offset, class_offset);
+        }
+    }
+
+    fn remap_stmt_with(
+        stmt: &mut FirStmt,
+        fr: &HashMap<u32, FunctionId>,
+        cr: &HashMap<u32, ClassId>,
+        fo: u32,
+        co: u32,
+    ) {
+        match stmt {
+            FirStmt::Let { value, .. } => {
+                Self::remap_expr_with(value, fr, cr, fo, co);
+            }
+            FirStmt::Assign { target, value } => {
+                Self::remap_place_with(target, fr, cr, fo, co);
+                Self::remap_expr_with(value, fr, cr, fo, co);
+            }
+            FirStmt::Return(expr) | FirStmt::Expr(expr) => {
+                Self::remap_expr_with(expr, fr, cr, fo, co);
+            }
+            FirStmt::If {
+                cond,
+                then_body,
+                else_body,
+            } => {
+                Self::remap_expr_with(cond, fr, cr, fo, co);
+                Self::remap_stmts_with(then_body, fr, cr, fo, co);
+                Self::remap_stmts_with(else_body, fr, cr, fo, co);
+            }
+            FirStmt::While {
+                cond,
+                body,
+                increment,
+            } => {
+                Self::remap_expr_with(cond, fr, cr, fo, co);
+                Self::remap_stmts_with(body, fr, cr, fo, co);
+                Self::remap_stmts_with(increment, fr, cr, fo, co);
+            }
+            FirStmt::Block(body) => {
+                Self::remap_stmts_with(body, fr, cr, fo, co);
+            }
+            FirStmt::Break | FirStmt::Continue | FirStmt::NoOp => {}
+        }
+    }
+
+    fn remap_place_with(
+        place: &mut FirPlace,
+        fr: &HashMap<u32, FunctionId>,
+        cr: &HashMap<u32, ClassId>,
+        fo: u32,
+        co: u32,
+    ) {
+        match place {
+            FirPlace::Local(_) => {}
+            FirPlace::Field { object, .. } => {
+                Self::remap_expr_with(object, fr, cr, fo, co);
+            }
+            FirPlace::Index { list, index } => {
+                Self::remap_expr_with(list, fr, cr, fo, co);
+                Self::remap_expr_with(index, fr, cr, fo, co);
+            }
+            FirPlace::MapIndex { map, key } => {
+                Self::remap_expr_with(map, fr, cr, fo, co);
+                Self::remap_expr_with(key, fr, cr, fo, co);
+            }
+        }
+    }
+
+    /// Resolve a FunctionId using the remap table, falling back to offset.
+    fn resolve_fid(fid: FunctionId, fr: &HashMap<u32, FunctionId>, fo: u32) -> FunctionId {
+        fr.get(&fid.0).copied().unwrap_or(FunctionId(fid.0 + fo))
+    }
+
+    /// Resolve a ClassId using the remap table, falling back to offset.
+    fn resolve_cid(cid: ClassId, cr: &HashMap<u32, ClassId>, co: u32) -> ClassId {
+        if cid.0 >= u32::MAX - 10 {
+            return cid;
+        }
+        cr.get(&cid.0).copied().unwrap_or(ClassId(cid.0 + co))
+    }
+
+    fn remap_expr_with(
+        expr: &mut FirExpr,
+        fr: &HashMap<u32, FunctionId>,
+        cr: &HashMap<u32, ClassId>,
+        fo: u32,
+        co: u32,
+    ) {
+        match expr {
+            FirExpr::Call { func, args, .. } => {
+                *func = Self::resolve_fid(*func, fr, fo);
+                for arg in args.iter_mut() {
+                    Self::remap_expr_with(arg, fr, cr, fo, co);
+                }
+            }
+            FirExpr::Spawn { func, args, .. } => {
+                *func = Self::resolve_fid(*func, fr, fo);
+                for arg in args.iter_mut() {
+                    Self::remap_expr_with(arg, fr, cr, fo, co);
+                }
+            }
+            FirExpr::BlockOn { func, args, .. } => {
+                *func = Self::resolve_fid(*func, fr, fo);
+                for arg in args.iter_mut() {
+                    Self::remap_expr_with(arg, fr, cr, fo, co);
+                }
+            }
+            FirExpr::Construct { class, fields, .. } => {
+                *class = Self::resolve_cid(*class, cr, co);
+                for field_val in fields.iter_mut() {
+                    Self::remap_expr_with(field_val, fr, cr, fo, co);
+                }
+            }
+            FirExpr::FieldGet { object, .. } => {
+                Self::remap_expr_with(object, fr, cr, fo, co);
+            }
+            FirExpr::FieldSet { object, value, .. } => {
+                Self::remap_expr_with(object, fr, cr, fo, co);
+                Self::remap_expr_with(value, fr, cr, fo, co);
+            }
+            FirExpr::BinaryOp { left, right, .. } => {
+                Self::remap_expr_with(left, fr, cr, fo, co);
+                Self::remap_expr_with(right, fr, cr, fo, co);
+            }
+            FirExpr::UnaryOp { operand, .. } => {
+                Self::remap_expr_with(operand, fr, cr, fo, co);
+            }
+            FirExpr::RuntimeCall { args, .. } => {
+                for arg in args.iter_mut() {
+                    Self::remap_expr_with(arg, fr, cr, fo, co);
+                }
+            }
+            FirExpr::ListNew { elements, .. } => {
+                for elem in elements.iter_mut() {
+                    Self::remap_expr_with(elem, fr, cr, fo, co);
+                }
+            }
+            FirExpr::ListGet { list, index, .. } => {
+                Self::remap_expr_with(list, fr, cr, fo, co);
+                Self::remap_expr_with(index, fr, cr, fo, co);
+            }
+            FirExpr::ListSet {
+                list, index, value, ..
+            } => {
+                Self::remap_expr_with(list, fr, cr, fo, co);
+                Self::remap_expr_with(index, fr, cr, fo, co);
+                Self::remap_expr_with(value, fr, cr, fo, co);
+            }
+            FirExpr::TagWrap { value, .. } => {
+                Self::remap_expr_with(value, fr, cr, fo, co);
+            }
+            FirExpr::TagUnwrap { value, .. } => {
+                Self::remap_expr_with(value, fr, cr, fo, co);
+            }
+            FirExpr::TagCheck { value, .. } => {
+                Self::remap_expr_with(value, fr, cr, fo, co);
+            }
+            FirExpr::ClosureCreate { func, env, .. } => {
+                *func = Self::resolve_fid(*func, fr, fo);
+                Self::remap_expr_with(env, fr, cr, fo, co);
+            }
+            FirExpr::ClosureCall { closure, args, .. } => {
+                Self::remap_expr_with(closure, fr, cr, fo, co);
+                for arg in args.iter_mut() {
+                    Self::remap_expr_with(arg, fr, cr, fo, co);
+                }
+            }
+            FirExpr::EnvLoad { env, .. } => {
+                Self::remap_expr_with(env, fr, cr, fo, co);
+            }
+            FirExpr::GlobalFunc(fid) => {
+                *fid = Self::resolve_fid(*fid, fr, fo);
+            }
+            FirExpr::ResolveTask { task, .. } => {
+                Self::remap_expr_with(task, fr, cr, fo, co);
+            }
+            FirExpr::CancelTask { task } => {
+                Self::remap_expr_with(task, fr, cr, fo, co);
+            }
+            FirExpr::WaitCancel { task } => {
+                Self::remap_expr_with(task, fr, cr, fo, co);
+            }
+            FirExpr::IntToFloat(inner) => {
+                Self::remap_expr_with(inner, fr, cr, fo, co);
+            }
+            FirExpr::Bitcast { value, .. } => {
+                Self::remap_expr_with(value, fr, cr, fo, co);
+            }
+            FirExpr::IntLit(_)
+            | FirExpr::FloatLit(_)
+            | FirExpr::BoolLit(_)
+            | FirExpr::StringLit(_)
+            | FirExpr::NilLit
+            | FirExpr::LocalVar(_, _)
+            | FirExpr::Safepoint => {}
+        }
+    }
+
     /// Take ownership of the built FirModule.
     pub fn finish(self) -> FirModule {
         self.ms.module
@@ -371,10 +793,31 @@ impl Lowerer {
             Expr::Ident(name, _) => self.scope.local_ast_types.get(name).cloned(),
             _ => self.type_table.get(&expr.span()).cloned(),
         };
-        if let Some(Type::List(inner)) = ast_ty {
-            Some(self.lower_type(&inner))
-        } else {
-            None
+        match ast_ty {
+            Some(Type::List(inner)) | Some(Type::Set(inner)) => Some(self.lower_type(&inner)),
+            _ => None,
+        }
+    }
+
+    /// Resolve the AST-level element type of a list or set expression.
+    /// Used by for-loop lowering to set local_ast_types for the loop variable.
+    fn resolve_list_ast_elem_type(&self, expr: &Expr) -> Option<Type> {
+        let ast_ty = match expr {
+            Expr::Ident(name, _) => self.scope.local_ast_types.get(name).cloned(),
+            // For member access (e.g. s.deps), resolve the field type from class info
+            Expr::Member { object, field, .. } => {
+                let class_name = self.resolve_class_name(object).ok()?;
+                let ci = self.type_env.get_class(&class_name)?;
+                ci.fields
+                    .iter()
+                    .find(|(fname, _)| fname.as_str() == field.as_str())
+                    .map(|(_, ftype)| ftype.clone())
+            }
+            _ => self.type_table.get(&expr.span()).cloned(),
+        };
+        match ast_ty {
+            Some(Type::List(inner)) | Some(Type::Set(inner)) => Some(*inner),
+            _ => None,
         }
     }
 
@@ -631,7 +1074,7 @@ impl Lowerer {
             return ty.clone();
         }
         // Fall back to type env (top-level bindings)
-        if let Some(ty) = self.type_env.get_var(name) {
+        if let Some(Binding { ty, .. }) = self.type_env.get_var(name) {
             self.lower_type(ty)
         } else {
             FirType::Void
@@ -640,7 +1083,11 @@ impl Lowerer {
 
     /// Resolve the return type of a closure-typed local variable.
     fn resolve_closure_ret_type(&self, name: &str) -> FirType {
-        if let Some(Type::Function { ret, .. }) = self.type_env.get_var(name) {
+        if let Some(Binding {
+            ty: Type::Function { ret, .. },
+            ..
+        }) = self.type_env.get_var(name)
+        {
             return self.lower_type(ret);
         }
         // Check local AST types
@@ -651,8 +1098,16 @@ impl Lowerer {
     }
 
     fn resolve_function_ret_type(&self, name: &str) -> FirType {
-        if let Some(Type::Function { ret, .. }) = self.type_env.get_var(name) {
+        if let Some(Binding {
+            ty: Type::Function { ret, .. },
+            ..
+        }) = self.type_env.get_var(name)
+        {
             self.lower_type(ret)
+        } else if let Some(&func_id) = self.ms.functions.get(name) {
+            // Fallback: look up the return type from the already-compiled FIR function.
+            // This handles imported methods whose signatures aren't in the main TypeEnv.
+            self.resolve_function_ret_type_by_id(func_id)
         } else {
             FirType::Void
         }
@@ -668,9 +1123,12 @@ impl Lowerer {
         ret_ty: FirType,
         call_span: &Span,
     ) -> (Vec<FirExpr>, FirType) {
-        let func_ty = self.type_env.get_var(func_name);
-        let (param_types, ret_ast) = match &func_ty {
-            Some(Type::Function { params, ret, .. }) => (params.clone(), ret.as_ref().clone()),
+        let func_binding = self.type_env.get_var(func_name);
+        let (param_types, ret_ast) = match &func_binding {
+            Some(Binding {
+                ty: Type::Function { params, ret, .. },
+                ..
+            }) => (params.clone(), ret.as_ref().clone()),
             _ => return (fir_args, ret_ty),
         };
 
@@ -757,8 +1215,11 @@ impl Lowerer {
     fn function_is_suspendable(&self, name: &str) -> bool {
         matches!(
             self.type_env.get_var(name),
-            Some(Type::Function {
-                suspendable: true,
+            Some(Binding {
+                ty: Type::Function {
+                    suspendable: true,
+                    ..
+                },
                 ..
             })
         )
@@ -772,7 +1233,11 @@ impl Lowerer {
             if let Some(Type::Task(inner_ty)) = self.scope.local_ast_types.get(name) {
                 return self.lower_type(inner_ty);
             }
-            if let Some(Type::Task(inner_ty)) = self.type_env.get_var(name) {
+            if let Some(Binding {
+                ty: Type::Task(inner_ty),
+                ..
+            }) = self.type_env.get_var(name)
+            {
                 return self.lower_type(inner_ty);
             }
         }
@@ -782,7 +1247,10 @@ impl Lowerer {
     fn resolve_async_call_ast_type(&self, func: &Expr) -> Option<Type> {
         match func {
             Expr::Ident(name, _) => match self.type_env.get_var(name) {
-                Some(Type::Function { ret, .. }) => Some(Type::Task(ret.clone())),
+                Some(Binding {
+                    ty: Type::Function { ret, .. },
+                    ..
+                }) => Some(Type::Task(ret.clone())),
                 _ => None,
             },
             _ => None,
@@ -878,7 +1346,10 @@ impl Lowerer {
             {
                 return true;
             }
-            if let Some(Type::Custom(class_name, _)) = self.type_env.get_var(name)
+            if let Some(Binding {
+                ty: Type::Custom(class_name, _),
+                ..
+            }) = self.type_env.get_var(name)
                 && class_name == builtin_class::RANGE
             {
                 return true;
@@ -902,7 +1373,11 @@ impl Lowerer {
                     return Ok(class_name.clone());
                 }
                 // Fall back to the type env (top-level bindings)
-                if let Some(Type::Custom(class_name, _)) = self.type_env.get_var(name) {
+                if let Some(Binding {
+                    ty: Type::Custom(class_name, _),
+                    ..
+                }) = self.type_env.get_var(name)
+                {
                     return Ok(class_name.clone());
                 }
                 // Inside a method body, bare field names resolve via self
@@ -935,7 +1410,10 @@ impl Lowerer {
                         return Ok(name.clone());
                     }
                     // Function call that returns a class instance: look up return type
-                    if let Some(Type::Function { ret, .. }) = self.type_env.get_var(name)
+                    if let Some(Binding {
+                        ty: Type::Function { ret, .. },
+                        ..
+                    }) = self.type_env.get_var(name)
                         && let Type::Custom(class_name, _) = ret.as_ref()
                         && self.ms.classes.contains_key(class_name.as_str())
                     {
@@ -1017,7 +1495,7 @@ impl Lowerer {
                         .scope
                         .local_ast_types
                         .get(name.as_str())
-                        .or_else(|| self.type_env.get_var(name));
+                        .or_else(|| self.type_env.get_var_type(name));
                     let elem_class = match list_type {
                         Some(Type::List(inner)) => {
                             if let Type::Custom(class_name, _) = inner.as_ref() {

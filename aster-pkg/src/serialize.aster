@@ -1,0 +1,132 @@
+# Seedfile serialization and deserialization.
+#
+# The wrapper program prints the Seedfile state in a simple
+# line-based format. This module parses that output back into
+# structured data that the CLI can act on.
+#
+# Format:
+#   NAME:my-app
+#   VERSION:0.1.0
+#   COMPILER:0.1.0
+#   QUARANTINE:3
+#   DEP:http|1.2.0|||false|false
+#   DEP:json|0.4.0|||false|false
+#   TASK:test|aster test --release
+#   OVERRIDE:json|0.3.0|||
+
+use seedfile { Seedfile, Dependency, Task, Override }
+
+# Parse the structured output from a wrapper execution into a Seedfile.
+pub def parse_seedfile_output(output: String) -> Seedfile
+    let s = Seedfile(
+        aster_version: "0.1.0",
+        name: "",
+        version_str: "",
+        compiler_version: "",
+        quarantine_days: 0,
+        deps: [],
+        tasks: [],
+        overrides: []
+    )
+
+    let lines = output.split(sep: "\n")
+    for line in lines
+        let trimmed = line.trim()
+        if trimmed.len() == 0
+            continue
+
+        if trimmed.starts_with(pre: "NAME:")
+            s.name = trimmed.slice(from: 5, to: trimmed.len())
+        elif trimmed.starts_with(pre: "VERSION:")
+            s.version_str = trimmed.slice(from: 8, to: trimmed.len())
+        elif trimmed.starts_with(pre: "COMPILER:")
+            s.compiler_version = trimmed.slice(from: 9, to: trimmed.len())
+        elif trimmed.starts_with(pre: "QUARANTINE:")
+            # Parse integer from string. For now we handle simple cases.
+            let q_str = trimmed.slice(from: 11, to: trimmed.len())
+            s.quarantine_days = parse_int(text: q_str)
+        elif trimmed.starts_with(pre: "DEP:")
+            let dep_str = trimmed.slice(from: 4, to: trimmed.len())
+            let parts = dep_str.split(sep: "|")
+            # parts: name|version|path|git|dev|trusted
+            let dep = Dependency(
+                name: parts[0],
+                version: parts[1],
+                path: safe_get(list: parts, index: 2, fallback: ""),
+                git: safe_get(list: parts, index: 3, fallback: ""),
+                dev: safe_get(list: parts, index: 4, fallback: "false") == "true",
+                trusted: safe_get(list: parts, index: 5, fallback: "false") == "true"
+            )
+            s.deps.push(item: dep)
+        elif trimmed.starts_with(pre: "TASK:")
+            let task_str = trimmed.slice(from: 5, to: trimmed.len())
+            let parts = task_str.split(sep: "|")
+            let t = Task(
+                name: parts[0],
+                cmd: safe_get(list: parts, index: 1, fallback: "")
+            )
+            s.tasks.push(item: t)
+        elif trimmed.starts_with(pre: "OVERRIDE:")
+            let ov_str = trimmed.slice(from: 9, to: trimmed.len())
+            let parts = ov_str.split(sep: "|")
+            let o = Override(
+                name: parts[0],
+                version: safe_get(list: parts, index: 1, fallback: ""),
+                path: safe_get(list: parts, index: 2, fallback: ""),
+                git: safe_get(list: parts, index: 3, fallback: ""),
+                branch: safe_get(list: parts, index: 4, fallback: "")
+            )
+            s.overrides.push(item: o)
+
+    s
+
+# Safely get an element from a string list, returning a fallback if out of bounds.
+def safe_get(list: List[String], index: Int, fallback: String) -> String
+    if index < list.len()
+        return list[index]
+    fallback
+
+# Parse an integer from a string. Handles simple non-negative integers.
+# Returns 0 for unparseable input.
+def parse_int(text: String) -> Int
+    let result = 0
+    let i = 0
+    while i < text.len()
+        let ch = text.slice(from: i, to: i + 1)
+        if ch == "0"
+            result = result * 10
+        elif ch == "1"
+            result = result * 10 + 1
+        elif ch == "2"
+            result = result * 10 + 2
+        elif ch == "3"
+            result = result * 10 + 3
+        elif ch == "4"
+            result = result * 10 + 4
+        elif ch == "5"
+            result = result * 10 + 5
+        elif ch == "6"
+            result = result * 10 + 6
+        elif ch == "7"
+            result = result * 10 + 7
+        elif ch == "8"
+            result = result * 10 + 8
+        elif ch == "9"
+            result = result * 10 + 9
+        i = i + 1
+    result
+
+# Format a Seedfile back into the line-based serialization format.
+# Useful for round-trip testing.
+pub def format_seedfile(s: Seedfile) -> String
+    let result = "NAME:" + s.name + "\n"
+    result = result + "VERSION:" + s.version_str + "\n"
+    result = result + "COMPILER:" + s.compiler_version + "\n"
+    result = result + "QUARANTINE:" + to_string(value: s.quarantine_days) + "\n"
+
+    # Note: Dependency/Task/Override list iteration requires for-loop
+    # support over class instances, which the FIR lowerer does not yet
+    # handle. This function is provided for typecheck completeness.
+    # At runtime, the CLI uses the raw output string from the wrapper.
+
+    result
