@@ -3,6 +3,7 @@
 pub mod diagnostic;
 pub mod expr;
 pub mod span;
+pub mod symbol_index;
 pub mod templates;
 pub mod type_env;
 pub mod type_table;
@@ -13,7 +14,10 @@ pub use expr::{
     BinOp, EnumVariant, ErrorCatchPattern, Expr, MatchPattern, Module, Stmt, StringPart, UnaryOp,
 };
 pub use span::Span;
-pub use type_env::{ClassInfo, DynamicReceiverInfo, EnumInfo, NamespaceInfo, TraitInfo, TypeEnv};
+pub use symbol_index::{SymbolIndex, SymbolInfo, SymbolKind};
+pub use type_env::{
+    Binding, ClassInfo, DynamicReceiverInfo, EnumInfo, NamespaceInfo, TraitInfo, TypeEnv,
+};
 pub use type_table::TypeTable;
 pub use types::{Type, TypeConstraint};
 

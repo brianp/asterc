@@ -1,7 +1,16 @@
+use crate::span::Span;
 use crate::types::Type;
 use indexmap::IndexMap;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+
+/// A variable binding: its type plus the span where it was defined.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Binding {
+    pub ty: Type,
+    /// The span of the definition site, or `Span::dummy()` for builtins/synthetic nodes.
+    pub def_span: Span,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClassInfo {
@@ -69,6 +78,8 @@ pub struct EnumInfo {
     pub name: String,
     pub variants: Vec<String>,
     pub includes: Vec<String>,
+    /// Maps variant name to its fields: (field_name, field_type).
+    pub variant_fields: HashMap<String, Vec<(String, Type)>>,
 }
 
 /// Stores the public exports of an imported module namespace.
@@ -84,7 +95,7 @@ pub struct NamespaceInfo {
 /// Maps are shared via Rc and only cloned on mutation (copy-on-write).
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeEnv {
-    variables: Rc<HashMap<String, Type>>,
+    variables: Rc<HashMap<String, Binding>>,
     classes: Rc<HashMap<String, ClassInfo>>,
     traits: Rc<HashMap<String, TraitInfo>>,
     enums: Rc<HashMap<String, EnumInfo>>,
@@ -147,10 +158,17 @@ impl TypeEnv {
         }
     }
 
-    pub fn get_var(&self, name: &str) -> Option<&Type> {
+    /// Look up a variable, returning the full binding (type + definition span).
+    pub fn get_var(&self, name: &str) -> Option<&Binding> {
         self.variables
             .get(name)
             .or_else(|| self.parent.as_ref().and_then(|p| p.get_var(name)))
+    }
+
+    /// Look up a variable, returning only its type. Convenience for callers
+    /// that do not need the definition span.
+    pub fn get_var_type(&self, name: &str) -> Option<&Type> {
+        self.get_var(name).map(|b| &b.ty)
     }
 
     /// Check if `name` exists in any parent scope (not the current one).
@@ -160,8 +178,26 @@ impl TypeEnv {
             .is_some_and(|p| p.get_var(name).is_some())
     }
 
-    pub fn set_var(&mut self, name: String, ty: Type) {
-        Rc::make_mut(&mut self.variables).insert(name, ty);
+    /// Store a full binding (type + definition span).
+    pub fn set_var(&mut self, name: String, binding: Binding) {
+        Rc::make_mut(&mut self.variables).insert(name, binding);
+    }
+
+    /// Store a variable with a known definition span.
+    pub fn set_var_with_span(&mut self, name: String, ty: Type, def_span: Span) {
+        self.set_var(name, Binding { ty, def_span });
+    }
+
+    /// Store a variable without a meaningful definition span (builtins, synthetic nodes).
+    /// Uses `Span::dummy()` as the definition span.
+    pub fn set_var_type(&mut self, name: String, ty: Type) {
+        self.set_var(
+            name,
+            Binding {
+                ty,
+                def_span: Span::dummy(),
+            },
+        );
     }
 
     pub fn get_class(&self, name: &str) -> Option<&ClassInfo> {
@@ -265,26 +301,45 @@ mod tests {
     #[test]
     fn set_and_get_var_in_same_env() {
         let mut env = TypeEnv::new();
-        env.set_var("x".into(), Type::Int);
-        assert_eq!(env.get_var("x"), Some(&Type::Int));
-        assert_eq!(env.get_var("y"), None);
+        env.set_var_type("x".into(), Type::Int);
+        assert_eq!(env.get_var_type("x"), Some(&Type::Int));
+        assert_eq!(env.get_var_type("y"), None);
+    }
+
+    #[test]
+    fn set_var_with_span_records_def_span() {
+        let mut env = TypeEnv::new();
+        let span = Span::new(10, 15);
+        env.set_var_with_span("x".into(), Type::Int, span);
+        let binding = env.get_var("x").unwrap();
+        assert_eq!(binding.ty, Type::Int);
+        assert_eq!(binding.def_span, span);
+    }
+
+    #[test]
+    fn set_var_type_uses_dummy_span() {
+        let mut env = TypeEnv::new();
+        env.set_var_type("x".into(), Type::Int);
+        let binding = env.get_var("x").unwrap();
+        assert_eq!(binding.ty, Type::Int);
+        assert_eq!(binding.def_span, Span::dummy());
     }
 
     #[test]
     fn child_inherits_parent_var() {
         let mut parent = TypeEnv::new();
-        parent.set_var("x".into(), Type::Int);
+        parent.set_var_type("x".into(), Type::Int);
         let child = parent.into_child();
-        assert_eq!(child.get_var("x"), Some(&Type::Int));
+        assert_eq!(child.get_var_type("x"), Some(&Type::Int));
     }
 
     #[test]
     fn child_can_shadow_var() {
         let mut parent = TypeEnv::new();
-        parent.set_var("x".into(), Type::Int);
+        parent.set_var_type("x".into(), Type::Int);
         let mut child = parent.into_child();
-        child.set_var("x".into(), Type::Float);
-        assert_eq!(child.get_var("x"), Some(&Type::Float));
+        child.set_var_type("x".into(), Type::Float);
+        assert_eq!(child.get_var_type("x"), Some(&Type::Float));
     }
 
     #[test]
@@ -337,33 +392,33 @@ mod tests {
     #[test]
     fn child_shares_parent_via_rc() {
         let mut parent = TypeEnv::new();
-        parent.set_var("x".into(), Type::Int);
-        parent.set_var("y".into(), Type::Float);
+        parent.set_var_type("x".into(), Type::Int);
+        parent.set_var_type("y".into(), Type::Float);
         let child = parent.into_child();
         // Parent is shared via Rc, not cloned deeply
         assert!(child.parent.is_some());
-        assert_eq!(child.get_var("x"), Some(&Type::Int));
-        assert_eq!(child.get_var("y"), Some(&Type::Float));
+        assert_eq!(child.get_var_type("x"), Some(&Type::Int));
+        assert_eq!(child.get_var_type("y"), Some(&Type::Float));
     }
 
     #[test]
     fn enter_exit_scope_preserves_state() {
         let mut env = TypeEnv::new();
-        env.set_var("x".into(), Type::Int);
+        env.set_var_type("x".into(), Type::Int);
         env.enter_scope();
-        env.set_var("y".into(), Type::Float);
-        assert_eq!(env.get_var("x"), Some(&Type::Int)); // inherited
-        assert_eq!(env.get_var("y"), Some(&Type::Float)); // local
+        env.set_var_type("y".into(), Type::Float);
+        assert_eq!(env.get_var_type("x"), Some(&Type::Int)); // inherited
+        assert_eq!(env.get_var_type("y"), Some(&Type::Float)); // local
         env.exit_scope();
-        assert_eq!(env.get_var("x"), Some(&Type::Int));
-        assert_eq!(env.get_var("y"), None); // gone after exit
+        assert_eq!(env.get_var_type("x"), Some(&Type::Int));
+        assert_eq!(env.get_var_type("y"), None); // gone after exit
     }
 
     #[test]
     fn into_child_does_not_bump_refcount() {
         let mut parent = TypeEnv::new();
-        parent.set_var("x".into(), Type::Int);
-        parent.set_var("y".into(), Type::Float);
+        parent.set_var_type("x".into(), Type::Int);
+        parent.set_var_type("y".into(), Type::Float);
 
         // Parent's variables Rc has strong count 1
         assert_eq!(Rc::strong_count(&parent.variables), 1);
@@ -376,36 +431,36 @@ mod tests {
         assert_eq!(Rc::strong_count(&parent_in_child.variables), 1);
 
         // Child can look up parent's vars through the chain
-        assert_eq!(child.get_var("x"), Some(&Type::Int));
-        assert_eq!(child.get_var("y"), Some(&Type::Float));
+        assert_eq!(child.get_var_type("x"), Some(&Type::Int));
+        assert_eq!(child.get_var_type("y"), Some(&Type::Float));
     }
 
     #[test]
     fn into_child_roundtrip_via_exit_scope() {
         let mut parent = TypeEnv::new();
-        parent.set_var("x".into(), Type::Int);
+        parent.set_var_type("x".into(), Type::Int);
         parent.set_class("Foo".into(), dummy_class("Foo"));
 
         let mut child = parent.into_child();
-        child.set_var("y".into(), Type::Float);
+        child.set_var_type("y".into(), Type::Float);
 
         // Child sees both parent and local bindings
-        assert_eq!(child.get_var("x"), Some(&Type::Int));
-        assert_eq!(child.get_var("y"), Some(&Type::Float));
+        assert_eq!(child.get_var_type("x"), Some(&Type::Int));
+        assert_eq!(child.get_var_type("y"), Some(&Type::Float));
         assert_eq!(child.get_class("Foo"), Some(&dummy_class("Foo")));
 
         // exit_scope restores parent state
         child.exit_scope();
-        assert_eq!(child.get_var("x"), Some(&Type::Int));
-        assert_eq!(child.get_var("y"), None); // child local gone
+        assert_eq!(child.get_var_type("x"), Some(&Type::Int));
+        assert_eq!(child.get_var_type("y"), None); // child local gone
         assert_eq!(child.get_class("Foo"), Some(&dummy_class("Foo")));
     }
 
     #[test]
     fn into_child_parent_mutation_no_deep_clone() {
         let mut env = TypeEnv::new();
-        env.set_var("a".into(), Type::Int);
-        env.set_var("b".into(), Type::Float);
+        env.set_var_type("a".into(), Type::Int);
+        env.set_var_type("b".into(), Type::Float);
 
         // Move into child then immediately restore parent
         let mut child = env.into_child();
@@ -415,42 +470,42 @@ mod tests {
         assert_eq!(Rc::strong_count(&child.variables), 1);
 
         // Mutation should NOT trigger deep clone (refcount is 1)
-        child.set_var("c".into(), Type::String);
-        assert_eq!(child.get_var("a"), Some(&Type::Int));
-        assert_eq!(child.get_var("c"), Some(&Type::String));
+        child.set_var_type("c".into(), Type::String);
+        assert_eq!(child.get_var_type("a"), Some(&Type::Int));
+        assert_eq!(child.get_var_type("c"), Some(&Type::String));
     }
 
     #[test]
     fn into_child_shadowing_works() {
         let mut parent = TypeEnv::new();
-        parent.set_var("x".into(), Type::Int);
+        parent.set_var_type("x".into(), Type::Int);
 
         let mut child = parent.into_child();
-        child.set_var("x".into(), Type::Float);
+        child.set_var_type("x".into(), Type::Float);
 
         // Child sees shadowed value
-        assert_eq!(child.get_var("x"), Some(&Type::Float));
+        assert_eq!(child.get_var_type("x"), Some(&Type::Float));
 
         // After exit, original value is restored
         child.exit_scope();
-        assert_eq!(child.get_var("x"), Some(&Type::Int));
+        assert_eq!(child.get_var_type("x"), Some(&Type::Int));
     }
 
     #[test]
     fn into_child_multi_level_nesting() {
         let mut root = TypeEnv::new();
-        root.set_var("a".into(), Type::Int);
+        root.set_var_type("a".into(), Type::Int);
 
         let mut child1 = root.into_child();
-        child1.set_var("b".into(), Type::Float);
+        child1.set_var_type("b".into(), Type::Float);
 
         let mut child2 = child1.into_child();
-        child2.set_var("c".into(), Type::String);
+        child2.set_var_type("c".into(), Type::String);
 
         // child2 sees all three levels
-        assert_eq!(child2.get_var("a"), Some(&Type::Int));
-        assert_eq!(child2.get_var("b"), Some(&Type::Float));
-        assert_eq!(child2.get_var("c"), Some(&Type::String));
+        assert_eq!(child2.get_var_type("a"), Some(&Type::Int));
+        assert_eq!(child2.get_var_type("b"), Some(&Type::Float));
+        assert_eq!(child2.get_var_type("c"), Some(&Type::String));
 
         // No refcount bumps at any level
         let p1 = child2.parent.as_ref().unwrap();
@@ -460,10 +515,10 @@ mod tests {
 
         // Unwind back to root
         child2.exit_scope();
-        assert_eq!(child2.get_var("b"), Some(&Type::Float));
-        assert_eq!(child2.get_var("c"), None);
+        assert_eq!(child2.get_var_type("b"), Some(&Type::Float));
+        assert_eq!(child2.get_var_type("c"), None);
         child2.exit_scope();
-        assert_eq!(child2.get_var("a"), Some(&Type::Int));
-        assert_eq!(child2.get_var("b"), None);
+        assert_eq!(child2.get_var_type("a"), Some(&Type::Int));
+        assert_eq!(child2.get_var_type("b"), None);
     }
 }

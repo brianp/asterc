@@ -19,7 +19,7 @@ impl TypeChecker {
         let Expr::Ident(name, span) = expr else {
             return Ok(());
         };
-        if !matches!(self.env.get_var(name), Some(Type::Task(_))) {
+        if !matches!(self.env.get_var_type(name), Some(Type::Task(_))) {
             return Ok(());
         }
         if self.sc.consumed_tasks.insert(name.clone()) {
@@ -207,7 +207,7 @@ impl TypeChecker {
                     let mut sub = self.child_checker();
                     sub.warn_if_shadowed(var, *span);
                     sub.env
-                        .set_var(var.clone(), Type::Custom(error_type.clone(), Vec::new()));
+                        .set_var_type(var.clone(), Type::Custom(error_type.clone(), Vec::new()));
                     let result = sub.check_expr(value);
                     self.restore_from_child(sub);
                     result?

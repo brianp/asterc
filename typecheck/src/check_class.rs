@@ -80,13 +80,13 @@ impl TypeChecker {
         // Create a child checker with class fields in scope for method body checking
         let mut method_checker = self.child_checker();
         for (fname, fty, _) in fields {
-            method_checker.env.set_var(fname.clone(), fty.clone());
+            method_checker.env.set_var_type(fname.clone(), fty.clone());
         }
         // Also inject inherited fields from parent classes
         if extends.is_some() {
             for ancestor in method_checker.walk_ancestors(name) {
                 for (fname, fty) in ancestor.fields.iter() {
-                    method_checker.env.set_var(fname.clone(), fty.clone());
+                    method_checker.env.set_var_type(fname.clone(), fty.clone());
                 }
             }
         }
@@ -651,7 +651,7 @@ impl TypeChecker {
         }
         all_field_names.extend(fields.iter().map(|(n, _, _)| n.clone()));
         all_field_types.extend(fields.iter().map(|(_, t, _)| t.clone()));
-        self.env.set_var(
+        self.env.set_var_type(
             name.to_string(),
             Type::func(
                 all_field_names,
@@ -1300,6 +1300,7 @@ impl TypeChecker {
             name: enum_name.clone(),
             variants: variant_names.clone(),
             includes: Vec::new(),
+            variant_fields: std::collections::HashMap::new(),
         };
         self.env.set_enum(enum_name.clone(), enum_info);
 
@@ -1309,7 +1310,7 @@ impl TypeChecker {
             let variant_name = &variant_names[i];
             let ctor_name = format!("{}.{}", enum_name, variant_name);
             // Constructor: ClassName.FieldValue.VariantName(value: FieldType) -> EnumType
-            self.env.set_var(
+            self.env.set_var_type(
                 ctor_name,
                 Type::func(vec![fname.clone()], vec![fty.clone()], enum_type.clone()),
             );

@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 ast = { path = "../ast" }
+fir = { path = "../fir" }
 lexer = { path = "../lexer" }
 parser = { path = "../parser" }
 indexmap = "2.13.0"

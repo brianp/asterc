@@ -9,8 +9,8 @@ use ast::templates::type_errors::{
 };
 use ast::templates::warnings::{RedundantTypeAnnotation, ShadowedVariable};
 use ast::{
-    ClassInfo, Diagnostic, EnumInfo, Expr, MatchPattern, Span, Stmt, TraitInfo, Type, TypeEnv,
-    TypeTable,
+    ClassInfo, Diagnostic, EnumInfo, Expr, MatchPattern, Span, Stmt, SymbolIndex, SymbolInfo,
+    SymbolKind, TraitInfo, Type, TypeEnv, TypeTable,
 };
 use indexmap::IndexMap;
 use std::cell::RefCell;
@@ -74,6 +74,9 @@ pub struct TypeChecker {
     pub reg: TypeRegistry,
     /// Maps expression spans to their resolved types. Consumed by FIR lowerer.
     pub type_table: TypeTable,
+    /// Maps use-site spans to their resolved symbol information.
+    /// Populated during typechecking; consumed by LSP server for hover, go-to-def, etc.
+    pub symbol_index: SymbolIndex,
     /// Optional module loader for resolving `use` imports.
     /// When None, `use` statements are ignored (prelude mode).
     pub module_loader: Option<Rc<RefCell<ModuleLoader>>>,
@@ -126,6 +129,7 @@ impl TypeChecker {
             },
             module_loader: None,
             type_table: TypeTable::new(),
+            symbol_index: SymbolIndex::new(),
         }
     }
 
@@ -140,18 +144,18 @@ impl TypeChecker {
     ) {
         // Register log/say so they appear in scope for diagnostics (e.g. typo suggestions).
         // Actual type checking is handled as polymorphic builtins in check_call_inner.
-        env.set_var(
+        env.set_var_type(
             "log".into(),
             Type::func(vec!["message".into()], vec![Type::String], Type::Void),
         );
-        env.set_var(
+        env.set_var_type(
             "say".into(),
             Type::func(vec!["message".into()], vec![Type::String], Type::Void),
         );
         // Note: `len`, `to_string`, and `random` are handled as polymorphic
         // builtins in check_call_inner rather than registered here, because
         // their type signatures depend on context.
-        env.set_var("random".into(), Type::func(vec![], vec![], Type::Int));
+        env.set_var_type("random".into(), Type::func(vec![], vec![], Type::Int));
 
         // Built-in error hierarchy: Exception (root) -> Error (app base)
         env.set_class(
@@ -162,7 +166,7 @@ impl TypeChecker {
                 HashMap::new(),
             ),
         );
-        env.set_var(
+        env.set_var_type(
             "Exception".into(),
             Type::func(
                 vec!["message".into()],
@@ -179,7 +183,7 @@ impl TypeChecker {
             info.extends = Some("Exception".into());
             info
         });
-        env.set_var(
+        env.set_var_type(
             "Error".into(),
             Type::func(
                 vec!["message".into()], // inherited message field
@@ -197,7 +201,7 @@ impl TypeChecker {
             info.extends = Some("Error".into());
             info
         });
-        env.set_var(
+        env.set_var_type(
             "CancelledError".into(),
             Type::func(
                 vec!["message".into()],
@@ -223,7 +227,7 @@ impl TypeChecker {
                 info.extends = Some(parent.into());
                 info
             });
-            env.set_var(
+            env.set_var_type(
                 name.into(),
                 Type::func(
                     vec!["message".into()],
@@ -243,7 +247,7 @@ impl TypeChecker {
             info.extends = Some("Error".into());
             info
         });
-        env.set_var(
+        env.set_var_type(
             "FunctionNotFound".into(),
             Type::func(
                 vec!["message".into(), "name".into()],
@@ -262,7 +266,7 @@ impl TypeChecker {
             info.extends = Some("Error".into());
             info
         });
-        env.set_var(
+        env.set_var_type(
             "ProcessError".into(),
             Type::func(
                 vec!["message".into(), "command".into()],
@@ -287,7 +291,7 @@ impl TypeChecker {
 
         // I/O namespaces — static methods only, no instances
         for name in ["File", "TcpListener", "TcpStream"] {
-            env.set_var(name.into(), Type::Custom(name.into(), Vec::new()));
+            env.set_var_type(name.into(), Type::Custom(name.into(), Vec::new()));
         }
 
         // Range builtin class — includes Iterable, used by `..` and `..=` syntax
@@ -387,6 +391,7 @@ impl TypeChecker {
                 name: "Ordering".into(),
                 variants: vec!["Less".into(), "Equal".into(), "Greater".into()],
                 includes: vec!["Eq".into()],
+                variant_fields: HashMap::new(),
             },
         );
 
@@ -653,6 +658,7 @@ impl TypeChecker {
             },
             module_loader: self.module_loader.clone(),
             type_table: TypeTable::new(),
+            symbol_index: SymbolIndex::new(),
         }
     }
 
@@ -664,6 +670,8 @@ impl TypeChecker {
             .extend(std::mem::take(&mut child.reg.diagnostics));
         self.type_table
             .extend(std::mem::take(&mut child.type_table));
+        self.symbol_index
+            .extend(std::mem::take(&mut child.symbol_index));
         self.reg
             .imported_classes
             .extend(std::mem::take(&mut child.reg.imported_classes));
@@ -816,7 +824,7 @@ impl TypeChecker {
                     throws: throws.as_deref().cloned().map(Box::new),
                     suspendable: false,
                 };
-                self.env.set_var(name.clone(), fn_type);
+                self.env.set_var_type(name.clone(), fn_type);
             }
         }
 
@@ -837,7 +845,7 @@ impl TypeChecker {
                         value: Expr::Lambda { .. },
                         ..
                     } = s
-                        && let Some(Type::Function { ret, .. }) = self.env.get_var(name)
+                        && let Some(Type::Function { ret, .. }) = self.env.get_var_type(name)
                         && matches!(ret.as_ref(), Type::Inferred)
                     {
                         return Some(i);
@@ -870,7 +878,7 @@ impl TypeChecker {
                             }
                         }
                         // Check if the return type was resolved from Inferred
-                        if let Some(Type::Function { ret, .. }) = self.env.get_var(name)
+                        if let Some(Type::Function { ret, .. }) = self.env.get_var_type(name)
                             && !matches!(ret.as_ref(), Type::Inferred)
                         {
                             changed = true;
@@ -896,7 +904,7 @@ impl TypeChecker {
                     self.reg.diagnostics.push(diag);
                     // For let bindings that failed, assign Type::Error so later code doesn't cascade
                     if let ast::Stmt::Let { name, .. } = s {
-                        self.env.set_var(name.clone(), Type::Error);
+                        self.env.set_var_type(name.clone(), Type::Error);
                     }
                 }
             }
@@ -934,14 +942,14 @@ impl TypeChecker {
                     ret,
                     throws,
                     suspendable,
-                }) = self.env.get_var(name).cloned()
+                }) = self.env.get_var_type(name).cloned()
                 else {
                     continue;
                 };
                 if suspendable {
                     continue;
                 }
-                self.env.set_var(
+                self.env.set_var_type(
                     name.clone(),
                     Type::Function {
                         param_names,
@@ -1064,7 +1072,7 @@ impl TypeChecker {
         match expr {
             Expr::Ident(name, _) => self
                 .env
-                .get_var(name)
+                .get_var_type(name)
                 .is_some_and(|ty| ty.is_suspendable_function()),
             Expr::Member { .. } => false,
             _ => false,
@@ -1098,7 +1106,7 @@ impl TypeChecker {
                 // Push type params into scope so method types can reference them
                 if let Some(gp) = generic_params {
                     for p in gp {
-                        self.env.set_var(
+                        self.env.set_var_type(
                             format!("__type_param_{}", p),
                             Type::TypeVar(p.clone(), vec![]),
                         );
@@ -1227,6 +1235,11 @@ impl TypeChecker {
                 ..
             } => {
                 let variant_names: Vec<String> = variants.iter().map(|v| v.name.clone()).collect();
+                let variant_fields: HashMap<String, Vec<(String, Type)>> = variants
+                    .iter()
+                    .filter(|v| !v.fields.is_empty())
+                    .map(|v| (v.name.clone(), v.fields.clone()))
+                    .collect();
 
                 // Validate includes — extract base trait names
                 let mut include_names = Vec::new();
@@ -1261,6 +1274,7 @@ impl TypeChecker {
                     name: name.clone(),
                     variants: variant_names,
                     includes: include_names,
+                    variant_fields,
                 };
                 self.env.set_enum(name.clone(), info);
                 Ok(Type::Void)
@@ -1291,9 +1305,9 @@ impl TypeChecker {
                         ))
                         .with_label(stmt_span, format!("expected {}", ann)));
                     }
-                    self.env.set_var(name.clone(), ann.clone());
+                    self.env.set_var_type(name.clone(), ann.clone());
                 } else {
-                    self.env.set_var(name.clone(), val_ty);
+                    self.env.set_var_type(name.clone(), val_ty);
                 }
                 self.sc.const_names.insert(name.clone());
                 Ok(Type::Void)
@@ -1341,7 +1355,7 @@ impl TypeChecker {
                 Some(Type::Function {
                     suspendable: true, ..
                 }),
-            ) = (&ty, self.env.get_var(name))
+            ) = (&ty, self.env.get_var_type(name))
         {
             ty = Type::Function {
                 param_names: param_names.clone(),
@@ -1354,26 +1368,26 @@ impl TypeChecker {
         self.sc.expected_type = prev_expected;
         self.sc.current_function = prev_fn;
         if ty.is_error() {
-            self.env.set_var(name.to_string(), Type::Error);
+            self.env.set_var_type(name.to_string(), Type::Error);
             return Ok(Type::Error);
         }
         if let Some(ann) = type_ann {
             // Empty list takes on the annotated type
             if ty == Type::List(Box::new(Type::Nil)) && matches!(ann, Type::List(_)) {
-                self.env.set_var(name.to_string(), ann.clone());
+                self.env.set_var_type(name.to_string(), ann.clone());
                 return Ok(ann.clone());
             }
             // Empty map takes on the annotated type
             if ty == Type::Map(Box::new(Type::Error), Box::new(Type::Error))
                 && matches!(ann, Type::Map(_, _))
             {
-                self.env.set_var(name.to_string(), ann.clone());
+                self.env.set_var_type(name.to_string(), ann.clone());
                 return Ok(ann.clone());
             }
             // Nullable auto-wrap: T or Nil assigned to T?
             if let Type::Nullable(inner) = ann {
                 if ty == *ann || ty == **inner || ty == Type::Nil {
-                    self.env.set_var(name.to_string(), ann.clone());
+                    self.env.set_var_type(name.to_string(), ann.clone());
                     return Ok(ann.clone());
                 }
                 return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(
@@ -1438,7 +1452,23 @@ impl TypeChecker {
             }
         }
         self.warn_if_shadowed(name, stmt_span);
-        self.env.set_var(name.to_string(), ty.clone());
+        self.env
+            .set_var_with_span(name.to_string(), ty.clone(), stmt_span);
+        // Record the definition site in the symbol index.
+        let kind = if matches!(ty, Type::Function { .. }) {
+            SymbolKind::Function
+        } else {
+            SymbolKind::Variable
+        };
+        self.symbol_index.insert(
+            stmt_span,
+            SymbolInfo {
+                name: name.to_string(),
+                ty: ty.clone(),
+                def_span: Some(stmt_span),
+                kind,
+            },
+        );
         // Track Task[T] bindings for must-consume enforcement
         if matches!(ty, Type::Task(_)) {
             self.sc.task_bindings.insert(name.to_string(), stmt_span);
@@ -1514,7 +1544,7 @@ impl TypeChecker {
         if iter_ty.is_error() {
             return self.with_child_scope(|tc| {
                 tc.sc.loop_depth += 1;
-                tc.env.set_var(var.to_string(), Type::Error);
+                tc.env.set_var_type(var.to_string(), Type::Error);
                 tc.check_body(body)?;
                 Ok(Type::Void)
             });
@@ -1574,7 +1604,7 @@ impl TypeChecker {
         self.with_child_scope(|tc| {
             tc.sc.loop_depth += 1;
             tc.warn_if_shadowed(var, stmt_span);
-            tc.env.set_var(var.to_string(), elem_ty);
+            tc.env.set_var_type(var.to_string(), elem_ty);
             tc.check_body(body)
         })
     }
@@ -1600,7 +1630,7 @@ impl TypeChecker {
                         .with_label(*ident_span, "const binding cannot be reassigned"),
                     );
                 }
-                let target_ty = self.env.get_var(name).cloned().ok_or_else(|| {
+                let target_ty = self.env.get_var_type(name).cloned().ok_or_else(|| {
                     let mut diag =
                         Diagnostic::from_template(DiagnosticTemplate::UndeclaredAssignment(
                             UndeclaredAssignment { name: name.clone() },
@@ -2216,7 +2246,7 @@ impl TypeChecker {
     /// Inject all exports from a module into the current environment.
     fn inject_all_exports(&mut self, exports: &crate::module_loader::ModuleExports) {
         for (name, ty) in &exports.variables {
-            self.env.set_var(name.clone(), ty.clone());
+            self.env.set_var_type(name.clone(), ty.clone());
         }
         for (name, info) in &exports.classes {
             self.env.set_class(name.clone(), info.clone());
@@ -2248,7 +2278,7 @@ impl TypeChecker {
             found = true;
         }
         if let Some(ty) = exports.variables.get(name) {
-            self.env.set_var(name.to_string(), ty.clone());
+            self.env.set_var_type(name.to_string(), ty.clone());
             found = true;
         }
         found
@@ -2312,6 +2342,7 @@ impl TypeChecker {
                 enum_name,
                 variant,
                 span,
+                bindings,
             } => {
                 // Check the enum exists
                 let enum_info = self.env.get_enum(enum_name).ok_or_else(|| {
@@ -2332,6 +2363,55 @@ impl TypeChecker {
                         ))
                         .with_label(*span, format!("unknown variant on {}", enum_name)),
                     );
+                }
+                // Validate bindings against the variant's fields
+                if !bindings.is_empty() {
+                    let variant_fields = enum_info
+                        .variant_fields
+                        .get(variant.as_str())
+                        .map(|v| v.as_slice())
+                        .unwrap_or(&[]);
+                    if variant_fields.is_empty() {
+                        return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(
+                            TypeMismatch {
+                                expected: Type::Custom(
+                                    format!("{}.{}", enum_name, variant),
+                                    Vec::new(),
+                                ),
+                                actual: Type::Custom(
+                                    format!("{}.{} (no fields to destructure)", enum_name, variant),
+                                    Vec::new(),
+                                ),
+                            },
+                        ))
+                        .with_label(
+                            *span,
+                            format!("variant '{}' has no fields to destructure", variant),
+                        ));
+                    }
+                    if bindings.len() > variant_fields.len() {
+                        return Err(Diagnostic::from_template(DiagnosticTemplate::TypeMismatch(
+                            TypeMismatch {
+                                expected: Type::Custom(
+                                    format!("{} binding(s)", variant_fields.len()),
+                                    Vec::new(),
+                                ),
+                                actual: Type::Custom(
+                                    format!("{} binding(s)", bindings.len()),
+                                    Vec::new(),
+                                ),
+                            },
+                        ))
+                        .with_label(
+                            *span,
+                            format!(
+                                "variant '{}' has {} field(s) but {} binding(s) provided",
+                                variant,
+                                variant_fields.len(),
+                                bindings.len()
+                            ),
+                        ));
+                    }
                 }
                 // Check enum type matches scrutinee type (unwrap Nullable if present)
                 let expected_enum_ty = Type::Custom(enum_name.clone(), Vec::new());

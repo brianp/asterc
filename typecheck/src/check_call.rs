@@ -209,7 +209,7 @@ impl TypeChecker {
                 // Promote the variable from List[Nil] to List[T]
                 if let Expr::Ident(var_name, _) = object.as_ref() {
                     let promoted = Type::List(Box::new(arg_ty));
-                    self.env.set_var(var_name.clone(), promoted.clone());
+                    self.env.set_var_type(var_name.clone(), promoted.clone());
                     // Persist promotion across scope boundaries (if/while/for)
                     self.reg.nil_promotions.insert(var_name.clone(), promoted);
                 }
@@ -286,7 +286,7 @@ impl TypeChecker {
                     // ── DynamicReceiver bare call fallback ──────────────
                     // Inside a DynamicReceiver class body, bare calls to unknown
                     // names route through method_missing (implicit self).
-                    if self.env.get_var(name).is_none()
+                    if self.env.get_var_type(name).is_none()
                         && let Some(ref current_class) = self.sc.current_class.clone()
                         && !self.is_real_member(current_class, name)
                         && let Some(dr_info) = self.find_dynamic_receiver_info(current_class)
@@ -1296,7 +1296,7 @@ impl TypeChecker {
                         throws: Some(Box::new(Type::Custom("CancelledError".into(), Vec::new()))),
                         suspendable: true,
                     }),
-                    _ => self.env.get_var(name).cloned().ok_or_else(|| {
+                    _ => self.env.get_var_type(name).cloned().ok_or_else(|| {
                         let mut diag =
                             Diagnostic::from_template(DiagnosticTemplate::UndefinedVariable(
                                 UndefinedVariable { name: name.clone() },

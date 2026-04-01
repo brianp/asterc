@@ -1,6 +1,7 @@
 use ast::templates::DiagnosticTemplate;
 use ast::templates::module_errors::{CircularImport, ModuleNotFound};
 use ast::{ClassInfo, Diagnostic, EnumInfo, Stmt, TraitInfo, Type};
+use fir::FirCache;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -65,6 +66,8 @@ pub struct ModuleExports {
 pub struct ModuleLoader {
     resolver: Box<dyn FileResolver>,
     pub(crate) cache: HashMap<String, ModuleExports>,
+    /// Cached FIR data from imported modules, keyed by module path.
+    fir_cache: HashMap<String, FirCache>,
     in_progress: HashSet<String>,
     /// Whether the --unstable flag is enabled. Propagated to child TypeCheckers
     /// so imported modules can also use `std/unstable`.
@@ -76,9 +79,15 @@ impl ModuleLoader {
         Self {
             resolver,
             cache: HashMap::new(),
+            fir_cache: HashMap::new(),
             in_progress: HashSet::new(),
             unstable: false,
         }
+    }
+
+    /// Return all cached FIR data from imported modules.
+    pub fn take_fir_caches(&mut self) -> Vec<FirCache> {
+        self.fir_cache.drain().map(|(_, v)| v).collect()
     }
 
     /// Load and compile a module, returning its exports.
@@ -164,9 +173,37 @@ impl ModuleLoader {
         // Extract exports: only pub items
         let exports = extract_exports(&module_ast, &tc);
 
+        // Lower the imported module to FIR and cache the result.
+        // This ensures method bodies are available for cross-module calls.
+        // Before lowering, merge FIR data from this module's own imports
+        // (already cached from recursive load_module calls).
+        let fir_data = {
+            let mut lowerer = fir::Lowerer::new(tc.env.clone(), tc.type_table.clone());
+
+            // Merge FIR from transitive imports (already in cache)
+            {
+                let loader = loader_rc.borrow();
+                for cached_fir in loader.fir_cache.values() {
+                    lowerer.merge_imported(cached_fir);
+                }
+            }
+
+            // Best-effort: if lowering fails (e.g. unsupported features), we still
+            // cache the exports for typechecking but skip FIR caching.
+            if lowerer.lower_module(&module_ast).is_ok() {
+                Some(lowerer.export_cache())
+            } else {
+                None
+            }
+        };
+
         // Cache
         {
-            loader_rc.borrow_mut().cache.insert(key, exports.clone());
+            let mut loader = loader_rc.borrow_mut();
+            loader.cache.insert(key.clone(), exports.clone());
+            if let Some(fir) = fir_data {
+                loader.fir_cache.entry(key).or_insert(fir);
+            }
         }
 
         Ok(exports)
@@ -189,7 +226,7 @@ fn extract_exports(module: &ast::Module, tc: &crate::typechecker::TypeChecker) -
                 is_public: true,
                 ..
             } => {
-                if let Some(ty) = tc.env.get_var(name) {
+                if let Some(ty) = tc.env.get_var_type(name) {
                     exports.variables.insert(name.clone(), ty.clone());
                 }
             }
@@ -202,7 +239,7 @@ fn extract_exports(module: &ast::Module, tc: &crate::typechecker::TypeChecker) -
                     exports.classes.insert(name.clone(), info.clone());
                 }
                 // Also export the constructor function
-                if let Some(ctor_ty) = tc.env.get_var(name) {
+                if let Some(ctor_ty) = tc.env.get_var_type(name) {
                     exports.variables.insert(name.clone(), ctor_ty.clone());
                 }
             }
@@ -224,7 +261,7 @@ fn extract_exports(module: &ast::Module, tc: &crate::typechecker::TypeChecker) -
                     exports.enums.insert(name.clone(), info.clone());
                 }
                 // Also export the enum type variable
-                if let Some(ty) = tc.env.get_var(name) {
+                if let Some(ty) = tc.env.get_var_type(name) {
                     exports.variables.insert(name.clone(), ty.clone());
                 }
             }
@@ -296,7 +333,7 @@ fn export_name_from_env(
     if let Some(info) = tc.env.get_class(name) {
         exports.classes.insert(name.to_string(), info.clone());
         // Also export the constructor
-        if let Some(ctor) = tc.env.get_var(name) {
+        if let Some(ctor) = tc.env.get_var_type(name) {
             exports.variables.insert(name.to_string(), ctor.clone());
         }
     }
@@ -305,11 +342,11 @@ fn export_name_from_env(
     }
     if let Some(info) = tc.env.get_enum(name) {
         exports.enums.insert(name.to_string(), info.clone());
-        if let Some(ty) = tc.env.get_var(name) {
+        if let Some(ty) = tc.env.get_var_type(name) {
             exports.variables.insert(name.to_string(), ty.clone());
         }
     }
-    if let Some(ty) = tc.env.get_var(name) {
+    if let Some(ty) = tc.env.get_var_type(name) {
         exports.variables.insert(name.to_string(), ty.clone());
     }
 }

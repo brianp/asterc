@@ -24,4 +24,10 @@ impl Span {
     pub fn dummy() -> Self {
         Span { start: 0, end: 0 }
     }
+
+    /// Returns true if this span is the sentinel dummy span (start == 0, end == 0).
+    /// A dummy span indicates that no real source location is available.
+    pub fn is_dummy(self) -> bool {
+        self.start == 0 && self.end == 0
+    }
 }

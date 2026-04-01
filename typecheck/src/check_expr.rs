@@ -7,7 +7,7 @@ use ast::templates::type_errors::{
     UndefinedVariable, UnknownField, VisibilityError,
 };
 use ast::templates::warnings::UseAfterMove;
-use ast::{BinOp, Diagnostic, Expr, MatchPattern, Span, Type, UnaryOp};
+use ast::{BinOp, Diagnostic, Expr, MatchPattern, Span, SymbolInfo, SymbolKind, Type, UnaryOp};
 use std::collections::HashMap;
 
 use crate::typechecker::TypeChecker;
@@ -39,7 +39,7 @@ impl TypeChecker {
                     self.sc.boundary_crossed.remove(name);
                 }
                 {
-                    let ty = self.env.get_var(name).cloned().ok_or_else(|| {
+                    let binding = self.env.get_var(name).cloned().ok_or_else(|| {
                         let mut diag =
                             Diagnostic::from_template(DiagnosticTemplate::UndefinedVariable(
                                 UndefinedVariable { name: name.clone() },
@@ -50,6 +50,28 @@ impl TypeChecker {
                         }
                         diag
                     })?;
+                    let ty = binding.ty;
+                    let def_span = binding.def_span;
+                    // Determine kind: functions are Function type, otherwise variable
+                    let kind = if matches!(ty, Type::Function { .. }) {
+                        SymbolKind::Function
+                    } else {
+                        SymbolKind::Variable
+                    };
+                    self.symbol_index.insert(
+                        *span,
+                        SymbolInfo {
+                            name: name.clone(),
+                            ty: ty.clone(),
+                            // Only record a real def_span; dummy means no source location.
+                            def_span: if def_span.is_dummy() {
+                                None
+                            } else {
+                                Some(def_span)
+                            },
+                            kind,
+                        },
+                    );
                     // Apply nil-list promotions from .push() calls in nested scopes
                     if matches!(&ty, Type::List(inner) if **inner == Type::Nil)
                         && let Some(promoted) = self.reg.nil_promotions.get(name)
@@ -89,9 +111,39 @@ impl TypeChecker {
                 left, op, right, ..
             } => self.check_binary(left, op, right),
             Expr::UnaryOp { op, operand, .. } => self.check_unary(op, operand),
-            Expr::Member { object, field, .. } => self.check_member(object, field),
+            Expr::Member {
+                object,
+                field,
+                span,
+            } => {
+                let ty = self.check_member(object, field)?;
+                // Record field/method access in symbol index using the member expression span.
+                let kind = if matches!(ty, Type::Function { .. }) {
+                    SymbolKind::Method
+                } else {
+                    SymbolKind::Field
+                };
+                self.symbol_index.insert(
+                    *span,
+                    SymbolInfo {
+                        name: field.clone(),
+                        ty: ty.clone(),
+                        def_span: None,
+                        kind,
+                    },
+                );
+                Ok(ty)
+            }
             Expr::ListLiteral(elems, _) => self.check_list_literal(elems),
-            Expr::Index { object, index, .. } => self.check_index(object, index),
+            Expr::Index {
+                object,
+                index,
+                span,
+            } => {
+                let ty = self.check_index(object, index)?;
+                self.type_table.insert(*span, ty.clone());
+                Ok(ty)
+            }
             Expr::Match {
                 scrutinee, arms, ..
             } => self.check_match_expr(scrutinee, arms),
@@ -465,7 +517,7 @@ impl TypeChecker {
         let mut param_types = Vec::new();
         for (n, t) in params {
             sub.warn_if_shadowed(n, Span::dummy());
-            sub.env.set_var(n.clone(), t.clone());
+            sub.env.set_var_type(n.clone(), t.clone());
             param_types.push(t.clone());
         }
 
@@ -671,7 +723,7 @@ impl TypeChecker {
             Expr::Bool(..) => Some(Type::Bool),
             Expr::Ident(name, _) => {
                 // Check env first (params, pre-registered functions)
-                if let Some(ty) = sub.env.get_var(name) {
+                if let Some(ty) = sub.env.get_var_type(name) {
                     return Some(ty.clone());
                 }
                 // Trace through let bindings: let v = f(...)
@@ -684,7 +736,7 @@ impl TypeChecker {
                 // For function calls, try to determine the return type
                 match func.as_ref() {
                     Expr::Ident(fn_name, _) => {
-                        if let Some(Type::Function { ret, .. }) = sub.env.get_var(fn_name)
+                        if let Some(Type::Function { ret, .. }) = sub.env.get_var_type(fn_name)
                             && !matches!(ret.as_ref(), Type::Inferred)
                         {
                             return Some(ret.as_ref().clone());
@@ -1104,7 +1156,7 @@ impl TypeChecker {
                 self.reg.imported_classes.insert(field.to_string());
                 // Return the constructor function type
                 if let Some(ty) = ns.variables.get(field) {
-                    self.env.set_var(field.to_string(), ty.clone());
+                    self.env.set_var_type(field.to_string(), ty.clone());
                     return Ok(ty.clone());
                 }
                 return Ok(info.ty.clone());
@@ -2096,7 +2148,32 @@ impl TypeChecker {
                     scrutinee_ty.clone()
                 };
                 sub.warn_if_shadowed(name, *pat_span);
-                sub.env.set_var(name.clone(), bind_ty);
+                sub.env.set_var_type(name.clone(), bind_ty);
+                let result = sub.check_expr(value);
+                self.restore_from_child(sub);
+                result?
+            } else if let MatchPattern::EnumVariant {
+                enum_name,
+                variant,
+                bindings,
+                ..
+            } = pattern
+                && !bindings.is_empty()
+            {
+                // Create a child scope for destructuring bindings
+                let mut sub = self.child_checker();
+                let variant_fields: Vec<(String, Type)> = sub
+                    .env
+                    .get_enum(enum_name)
+                    .and_then(|ei| ei.variant_fields.get(variant.as_str()).cloned())
+                    .unwrap_or_default();
+                for (field_name, bind_name) in bindings {
+                    if let Some((_, field_ty)) =
+                        variant_fields.iter().find(|(n, _)| n == field_name)
+                    {
+                        sub.env.set_var_type(bind_name.clone(), field_ty.clone());
+                    }
+                }
                 let result = sub.check_expr(value);
                 self.restore_from_child(sub);
                 result?

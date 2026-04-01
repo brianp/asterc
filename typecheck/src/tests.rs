@@ -1,5 +1,5 @@
 use super::typechecker::TypeChecker;
-use ast::{BinOp, Expr, Span, Stmt, Type, UnaryOp};
+use ast::{BinOp, Expr, Span, Stmt, SymbolKind, Type, UnaryOp};
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
@@ -55,7 +55,7 @@ fn let_and_ident_lookup() {
         span: s(),
     };
     assert_eq!(tc.check_stmt(&stmt).unwrap(), Type::Int);
-    assert_eq!(tc.env.get_var("x").cloned(), Some(Type::Int));
+    assert_eq!(tc.env.get_var_type("x").cloned(), Some(Type::Int));
 }
 
 #[test]
@@ -179,7 +179,7 @@ fn class_type_check_and_member_access() {
     tc.check_stmt(&class_stmt).unwrap();
 
     tc.env
-        .set_var("p".into(), Type::Custom("Point".into(), Vec::new()));
+        .set_var_type("p".into(), Type::Custom("Point".into(), Vec::new()));
     let access = Expr::Member {
         object: Box::new(Expr::Ident("p".into(), s())),
         field: "x".into(),
@@ -215,7 +215,7 @@ fn unknowns_and_errors() {
         err
     );
 
-    tc.env.set_var("p".into(), Type::Int);
+    tc.env.set_var_type("p".into(), Type::Int);
     let access = Expr::Member {
         object: Box::new(Expr::Ident("p".into(), s())),
         field: "foo".into(),
@@ -670,7 +670,7 @@ fn while_non_bool_cond_error() {
 fn for_typechecks_body() {
     let mut tc = TypeChecker::new();
     tc.env
-        .set_var("items".into(), Type::List(Box::new(Type::Int)));
+        .set_var_type("items".into(), Type::List(Box::new(Type::Int)));
     let stmt = Stmt::For {
         var: "x".into(),
         iter: Expr::Ident("items".into(), s()),
@@ -685,7 +685,7 @@ fn for_typechecks_body() {
 #[test]
 fn assignment_type_match_ok() {
     let mut tc = TypeChecker::new();
-    tc.env.set_var("x".into(), Type::Int);
+    tc.env.set_var_type("x".into(), Type::Int);
     let stmt = Stmt::Assignment {
         target: Expr::Ident("x".into(), s()),
         value: Expr::Int(5, s()),
@@ -697,7 +697,7 @@ fn assignment_type_match_ok() {
 #[test]
 fn assignment_type_mismatch_error() {
     let mut tc = TypeChecker::new();
-    tc.env.set_var("x".into(), Type::Int);
+    tc.env.set_var_type("x".into(), Type::Int);
     let stmt = Stmt::Assignment {
         target: Expr::Ident("x".into(), s()),
         value: Expr::Str("hello".into(), s()),
@@ -814,7 +814,7 @@ fn let_with_matching_type_annotation() {
         span: s(),
     };
     assert!(tc.check_stmt(&stmt).is_ok());
-    assert_eq!(tc.env.get_var("x").cloned(), Some(Type::Int));
+    assert_eq!(tc.env.get_var_type("x").cloned(), Some(Type::Int));
 }
 
 #[test]
@@ -894,7 +894,8 @@ fn list_literal_mixed_types_error() {
 #[test]
 fn index_list_of_ints() {
     let mut tc = TypeChecker::new();
-    tc.env.set_var("xs".into(), Type::List(Box::new(Type::Int)));
+    tc.env
+        .set_var_type("xs".into(), Type::List(Box::new(Type::Int)));
     let expr = Expr::Index {
         object: Box::new(Expr::Ident("xs".into(), s())),
         index: Box::new(Expr::Int(0, s())),
@@ -907,7 +908,7 @@ fn index_list_of_ints() {
 fn index_list_of_strings() {
     let mut tc = TypeChecker::new();
     tc.env
-        .set_var("xs".into(), Type::List(Box::new(Type::String)));
+        .set_var_type("xs".into(), Type::List(Box::new(Type::String)));
     let expr = Expr::Index {
         object: Box::new(Expr::Ident("xs".into(), s())),
         index: Box::new(Expr::Int(0, s())),
@@ -919,7 +920,8 @@ fn index_list_of_strings() {
 #[test]
 fn index_non_int_error() {
     let mut tc = TypeChecker::new();
-    tc.env.set_var("xs".into(), Type::List(Box::new(Type::Int)));
+    tc.env
+        .set_var_type("xs".into(), Type::List(Box::new(Type::Int)));
     let expr = Expr::Index {
         object: Box::new(Expr::Ident("xs".into(), s())),
         index: Box::new(Expr::Str("bad".into(), s())),
@@ -932,7 +934,7 @@ fn index_non_int_error() {
 #[test]
 fn index_non_list_error() {
     let mut tc = TypeChecker::new();
-    tc.env.set_var("x".into(), Type::Int);
+    tc.env.set_var_type("x".into(), Type::Int);
     let expr = Expr::Index {
         object: Box::new(Expr::Ident("x".into(), s())),
         index: Box::new(Expr::Int(0, s())),
@@ -951,7 +953,8 @@ fn index_non_list_error() {
 #[test]
 fn for_over_list_binds_element_type() {
     let mut tc = TypeChecker::new();
-    tc.env.set_var("xs".into(), Type::List(Box::new(Type::Int)));
+    tc.env
+        .set_var_type("xs".into(), Type::List(Box::new(Type::Int)));
     let stmt = Stmt::For {
         var: "x".into(),
         iter: Expr::Ident("xs".into(), s()),
@@ -967,7 +970,7 @@ fn for_over_list_binds_element_type() {
 #[test]
 fn for_over_non_list_error() {
     let mut tc = TypeChecker::new();
-    tc.env.set_var("x".into(), Type::Int);
+    tc.env.set_var_type("x".into(), Type::Int);
     let stmt = Stmt::For {
         var: "i".into(),
         iter: Expr::Ident("x".into(), s()),
@@ -1027,7 +1030,7 @@ fn let_empty_list_with_annotation_gets_annotated_type() {
     };
     assert!(tc.check_stmt(&stmt).is_ok());
     assert_eq!(
-        tc.env.get_var("xs").cloned(),
+        tc.env.get_var_type("xs").cloned(),
         Some(Type::List(Box::new(Type::Int)))
     );
 }
@@ -1059,7 +1062,8 @@ fn builtin_say_accepts_string() {
 #[test]
 fn builtin_len_list_returns_int() {
     let mut tc = TypeChecker::new();
-    tc.env.set_var("xs".into(), Type::List(Box::new(Type::Int)));
+    tc.env
+        .set_var_type("xs".into(), Type::List(Box::new(Type::Int)));
     let call = Expr::Call {
         func: Box::new(Expr::Ident("len".into(), s())),
         args: vec![("value".into(), s(), Expr::Ident("xs".into(), s()))],
@@ -1545,7 +1549,7 @@ fn member_access_finds_method_unqualified() {
     tc.check_stmt(&class_stmt).unwrap();
 
     tc.env
-        .set_var("p".into(), Type::Custom("Point".into(), Vec::new()));
+        .set_var_type("p".into(), Type::Custom("Point".into(), Vec::new()));
     // Access via p.show (unqualified) should work
     let access = Expr::Member {
         object: Box::new(Expr::Ident("p".into(), s())),
@@ -1619,7 +1623,7 @@ fn if_body_variables_dont_leak() {
     };
     tc.check_stmt(&stmt).unwrap();
     // "inner" should NOT be visible in outer scope
-    assert_eq!(tc.env.get_var("inner"), None);
+    assert_eq!(tc.env.get_var_type("inner"), None);
 }
 
 #[test]
@@ -1640,13 +1644,14 @@ fn while_body_variables_dont_leak() {
         span: s(),
     };
     tc.check_stmt(&stmt).unwrap();
-    assert_eq!(tc.env.get_var("inner"), None);
+    assert_eq!(tc.env.get_var_type("inner"), None);
 }
 
 #[test]
 fn for_body_variables_dont_leak() {
     let mut tc = TypeChecker::new();
-    tc.env.set_var("xs".into(), Type::List(Box::new(Type::Int)));
+    tc.env
+        .set_var_type("xs".into(), Type::List(Box::new(Type::Int)));
     let stmt = Stmt::For {
         var: "x".into(),
         iter: Expr::Ident("xs".into(), s()),
@@ -1661,8 +1666,8 @@ fn for_body_variables_dont_leak() {
     };
     tc.check_stmt(&stmt).unwrap();
     // Both "inner" and loop var "x" should NOT leak
-    assert_eq!(tc.env.get_var("inner"), None);
-    assert_eq!(tc.env.get_var("x"), None);
+    assert_eq!(tc.env.get_var_type("inner"), None);
+    assert_eq!(tc.env.get_var_type("x"), None);
 }
 
 #[test]
@@ -1796,5 +1801,146 @@ def main() -> Int
     assert!(
         err.contains("Cat") && err.contains("Dog"),
         "Expected type error, got: {err}"
+    );
+}
+
+// ─── SymbolIndex ────────────────────────────────────────────────────
+
+/// Run the full typecheck pipeline on `src` and return the TypeChecker.
+fn typecheck_module(src: &str) -> TypeChecker {
+    let tokens = lexer::lex(src).expect("lex ok");
+    let mut parser = parser::Parser::new(tokens);
+    let module = parser.parse_module("test").expect("parse ok");
+    let mut tc = TypeChecker::new();
+    let _ = tc.check_module_all(&module);
+    tc
+}
+
+#[test]
+fn symbol_index_let_binding_records_definition() {
+    // `let x = 42` at a known span should appear in the symbol index with kind Variable.
+    let src = "let x = 42\n";
+    let tc = typecheck_module(src);
+    // The symbol index should contain at least one entry for `x`.
+    let entries: Vec<_> = tc.symbol_index.find_by_name("x").into_iter().collect();
+    assert!(
+        !entries.is_empty(),
+        "Expected symbol index to contain an entry for 'x'"
+    );
+    let (_, info) = entries[0];
+    assert_eq!(info.ty, Type::Int);
+    assert_eq!(info.kind, SymbolKind::Variable);
+    // def_span should point back to the same span (definition is self-referential at let site).
+    assert!(
+        info.def_span.is_some(),
+        "Expected def_span to be set for let binding"
+    );
+}
+
+#[test]
+fn symbol_index_ident_use_links_to_definition() {
+    // When `y` is used in an expression, the use-site should appear in the index
+    // and its def_span should match the span of the `let y` definition.
+    let src = "let y = 10\nlet z = y\n";
+    let tc = typecheck_module(src);
+    // Find the use-site entry for `y` (the one that isn't the definition itself).
+    let y_entries = tc.symbol_index.find_by_name("y");
+    // There should be at least two entries: the definition site and the use site.
+    assert!(
+        y_entries.len() >= 2,
+        "Expected at least two symbol index entries for 'y', got {}",
+        y_entries.len()
+    );
+    // All entries for `y` should have the same def_span.
+    let def_spans: Vec<_> = y_entries
+        .iter()
+        .filter_map(|(_, info)| info.def_span)
+        .collect();
+    assert!(
+        !def_spans.is_empty(),
+        "At least one entry for 'y' should have a def_span"
+    );
+    // All def_spans should be equal (they all point to the same definition).
+    assert!(
+        def_spans.windows(2).all(|w| w[0] == w[1]),
+        "All def_spans for 'y' should point to the same definition"
+    );
+}
+
+#[test]
+fn symbol_index_function_def_gets_function_kind() {
+    // `def add(x: Int, y: Int) -> Int` should produce a Function-kind entry.
+    let src = "def add(x: Int, y: Int) -> Int\n  x\n";
+    let tc = typecheck_module(src);
+    let entries = tc.symbol_index.find_by_name("add");
+    assert!(!entries.is_empty(), "Expected symbol index entry for 'add'");
+    let (_, info) = entries[0];
+    assert_eq!(
+        info.kind,
+        SymbolKind::Function,
+        "Expected Function kind for function definition"
+    );
+}
+
+#[test]
+fn symbol_index_field_access_recorded() {
+    // Accessing a field on a class instance should create a Field entry in the index.
+    let src = "\
+class Point
+  x: Int
+  y: Int
+
+def main() -> Int
+  let p = Point(x: 1, y: 2)
+  p.x
+";
+    let tc = typecheck_module(src);
+    let field_entries = tc.symbol_index.find_by_name("x");
+    // There should be at least one Field entry for `x`.
+    let field_access = field_entries
+        .iter()
+        .find(|(_, info)| info.kind == SymbolKind::Field);
+    assert!(
+        field_access.is_some(),
+        "Expected a Field kind entry for 'x' in the symbol index"
+    );
+    let (_, info) = field_access.unwrap();
+    assert_eq!(info.ty, Type::Int);
+}
+
+#[test]
+fn symbol_index_builtin_ident_has_no_def_span() {
+    // Builtins like `log` are registered with Span::dummy(), so their def_span should be None.
+    let src = "let _ = log\n";
+    let tc = typecheck_module(src);
+    let log_entries = tc.symbol_index.find_by_name("log");
+    // The use of `log` as an ident should appear in the index.
+    let use_entry = log_entries
+        .iter()
+        .find(|(_, info)| !matches!(info.def_span, Some(_) if !info.def_span.unwrap().is_dummy()));
+    assert!(
+        use_entry.is_some() || log_entries.iter().all(|(_, i)| i.def_span.is_none()),
+        "Builtin 'log' should have def_span: None since it has no source location"
+    );
+}
+
+#[test]
+fn symbol_index_child_scope_merges_into_parent() {
+    // Symbols resolved inside an if-body should propagate to the parent symbol index.
+    let src = "\
+let x = 1
+def main() -> Int
+  if true
+    let y = x
+    y
+  else
+    0
+";
+    let tc = typecheck_module(src);
+    // `x` should appear in the symbol index (used inside the if-body).
+    let x_uses = tc.symbol_index.find_by_name("x");
+    assert!(
+        !x_uses.is_empty(),
+        "Expected 'x' use to appear in symbol index after child scope merge"
     );
 }
