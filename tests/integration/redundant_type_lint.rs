@@ -252,3 +252,72 @@ fn warning_message_format() {
         "redundant type annotation: type `Int` can be inferred"
     );
 }
+
+// =============================================================================
+// W005: Redundant main() -> Int with return 0
+// =============================================================================
+
+fn check_w005_warnings(src: &str) -> Vec<Diagnostic> {
+    let tokens = lex(src).expect("lex ok");
+    let mut parser = Parser::new(tokens);
+    let module = parser.parse_module("test").expect("parse ok");
+    let mut tc = TypeChecker::new();
+    tc.check_module(&module).expect("typecheck ok");
+    tc.reg
+        .diagnostics
+        .into_iter()
+        .filter(|d| d.severity == Severity::Warning && d.code() == Some("W005"))
+        .collect()
+}
+
+#[test]
+fn w005_warn_main_int_returning_zero_literal() {
+    let src = "def main() -> Int\n  0\n";
+    let warnings = check_w005_warnings(src);
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected W005 warning, got: {:?}",
+        warnings
+    );
+}
+
+#[test]
+fn w005_warn_main_int_returning_zero_explicit() {
+    let src = "def main() -> Int\n  return 0\n";
+    let warnings = check_w005_warnings(src);
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected W005 warning, got: {:?}",
+        warnings
+    );
+}
+
+#[test]
+fn w005_no_warn_main_int_returning_nonzero() {
+    let src = "def main() -> Int\n  42\n";
+    let warnings = check_w005_warnings(src);
+    assert!(warnings.is_empty(), "expected no W005, got: {:?}", warnings);
+}
+
+#[test]
+fn w005_no_warn_main_no_return_type() {
+    let src = "def main()\n  log(message: \"hi\")\n";
+    let warnings = check_w005_warnings(src);
+    assert!(warnings.is_empty(), "expected no W005, got: {:?}", warnings);
+}
+
+#[test]
+fn w005_no_warn_main_void() {
+    let src = "def main() -> Void\n  log(message: \"hi\")\n";
+    let warnings = check_w005_warnings(src);
+    assert!(warnings.is_empty(), "expected no W005, got: {:?}", warnings);
+}
+
+#[test]
+fn w005_no_warn_non_main_int_returning_zero() {
+    let src = "def helper() -> Int\n  0\n\ndef main() -> Int\n  helper()\n";
+    let warnings = check_w005_warnings(src);
+    assert!(warnings.is_empty(), "expected no W005, got: {:?}", warnings);
+}

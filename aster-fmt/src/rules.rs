@@ -233,11 +233,15 @@ pub(crate) fn format_module_with_comments(
         if !result_docs.is_empty() {
             result_docs.push(hardline());
         }
+        // Bundle comments with their statement into a single doc entry so
+        // that join_stmts doesn't insert extra blank lines between them.
+        let mut parts = Vec::new();
         for c in &assigned[i] {
-            result_docs.push(text(c.trim()));
-            result_docs.push(hardline());
+            parts.push(text(c.trim()));
+            parts.push(hardline());
         }
-        result_docs.push(format_stmt(stmt, config));
+        parts.push(format_stmt(stmt, config));
+        result_docs.push(concat(parts));
     }
 
     let body = join_stmts(&result_docs);
@@ -498,7 +502,16 @@ fn format_function_def(
         header.push(format_type(throw_ty));
     }
 
-    if !matches!(ret_type, Type::Void | Type::Inferred) {
+    // Detect redundant main() -> Int with body that just returns 0
+    let is_redundant_main = short_name == "main"
+        && *ret_type == Type::Int
+        && body.len() == 1
+        && matches!(
+            &body[0],
+            Stmt::Return(Expr::Int(0, _), _) | Stmt::Expr(Expr::Int(0, _), _)
+        );
+
+    if !is_redundant_main && !matches!(ret_type, Type::Void | Type::Inferred) {
         header.push(text(" -> "));
         header.push(format_type(ret_type));
     }
@@ -521,7 +534,12 @@ fn format_function_def(
         }
     }
 
-    format_block_inner(&concat(header), body, true, config)
+    if is_redundant_main {
+        // Strip entire body (the 0 is implicit)
+        concat(header)
+    } else {
+        format_block_inner(&concat(header), body, true, config)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -531,6 +549,61 @@ fn format_function_def(
 /// Format a block without return stripping (used for if/while/for/etc).
 fn format_block(header: &Doc, body: &[Stmt], config: &FormatConfig) -> Doc {
     format_block_inner(header, body, false, config)
+}
+
+/// Classify a statement for blank-line grouping.
+///
+/// Block constructs (if, while, for, and function definitions) are always
+/// separated from their neighbours by a blank line.  Consecutive let bindings
+/// or consecutive assignments are kept together without a blank line, but a
+/// blank line is inserted when the group kind changes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StmtGroup {
+    /// A block construct: always gets a blank line before/after.
+    Block,
+    /// A `let` binding (non-function).
+    Let,
+    /// An assignment statement.
+    Assignment,
+    /// Anything else (expressions, return, break, continue, const, use, ...).
+    Other,
+}
+
+fn classify_stmt(stmt: &Stmt) -> StmtGroup {
+    match stmt {
+        // Function definitions (let + lambda) are blocks.
+        Stmt::Let {
+            value: Expr::Lambda { .. },
+            ..
+        } => StmtGroup::Block,
+        Stmt::Let { .. } => StmtGroup::Let,
+        Stmt::If { .. }
+        | Stmt::While { .. }
+        | Stmt::For { .. }
+        | Stmt::Class { .. }
+        | Stmt::Trait { .. }
+        | Stmt::Enum { .. } => StmtGroup::Block,
+        Stmt::Assignment { .. } => StmtGroup::Assignment,
+        _ => StmtGroup::Other,
+    }
+}
+
+/// Returns `true` when a blank line should be inserted between two consecutive
+/// statements in a block body.
+fn needs_blank_line(prev: &Stmt, curr: &Stmt) -> bool {
+    let pg = classify_stmt(prev);
+    let cg = classify_stmt(curr);
+    // A block construct always gets a blank line on either side.
+    if pg == StmtGroup::Block || cg == StmtGroup::Block {
+        return true;
+    }
+    // Switching between different non-block groups triggers a blank line.
+    pg != cg
+}
+
+/// Returns `true` when the statement is a return (explicit or implicit).
+fn is_return_like(stmt: &Stmt, strip_last_return: bool) -> bool {
+    matches!(stmt, Stmt::Return(..)) || (strip_last_return && matches!(stmt, Stmt::Expr(..)))
 }
 
 /// Format a block, optionally stripping `return` on the last statement.
@@ -559,8 +632,23 @@ fn format_block_inner(
         })
         .collect();
     let mut inner = Vec::new();
-    for d in body_docs {
-        inner.push(hardline());
+    for (i, d) in body_docs.into_iter().enumerate() {
+        let blank = if i == 0 {
+            false
+        } else if i == last_idx
+            && body.len() > 1
+            && is_return_like(&body[last_idx], strip_last_return)
+        {
+            // Separate the final return / trailing expression from the body.
+            true
+        } else {
+            needs_blank_line(&body[i - 1], &body[i])
+        };
+        if blank {
+            inner.push(blankline());
+        } else {
+            inner.push(hardline());
+        }
         inner.push(d);
     }
     concat(vec![header.clone(), indent(concat(inner))])
@@ -1090,44 +1178,10 @@ fn escape_interp_literal(s: &str) -> String {
 ///
 /// `align_col` is the column just after the opening `(`.
 /// Returns a raw string with embedded newlines and alignment spaces.
-fn pack_items_str(items: &[String], align_col: usize, config: &FormatConfig) -> String {
-    if items.is_empty() {
-        return String::new();
-    }
-    if items.len() == 1 {
-        return items[0].clone();
-    }
-
-    let max_width = config.line_width;
-    let two_thirds = max_width * 2 / 3;
-
-    let mut lines: Vec<String> = Vec::new();
-    let mut line_buf = items[0].clone();
-    let mut col = align_col + items[0].len();
-
-    for item in &items[1..] {
-        let piece = format!(", {}", item);
-        let new_content_len = line_buf.len() + piece.len();
-        let new_col = col + piece.len();
-
-        if new_content_len > two_thirds || new_col > max_width {
-            line_buf.push(',');
-            lines.push(line_buf);
-            line_buf = item.clone();
-            col = align_col + item.len();
-        } else {
-            line_buf.push_str(&piece);
-            col += piece.len();
-        }
-    }
-    lines.push(line_buf);
-
-    if lines.len() == 1 {
-        lines[0].clone()
-    } else {
-        let align_spaces: String = " ".repeat(align_col);
-        lines.join(&format!("\n{}", align_spaces))
-    }
+fn pack_items_str(items: &[String], _align_col: usize, _config: &FormatConfig) -> String {
+    // Aster's indentation-based parser does not support multi-line parameter
+    // lists or call argument lists, so we always emit everything on one line.
+    items.join(", ")
 }
 
 /// Render a Doc to a flat string for measuring.
@@ -1350,13 +1404,13 @@ fn format_binop(left: &Expr, op: &BinOp, right: &Expr, config: &FormatConfig) ->
         format_expr(right, config)
     };
 
-    group(concat(vec![
+    concat(vec![
         left_doc,
         text(" "),
         text(op_str),
-        line(),
+        text(" "),
         right_doc,
-    ]))
+    ])
 }
 
 fn format_unaryop(op: &UnaryOp, operand: &Expr, config: &FormatConfig) -> Doc {

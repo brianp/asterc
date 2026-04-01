@@ -204,7 +204,7 @@ fn frontend_and_lower(source: &str, filename: &str, unstable: bool) -> fir::FirM
             &Diagnostic::from_template(DiagnosticTemplate::NotCompilable(NotCompilable {
                 message: "no main() function found".to_string(),
             }))
-            .with_note("add a `def main() -> Int` function as the program entry point"),
+            .with_note("add a `def main()` function as the program entry point"),
         );
         std::process::exit(1);
     }

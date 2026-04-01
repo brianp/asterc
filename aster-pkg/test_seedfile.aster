@@ -1,25 +1,25 @@
-use src/seedfile { Seedfile, Dependency, Task }
+use src/seedfile { Dependency, Seedfile, Task }
 
+
+# Simulate a Seedfile
 def main()
-    let s = Seedfile(aster_version: "0.1.0", name: "", version_str: "", compiler_version: "", deps: [], tasks: [])
+  let s = Seedfile(aster_version: "0.1.0", name: "", version_str: "", compiler_version: "", deps: [], tasks: [])
 
-    # Simulate a Seedfile
-    s.package(pkg_name: "my-app", version: "0.1.0")
-    s.compiler(ver: "0.1.0")
-    s.http(version: "1.2.0")
-    s.json(version: "0.4.0")
-    s.aster_fmt(name: "aster-fmt", path: "aster-fmt")
-    s.serde_json(version: "1", dev: "true")
-    s.task(name: "test", cmd: "aster test --release")
+  s.package(pkg_name: "my-app", version: "0.1.0")
+  s.compiler(ver: "0.1.0")
+  s.http(version: "1.2.0")
+  s.json(version: "0.4.0")
+  s.aster_fmt(name: "aster-fmt", path: "aster-fmt")
+  s.serde_json(version: "1", dev: "true")
+  s.task(name: "test", cmd: "aster test --release")
+  say(message: "name: {s.name}")
+  say(message: "version: {s.version_str}")
+  say(message: "compiler: {s.compiler_version}")
+  say(message: "deps: {s.deps.len()}")
+  say(message: "tasks: {s.tasks.len()}")
 
-    say(message: "name: {s.name}")
-    say(message: "version: {s.version_str}")
-    say(message: "compiler: {s.compiler_version}")
-    say(message: "deps: {s.deps.len()}")
-    say(message: "tasks: {s.tasks.len()}")
+  for dep in s.deps
+    say(message: "  {dep.name} {dep.version} path={dep.path} dev={dep.dev}")
 
-    for dep in s.deps
-        say(message: "  {dep.name} {dep.version} path={dep.path} dev={dep.dev}")
-
-    for t in s.tasks
-        say(message: "  {t.name} -> {t.cmd}")
+  for t in s.tasks
+    say(message: "  {t.name} -> {t.cmd}")

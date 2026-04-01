@@ -14,258 +14,370 @@
 # Note: All evaluation functions are inlined here because cross-module
 # function calls do not yet produce values at runtime (FIR lowering
 # limitation). Once that works, these will be imported from eval.aster.
-
-use std/sys { args }
-use std/fs { read_file, write_file, exists, remove }
+use std/fs { exists, read_file, remove, write_file }
 use std/process { run }
+use std/sys { args }
+
 
 # ── Seedfile wrapping (inlined from eval.aster) ──────────────────────
-
 # The full class definition inlined into every generated wrapper.
 # Uses string accumulation for deps/tasks/overrides since the
 # FIR lowerer cannot yet iterate over List[ClassName].
 def seedfile_class_source() -> String
-    let src = "class Seedfile includes DynamicReceiver\n"
-    src = src + "    pub name: String\n"
-    src = src + "    pub version_str: String\n"
-    src = src + "    pub compiler_version: String\n"
-    src = src + "    pub quarantine_days: Int\n"
-    src = src + "    pub dep_serial: String\n"
-    src = src + "    pub task_serial: String\n"
-    src = src + "    pub override_serial: String\n"
-    src = src + "\n"
-    src = src + "    pub def package(pkg_name: String, version: String = \"0.0.0\") -> Void\n"
-    src = src + "        name = pkg_name\n"
-    src = src + "        version_str = version\n"
-    src = src + "\n"
-    src = src + "    pub def compiler(ver: String) -> Void\n"
-    src = src + "        compiler_version = ver\n"
-    src = src + "\n"
-    src = src + "    pub def quarantine(days: Int) -> Void\n"
-    src = src + "        quarantine_days = days\n"
-    src = src + "\n"
-    src = src + "    pub def task(task_name: String, cmd: String) -> Void\n"
-    src = src + "        task_serial = task_serial + \"TASK:\" + task_name + \"|\" + cmd + \"\\n\"\n"
-    src = src + "\n"
-    src = src + "    pub def override(dep_name: String, version: String = \"\", path: String = \"\", git: String = \"\", branch: String = \"\") -> Void\n"
-    src = src + "        override_serial = override_serial + \"OVERRIDE:\" + dep_name + \"|\" + version + \"|\" + path + \"|\" + git + \"|\" + branch + \"\\n\"\n"
-    src = src + "\n"
-    src = src + "    pub def method_missing(fn_name: String, args: Map[String, String]) -> Void\n"
-    src = src + "        let dep_name = args[\"name\"].or(default: fn_name)\n"
-    src = src + "        let dep_version = args[\"version\"].or(default: \"*\")\n"
-    src = src + "        let dep_path = args[\"path\"].or(default: \"\")\n"
-    src = src + "        let dep_git = args[\"git\"].or(default: \"\")\n"
-    src = src + "        let dep_dev = args[\"dev\"].or(default: \"false\")\n"
-    src = src + "        let dep_trusted = args[\"trusted\"].or(default: \"false\")\n"
-    src = src + "        dep_serial = dep_serial + \"DEP:\" + dep_name + \"|\" + dep_version + \"|\" + dep_path + \"|\" + dep_git + \"|\" + dep_dev + \"|\" + dep_trusted + \"\\n\"\n"
-    src
+  let src = "class Seedfile includes DynamicReceiver\n"
+
+  src = src + "    pub name: String\n"
+  src = src + "    pub version_str: String\n"
+  src = src + "    pub compiler_version: String\n"
+  src = src + "    pub quarantine_days: Int\n"
+  src = src + "    pub dep_serial: String\n"
+  src = src + "    pub task_serial: String\n"
+  src = src + "    pub override_serial: String\n"
+  src = src + "\n"
+  src = src + "    pub def package(pkg_name: String, version: String = \"0.0.0\") -> Void\n"
+  src = src + "        name = pkg_name\n"
+  src = src + "        version_str = version\n"
+  src = src + "\n"
+  src = src + "    pub def compiler(ver: String) -> Void\n"
+  src = src + "        compiler_version = ver\n"
+  src = src + "\n"
+  src = src + "    pub def quarantine(days: Int) -> Void\n"
+  src = src + "        quarantine_days = days\n"
+  src = src + "\n"
+  src = src + "    pub def task(task_name: String, cmd: String) -> Void\n"
+  src = src + "        task_serial = task_serial + \"TASK:\" + task_name + \"|\" + cmd + \"\\n\"\n"
+  src = src + "\n"
+  src = src + "    pub def override(dep_name: String, version: String = \"\", path: String = \"\", git: String = \"\", branch: String = \"\") -> Void\n"
+  src = src + "        override_serial = override_serial + \"OVERRIDE:\" + dep_name + \"|\" + version + \"|\" + path + \"|\" + git + \"|\" + branch + \"\\n\"\n"
+  src = src + "\n"
+  src = src + "    pub def method_missing(fn_name: String, args: Map[String, String]) -> Void\n"
+  src = src + "        let dep_name = args[\"name\"].or(default: fn_name)\n"
+  src = src + "        let dep_version = args[\"version\"].or(default: \"*\")\n"
+  src = src + "        let dep_path = args[\"path\"].or(default: \"\")\n"
+  src = src + "        let dep_git = args[\"git\"].or(default: \"\")\n"
+  src = src + "        let dep_dev = args[\"dev\"].or(default: \"false\")\n"
+  src = src + "        let dep_trusted = args[\"trusted\"].or(default: \"false\")\n"
+  src = src + "        dep_serial = dep_serial + \"DEP:\" + dep_name + \"|\" + dep_version + \"|\" + dep_path + \"|\" + dep_git + \"|\" + dep_dev + \"|\" + dep_trusted + \"\\n\"\n"
+
+  src
+
 
 def seedfile_constructor() -> String
-    "let _seed = Seedfile(name: \"\", version_str: \"\", compiler_version: \"\", quarantine_days: 0, dep_serial: \"\", task_serial: \"\", override_serial: \"\")\n"
+  "let _seed = Seedfile(name: \"\", version_str: \"\", compiler_version: \"\", quarantine_days: 0, dep_serial: \"\", task_serial: \"\", override_serial: \"\")\n"
+
 
 def seedfile_footer() -> String
-    let foot = "say(message: \"NAME:\" + _seed.name)\n"
-    foot = foot + "say(message: \"VERSION:\" + _seed.version_str)\n"
-    foot = foot + "say(message: \"COMPILER:\" + _seed.compiler_version)\n"
-    foot = foot + "say(message: \"QUARANTINE:\" + to_string(value: _seed.quarantine_days))\n"
-    foot = foot + "say(message: _seed.dep_serial)\n"
-    foot = foot + "say(message: _seed.task_serial)\n"
-    foot = foot + "say(message: _seed.override_serial)\n"
-    foot
+  let foot = "say(message: \"NAME:\" + _seed.name)\n"
+
+  foot = foot + "say(message: \"VERSION:\" + _seed.version_str)\n"
+  foot = foot + "say(message: \"COMPILER:\" + _seed.compiler_version)\n"
+  foot = foot + "say(message: \"QUARANTINE:\" + to_string(value: _seed.quarantine_days))\n"
+  foot = foot + "say(message: _seed.dep_serial)\n"
+  foot = foot + "say(message: _seed.task_serial)\n"
+  foot = foot + "say(message: _seed.override_serial)\n"
+
+  foot
+
 
 def transform_line(line: String) -> String
-    let trimmed = line.trim()
-    if trimmed.len() == 0
-        return ""
-    if trimmed.starts_with(pre: "#")
-        return trimmed
-    if trimmed.contains(str: "(")
-        return "_seed." + trimmed
-    trimmed
+  let trimmed = line.trim()
+
+  if trimmed.len() == 0
+    return ""
+
+  if trimmed.starts_with(pre: "#")
+    return trimmed
+
+  if trimmed.contains(str: "(")
+    return "_seed." + trimmed
+
+  trimmed
+
 
 def wrap_seedfile(content: String) -> String
-    let result = seedfile_class_source() + "\n"
-    result = result + "def main() -> Int\n"
-    result = result + "    " + seedfile_constructor()
-    let lines = content.split(sep: "\n")
-    for line in lines
-        let transformed = transform_line(line: line)
-        if transformed.len() > 0
-            result = result + "    " + transformed + "\n"
-    result = result + "    " + seedfile_footer().replace(old: "\n", new: "\n    ")
-    result = result + "0\n"
-    result
+  let result = seedfile_class_source() + "\n"
+
+  result = result + "def main() -> Int\n"
+  result = result + "    " + seedfile_constructor()
+
+  let lines = content.split(sep: "\n")
+
+  for line in lines
+    let transformed = transform_line(line: line)
+
+    if transformed.len() > 0
+      result = result + "    " + transformed + "\n"
+
+  result = result + "    " + seedfile_footer().replace(old: "\n", new: "\n    ")
+  result = result + "0\n"
+
+  result
+
 
 # ── CLI ──────────────────────────────────────────────────────────────
-
 def main() throws Error -> Int
-    let argv = args()
-    let subcommand = find_subcommand(argv: argv)
+  let argv = args()
+  let subcommand = find_subcommand(argv: argv)
 
-    if subcommand == ""
-        say(message: "aster: Aster package manager")
-        say(message: "")
-        say(message: "Usage: aster <command>")
-        say(message: "")
-        say(message: "Commands:")
-        say(message: "  info       Evaluate Seedfile and display package info")
-        say(message: "  build      Compile the project (delegates to asterc)")
-        say(message: "  run        Run the project (delegates to asterc)")
-        say(message: "  check      Type-check the project (delegates to asterc)")
-        say(message: "  fmt        Format source files (delegates to asterc)")
-        return 0
+  if subcommand == ""
+    say(message: "aster: Aster package manager")
+    say(message: "")
+    say(message: "Usage: aster <command>")
+    say(message: "")
+    say(message: "Commands:")
+    say(message: "  info       Evaluate Seedfile and display package info")
+    say(message: "  build      Compile the project (delegates to asterc)")
+    say(message: "  run        Run the project (delegates to asterc)")
+    say(message: "  check      Type-check the project (delegates to asterc)")
+    say(message: "  fmt        Format source files (delegates to asterc)")
 
-    if subcommand == "build" or subcommand == "run" or subcommand == "check" or subcommand == "fmt" or subcommand == "test"
-        say(message: "aster {subcommand}: delegating to asterc (not yet implemented)")
-        return 0
+    return 0
 
-    if subcommand == "info"
-        return cmd_info()!
+  if subcommand == "build" or subcommand == "run" or subcommand == "check" or subcommand == "fmt"
+    return cmd_passthrough(subcommand: subcommand)!
 
-    say(message: "aster: unknown command '{subcommand}'")
-    1
+  if subcommand == "info"
+    return cmd_info()!
+
+  say(message: "aster: unknown command '{subcommand}'")
+
+  1
+
+
+def collect_passthrough_args(argv: List[String], subcommand: String) -> List[String]
+  let result: List[String] = []
+  let i = 0
+  let found_separator = false
+  let found_subcommand = false
+
+  while i < argv.len()
+    let arg = argv[i]
+
+    if found_subcommand
+      result.push(item: arg)
+    elif found_separator and arg == subcommand
+      found_subcommand = true
+    elif arg == "--"
+      found_separator = true
+    elif found_separator == false and i == 1 and arg == subcommand
+      found_subcommand = true
+
+    i = i + 1
+
+  result
+
+
+def cmd_passthrough(subcommand: String) throws Error -> Int
+  let asterc = find_asterc()
+  let argv = args()
+  let remaining = collect_passthrough_args(argv: argv, subcommand: subcommand)
+  let cmd_args: List[String] = []
+
+  cmd_args.push(item: subcommand)
+
+  let i = 0
+
+  while i < remaining.len()
+    cmd_args.push(item: remaining[i])
+
+    i = i + 1
+
+  let result = run(cmd: asterc, args: cmd_args)!
+  let code = result.exit_code
+  let out = result.stdout
+  let err = result.stderr
+
+  say(message: out)
+  say(message: err)
+
+  code
+
 
 def find_subcommand(argv: List[String]) -> String
-    let i = 0
-    let past_separator = false
-    while i < argv.len()
-        let arg = argv[i]
-        if arg == "--"
-            past_separator = true
-            i = i + 1
-            continue
-        if past_separator
-            return arg
-        if i == 1 and arg.ends_with(suf: ".aster") == false and arg != "run" and arg != "check" and arg != "build"
-            return arg
-        i = i + 1
-    ""
+  let i = 0
+  let past_separator = false
+
+  while i < argv.len()
+    let arg = argv[i]
+
+    if arg == "--"
+      past_separator = true
+      i = i + 1
+
+      continue
+
+    if past_separator
+      return arg
+
+    if i == 1 and arg.ends_with(suf: ".aster") == false and arg != "run" and arg != "check" and arg != "build"
+      return arg
+
+    i = i + 1
+
+  ""
+
 
 def cmd_info() throws Error -> Int
-    let seedfile_path = "Seedfile"
-    if exists(path: seedfile_path) == false
-        say(message: "aster: no Seedfile found in current directory")
-        return 1
+  let seedfile_path = "Seedfile"
 
-    let content = read_file(path: seedfile_path)!
-    let wrapper = wrap_seedfile(content: content)
+  if exists(path: seedfile_path) == false
+    say(message: "aster: no Seedfile found in current directory")
 
-    let tmp_path = ".aster_eval_tmp.aster"
-    write_file(path: tmp_path, content: wrapper)!
+    return 1
 
-    let asterc = find_asterc()
-    let result = run(cmd: asterc, args: ["run", tmp_path])!
+  let content = read_file(path: seedfile_path)!
+  let wrapper = wrap_seedfile(content: content)
+  let tmp_path = ".aster_eval_tmp.aster"
 
-    remove(path: tmp_path)!
+  write_file(path: tmp_path, content: wrapper)!
 
-    if result.exit_code != 0
-        say(message: "aster: Seedfile evaluation failed")
-        if result.stderr.len() > 0
-            say(message: result.stderr)
-        return 1
+  let asterc = find_asterc()
+  let result = run(cmd: asterc, args: ["run", tmp_path])!
 
-    let output = result.stdout
-    display_info(output: output)
-    0
+  remove(path: tmp_path)!
+
+  if result.exit_code != 0
+    say(message: "aster: Seedfile evaluation failed")
+
+    if result.stderr.len() > 0
+      say(message: result.stderr)
+
+    return 1
+
+  let output = result.stdout
+
+  display_info(output: output)
+
+  0
+
 
 # ── Output display ───────────────────────────────────────────────────
+def display_info(output: String)
+  let lines = output.split(sep: "\n")
+  let name = ""
+  let version = ""
+  let compiler = ""
+  let quarantine = ""
+  let dep_count = 0
+  let task_count = 0
+  let override_count = 0
+  let dep_lines: List[String] = []
+  let task_lines: List[String] = []
+  let override_lines: List[String] = []
 
-def display_info(output: String) -> Void
-    let lines = output.split(sep: "\n")
-    let name = ""
-    let version = ""
-    let compiler = ""
-    let quarantine = ""
-    let dep_count = 0
-    let task_count = 0
-    let override_count = 0
-    let dep_lines: List[String] = []
-    let task_lines: List[String] = []
-    let override_lines: List[String] = []
+  for line in lines
+    let trimmed = line.trim()
 
-    for line in lines
-        let trimmed = line.trim()
-        if trimmed.len() == 0
-            continue
-        if trimmed.starts_with(pre: "NAME:")
-            name = trimmed.slice(from: 5, to: trimmed.len())
-        elif trimmed.starts_with(pre: "VERSION:")
-            version = trimmed.slice(from: 8, to: trimmed.len())
-        elif trimmed.starts_with(pre: "COMPILER:")
-            compiler = trimmed.slice(from: 9, to: trimmed.len())
-        elif trimmed.starts_with(pre: "QUARANTINE:")
-            quarantine = trimmed.slice(from: 11, to: trimmed.len())
-        elif trimmed.starts_with(pre: "DEP:")
-            dep_lines.push(item: trimmed)
-            dep_count = dep_count + 1
-        elif trimmed.starts_with(pre: "TASK:")
-            task_lines.push(item: trimmed)
-            task_count = task_count + 1
-        elif trimmed.starts_with(pre: "OVERRIDE:")
-            override_lines.push(item: trimmed)
-            override_count = override_count + 1
+    if trimmed.len() == 0
+      continue
 
-    say(message: "Package: {name} v{version}")
-    if compiler.len() > 0
-        say(message: "Compiler: {compiler}")
-    if quarantine.len() > 0 and quarantine != "0"
-        say(message: "Quarantine: {quarantine} days")
+    if trimmed.starts_with(pre: "NAME:")
+      name = trimmed.slice(from: 5, to: trimmed.len())
+    elif trimmed.starts_with(pre: "VERSION:")
+      version = trimmed.slice(from: 8, to: trimmed.len())
+    elif trimmed.starts_with(pre: "COMPILER:")
+      compiler = trimmed.slice(from: 9, to: trimmed.len())
+    elif trimmed.starts_with(pre: "QUARANTINE:")
+      quarantine = trimmed.slice(from: 11, to: trimmed.len())
+    elif trimmed.starts_with(pre: "DEP:")
+      dep_lines.push(item: trimmed)
 
-    if dep_count > 0
-        say(message: "")
-        say(message: "Dependencies ({dep_count}):")
-        let i = 0
-        while i < dep_lines.len()
-            let dep_str = dep_lines[i].slice(from: 4, to: dep_lines[i].len())
-            let parts = dep_str.split(sep: "|")
-            let dep_name = parts[0]
-            let dep_version = parts[1]
-            let dep_path = ""
-            let dep_dev = ""
-            if parts.len() > 2
-                dep_path = parts[2]
-            if parts.len() > 4
-                dep_dev = parts[4]
-            let suffix = ""
-            if dep_path.len() > 0
-                suffix = " (path: {dep_path})"
-            if dep_dev == "true"
-                suffix = suffix + " [dev]"
-            say(message: "  {dep_name} {dep_version}{suffix}")
-            i = i + 1
+      dep_count = dep_count + 1
+    elif trimmed.starts_with(pre: "TASK:")
+      task_lines.push(item: trimmed)
 
-    if task_count > 0
-        say(message: "")
-        say(message: "Tasks ({task_count}):")
-        let i = 0
-        while i < task_lines.len()
-            let task_str = task_lines[i].slice(from: 5, to: task_lines[i].len())
-            let parts = task_str.split(sep: "|")
-            let task_name = parts[0]
-            let task_cmd = ""
-            if parts.len() > 1
-                task_cmd = parts[1]
-            say(message: "  {task_name}: {task_cmd}")
-            i = i + 1
+      task_count = task_count + 1
+    elif trimmed.starts_with(pre: "OVERRIDE:")
+      override_lines.push(item: trimmed)
 
-    if override_count > 0
-        say(message: "")
-        say(message: "Overrides ({override_count}):")
-        let i = 0
-        while i < override_lines.len()
-            let ov_str = override_lines[i].slice(from: 9, to: override_lines[i].len())
-            let parts = ov_str.split(sep: "|")
-            let ov_name = parts[0]
-            let ov_version = ""
-            if parts.len() > 1
-                ov_version = parts[1]
-            say(message: "  {ov_name} -> {ov_version}")
-            i = i + 1
+      override_count = override_count + 1
+
+  say(message: "Package: {name} v{version}")
+
+  if compiler.len() > 0
+    say(message: "Compiler: {compiler}")
+
+  if quarantine.len() > 0 and quarantine != "0"
+    say(message: "Quarantine: {quarantine} days")
+
+  if dep_count > 0
+    say(message: "")
+    say(message: "Dependencies ({dep_count}):")
+
+    let i = 0
+
+    while i < dep_lines.len()
+      let dep_str = dep_lines[i].slice(from: 4, to: dep_lines[i].len())
+      let parts = dep_str.split(sep: "|")
+      let dep_name = parts[0]
+      let dep_version = parts[1]
+      let dep_path = ""
+      let dep_dev = ""
+
+      if parts.len() > 2
+        dep_path = parts[2]
+
+      if parts.len() > 4
+        dep_dev = parts[4]
+
+      let suffix = ""
+
+      if dep_path.len() > 0
+        suffix = " (path: {dep_path})"
+
+      if dep_dev == "true"
+        suffix = suffix + " [dev]"
+
+      say(message: "  {dep_name} {dep_version}{suffix}")
+
+      i = i + 1
+
+  if task_count > 0
+    say(message: "")
+    say(message: "Tasks ({task_count}):")
+
+    let i = 0
+
+    while i < task_lines.len()
+      let task_str = task_lines[i].slice(from: 5, to: task_lines[i].len())
+      let parts = task_str.split(sep: "|")
+      let task_name = parts[0]
+      let task_cmd = ""
+
+      if parts.len() > 1
+        task_cmd = parts[1]
+
+      say(message: "  {task_name}: {task_cmd}")
+
+      i = i + 1
+
+  if override_count > 0
+    say(message: "")
+    say(message: "Overrides ({override_count}):")
+
+    let i = 0
+
+    while i < override_lines.len()
+      let ov_str = override_lines[i].slice(from: 9, to: override_lines[i].len())
+      let parts = ov_str.split(sep: "|")
+      let ov_name = parts[0]
+      let ov_version = ""
+
+      if parts.len() > 1
+        ov_version = parts[1]
+
+      say(message: "  {ov_name} -> {ov_version}")
+
+      i = i + 1
+
 
 def find_asterc() -> String
-    let argv = args()
-    if argv.len() > 0
-        let first = argv[0]
-        if first.contains(str: "asterc")
-            return first
-    "asterc"
+  let argv = args()
+
+  if argv.len() > 0
+    let first = argv[0]
+
+    if first.contains(str: "asterc")
+      return first
+
+  "asterc"

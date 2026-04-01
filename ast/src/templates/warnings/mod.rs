@@ -18,3 +18,6 @@ define_diagnostic!(
         self.type_name
     )
 );
+define_diagnostic!(RedundantMainReturn {}, "W005", |self| {
+    "main() implicitly returns exit code 0; remove `-> Int` and the trailing `0`".to_string()
+});

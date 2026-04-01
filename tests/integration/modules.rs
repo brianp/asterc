@@ -29,29 +29,61 @@ fn run_multi_file(main_src: &str, files: HashMap<&str, &str>) -> std::process::O
 fn run_imported_class_method() {
     let mut files = HashMap::new();
     files.insert("greeter", "pub class Greeter\n    pub name: String\n\n    pub def greet() -> String\n        \"Hello, {name}!\"\n");
-    let output = run_multi_file("use greeter { Greeter }\n\ndef main() -> Int\n    let g = Greeter(name: \"World\")\n    say(message: g.greet())\n    0\n", files);
+    let output = run_multi_file(
+        "use greeter { Greeter }\n\ndef main() -> Int\n    let g = Greeter(name: \"World\")\n    say(message: g.greet())\n    0\n",
+        files,
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "should succeed: {}{}", stdout, String::from_utf8_lossy(&output.stderr));
-    assert!(stdout.contains("Hello, World!"), "expected greeting: {}", stdout);
+    assert!(
+        output.status.success(),
+        "should succeed: {}{}",
+        stdout,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("Hello, World!"),
+        "expected greeting: {}",
+        stdout
+    );
 }
 
 #[test]
 fn run_imported_class_with_dynamic_receiver() {
     let mut files = HashMap::new();
     files.insert("config", "pub class Config includes DynamicReceiver\n    pub last_call: String\n\n    pub def method_missing(fn_name: String, args: Map[String, String]) -> Void\n        last_call = fn_name\n");
-    let output = run_multi_file("use config { Config }\n\ndef main() -> Int\n    let c = Config(last_call: \"none\")\n    c.something_dynamic()\n    say(message: c.last_call)\n    0\n", files);
+    let output = run_multi_file(
+        "use config { Config }\n\ndef main() -> Int\n    let c = Config(last_call: \"none\")\n    c.something_dynamic()\n    say(message: c.last_call)\n    0\n",
+        files,
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "should succeed: {}{}", stdout, String::from_utf8_lossy(&output.stderr));
-    assert!(stdout.contains("something_dynamic"), "expected dynamic method name: {}", stdout);
+    assert!(
+        output.status.success(),
+        "should succeed: {}{}",
+        stdout,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("something_dynamic"),
+        "expected dynamic method name: {}",
+        stdout
+    );
 }
 
 #[test]
 fn run_imported_class_field_access() {
     let mut files = HashMap::new();
     files.insert("point", "pub class Point\n    pub x: Int\n    pub y: Int\n");
-    let output = run_multi_file("use point { Point }\n\ndef main() -> Int\n    let p = Point(x: 10, y: 20)\n    say(message: \"{p.x}\")\n    say(message: \"{p.y}\")\n    0\n", files);
+    let output = run_multi_file(
+        "use point { Point }\n\ndef main() -> Int\n    let p = Point(x: 10, y: 20)\n    say(message: \"{p.x}\")\n    say(message: \"{p.y}\")\n    0\n",
+        files,
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "should succeed: {}{}", stdout, String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "should succeed: {}{}",
+        stdout,
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(stdout.contains("10"), "expected x=10: {}", stdout);
     assert!(stdout.contains("20"), "expected y=20: {}", stdout);
 }
@@ -60,21 +92,40 @@ fn run_imported_class_field_access() {
 fn run_imported_function() {
     let mut files = HashMap::new();
     files.insert("math", "pub def double(n: Int) -> Int\n    n * 2\n");
-    let output = run_multi_file("use math { double }\n\ndef main() -> Int\n    let result = double(n: 21)\n    say(message: \"{result}\")\n    0\n", files);
+    let output = run_multi_file(
+        "use math { double }\n\ndef main() -> Int\n    let result = double(n: 21)\n    say(message: \"{result}\")\n    0\n",
+        files,
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "should succeed: {}{}", stdout, String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "should succeed: {}{}",
+        stdout,
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(stdout.contains("42"), "expected 42: {}", stdout);
 }
 
 #[test]
 fn run_diamond_import_methods() {
     let mut files = HashMap::new();
-    files.insert("base", "pub class Base\n    pub val: Int\n\n    pub def double() -> Int\n        val * 2\n");
+    files.insert(
+        "base",
+        "pub class Base\n    pub val: Int\n\n    pub def double() -> Int\n        val * 2\n",
+    );
     files.insert("left", "use base { Base }\n\npub class Left\n    pub b: Base\n\n    pub def left_val() -> Int\n        b.double() + 1\n");
     files.insert("right", "use base { Base }\n\npub class Right\n    pub b: Base\n\n    pub def right_val() -> Int\n        b.double() + 100\n");
-    let output = run_multi_file("use base { Base }\nuse left { Left }\nuse right { Right }\n\ndef main() -> Int\n    let b = Base(val: 5)\n    let l = Left(b: b)\n    let r = Right(b: b)\n    say(message: \"{l.left_val()}\")\n    say(message: \"{r.right_val()}\")\n    0\n", files);
+    let output = run_multi_file(
+        "use base { Base }\nuse left { Left }\nuse right { Right }\n\ndef main() -> Int\n    let b = Base(val: 5)\n    let l = Left(b: b)\n    let r = Right(b: b)\n    say(message: \"{l.left_val()}\")\n    say(message: \"{r.right_val()}\")\n    0\n",
+        files,
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "should succeed: {}{}", stdout, String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "should succeed: {}{}",
+        stdout,
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(stdout.contains("11"), "expected 11 (5*2+1): {}", stdout);
     assert!(stdout.contains("110"), "expected 110 (5*2+100): {}", stdout);
 }
@@ -83,10 +134,22 @@ fn run_diamond_import_methods() {
 fn run_imported_class_constructor() {
     let mut files = HashMap::new();
     files.insert("user", "pub class User\n    pub name: String\n    pub age: Int\n\n    pub def greet() -> String\n        \"I'm {name}, age {age}\"\n");
-    let output = run_multi_file("use user { User }\n\ndef main() -> Int\n    let u = User(name: \"Alice\", age: 30)\n    say(message: u.greet())\n    0\n", files);
+    let output = run_multi_file(
+        "use user { User }\n\ndef main() -> Int\n    let u = User(name: \"Alice\", age: 30)\n    say(message: u.greet())\n    0\n",
+        files,
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "should succeed: {}{}", stdout, String::from_utf8_lossy(&output.stderr));
-    assert!(stdout.contains("I'm Alice, age 30"), "expected greeting: {}", stdout);
+    assert!(
+        output.status.success(),
+        "should succeed: {}{}",
+        stdout,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("I'm Alice, age 30"),
+        "expected greeting: {}",
+        stdout
+    );
 }
 
 // ─── Module system: imports and visibility ───────────────────────────

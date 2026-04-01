@@ -128,9 +128,24 @@ impl Lowerer {
             global_prelude.push(fir_stmt);
         }
 
+        // main() with no return type annotation implicitly returns 0 (exit code)
+        let is_main_inferred = name == "main" && *ret_type == Type::Inferred;
+        let effective_ret = if is_main_inferred {
+            Type::Int
+        } else {
+            ret_type.clone()
+        };
+
         // Lower body, converting last expression to implicit return
         let mut fir_body = self.lower_body(body)?;
-        self.finalize_function_body(&mut fir_body, ret_type, scope_id, true, true);
+        self.finalize_function_body(&mut fir_body, &effective_ret, scope_id, true, true);
+
+        // For main() with inferred return, append `return 0` if body doesn't
+        // already contain an explicit return. Placed after all cleanup (scope_exit)
+        // so async scope cleanup still runs.
+        if is_main_inferred && !fir_body.iter().any(|s| matches!(s, FirStmt::Return(_))) {
+            fir_body.push(FirStmt::Return(FirExpr::IntLit(0)));
+        }
 
         // Prepend global value definitions after scope_enter
         if !global_prelude.is_empty() {
@@ -140,7 +155,7 @@ impl Lowerer {
             fir_body.extend(rest);
         }
 
-        let id = self.register_function(name, fir_params, ret_type, fir_body);
+        let id = self.register_function(name, fir_params, &effective_ret, fir_body);
 
         self.restore_scope(snapshot);
 

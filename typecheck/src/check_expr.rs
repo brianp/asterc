@@ -457,10 +457,19 @@ impl TypeChecker {
             }
         }
 
+        // main() with no return type annotation implicitly returns Int (exit code)
+        let is_main_inferred =
+            self.sc.current_function.as_deref() == Some("main") && *ret_type == Type::Inferred;
+        let effective_main_ret = if is_main_inferred {
+            Type::Int
+        } else {
+            ret_type.clone()
+        };
+
         let mut sub = self.child_checker();
         sub.sc.throws_type = throws.as_deref().cloned();
-        if *ret_type != Type::Void && *ret_type != Type::Inferred {
-            sub.sc.expected_return_type = Some(ret_type.clone());
+        if effective_main_ret != Type::Void && effective_main_ret != Type::Inferred {
+            sub.sc.expected_return_type = Some(effective_main_ret.clone());
         }
 
         // Register virtual ClassInfo for constrained type parameters so that
@@ -525,11 +534,38 @@ impl TypeChecker {
 
         let body_result = Self::check_lambda_body(&mut sub, body, ret_type);
 
-        // If ret_type is Inferred, use the actual body result type
-        let effective_ret = match &body_result {
-            Ok(last) if *ret_type == Type::Inferred => last.clone(),
-            _ => ret_type.clone(),
+        // If ret_type is Inferred, use the actual body result type.
+        // For main(), Inferred resolves to Int (implicit exit code 0).
+        let effective_ret = if is_main_inferred {
+            Type::Int
+        } else {
+            match &body_result {
+                Ok(last) if *ret_type == Type::Inferred => last.clone(),
+                _ => ret_type.clone(),
+            }
         };
+
+        // W005: warn when main() -> Int with body that just returns 0
+        if self.sc.current_function.as_deref() == Some("main")
+            && *ret_type == Type::Int
+            && body.len() == 1
+        {
+            let is_zero_return = matches!(
+                &body[0],
+                ast::Stmt::Return(Expr::Int(0, _), _) | ast::Stmt::Expr(Expr::Int(0, _), _)
+            );
+            if is_zero_return {
+                sub.reg.diagnostics.push(
+                    Diagnostic::warning(
+                        "main() implicitly returns exit code 0; remove `-> Int` and the trailing `0`"
+                            .to_string(),
+                    )
+                    .with_template(DiagnosticTemplate::RedundantMainReturn(
+                        ast::templates::warnings::RedundantMainReturn {},
+                    )),
+                );
+            }
+        }
 
         // Must-consume check: emit E027 for any Task[T] binding not consumed
         if !is_abstract {

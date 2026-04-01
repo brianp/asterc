@@ -3528,3 +3528,83 @@ def process(e: Token) -> Int
 "#,
     );
 }
+
+// ===========================================================================
+// Implicit main() return
+// ===========================================================================
+
+#[test]
+fn main_no_return_type_lowers_to_i64() {
+    let fir = lower_ok("def main()\n  log(message: \"hello\")\n");
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    assert_eq!(main_func.ret_type, FirType::I64);
+}
+
+#[test]
+fn main_no_return_type_appends_return_zero() {
+    let fir = lower_ok("def main()\n  log(message: \"hello\")\n");
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    // main() with inferred return should have ret_type I64 and contain a Return
+    assert_eq!(main_func.ret_type, FirType::I64);
+    assert!(
+        main_func
+            .body
+            .iter()
+            .any(|s| matches!(s, FirStmt::Return(_))),
+        "expected a return statement in main body: {:?}",
+        main_func.body
+    );
+}
+
+#[test]
+fn main_no_return_type_with_explicit_return_keeps_it() {
+    let fir = lower_ok("def main()\n  return 42\n");
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    assert_eq!(main_func.ret_type, FirType::I64);
+    assert!(
+        main_func
+            .body
+            .iter()
+            .any(|s| matches!(s, FirStmt::Return(FirExpr::IntLit(42)))),
+        "expected return 42 in body: {:?}",
+        main_func.body
+    );
+}
+
+#[test]
+fn main_explicit_int_return_unchanged() {
+    let fir = lower_ok("def main() -> Int\n  99\n");
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    assert_eq!(main_func.ret_type, FirType::I64);
+    assert!(
+        main_func
+            .body
+            .iter()
+            .any(|s| matches!(s, FirStmt::Return(FirExpr::IntLit(99)))),
+        "expected return 99 in body: {:?}",
+        main_func.body
+    );
+}
+
+#[test]
+fn main_explicit_void_return_unchanged() {
+    let fir = lower_ok("def main() -> Void\n  log(message: \"hello\")\n");
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+    assert_eq!(main_func.ret_type, FirType::Void);
+}
+
+#[test]
+fn non_main_inferred_return_not_affected() {
+    // A non-main function with no return type should NOT get implicit return 0
+    let fir = lower_ok("def helper()\n  log(message: \"hi\")\n\ndef main() -> Int\n  0\n");
+    let helper = fir.functions.iter().find(|f| f.name == "helper").unwrap();
+    // helper should NOT have a Return(IntLit(0)) injected
+    assert!(
+        !helper
+            .body
+            .iter()
+            .any(|s| matches!(s, FirStmt::Return(FirExpr::IntLit(0)))),
+        "non-main function should not get implicit return 0: {:?}",
+        helper.body
+    );
+}

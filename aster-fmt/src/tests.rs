@@ -118,9 +118,10 @@ fn format_let_nil() {
 
 #[test]
 fn format_simple_function() {
+    // main() -> Int returning 0 is redundant; formatter strips it
     let source = "def main() -> Int\n  return 0\n";
     let out = fmt(source);
-    assert_eq!(out, "def main() -> Int\n  0\n");
+    assert_eq!(out, "def main()\n");
 }
 
 #[test]
@@ -690,37 +691,24 @@ fn sig_wrap_short_fits_one_line() {
 }
 
 #[test]
-fn sig_wrap_long_params_wrap_at_paren() {
-    // These params together exceed 58 chars (2/3 of 88)
+fn sig_long_params_stay_on_one_line() {
+    // Aster's parser does not support multi-line parameter lists, so even
+    // long signatures must stay on a single line.
     let source = "def transform(input: String, count: Int, flag: Bool, callback: Fn(Int) -> String) -> String\n  input\n";
     let out = fmt(source);
-    // Should wrap, with continuation aligned to after "("
-    assert!(out.contains("def transform("));
-    // Verify it wraps (has newline within the signature)
-    // Check it doesn't exceed 88 chars per line
-    for line in out.lines() {
-        assert!(
-            line.len() <= 88,
-            "line exceeds 88 chars: {:?} (len={})",
-            line,
-            line.len()
-        );
-    }
+    assert!(out.contains("def transform(input: String, count: Int, flag: Bool, callback: (_0: Int) -> String) -> String"));
+    // No newlines inside the signature.
+    let sig_line = out.lines().next().unwrap();
+    assert!(sig_line.starts_with("def transform("));
 }
 
 #[test]
-fn call_wrap_long_args_wrap_at_paren() {
+fn call_long_args_stay_on_one_line() {
+    // Same as above: calls can't wrap either.
     let source =
         "do_thing(name: \"hello world\", count: 42, flag: true, timeout: 30, retries: 3)\n";
     let out = fmt(source);
-    for line in out.lines() {
-        assert!(
-            line.len() <= 88,
-            "line exceeds 88 chars: {:?} (len={})",
-            line,
-            line.len()
-        );
-    }
+    assert_eq!(out.lines().count(), 1, "call should stay on one line");
 }
 
 // ===========================================================================
@@ -941,4 +929,205 @@ fn plain_string_no_brace_escape() {
         "plain strings should not escape braces, got: {}",
         out
     );
+}
+
+// ===========================================================================
+// Blank line grouping tests
+// ===========================================================================
+
+#[test]
+fn blank_line_before_block_in_body() {
+    // An if block after a let should get a blank line between them.
+    let source = "def foo()\n  let x = 1\n  if x > 0\n    let y = 2\n";
+    let out = fmt(source);
+    assert_eq!(out, "def foo()\n  let x = 1\n\n  if x > 0\n    let y = 2\n");
+}
+
+#[test]
+fn blank_line_after_block_in_body() {
+    // A let after an if block should get a blank line between them.
+    let source = "def foo()\n  if true\n    let a = 1\n  let x = 2\n";
+    let out = fmt(source);
+    assert_eq!(out, "def foo()\n  if true\n    let a = 1\n\n  let x = 2\n");
+}
+
+#[test]
+fn blank_line_between_let_and_assignment_groups() {
+    // Switching from let bindings to assignments inserts a blank line.
+    let source = "def foo()\n  let x = 1\n  let y = 2\n  x = 10\n  y = 20\n";
+    let out = fmt(source);
+    assert_eq!(
+        out,
+        "def foo()\n  let x = 1\n  let y = 2\n\n  x = 10\n  y = 20\n"
+    );
+}
+
+#[test]
+fn no_blank_line_within_let_group() {
+    // Consecutive lets stay together without blank lines.
+    let source = "def foo()\n  let a = 1\n  let b = 2\n  let c = 3\n";
+    let out = fmt(source);
+    assert_eq!(out, "def foo()\n  let a = 1\n  let b = 2\n  let c = 3\n");
+}
+
+#[test]
+fn no_blank_line_within_assignment_group() {
+    // Consecutive assignments stay together without blank lines.
+    let source = "def foo(x: Int, y: Int)\n  x = 1\n  y = 2\n";
+    let out = fmt(source);
+    assert_eq!(out, "def foo(x: Int, y: Int)\n  x = 1\n  y = 2\n");
+}
+
+#[test]
+fn blank_line_between_blocks() {
+    // Two consecutive blocks get a blank line between them.
+    let source = "def foo()\n  if true\n    let a = 1\n  while true\n    let b = 2\n";
+    let out = fmt(source);
+    assert_eq!(
+        out,
+        "def foo()\n  if true\n    let a = 1\n\n  while true\n    let b = 2\n"
+    );
+}
+
+#[test]
+fn blank_line_function_def_in_body() {
+    // A function definition (let + lambda) is treated as a block.
+    let source = "def outer()\n  let x = 1\n  def inner()\n    let y = 2\n  let z = 3\n";
+    let out = fmt(source);
+    assert_eq!(
+        out,
+        "def outer()\n  let x = 1\n\n  def inner()\n    let y = 2\n\n  let z = 3\n"
+    );
+}
+
+#[test]
+fn blank_line_grouping_idempotent() {
+    // Formatting twice should yield the same result.
+    let source = "def foo()\n  let x = 1\n  if true\n    let a = 1\n  x = 10\n";
+    let out1 = fmt(source);
+    let out2 = fmt(&out1);
+    assert_eq!(out1, out2, "blank line grouping must be idempotent");
+}
+
+#[test]
+fn blank_line_for_loop_separation() {
+    // A for loop after assignments gets a blank line.
+    let source = "def foo()\n  let x = 1\n  for i in [1, 2, 3]\n    let y = i\n";
+    let out = fmt(source);
+    assert_eq!(
+        out,
+        "def foo()\n  let x = 1\n\n  for i in [1, 2, 3]\n    let y = i\n"
+    );
+}
+
+#[test]
+fn blank_line_mixed_groups() {
+    // lets -> assignments -> expression calls should all get blank lines between groups.
+    let source =
+        "def foo(x: Int)\n  let a = 1\n  let b = 2\n  x = 10\n  x = 20\n  bar()\n  baz()\n";
+    let out = fmt(source);
+    assert_eq!(
+        out,
+        "def foo(x: Int)\n  let a = 1\n  let b = 2\n\n  x = 10\n  x = 20\n\n  bar()\n\n  baz()\n"
+    );
+}
+
+#[test]
+fn blank_line_before_implicit_return() {
+    // The last expression (implicit return) in a function body gets a blank line.
+    let source = "def add(a: Int, b: Int) -> Int\n  let result = a + b\n  result\n";
+    let out = fmt(source);
+    assert_eq!(
+        out,
+        "def add(a: Int, b: Int) -> Int\n  let result = a + b\n\n  result\n"
+    );
+}
+
+#[test]
+fn blank_line_before_explicit_return() {
+    // An explicit return at the end gets stripped and separated by a blank line.
+    let source = "def add(a: Int, b: Int) -> Int\n  let result = a + b\n  return result\n";
+    let out = fmt(source);
+    assert_eq!(
+        out,
+        "def add(a: Int, b: Int) -> Int\n  let result = a + b\n\n  result\n"
+    );
+}
+
+#[test]
+fn no_blank_line_single_return() {
+    // A function with only a single expression body has no blank line.
+    let source = "def one() -> Int\n  1\n";
+    let out = fmt(source);
+    assert_eq!(out, "def one() -> Int\n  1\n");
+}
+
+// ===========================================================================
+// Implicit main() return — formatter strips redundant -> Int and 0
+// ===========================================================================
+
+#[test]
+fn format_main_strip_int_return_with_zero() {
+    // def main() -> Int\n  0  =>  def main()\n
+    let source = "def main() -> Int\n  0\n";
+    let out = fmt(source);
+    assert_eq!(out, "def main()\n");
+}
+
+#[test]
+fn format_main_strip_int_return_with_return_zero() {
+    // def main() -> Int\n  return 0  =>  def main()\n
+    let source = "def main() -> Int\n  return 0\n";
+    let out = fmt(source);
+    assert_eq!(out, "def main()\n");
+}
+
+#[test]
+fn format_main_keep_int_return_with_nonzero() {
+    // def main() -> Int\n  42  => keep as-is
+    let source = "def main() -> Int\n  42\n";
+    let out = fmt(source);
+    assert_eq!(out, "def main() -> Int\n  42\n");
+}
+
+#[test]
+fn format_main_keep_int_return_with_complex_body() {
+    // def main() -> Int with multiple statements should keep -> Int
+    let source = "def main() -> Int\n  let x = 1\n  return x\n";
+    let out = fmt(source);
+    assert!(
+        out.contains("-> Int"),
+        "should keep -> Int for complex body: {}",
+        out
+    );
+}
+
+#[test]
+fn format_main_keep_void_return() {
+    let source = "def main() -> Void\n  log(message: \"hi\")\n";
+    let out = fmt(source);
+    assert!(
+        !out.contains("-> Void"),
+        "Void return should already be hidden: {}",
+        out
+    );
+}
+
+#[test]
+fn format_main_no_return_type_unchanged() {
+    let source = "def main()\n  log(message: \"hi\")\n";
+    let out = fmt(source);
+    assert!(
+        !out.contains("->"),
+        "no return type should stay that way: {}",
+        out
+    );
+}
+
+#[test]
+fn format_non_main_int_return_zero_unchanged() {
+    // Non-main functions returning 0 should NOT be stripped
+    let source = "def helper() -> Int\n  0\n";
+    let out = fmt(source);
+    assert_eq!(out, "def helper() -> Int\n  0\n");
 }

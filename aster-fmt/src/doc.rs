@@ -18,6 +18,9 @@ pub enum Doc {
     Group(Box<Doc>),
     /// Unconditional newline — always breaks regardless of mode.
     HardLine,
+    /// A blank line separator — emits two newlines with indentation only on
+    /// the second line (no trailing whitespace on the blank line).
+    BlankLine,
     /// Empty document.
     Nil,
 }
@@ -48,6 +51,11 @@ pub fn softline() -> Doc {
 /// Unconditional hard newline.
 pub fn hardline() -> Doc {
     Doc::HardLine
+}
+
+/// A blank line: two newlines, with indentation only on the second line.
+pub fn blankline() -> Doc {
+    Doc::BlankLine
 }
 
 /// Group: try to print on one line; break if it doesn't fit.
@@ -127,6 +135,14 @@ pub fn pretty(width: usize, indent_size: usize, doc: &Doc) -> String {
                 }
                 col = spaces;
             }
+            Doc::BlankLine => {
+                out.push_str("\n\n");
+                let spaces = ind * indent_size;
+                for _ in 0..spaces {
+                    out.push(' ');
+                }
+                col = spaces;
+            }
             Doc::Concat(docs) => {
                 // Push in reverse so the first child is processed first.
                 for child in docs.iter().rev() {
@@ -170,7 +186,7 @@ fn fits(mut remaining: isize, cmds: &[Cmd]) -> bool {
                     return true;
                 }
             },
-            Doc::HardLine => {
+            Doc::HardLine | Doc::BlankLine => {
                 return true;
             }
             Doc::Concat(docs) => {

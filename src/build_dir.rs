@@ -200,7 +200,7 @@ mod tests {
         let _ = std::fs::create_dir_all(&tmp);
         let _ = std::fs::create_dir_all(tmp.join(".git"));
         let source = tmp.join("main.aster");
-        let _ = std::fs::write(&source, "def main() -> Int\n  42\n");
+        let _ = std::fs::write(&source, "def main()\n  42\n");
 
         let paths = resolve_build_paths(&source, Profile::Debug, None);
         assert!(paths.root.to_string_lossy().contains(".aster/build/debug"));

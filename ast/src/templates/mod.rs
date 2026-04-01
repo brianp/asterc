@@ -71,7 +71,8 @@ impl DiagnosticTemplate {
             Self::UnusedDefaultParam(_)
             | Self::UseAfterMove(_)
             | Self::ShadowedVariable(_)
-            | Self::RedundantTypeAnnotation(_) => Severity::Warning,
+            | Self::RedundantTypeAnnotation(_)
+            | Self::RedundantMainReturn(_) => Severity::Warning,
             _ => Severity::Error,
         }
     }
@@ -123,11 +124,12 @@ diagnostic_template_enum! {
     InvalidImportAlias(module_errors::InvalidImportAlias),
     UnstableRequired(module_errors::UnstableRequired),
 
-    // Warnings (W001-W004)
+    // Warnings (W001-W005)
     RedundantTypeAnnotation(warnings::RedundantTypeAnnotation),
     UnusedDefaultParam(warnings::UnusedDefaultParam),
     UseAfterMove(warnings::UseAfterMove),
     ShadowedVariable(warnings::ShadowedVariable),
+    RedundantMainReturn(warnings::RedundantMainReturn),
 
     // Lex errors (L001-L012)
     InterpolationError(lex_errors::InterpolationError),

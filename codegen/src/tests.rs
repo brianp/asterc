@@ -4479,3 +4479,34 @@ def main() -> Int
     let result = jit.call_i64(fir.entry.unwrap());
     assert_eq!(result, 2);
 }
+
+// ===========================================================================
+// Implicit main() return
+// ===========================================================================
+
+#[test]
+fn main_no_return_type_returns_zero() {
+    let src = "def main()\n  log(message: \"hello\")\n";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 0);
+}
+
+#[test]
+fn main_no_return_type_with_explicit_return_value() {
+    let src = "def main()\n  return 42\n";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn main_no_return_type_implicit_last_expr() {
+    let src = "def main()\n  1 + 2\n";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 3);
+}

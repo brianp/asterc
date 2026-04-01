@@ -1,61 +1,51 @@
 pub class Dependency
-    pub name: String
-    pub version: String
-    pub path: String
-    pub git: String
-    pub dev: Bool
-    pub trusted: Bool
+  pub name: String
+  pub version: String
+  pub path: String
+  pub git: String
+  pub dev: Bool
+  pub trusted: Bool
+
 
 pub class Task
-    pub name: String
-    pub cmd: String
+  pub name: String
+  pub cmd: String
+
 
 pub class Override
-    pub name: String
-    pub version: String
-    pub path: String
-    pub git: String
-    pub branch: String
+  pub name: String
+  pub version: String
+  pub path: String
+  pub git: String
+  pub branch: String
+
 
 pub class Seedfile includes DynamicReceiver
-    pub aster_version: String
-    pub name: String
-    pub version_str: String
-    pub compiler_version: String
-    pub quarantine_days: Int
-    pub deps: List[Dependency]
-    pub tasks: List[Task]
-    pub overrides: List[Override]
+  pub aster_version: String
+  pub name: String
+  pub version_str: String
+  pub compiler_version: String
+  pub quarantine_days: Int
+  pub deps: List[Dependency]
+  pub tasks: List[Task]
+  pub overrides: List[Override]
+  pub def package(pkg_name: String, version: String = "0.0.0")
+    name = pkg_name
+    version_str = version
+  pub def compiler(ver: String)
+    compiler_version = ver
+  pub def quarantine(days: Int)
+    quarantine_days = days
+  pub def task(task_name: String, cmd: String)
+    tasks.push(item: Task(name: task_name, cmd: cmd))
+  pub def override(dep_name: String, version: String = "", path: String = "", git: String = "", branch: String = "")
+    overrides.push(item: Override(name: dep_name, version: version, path: path, git: git, branch: branch))
+  pub def method_missing(fn_name: String, args: Map[String, String])
+    let dep_name = args["name"].or(default: fn_name)
+    let dep_version = args["version"].or(default: "*")
+    let dep_path = args["path"].or(default: "")
+    let dep_git = args["git"].or(default: "")
+    let dep_dev = args["dev"].or(default: "false") == "true"
+    let dep_trusted = args["trusted"].or(default: "false") == "true"
 
-    pub def package(pkg_name: String, version: String = "0.0.0") -> Void
-        name = pkg_name
-        version_str = version
-
-    pub def compiler(ver: String) -> Void
-        compiler_version = ver
-
-    pub def quarantine(days: Int) -> Void
-        quarantine_days = days
-
-    pub def task(task_name: String, cmd: String) -> Void
-        tasks.push(item: Task(name: task_name, cmd: cmd))
-
-    pub def override(dep_name: String, version: String = "", path: String = "", git: String = "", branch: String = "") -> Void
-        overrides.push(item: Override(name: dep_name, version: version, path: path, git: git, branch: branch))
-
-    pub def method_missing(fn_name: String, args: Map[String, String]) -> Void
-        let dep_name = args["name"].or(default: fn_name)
-        let dep_version = args["version"].or(default: "*")
-        let dep_path = args["path"].or(default: "")
-        let dep_git = args["git"].or(default: "")
-        let dep_dev = args["dev"].or(default: "false") == "true"
-        let dep_trusted = args["trusted"].or(default: "false") == "true"
-
-        deps.push(item: Dependency(
-            name: dep_name,
-            version: dep_version,
-            path: dep_path,
-            git: dep_git,
-            dev: dep_dev,
-            trusted: dep_trusted
-        ))
+    deps.push(item: Dependency(name: dep_name, version: dep_version, path: dep_path, git: dep_git, dev: dep_dev, trusted: dep_trusted))
