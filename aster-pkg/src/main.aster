@@ -11,9 +11,11 @@
 #   check    (passthrough) Delegate to asterc check.
 #   fmt      (passthrough) Delegate to asterc fmt.
 use std/fs { exists, read_file }
+use std/crypto { sha256 }
 use std/process { run }
 use std/sys { args }
 use src/seedfile { Seedfile, Dependency, Task, Override }
+use src/lock { read_lock_hash, read_lock_version, read_lock_output, write_lock }
 
 
 # ── CLI ──────────────────────────────────────────────────────────────
@@ -121,6 +123,7 @@ def find_subcommand(argv: List[String]) -> String
 
 def cmd_info() throws Error -> Int
   let seedfile_path = "Seedfile"
+  let lock_path = "Seedfile.lock"
 
   if exists(path: seedfile_path) == false
     say(message: "aster: no Seedfile found in current directory")
@@ -129,46 +132,82 @@ def cmd_info() throws Error -> Int
 
   let content = read_file(path: seedfile_path)!
 
-  # Check for allow_eval() mode (Phase 11)
+  # Phase 11: check for unrestricted mode
   let first_line = content.split(sep: "\n")[0].trim()
+  let is_unrestricted = first_line == "allow_eval()"
 
-  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, deps: [], tasks: [], overrides: [])
+  # Phase 12: lockfile caching (disabled for unrestricted Seedfiles
+  # since they may use env vars or other side effects)
+  if is_unrestricted == false
+    let hash = sha256(data: content)
+    let cached_hash = read_lock_hash(path: lock_path)!
 
-  if first_line == "allow_eval()"
-    # Strip the allow_eval() directive line and run in unrestricted mode
+    if cached_hash == hash and cached_hash.len() > 0
+      # Version check on cache hit
+      let cached_ver = read_lock_version(path: lock_path)!
+
+      if cached_ver != "0" and cached_ver != "1"
+        say(message: "aster: Seedfile requires version {cached_ver}, but this version of aster only supports version 1. Please upgrade aster.")
+
+        return 1
+
+      let cached_output = read_lock_output(path: lock_path)!
+
+      if cached_output.len() > 0
+        say(message: cached_output)
+
+        return 0
+
+  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, seedfile_version: 0, deps: [], tasks: [], overrides: [])
+
+  if is_unrestricted
     let lines = content.split(sep: "\n")
-    let rest: List[String] = []
+    let code = ""
     let i = 1
 
     while i < lines.len()
-      rest.push(item: lines[i])
+      if i > 1
+        code = code + "\n"
+
+      code = code + lines[i]
 
       i = i + 1
-
-    let code = rest.join(sep: "\n")
 
     seed.execute_unrestricted(code: code)!
   else
     seed.execute(code: content)!
 
-  display_info(seed: seed)
+  # Phase 12: version check after DSL evaluation
+  if seed.seedfile_version != 0 and seed.seedfile_version != 1
+    say(message: "aster: Seedfile requires version {seed.seedfile_version}, but this version of aster only supports version 1. Please upgrade aster.")
+
+    return 1
+
+  let output = format_info(seed: seed)
+
+  say(message: output)
+
+  # Write lockfile for non-unrestricted Seedfiles
+  if is_unrestricted == false
+    let hash = sha256(data: content)
+
+    write_lock(path: lock_path, hash: hash, version: to_string(value: seed.seedfile_version), output: output)!
 
   0
 
 
-# ── Output display ───────────────────────────────────────────────────
-def display_info(seed: Seedfile)
-  say(message: "Package: {seed.name} v{seed.version_str}")
+# ── Output formatting ────────────────────────────────────────────────
+def format_info(seed: Seedfile) -> String
+  let out = "Package: {seed.name} v{seed.version_str}"
 
   if seed.compiler_version.len() > 0
-    say(message: "Compiler: {seed.compiler_version}")
+    out = out + "\nCompiler: {seed.compiler_version}"
 
   if seed.quarantine_days > 0
-    say(message: "Quarantine: {seed.quarantine_days} days")
+    out = out + "\nQuarantine: {seed.quarantine_days} days"
 
   if seed.deps.len() > 0
-    say(message: "")
-    say(message: "Dependencies ({seed.deps.len()}):")
+    out = out + "\n\nDependencies ({seed.deps.len()}):"
 
     let i = 0
 
@@ -182,35 +221,35 @@ def display_info(seed: Seedfile)
       if dep.dev
         suffix = suffix + " [dev]"
 
-      say(message: "  {dep.name} {dep.version}{suffix}")
+      out = out + "\n  {dep.name} {dep.version}{suffix}"
 
       i = i + 1
 
   if seed.tasks.len() > 0
-    say(message: "")
-    say(message: "Tasks ({seed.tasks.len()}):")
+    out = out + "\n\nTasks ({seed.tasks.len()}):"
 
     let i = 0
 
     while i < seed.tasks.len()
       let t = seed.tasks[i]
 
-      say(message: "  {t.name}: {t.cmd}")
+      out = out + "\n  {t.name}: {t.cmd}"
 
       i = i + 1
 
   if seed.overrides.len() > 0
-    say(message: "")
-    say(message: "Overrides ({seed.overrides.len()}):")
+    out = out + "\n\nOverrides ({seed.overrides.len()}):"
 
     let i = 0
 
     while i < seed.overrides.len()
       let ov = seed.overrides[i]
 
-      say(message: "  {ov.name} -> {ov.version}")
+      out = out + "\n  {ov.name} -> {ov.version}"
 
       i = i + 1
+
+  out
 
 
 def find_asterc() -> String

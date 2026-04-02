@@ -18,7 +18,7 @@ use seedfile { Dependency, Override, Seedfile, Task }
 
 # Parse the structured output from a wrapper execution into a Seedfile.
 pub def parse_seedfile_output(output: String) -> Seedfile
-  let s = Seedfile(aster_version: "0.1.0", name: "", version_str: "", compiler_version: "", quarantine_days: 0, deps: [], tasks: [], overrides: [])
+  let s = Seedfile(aster_version: "0.1.0", name: "", version_str: "", compiler_version: "", quarantine_days: 0, seedfile_version: 0, deps: [], tasks: [], overrides: [])
   let lines = output.split(sep: "\n")
 
   for line in lines

@@ -1,0 +1,97 @@
+# Seedfile.lock read/write logic.
+#
+# The lockfile caches the evaluated Seedfile output so that subsequent
+# runs of `aster info` skip re-evaluation when the Seedfile has not
+# changed. Format:
+#
+#   HASH:<sha256 of Seedfile content>
+#   VERSION:<seedfile_version as string>
+#   ===
+#   <cached display output>
+#
+# On cache hit, the cached output is printed directly. On cache miss
+# (hash mismatch or missing lockfile), the caller re-evaluates and
+# writes a new lockfile.
+use std/fs { exists, read_file, write_file }
+
+
+pub def read_lock_hash(path: String) throws Error -> String
+  if exists(path: path) == false
+    return ""
+
+  let content = read_file(path: path)!
+
+  if content.len() == 0
+    return ""
+
+  let lines = content.split(sep: "\n")
+
+  if lines.len() == 0
+    return ""
+
+  let first = lines[0].trim()
+
+  if first.starts_with(pre: "HASH:")
+    return first.slice(from: 5, to: first.len())
+
+  ""
+
+
+pub def read_lock_version(path: String) throws Error -> String
+  if exists(path: path) == false
+    return "0"
+
+  let content = read_file(path: path)!
+
+  if content.len() == 0
+    return "0"
+
+  let lines = content.split(sep: "\n")
+
+  if lines.len() < 2
+    return "0"
+
+  let second = lines[1].trim()
+
+  if second.starts_with(pre: "VERSION:")
+    return second.slice(from: 8, to: second.len())
+
+  "0"
+
+
+pub def read_lock_output(path: String) throws Error -> String
+  if exists(path: path) == false
+    return ""
+
+  let content = read_file(path: path)!
+
+  if content.len() == 0
+    return ""
+
+  let lines = content.split(sep: "\n")
+  let found_separator = false
+  let output = ""
+  let i = 0
+  let first_output_line = true
+
+  while i < lines.len()
+    if found_separator
+      if first_output_line
+        output = lines[i]
+        first_output_line = false
+      else
+        output = output + "\n" + lines[i]
+    elif lines[i].trim() == "==="
+      found_separator = true
+
+    i = i + 1
+
+  if found_separator == false
+    return ""
+
+  output
+
+
+pub def write_lock(path: String, hash: String, version: String, output: String) throws Error -> Void
+  let content = "HASH:" + hash + "\nVERSION:" + version + "\n===\n" + output
+  write_file(path: path, content: content)!

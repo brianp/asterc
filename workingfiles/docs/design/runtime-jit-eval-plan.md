@@ -319,4 +319,4 @@ Run `ASTER_ENV=production aster info` and verify sentry appears in the output. R
 - [x] Phase 9: `use std/runtime { evaluate }` works in normal Aster code
 - [x] Phase 10: `aster info` works without subprocess/serialization machinery
 - [x] Phase 11: `allow_eval()` Seedfiles with conditionals and imports work
-- [ ] Phase 12: `Seedfile.lock` caching skips re-evaluation; version checking works
+- [x] Phase 12: `Seedfile.lock` caching skips re-evaluation; version checking works

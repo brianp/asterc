@@ -1243,9 +1243,12 @@ pub class Seedfile includes DynamicReceiver
   pub version_str: String
   pub compiler_version: String
   pub quarantine_days: Int
+  pub seedfile_version: Int
   pub deps: List[Dependency]
   pub tasks: List[Task]
   pub overrides: List[Override]
+  pub def seedfile(version: Int)
+    seedfile_version = version
   pub def package(pkg_name: String, version: String = "0.0.0")
     name = pkg_name
     version_str = version
@@ -1297,7 +1300,7 @@ fn run_seedfile_execute_basic_dsl() {
         r#"use src/seedfile { Seedfile }
 
 def main() throws EvalError -> Int
-  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, deps: [], tasks: [], overrides: [])
+  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, seedfile_version: 0, deps: [], tasks: [], overrides: [])
   seed.execute(code: "package(pkg_name: \"my-app\", version: \"1.0.0\")\ncompiler(ver: \"0.2.0\")")!
   say(message: seed.name)
   say(message: seed.version_str)
@@ -1332,7 +1335,7 @@ fn run_seedfile_execute_method_missing_deps() {
         r#"use src/seedfile { Seedfile }
 
 def main() throws EvalError -> Int
-  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, deps: [], tasks: [], overrides: [])
+  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, seedfile_version: 0, deps: [], tasks: [], overrides: [])
   seed.execute(code: "http(version: \"1.2.0\")\njson(version: \"0.4.0\")")!
   say(message: to_string(value: seed.deps.len()))
   0
@@ -1364,7 +1367,7 @@ fn run_seedfile_execute_full_dsl() {
         r#"use src/seedfile { Seedfile, Dependency, Task, Override }
 
 def main() throws EvalError -> Int
-  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, deps: [], tasks: [], overrides: [])
+  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, seedfile_version: 0, deps: [], tasks: [], overrides: [])
   let code = "package(pkg_name: \"aster-pkg\", version: \"0.1.0\")\ncompiler(ver: \"0.1.0\")\nquarantine(days: 3)\nhttp(version: \"1.2.0\")\njson(version: \"0.4.0\")\ntoml(version: \"0.5.0\")\naster_fmt(name: \"aster-fmt\", path: \"aster-fmt\")\nserde_json(version: \"1.0.0\", dev: \"true\")\ntask(task_name: \"test\", cmd: \"aster test --release\")\ntask(task_name: \"bench\", cmd: \"aster test --bench\")\noverride(dep_name: \"json\", version: \"0.3.0\")"
   seed.execute(code: code)!
   say(message: "name:" + seed.name)
@@ -1407,7 +1410,7 @@ fn run_seedfile_execute_eval_error() {
         r#"use src/seedfile { Seedfile }
 
 def main() throws EvalError -> Int
-  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, deps: [], tasks: [], overrides: [])
+  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, seedfile_version: 0, deps: [], tasks: [], overrides: [])
   seed.execute(code: "bad syntax %%%")!
   0
 "#,
@@ -1431,7 +1434,7 @@ fn run_seedfile_execute_comments_and_blanks() {
         r##"use src/seedfile { Seedfile }
 
 def main() throws EvalError -> Int
-  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, deps: [], tasks: [], overrides: [])
+  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, seedfile_version: 0, deps: [], tasks: [], overrides: [])
   let code = "# This is a comment\npackage(pkg_name: \"my-app\", version: \"1.0.0\")\n\n# Another comment\nhttp(version: \"1.0.0\")"
   seed.execute(code: code)!
   say(message: seed.name)
@@ -1464,7 +1467,7 @@ fn run_evaluate_unrestricted_with_use_statement() {
         r#"use src/seedfile { Seedfile }
 
 def main() throws EvalError -> Int
-  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, deps: [], tasks: [], overrides: [])
+  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, seedfile_version: 0, deps: [], tasks: [], overrides: [])
   let code = "use std/sys\npackage(pkg_name: \"test-app\", version: \"1.0.0\")\nhttp(version: \"1.2.0\")"
   seed.execute_unrestricted(code: code)!
   say(message: seed.name)
@@ -1495,7 +1498,7 @@ fn run_evaluate_unrestricted_conditional_false() {
         r#"use src/seedfile { Seedfile }
 
 def main() throws EvalError -> Int
-  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, deps: [], tasks: [], overrides: [])
+  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, seedfile_version: 0, deps: [], tasks: [], overrides: [])
   let code = "package(pkg_name: \"cond-app\", version: \"1.0.0\")\n\nlet mode = \"development\"\n\nif mode == \"production\"\n  http(version: \"2.0.0\")\n\njson(version: \"1.0.0\")"
   seed.execute_unrestricted(code: code)!
   say(message: seed.name)
@@ -1527,7 +1530,7 @@ fn run_evaluate_unrestricted_conditional_true() {
         r#"use src/seedfile { Seedfile }
 
 def main() throws EvalError -> Int
-  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, deps: [], tasks: [], overrides: [])
+  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, seedfile_version: 0, deps: [], tasks: [], overrides: [])
   let code = "package(pkg_name: \"cond-app\", version: \"1.0.0\")\n\nlet mode = \"production\"\n\nif mode == \"production\"\n  http(version: \"2.0.0\")\n\njson(version: \"1.0.0\")"
   seed.execute_unrestricted(code: code)!
   say(message: seed.name)
@@ -1559,7 +1562,7 @@ fn run_evaluate_unrestricted_dsl_still_works_without_use() {
         r#"use src/seedfile { Seedfile }
 
 def main() throws EvalError -> Int
-  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, deps: [], tasks: [], overrides: [])
+  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, seedfile_version: 0, deps: [], tasks: [], overrides: [])
   seed.execute_unrestricted(code: "package(pkg_name: \"plain\", version: \"2.0.0\")\nhttp(version: \"1.0.0\")")!
   say(message: seed.name)
   say(message: seed.version_str)
@@ -1591,7 +1594,7 @@ fn run_evaluate_unrestricted_syntax_error_produces_error() {
         r#"use src/seedfile { Seedfile }
 
 def main() throws EvalError -> Int
-  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, deps: [], tasks: [], overrides: [])
+  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, seedfile_version: 0, deps: [], tasks: [], overrides: [])
   seed.execute_unrestricted(code: "use std/sys\nbad syntax %%%")!
   0
 "#,
@@ -2116,3 +2119,345 @@ def main() -> Int
         text
     );
 }
+
+// ===========================================================================
+// Phase 12: seedfile(version:) and Seedfile.lock caching
+// ===========================================================================
+
+#[test]
+fn run_seedfile_version_default_is_zero() {
+    // Phase 12: seedfile_version defaults to 0 when seedfile() is not called.
+    let dir = setup_seedfile_dir("seedfile-ver-default");
+    let src = dir.join("test_ver_default.aster");
+    std::fs::write(
+        &src,
+        r#"use src/seedfile { Seedfile }
+
+def main() throws EvalError -> Int
+  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, seedfile_version: 0, deps: [], tasks: [], overrides: [])
+  seed.execute(code: "package(pkg_name: \"my-app\", version: \"1.0.0\")")!
+  say(message: to_string(value: seed.seedfile_version))
+  0
+"#,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    let text = stdout_text(&output);
+    assert!(
+        output.status.success(),
+        "seedfile_version default should be 0: {}",
+        crate::common::output_text(&output),
+    );
+    assert_eq!(text.trim(), "0", "default seedfile_version: {text}");
+}
+
+#[test]
+fn run_seedfile_version_method_sets_value() {
+    // Phase 12: seedfile(version: 1) sets the seedfile_version field.
+    let dir = setup_seedfile_dir("seedfile-ver-set");
+    let src = dir.join("test_ver_set.aster");
+    std::fs::write(
+        &src,
+        r#"use src/seedfile { Seedfile }
+
+def main() throws EvalError -> Int
+  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, seedfile_version: 0, deps: [], tasks: [], overrides: [])
+  seed.execute(code: "seedfile(version: 1)\npackage(pkg_name: \"my-app\", version: \"1.0.0\")")!
+  say(message: to_string(value: seed.seedfile_version))
+  0
+"#,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    let text = stdout_text(&output);
+    assert!(
+        output.status.success(),
+        "seedfile(version: 1) should succeed: {}",
+        crate::common::output_text(&output),
+    );
+    assert_eq!(text.trim(), "1", "seedfile_version should be 1: {text}");
+}
+
+#[test]
+fn run_seedfile_version_with_full_dsl() {
+    // Phase 12: seedfile(version:) works alongside other DSL calls.
+    let dir = setup_seedfile_dir("seedfile-ver-full");
+    let src = dir.join("test_ver_full.aster");
+    std::fs::write(
+        &src,
+        r#"use src/seedfile { Seedfile }
+
+def main() throws EvalError -> Int
+  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, seedfile_version: 0, deps: [], tasks: [], overrides: [])
+  let code = "seedfile(version: 1)\npackage(pkg_name: \"my-app\", version: \"2.0.0\")\ncompiler(ver: \"0.1.0\")\nhttp(version: \"1.0.0\")"
+  seed.execute(code: code)!
+  say(message: seed.name)
+  say(message: seed.version_str)
+  say(message: to_string(value: seed.seedfile_version))
+  say(message: to_string(value: seed.deps.len()))
+  0
+"#,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    let text = stdout_text(&output);
+    assert!(
+        output.status.success(),
+        "seedfile(version:) with full DSL should succeed: {}",
+        crate::common::output_text(&output),
+    );
+    let lines: Vec<&str> = text.trim().lines().collect();
+    assert_eq!(lines[0], "my-app", "name: {text}");
+    assert_eq!(lines[1], "2.0.0", "version: {text}");
+    assert_eq!(lines[2], "1", "seedfile_version: {text}");
+    assert_eq!(lines[3], "1", "1 dep: {text}");
+}
+
+#[test]
+fn run_seedfile_version_999_rejected() {
+    // Phase 12: seedfile(version: 999) triggers a version error.
+    let dir = setup_seedfile_dir("seedfile-ver-999");
+    let src = dir.join("test_ver_999.aster");
+    std::fs::write(
+        &src,
+        r#"use src/seedfile { Seedfile }
+
+def main() throws EvalError -> Int
+  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, seedfile_version: 0, deps: [], tasks: [], overrides: [])
+  seed.execute(code: "seedfile(version: 999)\npackage(pkg_name: \"my-app\", version: \"1.0.0\")")!
+  # Version check: the caller is responsible for checking seedfile_version
+  if seed.seedfile_version != 0 and seed.seedfile_version != 1
+    say(message: "aster: Seedfile requires version {seed.seedfile_version}, but this version of aster only supports version 1. Please upgrade aster.")
+    return 1
+  say(message: seed.name)
+  0
+"#,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    assert!(
+        !output.status.success(),
+        "seedfile(version: 999) should fail: {}",
+        crate::common::output_text(&output),
+    );
+    let text = stdout_text(&output);
+    assert!(
+        text.contains("version 999"),
+        "error should mention version 999: {text}"
+    );
+    assert!(
+        text.contains("upgrade aster"),
+        "error should mention upgrade: {text}"
+    );
+}
+
+#[test]
+fn run_lockfile_write_and_read_round_trip() {
+    // Phase 12: write_lock writes a lockfile that read_lock_hash/read_lock_output can parse.
+    let dir = setup_seedfile_dir("lock-round-trip");
+    let src_dir = dir.join("src");
+    std::fs::write(src_dir.join("lock.aster"), LOCK_ASTER_SOURCE).unwrap();
+    let lock_path = dir.join("test.lock");
+    let lock_str = lock_path.to_str().unwrap();
+    let src = dir.join("test_lock_rt.aster");
+    std::fs::write(
+        &src,
+        format!(
+            r#"use src/lock {{ read_lock_hash, read_lock_version, read_lock_output, write_lock }}
+
+def main() throws Error -> Int
+  let lock_path = "{lock_str}"
+  write_lock(path: lock_path, hash: "abc123", version: "1", output: "Package: my-app v1.0.0")!
+  let h = read_lock_hash(path: lock_path)!
+  let v = read_lock_version(path: lock_path)!
+  let o = read_lock_output(path: lock_path)!
+  say(message: h)
+  say(message: v)
+  say(message: o)
+  0
+"#
+        ),
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    let text = stdout_text(&output);
+    assert!(
+        output.status.success(),
+        "lockfile round trip should succeed: {}",
+        crate::common::output_text(&output),
+    );
+    let lines: Vec<&str> = text.trim().lines().collect();
+    assert_eq!(lines[0], "abc123", "hash: {text}");
+    assert_eq!(lines[1], "1", "version: {text}");
+    assert_eq!(lines[2], "Package: my-app v1.0.0", "output: {text}");
+}
+
+#[test]
+fn run_lockfile_missing_returns_empty() {
+    // Phase 12: read_lock_hash returns "" for a missing lockfile.
+    let dir = setup_seedfile_dir("lock-missing");
+    let src_dir = dir.join("src");
+    std::fs::write(src_dir.join("lock.aster"), LOCK_ASTER_SOURCE).unwrap();
+    let nonexistent = dir.join("nonexistent.lock");
+    let nonexistent_str = nonexistent.to_str().unwrap();
+    let src = dir.join("test_lock_miss.aster");
+    std::fs::write(
+        &src,
+        format!(
+            r#"use src/lock {{ read_lock_hash, read_lock_output }}
+
+def main() throws Error -> Int
+  let h = read_lock_hash(path: "{nonexistent_str}")!
+  let o = read_lock_output(path: "{nonexistent_str}")!
+  if h == "" and o == ""
+    say(message: "empty")
+  0
+"#
+        ),
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    let text = stdout_text(&output);
+    assert!(
+        output.status.success(),
+        "missing lockfile should not crash: {}",
+        crate::common::output_text(&output),
+    );
+    assert!(
+        text.contains("empty"),
+        "should return empty strings: {text}"
+    );
+}
+
+#[test]
+fn run_lockfile_hash_comparison_logic() {
+    // Phase 12: cache hit when hashes match, cache miss when they differ.
+    let dir = setup_seedfile_dir("lock-hash-cmp");
+    let src_dir = dir.join("src");
+    std::fs::write(src_dir.join("lock.aster"), LOCK_ASTER_SOURCE).unwrap();
+    let lock_path = dir.join("test_hash.lock");
+    let lock_str = lock_path.to_str().unwrap();
+    let src = dir.join("test_hash_cmp.aster");
+    std::fs::write(
+        &src,
+        format!(
+            r#"use std/crypto {{ sha256 }}
+use src/lock {{ read_lock_hash, read_lock_output, write_lock }}
+
+def main() throws Error -> Int
+  let content = "package(pkg_name: \"test\", version: \"1.0.0\")"
+  let hash = sha256(data: content)
+  let lock_path = "{lock_str}"
+  write_lock(path: lock_path, hash: hash, version: "0", output: "Package: test v1.0.0")!
+
+  # Same content -> cache hit
+  let cached_hash = read_lock_hash(path: lock_path)!
+  if cached_hash == hash
+    say(message: "hit")
+
+  # Different content -> cache miss
+  let new_hash = sha256(data: "different content")
+  if cached_hash != new_hash
+    say(message: "miss")
+
+  0
+"#
+        ),
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    let text = stdout_text(&output);
+    assert!(
+        output.status.success(),
+        "hash comparison should succeed: {}",
+        crate::common::output_text(&output),
+    );
+    assert!(text.contains("hit"), "same hash should hit: {text}");
+    assert!(text.contains("miss"), "different hash should miss: {text}");
+}
+
+/// The lock.aster source used in Phase 12 tests.
+const LOCK_ASTER_SOURCE: &str = r#"use std/fs { exists, read_file, write_file }
+
+
+pub def read_lock_hash(path: String) throws Error -> String
+  if exists(path: path) == false
+    return ""
+
+  let content = read_file(path: path)!
+
+  if content.len() == 0
+    return ""
+
+  let lines = content.split(sep: "\n")
+
+  if lines.len() == 0
+    return ""
+
+  let first = lines[0].trim()
+
+  if first.starts_with(pre: "HASH:")
+    return first.slice(from: 5, to: first.len())
+
+  ""
+
+
+pub def read_lock_version(path: String) throws Error -> String
+  if exists(path: path) == false
+    return "0"
+
+  let content = read_file(path: path)!
+
+  if content.len() == 0
+    return "0"
+
+  let lines = content.split(sep: "\n")
+
+  if lines.len() < 2
+    return "0"
+
+  let second = lines[1].trim()
+
+  if second.starts_with(pre: "VERSION:")
+    return second.slice(from: 8, to: second.len())
+
+  "0"
+
+
+pub def read_lock_output(path: String) throws Error -> String
+  if exists(path: path) == false
+    return ""
+
+  let content = read_file(path: path)!
+
+  if content.len() == 0
+    return ""
+
+  let lines = content.split(sep: "\n")
+  let found_separator = false
+  let output = ""
+  let i = 0
+  let first_output_line = true
+
+  while i < lines.len()
+    if found_separator
+      if first_output_line
+        output = lines[i]
+        first_output_line = false
+      else
+        output = output + "\n" + lines[i]
+    elif lines[i].trim() == "==="
+      found_separator = true
+
+    i = i + 1
+
+  if found_separator == false
+    return ""
+
+  output
+
+
+pub def write_lock(path: String, hash: String, version: String, output: String) throws Error -> Void
+  let content = "HASH:" + hash + "\nVERSION:" + version + "\n===\n" + output
+  write_file(path: path, content: content)!
+"#;

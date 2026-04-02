@@ -28,9 +28,12 @@ pub class Seedfile includes DynamicReceiver
   pub version_str: String
   pub compiler_version: String
   pub quarantine_days: Int
+  pub seedfile_version: Int
   pub deps: List[Dependency]
   pub tasks: List[Task]
   pub overrides: List[Override]
+  pub def seedfile(version: Int)
+    seedfile_version = version
   pub def package(pkg_name: String, version: String = "0.0.0")
     name = pkg_name
     version_str = version

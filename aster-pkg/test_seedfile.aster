@@ -3,7 +3,7 @@ use src/seedfile { Dependency, Override, Seedfile, Task }
 
 # Simulate a Seedfile
 def main()
-  let s = Seedfile(aster_version: "0.1.0", name: "", version_str: "", compiler_version: "", quarantine_days: 0, deps: [], tasks: [], overrides: [])
+  let s = Seedfile(aster_version: "0.1.0", name: "", version_str: "", compiler_version: "", quarantine_days: 0, seedfile_version: 0, deps: [], tasks: [], overrides: [])
 
   s.package(pkg_name: "my-app", version: "0.1.0")
   s.compiler(ver: "0.1.0")
