@@ -1211,9 +1211,9 @@ def main() throws EvalError -> Int
 
 // ─── Phase 10: DSL mode Seedfile evaluation via evaluate() ──────────
 
-/// Helper: the modified seedfile.aster source with execute() method.
+/// Helper: the modified seedfile.aster source with execute() and execute_unrestricted() methods.
 fn seedfile_aster_source() -> &'static str {
-    r#"use std/runtime { evaluate, EvalError }
+    r#"use std/runtime { evaluate, evaluate_unrestricted, EvalError }
 
 pub class Dependency
   pub name: String
@@ -1267,6 +1267,8 @@ pub class Seedfile includes DynamicReceiver
     deps.push(item: Dependency(name: dep_name, version: dep_version, path: dep_path, git: dep_git, dev: dep_dev, trusted: dep_trusted))
   pub def execute(code: String) throws EvalError -> Void
     evaluate(code: code)!
+  pub def execute_unrestricted(code: String) throws EvalError -> Void
+    evaluate_unrestricted(code: code)!
 "#
 }
 
@@ -1448,6 +1450,159 @@ def main() throws EvalError -> Int
     let lines: Vec<&str> = text.trim().lines().collect();
     assert_eq!(lines[0], "my-app", "package name set: {text}");
     assert_eq!(lines[1], "1", "1 dep via method_missing: {text}");
+}
+
+// ─── Phase 11: allow_eval() unrestricted Seedfile evaluation ────────
+
+#[test]
+fn run_evaluate_unrestricted_with_use_statement() {
+    // Phase 11: evaluate_unrestricted() allows use statements in evaluated code.
+    let dir = setup_seedfile_dir("eval-unrestricted-use");
+    let src = dir.join("test_unrestricted.aster");
+    std::fs::write(
+        &src,
+        r#"use src/seedfile { Seedfile }
+
+def main() throws EvalError -> Int
+  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, deps: [], tasks: [], overrides: [])
+  let code = "use std/sys\npackage(pkg_name: \"test-app\", version: \"1.0.0\")\nhttp(version: \"1.2.0\")"
+  seed.execute_unrestricted(code: code)!
+  say(message: seed.name)
+  say(message: to_string(value: seed.deps.len()))
+  0
+"#,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    let text = stdout_text(&output);
+    assert!(
+        output.status.success(),
+        "evaluate_unrestricted with use should succeed: {}",
+        crate::common::output_text(&output),
+    );
+    let lines: Vec<&str> = text.trim().lines().collect();
+    assert_eq!(lines[0], "test-app", "package name: {text}");
+    assert_eq!(lines[1], "1", "1 dep: {text}");
+}
+
+#[test]
+fn run_evaluate_unrestricted_conditional_false() {
+    // Phase 11: Unrestricted mode supports conditionals. When condition is false, branch skipped.
+    let dir = setup_seedfile_dir("eval-unrestricted-cond-false");
+    let src = dir.join("test_cond.aster");
+    std::fs::write(
+        &src,
+        r#"use src/seedfile { Seedfile }
+
+def main() throws EvalError -> Int
+  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, deps: [], tasks: [], overrides: [])
+  let code = "package(pkg_name: \"cond-app\", version: \"1.0.0\")\n\nlet mode = \"development\"\n\nif mode == \"production\"\n  http(version: \"2.0.0\")\n\njson(version: \"1.0.0\")"
+  seed.execute_unrestricted(code: code)!
+  say(message: seed.name)
+  say(message: to_string(value: seed.deps.len()))
+  0
+"#,
+    )
+    .unwrap();
+
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    let text = stdout_text(&output);
+    assert!(
+        output.status.success(),
+        "unrestricted mode with false condition should succeed: {}",
+        crate::common::output_text(&output),
+    );
+    let lines: Vec<&str> = text.trim().lines().collect();
+    assert_eq!(lines[0], "cond-app", "package name: {text}");
+    assert_eq!(lines[1], "1", "1 dep (json only): {text}");
+}
+
+#[test]
+fn run_evaluate_unrestricted_conditional_true() {
+    // Phase 11: Unrestricted mode supports conditionals. When condition is true, branch taken.
+    let dir = setup_seedfile_dir("eval-unrestricted-cond-true");
+    let src = dir.join("test_cond_true.aster");
+    std::fs::write(
+        &src,
+        r#"use src/seedfile { Seedfile }
+
+def main() throws EvalError -> Int
+  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, deps: [], tasks: [], overrides: [])
+  let code = "package(pkg_name: \"cond-app\", version: \"1.0.0\")\n\nlet mode = \"production\"\n\nif mode == \"production\"\n  http(version: \"2.0.0\")\n\njson(version: \"1.0.0\")"
+  seed.execute_unrestricted(code: code)!
+  say(message: seed.name)
+  say(message: to_string(value: seed.deps.len()))
+  0
+"#,
+    )
+    .unwrap();
+
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    let text = stdout_text(&output);
+    assert!(
+        output.status.success(),
+        "unrestricted mode with true condition should succeed: {}",
+        crate::common::output_text(&output),
+    );
+    let lines: Vec<&str> = text.trim().lines().collect();
+    assert_eq!(lines[0], "cond-app", "package name: {text}");
+    assert_eq!(lines[1], "2", "2 deps (http + json): {text}");
+}
+
+#[test]
+fn run_evaluate_unrestricted_dsl_still_works_without_use() {
+    // Phase 11: evaluate_unrestricted still works for plain DSL (no use statements).
+    let dir = setup_seedfile_dir("eval-unrestricted-plain");
+    let src = dir.join("test_plain.aster");
+    std::fs::write(
+        &src,
+        r#"use src/seedfile { Seedfile }
+
+def main() throws EvalError -> Int
+  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, deps: [], tasks: [], overrides: [])
+  seed.execute_unrestricted(code: "package(pkg_name: \"plain\", version: \"2.0.0\")\nhttp(version: \"1.0.0\")")!
+  say(message: seed.name)
+  say(message: seed.version_str)
+  say(message: to_string(value: seed.deps.len()))
+  0
+"#,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    let text = stdout_text(&output);
+    assert!(
+        output.status.success(),
+        "unrestricted mode without use should succeed: {}",
+        crate::common::output_text(&output),
+    );
+    let lines: Vec<&str> = text.trim().lines().collect();
+    assert_eq!(lines[0], "plain", "name: {text}");
+    assert_eq!(lines[1], "2.0.0", "version: {text}");
+    assert_eq!(lines[2], "1", "1 dep: {text}");
+}
+
+#[test]
+fn run_evaluate_unrestricted_syntax_error_produces_error() {
+    // Phase 11: Syntax errors in unrestricted mode propagate as errors.
+    let dir = setup_seedfile_dir("eval-unrestricted-syntax-err");
+    let src = dir.join("test_syntax_err.aster");
+    std::fs::write(
+        &src,
+        r#"use src/seedfile { Seedfile }
+
+def main() throws EvalError -> Int
+  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, deps: [], tasks: [], overrides: [])
+  seed.execute_unrestricted(code: "use std/sys\nbad syntax %%%")!
+  0
+"#,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    assert!(
+        !output.status.success(),
+        "unrestricted mode with syntax error should fail: {}",
+        crate::common::output_text(&output),
+    );
 }
 
 // ─── Iterable closures with captured variables (GH-1) ───────────────

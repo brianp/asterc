@@ -9,7 +9,7 @@ use crate::types::Type;
 /// Captured during FIR lowering and serialized into the FIR module so the
 /// runtime JIT compiler can reconstruct a valid typechecker environment
 /// for the evaluated code string.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ContextSnapshot {
     /// Class name if `evaluate()` is called inside a class method.
     pub current_class: Option<String>,
@@ -33,6 +33,11 @@ pub struct ContextSnapshot {
     /// parameter defaults. Used by the JIT lowerer to fill in missing args.
     #[serde(default)]
     pub method_defaults: HashMap<String, Vec<(String, Option<Expr>)>>,
+    /// When true, the eval pipeline creates a module loader so `use`
+    /// statements in evaluated code can resolve imports. Set by
+    /// `evaluate_unrestricted()` for code-mode Seedfile evaluation.
+    #[serde(default)]
+    pub allow_imports: bool,
 }
 
 /// Subset of class metadata needed for JIT typechecking of evaluated code.

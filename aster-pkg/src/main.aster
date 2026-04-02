@@ -132,14 +132,24 @@ def cmd_info() throws Error -> Int
   # Check for allow_eval() mode (Phase 11)
   let first_line = content.split(sep: "\n")[0].trim()
 
-  if first_line == "allow_eval()"
-    say(message: "aster: allow_eval() mode is not yet supported")
-
-    return 1
-
   let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, deps: [], tasks: [], overrides: [])
 
-  seed.execute(code: content)!
+  if first_line == "allow_eval()"
+    # Strip the allow_eval() directive line and run in unrestricted mode
+    let lines = content.split(sep: "\n")
+    let rest: List[String] = []
+    let i = 1
+
+    while i < lines.len()
+      rest.push(item: lines[i])
+
+      i = i + 1
+
+    let code = rest.join(sep: "\n")
+
+    seed.execute_unrestricted(code: code)!
+  else
+    seed.execute(code: content)!
 
   display_info(seed: seed)
 

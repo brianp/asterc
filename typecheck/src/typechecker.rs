@@ -720,7 +720,14 @@ impl TypeChecker {
     /// Protocol traits are NOT in scope -- they must be imported via `use std/cmp { Eq }` etc.
     pub fn with_loader(loader: Rc<RefCell<ModuleLoader>>) -> Self {
         let mut tc = Self::new();
-        tc.module_loader = Some(loader);
+        tc.enable_module_loader(loader);
+        tc
+    }
+
+    /// Attach a module loader and remove protocol traits that require explicit import.
+    /// Used by both `with_loader()` and `from_snapshot()` when `allow_imports` is set.
+    pub fn enable_module_loader(&mut self, loader: Rc<RefCell<ModuleLoader>>) {
+        self.module_loader = Some(loader);
         // Remove protocol traits from env — require `use std/<submodule>` import
         for name in [
             "Eq",
@@ -734,10 +741,9 @@ impl TypeChecker {
             "FieldAccessible",
             // Drop and Close stay in prelude — they're fundamental lifecycle traits
         ] {
-            tc.env.remove_trait(name);
+            self.env.remove_trait(name);
         }
-        tc.env.remove_enum("Ordering");
-        tc
+        self.env.remove_enum("Ordering");
     }
 
     /// Create a child TypeChecker that inherits context flags and a child scope.
@@ -2207,21 +2213,20 @@ impl TypeChecker {
             )])),
             "runtime" => {
                 let eval_err = || Some(Box::new(Type::Custom("EvalError".into(), Vec::new())));
+                let eval_sig = |throws_fn: &dyn Fn() -> Option<Box<Type>>| Type::Function {
+                    param_names: vec!["code".into()],
+                    params: vec![Type::String],
+                    ret: Box::new(Type::Void),
+                    throws: throws_fn(),
+                    suspendable: false,
+                };
                 let mut exports = self.builtin_function_exports(&[
                     (
                         "jit_run",
                         Type::func(vec!["code".into()], vec![Type::String], Type::Int),
                     ),
-                    (
-                        "evaluate",
-                        Type::Function {
-                            param_names: vec!["code".into()],
-                            params: vec![Type::String],
-                            ret: Box::new(Type::Void),
-                            throws: eval_err(),
-                            suspendable: false,
-                        },
-                    ),
+                    ("evaluate", eval_sig(&eval_err)),
+                    ("evaluate_unrestricted", eval_sig(&eval_err)),
                 ]);
                 // Export EvalError class so callers can use it in catch arms
                 exports.classes.insert(
@@ -2314,7 +2319,7 @@ impl TypeChecker {
                     .is_some_and(|loader| loader.borrow().jit);
                 if !jit_enabled {
                     // Check if the user selectively imports JIT-requiring functions
-                    let jit_functions = ["evaluate", "jit_run"];
+                    let jit_functions = ["evaluate", "evaluate_unrestricted", "jit_run"];
                     if let Some(selected) = names {
                         for name in selected {
                             if jit_functions.contains(&name.as_str()) {

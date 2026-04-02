@@ -723,7 +723,8 @@ impl Lowerer {
                 args: fir_args?,
                 ret_ty,
             })
-        } else if name == "evaluate" {
+        } else if name == "evaluate" || name == "evaluate_unrestricted" {
+            let allow_imports = name == "evaluate_unrestricted";
             // Runtime evaluation: capture context snapshot, build env struct,
             // and emit EvalCall with the env pointer.
             let code_arg = args
@@ -737,6 +738,7 @@ impl Lowerer {
                 FirExpr::StringLit(String::new())
             };
             let mut snapshot = self.capture_context_snapshot();
+            snapshot.allow_imports = allow_imports;
 
             // Build ordered env layout from locals in scope (sorted by name
             // for deterministic layout). Include "self" if present.

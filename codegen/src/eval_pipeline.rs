@@ -75,14 +75,26 @@ pub fn jit_compile_and_run(
 
     // When a context snapshot is provided, wrap bare statements in a
     // synthetic main so the pipeline can compile them as a module.
+    // If allow_imports is set, extract top-level `use` lines and place
+    // them at module level so the module loader can resolve them.
+    let allow_imports = context.is_some_and(|s| s.allow_imports);
     let wrapped;
     let effective_source = if context.is_some() {
-        let indented: String = source
+        let (use_lines, body_lines) = if allow_imports {
+            extract_top_level_uses(source)
+        } else {
+            (String::new(), source.to_string())
+        };
+        let indented: String = body_lines
             .lines()
             .map(|line| format!("  {line}"))
             .collect::<Vec<_>>()
             .join("\n");
-        wrapped = format!("def main() -> Void\n{indented}\n");
+        wrapped = if use_lines.is_empty() {
+            format!("def main() -> Void\n{indented}\n")
+        } else {
+            format!("{use_lines}\ndef main() -> Void\n{indented}\n")
+        };
         &wrapped
     } else {
         source
@@ -105,7 +117,16 @@ pub fn jit_compile_and_run(
 
     // 3. Typecheck
     let mut checker = if let Some(snapshot) = context {
-        TypeChecker::from_snapshot(snapshot)
+        let mut tc = TypeChecker::from_snapshot(snapshot);
+        if allow_imports {
+            let root = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
+            let resolver = FsResolver { root };
+            let mut module_loader = ModuleLoader::new(Box::new(resolver));
+            module_loader.jit = true;
+            let loader = Rc::new(RefCell::new(module_loader));
+            tc.enable_module_loader(loader);
+        }
+        tc
     } else {
         let root = Path::new(filename)
             .parent()
@@ -237,6 +258,37 @@ pub fn jit_compile_and_run(
             message,
         }
     })
+}
+
+/// Extract contiguous, unindented `use` statements from the top of a source string.
+///
+/// Returns `(use_lines, remaining_body)`. Only lines at column 0 starting with
+/// `use ` are lifted. Blank lines and comment lines (`#`) between uses are
+/// allowed but not lifted. Scanning stops at the first non-blank, non-comment,
+/// non-use line.
+fn extract_top_level_uses(source: &str) -> (String, String) {
+    let mut use_lines = Vec::new();
+    let mut body_start = 0;
+
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            body_start += line.len() + 1; // +1 for newline
+            continue;
+        }
+        if line.starts_with("use ") {
+            use_lines.push(line);
+            body_start += line.len() + 1;
+        } else {
+            break;
+        }
+    }
+
+    let uses = use_lines.join("\n");
+    // Cap body_start to source length (lines() may not account for a missing
+    // trailing newline, causing body_start to overshoot by 1).
+    let body = &source[body_start.min(source.len())..];
+    (uses, body.to_string())
 }
 
 #[cfg(test)]

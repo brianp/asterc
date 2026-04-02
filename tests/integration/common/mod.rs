@@ -157,7 +157,7 @@ pub fn compile_file(path: &str) {
         .unwrap_or_else(|e| panic!("Type error in {}: {}", path, e));
 }
 
-fn binary_path() -> PathBuf {
+pub fn binary_path() -> PathBuf {
     std::env::var_os("CARGO_BIN_EXE_asterc")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("target/debug/asterc"))

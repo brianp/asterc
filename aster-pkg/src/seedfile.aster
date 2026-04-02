@@ -1,4 +1,4 @@
-use std/runtime { evaluate, EvalError }
+use std/runtime { evaluate, evaluate_unrestricted, EvalError }
 
 pub class Dependency
   pub name: String
@@ -53,3 +53,5 @@ pub class Seedfile includes DynamicReceiver
     deps.push(item: Dependency(name: dep_name, version: dep_version, path: dep_path, git: dep_git, dev: dep_dev, trusted: dep_trusted))
   pub def execute(code: String) throws EvalError -> Void
     evaluate(code: code)!
+  pub def execute_unrestricted(code: String) throws EvalError -> Void
+    evaluate_unrestricted(code: code)!

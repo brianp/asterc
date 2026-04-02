@@ -896,6 +896,7 @@ impl Lowerer {
             env_layout: None,
             function_pointers: std::collections::HashMap::new(),
             method_defaults,
+            allow_imports: false,
         }
     }
 
