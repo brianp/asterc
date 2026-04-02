@@ -53,7 +53,8 @@ impl CraneliftAOT {
             }
         }
 
-        self.state.compile_declared_functions(&fir.functions)?;
+        self.state
+            .compile_declared_functions_with_contexts(&fir.functions, &fir.eval_contexts)?;
 
         // Emit a C-style `main` wrapper that calls `aster_main` and
         // truncates the i64 result to i32.  This lives in the object file

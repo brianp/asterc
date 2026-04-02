@@ -760,6 +760,71 @@ def main() -> Int
     );
 }
 
+// ─── evaluate() with runtime value passing (Phase 5) ─────────────────
+
+#[test]
+fn run_evaluate_self_mutation() {
+    // Phase 5 validation: evaluated code mutates self.field
+    // and the caller sees the mutation.
+    let dir = crate::common::make_temp_dir("eval-self-mutation");
+    let src = dir.join("eval_self.aster");
+    std::fs::write(
+        &src,
+        r#"use std/runtime { evaluate }
+
+class Counter
+  pub count: Int
+
+  pub def run_code(code: String) -> Void
+    evaluate(code: code)
+
+def main() -> Int
+  let c = Counter(count: 0)
+  c.run_code(code: "self.count = 42")
+  c.count
+"#,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    assert_eq!(
+        output.status.code(),
+        Some(42),
+        "evaluate() should mutate self.count to 42: {}",
+        crate::common::output_text(&output)
+    );
+}
+
+#[test]
+fn run_evaluate_local_variable_access() {
+    // Evaluated code can read local variables from the calling scope
+    let dir = crate::common::make_temp_dir("eval-local-access");
+    let src = dir.join("eval_local.aster");
+    std::fs::write(
+        &src,
+        r#"use std/runtime { evaluate }
+
+def run(code: String) -> Void
+  let x = 42
+  evaluate(code: code)
+
+def main() -> Int
+  run(code: "say(message: to_string(value: x))")
+  0
+"#,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    let text = crate::common::output_text(&output);
+    assert!(
+        output.status.success(),
+        "evaluate() with local variable access should succeed: {text}",
+    );
+    assert!(
+        text.contains("42"),
+        "evaluate() should print the value of x (42): {text}",
+    );
+}
+
 // ─── Iterable closures with captured variables (GH-1) ───────────────
 
 #[test]

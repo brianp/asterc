@@ -221,4 +221,5 @@ runtime_functions! {
     fn aster_crypto_sha256(I64) -> I64;
     // std/runtime
     fn aster_runtime_jit_eval(I64) -> I64;
+    fn aster_runtime_eval_with_ctx(I64, I64, I64) -> I64;
 }

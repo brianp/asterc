@@ -88,7 +88,7 @@ pub use process::aster_process_run;
 
 pub use crypto::aster_crypto_sha256;
 
-pub use runtime_eval::aster_runtime_jit_eval;
+pub use runtime_eval::{aster_runtime_eval_with_ctx, aster_runtime_jit_eval};
 
 pub use numeric::{
     aster_float_abs, aster_float_ceil, aster_float_clamp, aster_float_floor, aster_float_max,

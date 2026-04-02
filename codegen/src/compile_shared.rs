@@ -82,13 +82,17 @@ impl<M: Module> CompileState<M> {
     /// Declare runtime functions, declare async entry shims, compile all
     /// user functions and their async shims. This is the shared pipeline
     /// used by both AOT and JIT after backend-specific declaration.
-    pub fn compile_declared_functions(&mut self, functions: &[FirFunction]) -> Result<(), String> {
+    pub fn compile_declared_functions_with_contexts(
+        &mut self,
+        functions: &[FirFunction],
+        eval_contexts: &[fir::eval_context::EvalContext],
+    ) -> Result<(), String> {
         self.declare_runtime_functions()?;
         self.declare_async_entry_shims(functions)?;
 
         for func in functions {
             if !func.name.is_empty() {
-                self.compile_function(func)?;
+                self.compile_function_with_contexts(func, eval_contexts)?;
             }
         }
         for func in functions {
@@ -135,7 +139,11 @@ impl<M: Module> CompileState<M> {
         Ok(())
     }
 
-    pub fn compile_function(&mut self, func: &FirFunction) -> Result<(), String> {
+    pub fn compile_function_with_contexts(
+        &mut self,
+        func: &FirFunction,
+        eval_contexts: &[fir::eval_context::EvalContext],
+    ) -> Result<(), String> {
         let clif_func_id = *self
             .declared
             .get(&func.id)
@@ -156,7 +164,7 @@ impl<M: Module> CompileState<M> {
             .returns
             .push(AbiParam::new(fir_type_to_clif(&func.ret_type)));
 
-        let string_data = self.collect_and_register_strings(func)?;
+        let string_data = self.collect_and_register_strings_with_contexts(func, eval_contexts)?;
 
         {
             let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_context);
@@ -197,6 +205,14 @@ impl<M: Module> CompileState<M> {
                 runtime_refs,
                 string_gv_map,
             );
+
+            // Populate eval context JSON strings for EvalCall codegen
+            for (i, ctx) in eval_contexts.iter().enumerate() {
+                if let Ok(json_str) = String::from_utf8(ctx.snapshot_json.clone()) {
+                    state.eval_context_json.insert(i as u32, json_str);
+                }
+            }
+
             translate::declare_params(&mut builder, &mut state, func, entry_block);
 
             let param_roots: usize = func
@@ -320,12 +336,15 @@ impl<M: Module> CompileState<M> {
         Ok(())
     }
 
-    pub fn collect_and_register_strings(
+    pub fn collect_and_register_strings_with_contexts(
         &mut self,
         func: &FirFunction,
+        eval_contexts: &[fir::eval_context::EvalContext],
     ) -> Result<HashMap<String, (cranelift_module::DataId, usize)>, String> {
         let mut strings = std::collections::HashSet::new();
         collect_string_lits_stmts(&func.body, &mut strings);
+        // Also collect serialized context JSON from EvalCall sites
+        collect_eval_context_strings(&func.body, eval_contexts, &mut strings);
 
         let mut result = HashMap::new();
         for s in strings {
@@ -535,8 +554,11 @@ fn collect_string_lits_expr(
         FirExpr::IntToFloat(inner) | FirExpr::Bitcast { value: inner, .. } => {
             collect_string_lits_expr(inner, strings);
         }
-        FirExpr::EvalCall { code, .. } => {
+        FirExpr::EvalCall { code, env, .. } => {
             collect_string_lits_expr(code, strings);
+            if let Some(e) = env {
+                collect_string_lits_expr(e, strings);
+            }
         }
         FirExpr::IntLit(_)
         | FirExpr::FloatLit(_)
@@ -545,5 +567,56 @@ fn collect_string_lits_expr(
         | FirExpr::NilLit
         | FirExpr::LocalVar(_, _)
         | FirExpr::GlobalFunc(_) => {}
+    }
+}
+
+/// Walk a function body and collect the serialized JSON strings for any
+/// `EvalCall` expressions, so they get registered as string data sections.
+fn collect_eval_context_strings(
+    stmts: &[fir::stmts::FirStmt],
+    eval_contexts: &[fir::eval_context::EvalContext],
+    strings: &mut std::collections::HashSet<String>,
+) {
+    use fir::stmts::FirStmt;
+    for stmt in stmts {
+        match stmt {
+            FirStmt::Expr(expr) | FirStmt::Let { value: expr, .. } | FirStmt::Return(expr) => {
+                collect_eval_context_strings_expr(expr, eval_contexts, strings);
+            }
+            FirStmt::Assign { value, .. } => {
+                collect_eval_context_strings_expr(value, eval_contexts, strings);
+            }
+            FirStmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                collect_eval_context_strings(then_body, eval_contexts, strings);
+                collect_eval_context_strings(else_body, eval_contexts, strings);
+            }
+            FirStmt::While {
+                body, increment, ..
+            } => {
+                collect_eval_context_strings(body, eval_contexts, strings);
+                collect_eval_context_strings(increment, eval_contexts, strings);
+            }
+            FirStmt::Block(stmts) => {
+                collect_eval_context_strings(stmts, eval_contexts, strings);
+            }
+            FirStmt::Break | FirStmt::Continue | FirStmt::NoOp => {}
+        }
+    }
+}
+
+fn collect_eval_context_strings_expr(
+    expr: &fir::exprs::FirExpr,
+    eval_contexts: &[fir::eval_context::EvalContext],
+    strings: &mut std::collections::HashSet<String>,
+) {
+    if let fir::exprs::FirExpr::EvalCall { context_idx, .. } = expr
+        && let Some(ctx) = eval_contexts.get(*context_idx as usize)
+        && let Ok(json_str) = String::from_utf8(ctx.snapshot_json.clone())
+    {
+        strings.insert(json_str);
     }
 }

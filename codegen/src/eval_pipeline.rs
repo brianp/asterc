@@ -50,11 +50,16 @@ impl Drop for JitDepthGuard {
 /// snapshot (class info, variables, functions) and the source is treated
 /// as bare statements wrapped in a synthetic `def main() -> Void`.
 ///
+/// When `env_ptr` is `Some`, the entry function receives it as its first
+/// argument, and the Lowerer pre-populates scope with env-backed locals
+/// loaded from the env struct (closure-style env passing).
+///
 /// No file I/O, no `process::exit`. All errors are returned.
 pub fn jit_compile_and_run(
     source: &str,
     filename: &str,
     context: Option<&ContextSnapshot>,
+    env_ptr: Option<i64>,
 ) -> Result<i64, RuntimeEvalError> {
     // Guard against unbounded recursive JIT invocations (e.g. jit_run
     // calling jit_run). Decrement on all exit paths via a drop guard.
@@ -137,6 +142,33 @@ pub fn jit_compile_and_run(
         lowerer.merge_imported(cache);
     }
 
+    // Set eval env layout so the lowerer can inject __eval_env param
+    // and EnvLoad statements for captured variables.
+    let has_eval_env = context
+        .and_then(|s| s.env_layout.as_ref())
+        .is_some_and(|l| !l.is_empty());
+
+    // Safety invariant: env_layout presence and env_ptr must agree.
+    // Mismatch causes ABI corruption (caller passes wrong arg count).
+    if has_eval_env && env_ptr.is_none() {
+        return Err(RuntimeEvalError {
+            kind: "runtime",
+            message: "env_layout set in context but no env_ptr provided".to_string(),
+        });
+    }
+    if env_ptr.is_some() && !has_eval_env {
+        return Err(RuntimeEvalError {
+            kind: "runtime",
+            message: "env_ptr provided but no env_layout in context".to_string(),
+        });
+    }
+
+    if let Some(snapshot) = context
+        && let Some(env_layout) = &snapshot.env_layout
+    {
+        lowerer.set_eval_env(env_layout, snapshot);
+    }
+
     lowerer
         .lower_module(&module_ast)
         .map_err(|e| RuntimeEvalError {
@@ -159,8 +191,12 @@ pub fn jit_compile_and_run(
             message: e,
         })?;
 
-    // 7. Execute
-    Ok(jit.call_i64(entry))
+    // 7. Execute - pass env_ptr as first arg if present
+    if let Some(ptr) = env_ptr {
+        Ok(jit.call_i64_i64(entry, ptr))
+    } else {
+        Ok(jit.call_i64(entry))
+    }
 }
 
 #[cfg(test)]
@@ -169,27 +205,32 @@ mod tests {
 
     #[test]
     fn simple_program_returns_42() {
-        let result = jit_compile_and_run("def main() -> Int\n  42", "test.aster", None);
+        let result = jit_compile_and_run("def main() -> Int\n  42", "test.aster", None, None);
         assert_eq!(result.unwrap(), 42);
     }
 
     #[test]
     fn invalid_syntax_returns_syntax_error() {
-        let result = jit_compile_and_run("def main( -> Int\n  42", "test.aster", None);
+        let result = jit_compile_and_run("def main( -> Int\n  42", "test.aster", None, None);
         let err = result.unwrap_err();
         assert_eq!(err.kind, "syntax");
     }
 
     #[test]
     fn type_error_returns_type_error() {
-        let result = jit_compile_and_run("def main() -> Int\n  \"not an int\"", "test.aster", None);
+        let result = jit_compile_and_run(
+            "def main() -> Int\n  \"not an int\"",
+            "test.aster",
+            None,
+            None,
+        );
         let err = result.unwrap_err();
         assert_eq!(err.kind, "type");
     }
 
     #[test]
     fn missing_main_returns_lower_error() {
-        let result = jit_compile_and_run("def foo() -> Int\n  42", "test.aster", None);
+        let result = jit_compile_and_run("def foo() -> Int\n  42", "test.aster", None, None);
         let err = result.unwrap_err();
         assert_eq!(err.kind, "lower");
         assert!(err.message.contains("main()"));
@@ -197,13 +238,13 @@ mod tests {
 
     #[test]
     fn arithmetic_expression() {
-        let result = jit_compile_and_run("def main() -> Int\n  10 + 32", "test.aster", None);
+        let result = jit_compile_and_run("def main() -> Int\n  10 + 32", "test.aster", None, None);
         assert_eq!(result.unwrap(), 42);
     }
 
     #[test]
     fn zero_return() {
-        let result = jit_compile_and_run("def main() -> Int\n  0", "test.aster", None);
+        let result = jit_compile_and_run("def main() -> Int\n  0", "test.aster", None, None);
         assert_eq!(result.unwrap(), 0);
     }
 
@@ -214,7 +255,7 @@ mod tests {
 def main() -> Int
   jit_run(code: "def main() -> Int\n  7")
 "#;
-        let result = jit_compile_and_run(src, "test.aster", None);
+        let result = jit_compile_and_run(src, "test.aster", None, None);
         assert_eq!(result.unwrap(), 7);
     }
 
@@ -242,10 +283,16 @@ def main() -> Int
             }),
             variables: HashMap::new(),
             functions: HashMap::new(),
+            env_layout: None,
         };
 
         // Bare call to set_name should typecheck because it's registered as a function
-        let result = jit_compile_and_run("set_name(value: \"hello\")", "<eval>", Some(&snapshot));
+        let result = jit_compile_and_run(
+            "set_name(value: \"hello\")",
+            "<eval>",
+            Some(&snapshot),
+            None,
+        );
         // Should succeed (no type error). The JIT wraps this in def main() -> Void.
         assert!(
             result.is_ok(),
@@ -269,18 +316,18 @@ def main() -> Int
             }),
             variables: HashMap::new(),
             functions: HashMap::new(),
+            env_layout: None,
         };
 
-        let result = jit_compile_and_run("nonexistent_method(x: 1)", "<eval>", Some(&snapshot));
+        let result =
+            jit_compile_and_run("nonexistent_method(x: 1)", "<eval>", Some(&snapshot), None);
         let err = result.unwrap_err();
         assert_eq!(err.kind, "type");
     }
 
     #[test]
-    fn context_snapshot_variables_typecheck() {
-        // Variables from snapshot should pass typechecking.
-        // FIR lowering will fail ("unbound variable") because Phase 5
-        // (runtime value passing) hasn't wired env pointers yet.
+    fn context_snapshot_variables_without_env_fail() {
+        // Variables in snapshot without env_layout still produce lowering error
         use std::collections::HashMap;
 
         let snapshot = ContextSnapshot {
@@ -288,17 +335,83 @@ def main() -> Int
             class_info: None,
             variables: HashMap::from([("x".into(), ast::Type::Int)]),
             functions: HashMap::new(),
+            env_layout: None,
         };
 
-        // Code references the pre-populated variable x
         let result = jit_compile_and_run(
             "say(message: to_string(value: x))",
             "<eval>",
             Some(&snapshot),
+            None,
         );
-        // Typechecking passes but lowering fails (expected until Phase 5)
         let err = result.unwrap_err();
         assert_eq!(err.kind, "lower", "expected lower error, got: {err}");
+    }
+
+    #[test]
+    fn eval_env_variable_access() {
+        // Phase 5: variables from env_layout are loaded from the env pointer
+        use std::collections::HashMap;
+
+        let snapshot = ContextSnapshot {
+            current_class: None,
+            class_info: None,
+            variables: HashMap::from([("x".into(), ast::Type::Int)]),
+            functions: HashMap::new(),
+            env_layout: Some(vec![("x".into(), ast::Type::Int)]),
+        };
+
+        // Create an env struct with x = 99 at offset 0
+        let env_data: [i64; 1] = [99];
+        let env_ptr = env_data.as_ptr() as i64;
+
+        // Code prints x (which should be 99 from the env)
+        let result = jit_compile_and_run(
+            "say(message: to_string(value: x))",
+            "<eval>",
+            Some(&snapshot),
+            Some(env_ptr),
+        );
+        assert!(
+            result.is_ok(),
+            "expected ok, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn eval_env_multiple_variables() {
+        // Multiple variables in env, accessed in evaluated code
+        use std::collections::HashMap;
+
+        let snapshot = ContextSnapshot {
+            current_class: None,
+            class_info: None,
+            variables: HashMap::from([("a".into(), ast::Type::Int), ("b".into(), ast::Type::Int)]),
+            functions: HashMap::new(),
+            // Sorted alphabetically: a at offset 0, b at offset 8
+            env_layout: Some(vec![
+                ("a".into(), ast::Type::Int),
+                ("b".into(), ast::Type::Int),
+            ]),
+        };
+
+        // env struct: a=10 at offset 0, b=32 at offset 8
+        let env_data: [i64; 2] = [10, 32];
+        let env_ptr = env_data.as_ptr() as i64;
+
+        // Code that exercises both variables (a + b = 42)
+        let result = jit_compile_and_run(
+            "say(message: to_string(value: a + b))",
+            "<eval>",
+            Some(&snapshot),
+            Some(env_ptr),
+        );
+        assert!(
+            result.is_ok(),
+            "expected ok, got: {:?}",
+            result.unwrap_err()
+        );
     }
 
     #[test]
@@ -314,9 +427,10 @@ def main() -> Int
                 "compute".into(),
                 ast::Type::func(vec!["n".into()], vec![ast::Type::Int], ast::Type::Int),
             )]),
+            env_layout: None,
         };
 
-        let result = jit_compile_and_run("let y = compute(n: 42)", "<eval>", Some(&snapshot));
+        let result = jit_compile_and_run("let y = compute(n: 42)", "<eval>", Some(&snapshot), None);
         assert!(
             result.is_ok(),
             "expected ok, got: {:?}",
@@ -334,9 +448,11 @@ def main() -> Int
             class_info: None,
             variables: HashMap::new(),
             functions: HashMap::new(),
+            env_layout: None,
         };
 
-        let result = jit_compile_and_run("say(message: \"hello\")", "<eval>", Some(&snapshot));
+        let result =
+            jit_compile_and_run("say(message: \"hello\")", "<eval>", Some(&snapshot), None);
         assert!(
             result.is_ok(),
             "expected ok, got: {:?}",
@@ -353,7 +469,7 @@ def main() -> Int
         let original = super::JIT_DEPTH.load(Ordering::Relaxed);
         super::JIT_DEPTH.store(super::MAX_JIT_DEPTH, Ordering::Relaxed);
 
-        let result = jit_compile_and_run("def main() -> Int\n  0", "test.aster", None);
+        let result = jit_compile_and_run("def main() -> Int\n  0", "test.aster", None, None);
         let err = result.unwrap_err();
         assert_eq!(err.kind, "runtime");
         assert!(err.message.contains("nesting depth"));

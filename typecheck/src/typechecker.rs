@@ -642,6 +642,12 @@ impl TypeChecker {
 
                 tc.env.set_class(class_name.clone(), class_info);
 
+                // Register "self" so evaluated code can access self.field
+                tc.env.set_var_type(
+                    "self".to_string(),
+                    Type::Custom(class_name.clone(), Vec::new()),
+                );
+
                 // Register class fields as local variables (mirroring check_class_stmt)
                 for (fname, fty) in &ci.fields {
                     tc.env.set_var_type(fname.clone(), fty.clone());

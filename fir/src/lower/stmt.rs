@@ -79,8 +79,23 @@ impl Lowerer {
         let snapshot = self.save_scope();
         self.scope.current_return_type = Some(ret_type.clone());
 
-        // Allocate parameters as locals FIRST (codegen expects params at LocalId(0..N))
+        // If this is the entry function and eval_env is set, inject
+        // __eval_env: Ptr as the first parameter.
+        let has_eval_env = name == "main" && self.eval_env.is_some();
         let mut fir_params = Vec::new();
+        let mut env_prelude: Vec<FirStmt> = Vec::new();
+        let mut eval_env_local = None;
+
+        if has_eval_env {
+            // Allocate __eval_env as first param (LocalId(0))
+            let env_id = self.alloc_local();
+            self.scope.locals.insert("__eval_env".to_string(), env_id);
+            self.scope.local_types.insert(env_id, FirType::Ptr);
+            fir_params.push(("__eval_env".to_string(), FirType::Ptr));
+            eval_env_local = Some(env_id);
+        }
+
+        // Allocate parameters as locals (codegen expects params at LocalId(0..N))
         for (param_name, param_type) in params {
             let local_id = self.alloc_local();
             let fir_type = self.lower_type(param_type);
@@ -90,6 +105,32 @@ impl Lowerer {
                 .local_ast_types
                 .insert(param_name.clone(), param_type.clone());
             fir_params.push((param_name.clone(), fir_type));
+        }
+
+        // Emit EnvLoad statements for each captured variable in the eval env
+        if let (Some(env_id), true) = (eval_env_local, has_eval_env) {
+            // Take eval_env temporarily to avoid borrow issues
+            let eval_entries = self.eval_env.take().unwrap();
+            for (i, entry) in eval_entries.iter().enumerate() {
+                let local_id = self.alloc_local();
+                self.scope.locals.insert(entry.name.clone(), local_id);
+                self.scope
+                    .local_types
+                    .insert(local_id, entry.fir_ty.clone());
+                self.scope
+                    .local_ast_types
+                    .insert(entry.name.clone(), entry.ast_ty.clone());
+                env_prelude.push(FirStmt::Let {
+                    name: local_id,
+                    ty: entry.fir_ty.clone(),
+                    value: FirExpr::EnvLoad {
+                        env: Box::new(FirExpr::LocalVar(env_id, FirType::Ptr)),
+                        offset: i * 8,
+                        ty: entry.fir_ty.clone(),
+                    },
+                });
+            }
+            self.eval_env = Some(eval_entries);
         }
 
         // Every function body is an implicit task scope — spawned tasks are
@@ -147,11 +188,13 @@ impl Lowerer {
             fir_body.push(FirStmt::Return(FirExpr::IntLit(0)));
         }
 
-        // Prepend global value definitions after scope_enter
-        if !global_prelude.is_empty() {
-            // scope_enter is at index 0; insert globals right after it
+        // Prepend env loads and global definitions after scope_enter
+        let mut prelude = env_prelude;
+        prelude.extend(global_prelude);
+        if !prelude.is_empty() {
+            // scope_enter is at index 0; insert prelude right after it
             let rest = fir_body.split_off(1);
-            fir_body.extend(global_prelude);
+            fir_body.extend(prelude);
             fir_body.extend(rest);
         }
 

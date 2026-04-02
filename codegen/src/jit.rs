@@ -54,7 +54,8 @@ impl CraneliftJIT {
             }
         }
 
-        self.state.compile_declared_functions(&fir.functions)?;
+        self.state
+            .compile_declared_functions_with_contexts(&fir.functions, &fir.eval_contexts)?;
 
         self.state
             .module

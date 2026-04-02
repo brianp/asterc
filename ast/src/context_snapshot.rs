@@ -18,6 +18,10 @@ pub struct ContextSnapshot {
     pub variables: HashMap<String, Type>,
     /// Available function signatures in scope (name -> function type).
     pub functions: HashMap<String, Type>,
+    /// Ordered layout of captured variables for the runtime env struct.
+    /// Each entry is (variable_name, type), stored at offset `i * 8`.
+    /// `None` means no env is passed (e.g. snapshot used only for typechecking).
+    pub env_layout: Option<Vec<(String, Type)>>,
 }
 
 /// Subset of class metadata needed for JIT typechecking of evaluated code.

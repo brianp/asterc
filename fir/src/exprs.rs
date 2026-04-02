@@ -164,6 +164,9 @@ pub enum FirExpr {
     EvalCall {
         code: Box<FirExpr>,
         context_idx: u32,
+        /// Heap-allocated env struct pointer containing captured variable values.
+        /// `None` when no locals are in scope at the call site.
+        env: Option<Box<FirExpr>>,
         ret_ty: FirType,
     },
 }

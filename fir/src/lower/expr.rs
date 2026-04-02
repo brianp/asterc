@@ -716,7 +716,8 @@ impl Lowerer {
                 ret_ty,
             })
         } else if name == "evaluate" {
-            // Runtime evaluation: capture context snapshot and emit EvalCall
+            // Runtime evaluation: capture context snapshot, build env struct,
+            // and emit EvalCall with the env pointer.
             let code_arg = args
                 .iter()
                 .find(|(n, _, _)| n == "code")
@@ -727,7 +728,82 @@ impl Lowerer {
             } else {
                 FirExpr::StringLit(String::new())
             };
-            let snapshot = self.capture_context_snapshot();
+            let mut snapshot = self.capture_context_snapshot();
+
+            // Build ordered env layout from locals in scope (sorted by name
+            // for deterministic layout). Include "self" if present.
+            let mut env_entries: Vec<(String, FirType, LocalId, Type)> = Vec::new();
+            for (vname, &local_id) in &self.scope.locals {
+                // Skip compiler internals
+                if vname.starts_with("__") || vname == "code" {
+                    continue;
+                }
+                let fir_ty = self
+                    .scope
+                    .local_types
+                    .get(&local_id)
+                    .cloned()
+                    .unwrap_or(FirType::I64);
+                let ast_ty = if vname == "self" {
+                    self.scope
+                        .local_ast_types
+                        .get("self")
+                        .cloned()
+                        .unwrap_or(Type::Custom("Unknown".into(), vec![]))
+                } else {
+                    self.scope
+                        .local_ast_types
+                        .get(vname)
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            Self::fir_type_to_ast_approx(&fir_ty).unwrap_or(Type::Int)
+                        })
+                };
+                env_entries.push((vname.clone(), fir_ty, local_id, ast_ty));
+            }
+            env_entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+            let env_expr = if env_entries.is_empty() {
+                None
+            } else {
+                // Populate env_layout in the snapshot
+                snapshot.env_layout = Some(
+                    env_entries
+                        .iter()
+                        .map(|(n, _, _, ast_ty)| (n.clone(), ast_ty.clone()))
+                        .collect(),
+                );
+
+                // Allocate env struct and store each local's value
+                let env_size = env_entries.len() * 8;
+                let env_id = self.alloc_local();
+                let env_name = format!("__eval_env_{}", self.ms.module.eval_contexts.len());
+                self.scope.locals.insert(env_name, env_id);
+                self.scope.local_types.insert(env_id, FirType::Ptr);
+
+                self.pending_stmts.push(FirStmt::Let {
+                    name: env_id,
+                    ty: FirType::Ptr,
+                    value: FirExpr::RuntimeCall {
+                        name: "aster_class_alloc".to_string(),
+                        args: vec![FirExpr::IntLit(env_size as i64)],
+                        ret_ty: FirType::Ptr,
+                    },
+                });
+
+                for (i, (_, fir_ty, local_id, _)) in env_entries.iter().enumerate() {
+                    self.pending_stmts.push(FirStmt::Assign {
+                        target: FirPlace::Field {
+                            object: Box::new(FirExpr::LocalVar(env_id, FirType::Ptr)),
+                            offset: i * 8,
+                        },
+                        value: FirExpr::LocalVar(*local_id, fir_ty.clone()),
+                    });
+                }
+
+                Some(Box::new(FirExpr::LocalVar(env_id, FirType::Ptr)))
+            };
+
             let context_idx = self.ms.module.eval_contexts.len() as u32;
             self.ms
                 .module
@@ -739,6 +815,7 @@ impl Lowerer {
             Ok(FirExpr::EvalCall {
                 code: Box::new(code_expr),
                 context_idx,
+                env: env_expr,
                 ret_ty: FirType::Void,
             })
         } else if let Some((runtime_name, ret_ty)) = Self::stdlib_runtime_mapping(name) {

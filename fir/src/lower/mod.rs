@@ -128,6 +128,13 @@ pub(super) struct TopLevelState {
     pub(super) globals: HashMap<String, LocalId>,
 }
 
+/// Per-variable entry in the eval env layout: name, FIR type, AST type.
+pub struct EvalEnvEntry {
+    pub name: String,
+    pub fir_ty: FirType,
+    pub ast_ty: Type,
+}
+
 pub struct Lowerer {
     pub(super) type_env: TypeEnv,
     pub(super) type_table: TypeTable,
@@ -135,6 +142,9 @@ pub struct Lowerer {
     pub(super) ms: ModuleState,
     pub(super) tl: TopLevelState,
     pub(super) pending_stmts: Vec<FirStmt>,
+    /// When set, the entry function receives `__eval_env: Ptr` as first param
+    /// and locals are loaded from the env struct at known offsets.
+    pub(super) eval_env: Option<Vec<EvalEnvEntry>>,
 }
 
 impl Lowerer {
@@ -205,6 +215,7 @@ impl Lowerer {
                 globals: HashMap::new(),
             },
             pending_stmts: Vec::new(),
+            eval_env: None,
         }
     }
 
@@ -732,8 +743,11 @@ impl Lowerer {
             FirExpr::Bitcast { value, .. } => {
                 Self::remap_expr_with(value, fr, cr, fo, co);
             }
-            FirExpr::EvalCall { code, .. } => {
+            FirExpr::EvalCall { code, env, .. } => {
                 Self::remap_expr_with(code, fr, cr, fo, co);
+                if let Some(e) = env {
+                    Self::remap_expr_with(e, fr, cr, fo, co);
+                }
             }
             FirExpr::IntLit(_)
             | FirExpr::FloatLit(_)
@@ -820,6 +834,7 @@ impl Lowerer {
             class_info,
             variables,
             functions,
+            env_layout: None,
         }
     }
 
@@ -836,6 +851,53 @@ impl Lowerer {
     }
 
     /// Take ownership of the built FirModule.
+    /// Configure the eval env layout for context-aware JIT evaluation.
+    /// When set, the entry function's body is augmented with `__eval_env: Ptr`
+    /// as first parameter and EnvLoad statements for each captured variable.
+    pub fn set_eval_env(
+        &mut self,
+        env_layout: &[(String, ast::Type)],
+        snapshot: &ast::ContextSnapshot,
+    ) {
+        let entries: Vec<EvalEnvEntry> = env_layout
+            .iter()
+            .map(|(name, ast_ty)| EvalEnvEntry {
+                name: name.clone(),
+                fir_ty: self.lower_type(ast_ty),
+                ast_ty: ast_ty.clone(),
+            })
+            .collect();
+        self.eval_env = Some(entries);
+
+        // Pre-register class layout if "self" is in the env (for field access)
+        if let Some(class_name) = &snapshot.current_class
+            && let Some(ci) = &snapshot.class_info
+        {
+            let class_id = ClassId(self.ms.next_class);
+            self.ms.next_class += 1;
+            self.ms.classes.insert(class_name.clone(), class_id);
+
+            // Build field layout with pointer-first ordering (matching host layout)
+            let mut ptr_fields = Vec::new();
+            let mut val_fields = Vec::new();
+            for (fname, fty) in &ci.fields {
+                let fir_ty = self.lower_type(fty);
+                if fir_ty == FirType::Ptr {
+                    ptr_fields.push((fname.clone(), fir_ty));
+                } else {
+                    val_fields.push((fname.clone(), fir_ty));
+                }
+            }
+            let mut fields = Vec::new();
+            let mut offset = 0;
+            for (fname, fir_ty) in ptr_fields.into_iter().chain(val_fields) {
+                fields.push((fname, fir_ty, offset));
+                offset += 8;
+            }
+            self.ms.class_fields.insert(class_id, fields);
+        }
+    }
+
     pub fn finish(self) -> FirModule {
         self.ms.module
     }

@@ -122,6 +122,7 @@ dependencies = [
  "lexer",
  "libc",
  "parser",
+ "serde_json",
  "sha2",
  "typecheck",
 ]
