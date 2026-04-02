@@ -25,6 +25,8 @@ pub struct BuildConfig {
     pub profile: Profile,
     pub debug_info: bool,
     pub verbose: bool,
+    /// When true, the build includes JIT support for `evaluate()` and `jit_run()`.
+    pub jit: bool,
 }
 
 impl BuildConfig {
@@ -35,6 +37,7 @@ impl BuildConfig {
             profile: Profile::Debug,
             debug_info: true,
             verbose: false,
+            jit: false,
         }
     }
 
@@ -45,6 +48,7 @@ impl BuildConfig {
             profile: Profile::Release,
             debug_info: false,
             verbose: false,
+            jit: false,
         }
     }
 
@@ -85,6 +89,7 @@ mod tests {
         assert_eq!(config.profile, Profile::Debug);
         assert!(config.debug_info);
         assert!(!config.verbose);
+        assert!(!config.jit);
     }
 
     #[test]
@@ -94,6 +99,14 @@ mod tests {
         assert_eq!(config.profile, Profile::Release);
         assert!(!config.debug_info);
         assert!(!config.verbose);
+        assert!(!config.jit);
+    }
+
+    #[test]
+    fn jit_flag_can_be_set() {
+        let mut config = BuildConfig::debug();
+        config.jit = true;
+        assert!(config.jit);
     }
 
     #[test]

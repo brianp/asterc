@@ -28,6 +28,11 @@ pub extern "C" fn aster_runtime_jit_eval(code_ptr: *const u8) -> i64 {
 /// Compile and execute with full context and env pointer.
 /// Used by `evaluate()` call sites for context-aware runtime evaluation.
 ///
+/// On success, returns 0 (evaluate is Void).
+/// On failure, constructs an EvalError object, sets the typed error flag,
+/// and returns 0. The caller's error-handling code (!, !.or(), !.catch())
+/// checks the flag after the call.
+///
 /// # Safety
 /// - `code_ptr`: valid Aster heap string pointer (or null).
 /// - `context_ptr`: valid Aster heap string with JSON `ContextSnapshot` (or null).
@@ -47,8 +52,8 @@ pub extern "C" fn aster_runtime_eval_with_ctx(
         match serde_json::from_str::<ast::ContextSnapshot>(&json_str) {
             Ok(snapshot) => Some(snapshot),
             Err(e) => {
-                eprintln!("runtime eval error: failed to deserialize context: {e}");
-                return -1;
+                set_eval_error("runtime", &format!("failed to deserialize context: {e}"));
+                return 0;
             }
         }
     };
@@ -63,10 +68,30 @@ pub extern "C" fn aster_runtime_eval_with_ctx(
     match crate::eval_pipeline::jit_compile_and_run(&source, "<eval>", context.as_ref(), env) {
         Ok(exit_code) => exit_code,
         Err(e) => {
-            eprintln!("runtime eval error: {e}");
-            -1
+            set_eval_error(e.kind, &e.message);
+            0
         }
     }
+}
+
+/// Construct a heap-allocated EvalError object and set the typed error flag.
+///
+/// The EvalError layout matches the sentinel ClassId registration:
+///   offset 0: kind (String pointer)
+///   offset 8: message (String pointer)
+fn set_eval_error(kind: &str, message: &str) {
+    use super::alloc::aster_class_alloc_typed;
+    use super::error::aster_error_set_typed;
+    use super::string::aster_string_new_from_rust;
+    use ast::eval_error::{EVAL_ERROR_CLASS_ID, EVAL_ERROR_PTR_COUNT, EVAL_ERROR_SIZE};
+
+    let obj = aster_class_alloc_typed(EVAL_ERROR_SIZE, EVAL_ERROR_PTR_COUNT);
+    unsafe {
+        let base = obj as *mut i64;
+        *base = aster_string_new_from_rust(kind) as i64;
+        *base.add(1) = aster_string_new_from_rust(message) as i64;
+    }
+    aster_error_set_typed(EVAL_ERROR_CLASS_ID as i64, obj as i64);
 }
 
 /// Resolve host function pointers from the global registry into the snapshot.

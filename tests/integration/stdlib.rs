@@ -612,7 +612,7 @@ fn std_process_import_nonexistent_fails() {
 
 #[test]
 fn std_runtime_import_jit_run() {
-    crate::common::check_ok_with_files(
+    crate::common::check_ok_with_files_jit(
         "use std/runtime { jit_run }\n\ndef main() -> Int\n  jit_run(code: \"def main() -> Int\\n  0\")\n",
         HashMap::new(),
     );
@@ -620,7 +620,7 @@ fn std_runtime_import_jit_run() {
 
 #[test]
 fn std_runtime_jit_run_returns_int() {
-    crate::common::check_ok_with_files(
+    crate::common::check_ok_with_files_jit(
         "use std/runtime { jit_run }\n\ndef main() -> Int\n  let result: Int = jit_run(code: \"def main() -> Int\\n  42\")\n  result\n",
         HashMap::new(),
     );
@@ -638,7 +638,7 @@ fn std_runtime_import_nonexistent_fails() {
 
 #[test]
 fn std_runtime_wildcard_import() {
-    crate::common::check_ok_with_files(
+    crate::common::check_ok_with_files_jit(
         "use std/runtime\n\ndef main() -> Int\n  jit_run(code: \"def main() -> Int\\n  0\")\n",
         HashMap::new(),
     );

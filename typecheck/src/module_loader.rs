@@ -72,6 +72,9 @@ pub struct ModuleLoader {
     /// Whether the --unstable flag is enabled. Propagated to child TypeCheckers
     /// so imported modules can also use `std/unstable`.
     pub unstable: bool,
+    /// Whether the --jit flag is enabled. When false, importing `evaluate`
+    /// or `jit_run` from `std/runtime` is a compile error.
+    pub jit: bool,
 }
 
 impl ModuleLoader {
@@ -82,6 +85,7 @@ impl ModuleLoader {
             fir_cache: HashMap::new(),
             in_progress: HashSet::new(),
             unstable: false,
+            jit: false,
         }
     }
 

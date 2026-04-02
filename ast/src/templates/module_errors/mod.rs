@@ -27,3 +27,8 @@ define_diagnostic!(
     "M005",
     "Importing from std/unstable requires the --unstable compiler flag or ASTER_UNSTABLE=1 environment variable"
 );
+define_diagnostic!(
+    JitRequired,
+    "M006",
+    "evaluate() and jit_run() require the --jit flag when building with `asterc build`"
+);

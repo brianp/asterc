@@ -98,6 +98,18 @@ pub fn check_err_with_files(src: &str, files: HashMap<String, String>) -> String
     tc.check_module(&module).unwrap_err().to_string()
 }
 
+pub fn check_ok_with_files_jit(src: &str, files: HashMap<String, String>) {
+    let tokens = lex(src).expect("lex ok");
+    let mut parser = Parser::new(tokens);
+    let module = parser.parse_module("test").expect("parse ok");
+    let resolver = VirtualResolver { files };
+    let mut loader = ModuleLoader::new(Box::new(resolver));
+    loader.jit = true;
+    let loader = Rc::new(RefCell::new(loader));
+    let mut tc = TypeChecker::with_loader(loader);
+    tc.check_module(&module).expect("typecheck ok");
+}
+
 pub fn check_ok_with_files_unstable(src: &str, files: HashMap<String, String>) {
     let tokens = lex(src).expect("lex ok");
     let mut parser = Parser::new(tokens);

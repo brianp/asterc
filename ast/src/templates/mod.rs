@@ -72,7 +72,8 @@ impl DiagnosticTemplate {
             | Self::UseAfterMove(_)
             | Self::ShadowedVariable(_)
             | Self::RedundantTypeAnnotation(_)
-            | Self::RedundantMainReturn(_) => Severity::Warning,
+            | Self::RedundantMainReturn(_)
+            | Self::JitNotEnabled(_) => Severity::Warning,
             _ => Severity::Error,
         }
     }
@@ -123,6 +124,7 @@ diagnostic_template_enum! {
     CircularImport(module_errors::CircularImport),
     InvalidImportAlias(module_errors::InvalidImportAlias),
     UnstableRequired(module_errors::UnstableRequired),
+    JitRequired(module_errors::JitRequired),
 
     // Warnings (W001-W005)
     RedundantTypeAnnotation(warnings::RedundantTypeAnnotation),
@@ -130,6 +132,7 @@ diagnostic_template_enum! {
     UseAfterMove(warnings::UseAfterMove),
     ShadowedVariable(warnings::ShadowedVariable),
     RedundantMainReturn(warnings::RedundantMainReturn),
+    JitNotEnabled(warnings::JitNotEnabled),
 
     // Lex errors (L001-L012)
     InterpolationError(lex_errors::InterpolationError),

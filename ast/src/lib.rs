@@ -2,6 +2,7 @@
 
 pub mod context_snapshot;
 pub mod diagnostic;
+pub mod eval_error;
 pub mod expr;
 pub mod span;
 pub mod symbol_index;

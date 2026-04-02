@@ -1,20 +1,20 @@
 use ast::templates::DiagnosticTemplate;
 use ast::templates::module_errors::{
-    CircularImport, InvalidImportAlias, SymbolNotExported, UnstableRequired,
+    CircularImport, InvalidImportAlias, JitRequired, SymbolNotExported, UnstableRequired,
 };
 use ast::templates::type_errors::{
     ArgumentTypeMismatch, ConditionTypeError, ConstReassignment, ConstraintError, ControlFlowError,
     IndexTypeError, InvalidAssignment, MissingIterable, ReturnTypeMismatch, TraitError,
     TypeMismatch, UndeclaredAssignment, UndefinedVariable, UnknownField,
 };
-use ast::templates::warnings::{RedundantTypeAnnotation, ShadowedVariable};
+use ast::templates::warnings::{JitNotEnabled, RedundantTypeAnnotation, ShadowedVariable};
 use ast::{
     ClassInfo, Diagnostic, EnumInfo, Expr, MatchPattern, Span, Stmt, SymbolIndex, SymbolInfo,
     SymbolKind, TraitInfo, Type, TypeEnv, TypeTable,
 };
 use indexmap::IndexMap;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::module_loader::ModuleLoader;
@@ -253,6 +253,29 @@ impl TypeChecker {
                 vec!["message".into(), "name".into()],
                 vec![Type::String, Type::String],
                 Type::Custom("FunctionNotFound".into(), Vec::new()),
+            ),
+        );
+
+        // EvalError — thrown by std/runtime evaluate() on compile or runtime failure
+        env.set_class("EvalError".into(), {
+            let mut info = ClassInfo::new(
+                Type::Custom("EvalError".into(), Vec::new()),
+                IndexMap::from([
+                    ("kind".into(), Type::String),
+                    ("message".into(), Type::String),
+                ]),
+                HashMap::new(),
+            );
+            info.extends = Some("Error".into());
+            info.pub_fields = HashSet::from(["kind".into(), "message".into()]);
+            info
+        });
+        env.set_var_type(
+            "EvalError".into(),
+            Type::func(
+                vec!["kind".into(), "message".into()],
+                vec![Type::String, Type::String],
+                Type::Custom("EvalError".into(), Vec::new()),
             ),
         );
 
@@ -2162,16 +2185,31 @@ impl TypeChecker {
                 "sha256",
                 Type::func(vec!["data".into()], vec![Type::String], Type::String),
             )])),
-            "runtime" => Some(self.builtin_function_exports(&[
-                (
-                    "jit_run",
-                    Type::func(vec!["code".into()], vec![Type::String], Type::Int),
-                ),
-                (
-                    "evaluate",
-                    Type::func(vec!["code".into()], vec![Type::String], Type::Void),
-                ),
-            ])),
+            "runtime" => {
+                let eval_err = || Some(Box::new(Type::Custom("EvalError".into(), Vec::new())));
+                let mut exports = self.builtin_function_exports(&[
+                    (
+                        "jit_run",
+                        Type::func(vec!["code".into()], vec![Type::String], Type::Int),
+                    ),
+                    (
+                        "evaluate",
+                        Type::Function {
+                            param_names: vec!["code".into()],
+                            params: vec![Type::String],
+                            ret: Box::new(Type::Void),
+                            throws: eval_err(),
+                            suspendable: false,
+                        },
+                    ),
+                ]);
+                // Export EvalError class so callers can use it in catch arms
+                exports.classes.insert(
+                    "EvalError".into(),
+                    self.env.get_class("EvalError").cloned().unwrap(),
+                );
+                Some(exports)
+            }
             _ => None,
         }
     }
@@ -2246,6 +2284,35 @@ impl TypeChecker {
                         ))
                         .with_label(*span, "requires --unstable flag or ASTER_UNSTABLE=1"),
                     );
+                }
+            }
+            // Gate std/runtime JIT functions behind the --jit flag.
+            if path.len() >= 2 && path[1] == "runtime" {
+                let jit_enabled = self
+                    .module_loader
+                    .as_ref()
+                    .is_some_and(|loader| loader.borrow().jit);
+                if !jit_enabled {
+                    // Check if the user selectively imports JIT-requiring functions
+                    let jit_functions = ["evaluate", "jit_run"];
+                    if let Some(selected) = names {
+                        for name in selected {
+                            if jit_functions.contains(&name.as_str()) {
+                                return Err(Diagnostic::from_template(
+                                    DiagnosticTemplate::JitRequired(JitRequired {}),
+                                )
+                                .with_label(*span, format!("'{}' requires --jit flag", name)));
+                            }
+                        }
+                    } else {
+                        // Wildcard import of std/runtime without --jit: warn
+                        self.reg.diagnostics.push(
+                            Diagnostic::from_template(DiagnosticTemplate::JitNotEnabled(
+                                JitNotEnabled {},
+                            ))
+                            .with_label(*span, "std/runtime imported without --jit"),
+                        );
+                    }
                 }
             }
             if path.len() == 2 {

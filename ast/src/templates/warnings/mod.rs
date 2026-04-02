@@ -21,3 +21,8 @@ define_diagnostic!(
 define_diagnostic!(RedundantMainReturn {}, "W005", |self| {
     "main() implicitly returns exit code 0; remove `-> Int` and the trailing `0`".to_string()
 });
+define_diagnostic!(
+    JitNotEnabled,
+    "W006",
+    "std/runtime imported but --jit not enabled; evaluate() and jit_run() will fail to compile"
+);

@@ -78,6 +78,7 @@ fn print_usage() {
     eprintln!("  --opt <none|speed|size>     Override optimization level");
     eprintln!("  --build-dir <path>          Override build directory");
     eprintln!("  --verbose, -v               Print compilation steps");
+    eprintln!("  --jit                       Include JIT for runtime evaluate()");
     eprintln!();
     eprintln!("Compiler options:");
     eprintln!("  --unstable                  Enable importing from std/unstable");
@@ -91,6 +92,7 @@ fn frontend(
     source: &str,
     filename: &str,
     unstable: bool,
+    jit: bool,
 ) -> Result<(ast::Module, TypeChecker), ()> {
     // 1. Tokenize
     let tokens = match lex(source) {
@@ -119,6 +121,7 @@ fn frontend(
     let resolver = FsResolver { root };
     let mut module_loader = ModuleLoader::new(Box::new(resolver));
     module_loader.unstable = unstable;
+    module_loader.jit = jit;
     let loader = Rc::new(RefCell::new(module_loader));
     let mut checker = TypeChecker::with_loader(loader);
     let errors = checker.check_module_all(&module_ast);
@@ -145,9 +148,9 @@ fn frontend(
     Ok((module_ast, checker))
 }
 
-fn cmd_check(filename: &str, unstable: bool) {
+fn cmd_check(filename: &str, unstable: bool, jit: bool) {
     let source = read_source(filename);
-    match frontend(&source, filename, unstable) {
+    match frontend(&source, filename, unstable, jit) {
         Ok(_) => println!("Type checking passed for {}", filename),
         Err(()) => std::process::exit(1),
     }
@@ -155,8 +158,8 @@ fn cmd_check(filename: &str, unstable: bool) {
 
 /// Run the full frontend pipeline: parse, typecheck, lower to FIR, validate,
 /// and verify that a main() entry point exists.
-fn frontend_and_lower(source: &str, filename: &str, unstable: bool) -> fir::FirModule {
-    let (module_ast, checker) = match frontend(source, filename, unstable) {
+fn frontend_and_lower(source: &str, filename: &str, unstable: bool, jit: bool) -> fir::FirModule {
+    let (module_ast, checker) = match frontend(source, filename, unstable, jit) {
         Ok(v) => v,
         Err(()) => std::process::exit(1),
     };
@@ -214,7 +217,7 @@ fn frontend_and_lower(source: &str, filename: &str, unstable: bool) -> fir::FirM
 
 fn cmd_run(filename: &str, unstable: bool) {
     let source = read_source(filename);
-    let fir_module = frontend_and_lower(&source, filename, unstable);
+    let fir_module = frontend_and_lower(&source, filename, unstable, true);
     let entry = fir_module.entry.unwrap();
 
     // JIT compile and run
@@ -239,7 +242,7 @@ struct BuildOptions {
 
 fn cmd_build(opts: &BuildOptions) {
     let source = read_source(&opts.filename);
-    let fir_module = frontend_and_lower(&source, &opts.filename, opts.unstable);
+    let fir_module = frontend_and_lower(&source, &opts.filename, opts.unstable, opts.config.jit);
 
     // Resolve build paths
     let source_path = Path::new(&opts.filename)
@@ -693,6 +696,7 @@ fn parse_build_options(args: &[String], start_idx: usize) -> BuildOptions {
     let mut build_dir_override = None;
     let mut verbose = false;
     let mut unstable = false;
+    let mut jit = false;
 
     let mut i = start_idx + 1;
     while i < args.len() {
@@ -706,6 +710,7 @@ fn parse_build_options(args: &[String], start_idx: usize) -> BuildOptions {
             "--release" | "-r" => release = true,
             "--verbose" | "-v" => verbose = true,
             "--unstable" => unstable = true,
+            "--jit" => jit = true,
             "--opt" => {
                 i += 1;
                 if i < args.len() {
@@ -732,6 +737,7 @@ fn parse_build_options(args: &[String], start_idx: usize) -> BuildOptions {
         BuildConfig::debug()
     };
     config.verbose = verbose;
+    config.jit = jit;
 
     // Apply opt level override
     if let Some(ref opt) = opt_override {
@@ -775,21 +781,23 @@ fn main() {
         std::process::exit(1);
     }
 
-    // Check for --unstable flag anywhere in args (for check/run commands).
+    // Check for global flags anywhere in args (for check/run commands).
     let global_unstable = args.iter().any(|a| a == "--unstable")
         || env::var("ASTER_UNSTABLE").is_ok_and(|v| v == "1");
+    let global_jit = args.iter().any(|a| a == "--jit");
+    let global_filter = |a: &&String| *a != "--unstable" && *a != "--jit";
 
     match args[1].as_str() {
         "check" => {
-            let check_args: Vec<_> = args[2..].iter().filter(|a| *a != "--unstable").collect();
+            let check_args: Vec<_> = args[2..].iter().filter(global_filter).collect();
             if check_args.is_empty() {
-                eprintln!("Usage: asterc check [--unstable] <file.aster>");
+                eprintln!("Usage: asterc check [--unstable] [--jit] <file.aster>");
                 std::process::exit(1);
             }
-            cmd_check(check_args[0], global_unstable);
+            cmd_check(check_args[0], global_unstable, global_jit);
         }
         "run" => {
-            let run_args: Vec<_> = args[2..].iter().filter(|a| *a != "--unstable").collect();
+            let run_args: Vec<_> = args[2..].iter().filter(global_filter).collect();
             if run_args.is_empty() {
                 eprintln!("Usage: asterc run [--unstable] <file.aster>");
                 std::process::exit(1);
@@ -814,7 +822,7 @@ fn main() {
         // Default: treat first arg as a file, default to check
         other => {
             if other.ends_with(".aster") || std::path::Path::new(other).exists() {
-                cmd_check(other, global_unstable);
+                cmd_check(other, global_unstable, global_jit);
             } else {
                 eprintln!("Unknown command: {}", other);
                 print_usage();

@@ -197,6 +197,17 @@ impl Lowerer {
             ],
         );
 
+        // EvalError: kind(ptr,0), message(ptr,8)
+        let ee_id = ClassId(ast::eval_error::EVAL_ERROR_CLASS_ID);
+        classes.insert("EvalError".to_string(), ee_id);
+        class_fields.insert(
+            ee_id,
+            vec![
+                ("kind".into(), FirType::Ptr, 0),
+                ("message".into(), FirType::Ptr, 8),
+            ],
+        );
+
         Self {
             type_env,
             type_table,

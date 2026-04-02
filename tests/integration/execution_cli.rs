@@ -775,12 +775,12 @@ fn run_evaluate_self_mutation() {
 class Counter
   pub count: Int
 
-  pub def run_code(code: String) -> Void
-    evaluate(code: code)
+  pub def run_code(code: String) throws EvalError -> Void
+    evaluate(code: code)!
 
-def main() -> Int
+def main() throws EvalError -> Int
   let c = Counter(count: 0)
-  c.run_code(code: "self.count = 42")
+  c.run_code(code: "self.count = 42")!
   c.count
 "#,
     )
@@ -803,12 +803,12 @@ fn run_evaluate_local_variable_access() {
         &src,
         r#"use std/runtime { evaluate }
 
-def run(code: String) -> Void
+def run(code: String) throws EvalError -> Void
   let x = 42
-  evaluate(code: code)
+  evaluate(code: code)!
 
-def main() -> Int
-  run(code: "say(message: to_string(value: x))")
+def main() throws EvalError -> Int
+  run(code: "say(message: to_string(value: x))")!
   0
 "#,
     )
@@ -844,12 +844,12 @@ class Greeter
   pub def greet(name: String) -> Void
     greeting = "Hello, " + name
 
-  pub def run_code(code: String) -> Void
-    evaluate(code: code)
+  pub def run_code(code: String) throws EvalError -> Void
+    evaluate(code: code)!
 
-def main() -> Int
+def main() throws EvalError -> Int
   let g = Greeter(greeting: "")
-  g.run_code(code: "greet(name: \"world\")")
+  g.run_code(code: "greet(name: \"world\")")!
   say(message: g.greeting)
   0
 "#,
@@ -883,12 +883,12 @@ class Calculator
   pub def add(a: Int, b: Int) -> Int
     a + b
 
-  pub def run_code(code: String) -> Void
-    evaluate(code: code)
+  pub def run_code(code: String) throws EvalError -> Void
+    evaluate(code: code)!
 
-def main() -> Int
+def main() throws EvalError -> Int
   let c = Calculator(result: 0)
-  c.run_code(code: "result = add(a: 10, b: 32)")
+  c.run_code(code: "result = add(a: 10, b: 32)")!
   c.result
 "#,
     )
@@ -899,6 +899,137 @@ def main() -> Int
         Some(42),
         "evaluate() calling host method with return value: {}",
         crate::common::output_text(&output)
+    );
+}
+
+// ─── Phase 7: RuntimeEvalError and error boundary ─────────────────────
+
+#[test]
+fn run_evaluate_syntax_error_produces_eval_error() {
+    // Phase 7: syntax error in evaluated code surfaces as EvalError, not a crash.
+    let dir = crate::common::make_temp_dir("eval-syntax-error");
+    let src = dir.join("eval_syntax_err.aster");
+    std::fs::write(
+        &src,
+        r#"use std/runtime { evaluate, EvalError }
+
+def main() -> Int
+  evaluate(code: "def broken(")!.catch
+    EvalError err -> say(message: "caught:" + err.kind)
+  0
+"#,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    let text = crate::common::output_text(&output);
+    assert!(
+        output.status.success(),
+        "syntax error in evaluated code should not crash: {text}",
+    );
+    assert!(
+        text.contains("caught:syntax"),
+        "should catch EvalError with kind='syntax': {text}",
+    );
+}
+
+#[test]
+fn run_evaluate_type_error_produces_eval_error() {
+    // Phase 7: type error in evaluated code surfaces as EvalError, not a crash.
+    let dir = crate::common::make_temp_dir("eval-type-error");
+    let src = dir.join("eval_type_err.aster");
+    std::fs::write(
+        &src,
+        r#"use std/runtime { evaluate, EvalError }
+
+def main() -> Int
+  evaluate(code: "let x: Int = \"not an int\"")!.catch
+    EvalError err -> say(message: "caught:" + err.kind)
+  0
+"#,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    let text = crate::common::output_text(&output);
+    assert!(
+        output.status.success(),
+        "type error in evaluated code should not crash: {text}",
+    );
+    assert!(
+        text.contains("caught:type"),
+        "should catch EvalError with kind='type': {text}",
+    );
+}
+
+#[test]
+fn run_evaluate_success_no_error() {
+    // Phase 7: successful evaluation produces no error, mutations visible.
+    let dir = crate::common::make_temp_dir("eval-success");
+    let src = dir.join("eval_success.aster");
+    std::fs::write(
+        &src,
+        r#"use std/runtime { evaluate }
+
+class Box
+  pub value: Int
+
+  pub def run_code(code: String) throws EvalError -> Void
+    evaluate(code: code)!
+
+def main() throws EvalError -> Int
+  let b = Box(value: 0)
+  b.run_code(code: "self.value = 42")!
+  b.value
+"#,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    assert_eq!(
+        output.status.code(),
+        Some(42),
+        "successful evaluate should mutate value to 42: {}",
+        crate::common::output_text(&output)
+    );
+}
+
+#[test]
+fn run_evaluate_error_does_not_crash_host() {
+    // Phase 7: multiple errors in evaluated code don't crash the host process.
+    // Tests that the error boundary is robust across repeated calls.
+    let dir = crate::common::make_temp_dir("eval-no-crash");
+    let src = dir.join("eval_no_crash.aster");
+    std::fs::write(
+        &src,
+        r#"use std/runtime { evaluate, EvalError }
+
+def main() -> Int
+  evaluate(code: "???syntax!!!")!.catch
+    EvalError err -> say(message: "err1:" + err.kind)
+  evaluate(code: "let x: Int = \"wrong\"")!.catch
+    EvalError err -> say(message: "err2:" + err.kind)
+  evaluate(code: "say(message: \"ok\")")!.catch
+    EvalError err -> say(message: "err3:" + err.kind)
+  0
+"#,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    let text = crate::common::output_text(&output);
+    assert!(
+        output.status.success(),
+        "multiple evaluate errors should not crash host: {text}",
+    );
+    assert!(
+        text.contains("err1:syntax"),
+        "first error should be syntax: {text}",
+    );
+    assert!(
+        text.contains("err2:type"),
+        "second error should be type: {text}",
+    );
+    assert!(text.contains("ok"), "third evaluate should succeed: {text}",);
+    assert!(
+        !text.contains("err3:"),
+        "third evaluate should not produce an error: {text}",
     );
 }
 
@@ -1174,4 +1305,238 @@ def main() -> Int
         "each on empty list should not call callback, got: {}",
         stdout
     );
+}
+
+// ===========================================================================
+// Phase 8: --jit flag for asterc build
+// ===========================================================================
+
+#[test]
+fn build_without_jit_rejects_evaluate_import() {
+    let dir = crate::common::make_temp_dir("no-jit-eval");
+    let src = dir.join("eval.aster");
+    std::fs::write(
+        &src,
+        "\
+use std/runtime { evaluate }
+
+def main() -> Int
+  0
+",
+    )
+    .unwrap();
+    let output = crate::common::cli(&["build", src.to_str().unwrap()]);
+    assert!(
+        !output.status.success(),
+        "build without --jit should fail when evaluate is imported: {}",
+        crate::common::output_text(&output)
+    );
+    let text = crate::common::output_text(&output);
+    assert!(
+        text.contains("--jit"),
+        "error should mention --jit flag: {text}"
+    );
+}
+
+#[test]
+fn build_without_jit_rejects_jit_run_import() {
+    let dir = crate::common::make_temp_dir("no-jit-run");
+    let src = dir.join("jit_run.aster");
+    std::fs::write(
+        &src,
+        "\
+use std/runtime { jit_run }
+
+def main() -> Int
+  0
+",
+    )
+    .unwrap();
+    let output = crate::common::cli(&["build", src.to_str().unwrap()]);
+    assert!(
+        !output.status.success(),
+        "build without --jit should fail when jit_run is imported: {}",
+        crate::common::output_text(&output)
+    );
+    let text = crate::common::output_text(&output);
+    assert!(
+        text.contains("--jit"),
+        "error should mention --jit flag: {text}"
+    );
+}
+
+#[test]
+fn build_with_jit_accepts_evaluate_import() {
+    let dir = crate::common::make_temp_dir("jit-eval");
+    let src = dir.join("eval.aster");
+    std::fs::write(
+        &src,
+        "\
+use std/runtime { evaluate }
+
+def main() -> Int
+  0
+",
+    )
+    .unwrap();
+    let output_path = crate::common::temp_path("jit-eval-bin", "out");
+    let output = crate::common::cli(&[
+        "build",
+        src.to_str().unwrap(),
+        "--jit",
+        "-o",
+        output_path.to_str().unwrap(),
+    ]);
+    assert!(
+        output.status.success(),
+        "build with --jit should succeed: {}",
+        crate::common::output_text(&output)
+    );
+}
+
+#[test]
+fn check_without_jit_rejects_evaluate() {
+    let dir = crate::common::make_temp_dir("check-no-jit");
+    let src = dir.join("eval.aster");
+    std::fs::write(
+        &src,
+        "\
+use std/runtime { evaluate }
+
+def main() -> Int
+  0
+",
+    )
+    .unwrap();
+    let output = crate::common::cli(&["check", src.to_str().unwrap()]);
+    assert!(
+        !output.status.success(),
+        "check without --jit should fail: {}",
+        crate::common::output_text(&output)
+    );
+}
+
+#[test]
+fn check_with_jit_accepts_evaluate() {
+    let dir = crate::common::make_temp_dir("check-jit");
+    let src = dir.join("eval.aster");
+    std::fs::write(
+        &src,
+        "\
+use std/runtime { evaluate }
+
+def main() -> Int
+  0
+",
+    )
+    .unwrap();
+    let output = crate::common::cli(&["check", "--jit", src.to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "check with --jit should succeed: {}",
+        crate::common::output_text(&output)
+    );
+}
+
+#[test]
+fn run_always_allows_evaluate() {
+    let dir = crate::common::make_temp_dir("run-eval");
+    let src = dir.join("eval.aster");
+    std::fs::write(
+        &src,
+        "\
+use std/runtime { evaluate }
+
+def main() -> Int
+  0
+",
+    )
+    .unwrap();
+    // asterc run should always work (it IS the JIT), no --jit flag needed
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "run should always allow evaluate: {}",
+        crate::common::output_text(&output)
+    );
+}
+
+#[test]
+fn build_without_jit_allows_eval_error_import() {
+    let dir = crate::common::make_temp_dir("no-jit-evalerror");
+    let src = dir.join("eval_error.aster");
+    std::fs::write(
+        &src,
+        "\
+use std/runtime { EvalError }
+
+def main() -> Int
+  0
+",
+    )
+    .unwrap();
+    let output_path = crate::common::temp_path("no-jit-ee-bin", "out");
+    let output = crate::common::cli(&[
+        "build",
+        src.to_str().unwrap(),
+        "-o",
+        output_path.to_str().unwrap(),
+    ]);
+    assert!(
+        output.status.success(),
+        "EvalError import should work without --jit: {}",
+        crate::common::output_text(&output)
+    );
+}
+
+#[test]
+fn build_without_jit_warns_on_wildcard_runtime_import() {
+    let dir = crate::common::make_temp_dir("no-jit-wildcard");
+    let src = dir.join("runtime_wildcard.aster");
+    std::fs::write(
+        &src,
+        "\
+use std/runtime
+
+def main() -> Int
+  0
+",
+    )
+    .unwrap();
+    let output_path = crate::common::temp_path("no-jit-wc-bin", "out");
+    let output = crate::common::cli(&[
+        "build",
+        src.to_str().unwrap(),
+        "-o",
+        output_path.to_str().unwrap(),
+    ]);
+    // Should succeed but with a warning
+    let text = crate::common::output_text(&output);
+    assert!(text.contains("--jit"), "should warn about --jit: {text}");
+}
+
+#[test]
+fn build_without_jit_rejects_mixed_import() {
+    // Importing both evaluate (JIT-gated) and EvalError (non-gated) in one
+    // statement should produce a compile error for evaluate.
+    let dir = crate::common::make_temp_dir("no-jit-mixed");
+    let src = dir.join("mixed.aster");
+    std::fs::write(
+        &src,
+        "\
+use std/runtime { evaluate, EvalError }
+
+def main() -> Int
+  0
+",
+    )
+    .unwrap();
+    let output = crate::common::cli(&["build", src.to_str().unwrap()]);
+    assert!(
+        !output.status.success(),
+        "build should fail when evaluate is in a mixed import: {}",
+        crate::common::output_text(&output)
+    );
+    let text = crate::common::output_text(&output);
+    assert!(text.contains("--jit"), "error should mention --jit: {text}");
 }

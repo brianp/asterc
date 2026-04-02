@@ -760,35 +760,26 @@ fn translate_expr(
         } => {
             let code_val = translate_expr(builder, state, code);
 
-            if env.is_some() {
-                // Full context-aware evaluation: pass (code, context_json, env_ptr)
-                // to aster_runtime_eval_with_ctx.
-                let context_json = state
-                    .eval_context_json
-                    .get(context_idx)
-                    .cloned()
-                    .unwrap_or_default();
-                let context_val = translate_expr(builder, state, &FirExpr::StringLit(context_json));
-                let env_val = match env {
-                    Some(e) => translate_expr(builder, state, e),
-                    None => builder.ins().iconst(types::I64, 0),
-                };
-                if let Some(&func_ref) = state.runtime_refs.get("aster_runtime_eval_with_ctx") {
-                    let call = builder
-                        .ins()
-                        .call(func_ref, &[code_val, context_val, env_val]);
-                    builder.inst_results(call)[0]
-                } else {
-                    builder.ins().iconst(types::I64, -1)
-                }
+            // Always use aster_runtime_eval_with_ctx for evaluate() calls so
+            // errors are surfaced via the typed error flag (EvalError). Pass
+            // null env_ptr when no captures exist.
+            let context_json = state
+                .eval_context_json
+                .get(context_idx)
+                .cloned()
+                .unwrap_or_default();
+            let context_val = translate_expr(builder, state, &FirExpr::StringLit(context_json));
+            let env_val = match env {
+                Some(e) => translate_expr(builder, state, e),
+                None => builder.ins().iconst(types::I64, 0),
+            };
+            if let Some(&func_ref) = state.runtime_refs.get("aster_runtime_eval_with_ctx") {
+                let call = builder
+                    .ins()
+                    .call(func_ref, &[code_val, context_val, env_val]);
+                builder.inst_results(call)[0]
             } else {
-                // No env: fall back to simple 1-arg jit_eval
-                if let Some(&func_ref) = state.runtime_refs.get("aster_runtime_jit_eval") {
-                    let call = builder.ins().call(func_ref, &[code_val]);
-                    builder.inst_results(call)[0]
-                } else {
-                    builder.ins().iconst(types::I64, -1)
-                }
+                builder.ins().iconst(types::I64, -1)
             }
         }
     }
