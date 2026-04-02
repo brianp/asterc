@@ -41,6 +41,8 @@ pub struct FirCache {
     /// Default parameter values for functions/methods.
     #[allow(clippy::type_complexity)]
     pub function_defaults: HashMap<String, Vec<(String, Option<Expr>)>>,
+    /// Serialized context snapshots for `evaluate()` call sites in this module.
+    pub eval_contexts: Vec<crate::eval_context::EvalContext>,
 }
 
 #[derive(Debug)]
@@ -395,6 +397,7 @@ impl Lowerer {
             class_fields: self.ms.class_fields.clone(),
             enum_variants: self.ms.enum_variants.clone(),
             function_defaults: self.ms.function_defaults.clone(),
+            eval_contexts: self.ms.module.eval_contexts.clone(),
         }
     }
 
@@ -424,6 +427,7 @@ impl Lowerer {
         // next_* includes pre-registered IDs that haven't been added to the module array yet.
         let func_offset = self.ms.module.functions.len() as u32;
         let class_offset = self.ms.module.classes.len() as u32;
+        let eval_context_offset = self.ms.module.eval_contexts.len() as u32;
 
         // Build remap tables: for each old ID in the cache, determine the new ID.
         // Duplicates map to the already-existing ID; new items get sequential IDs
@@ -491,6 +495,7 @@ impl Lowerer {
                 &class_remap,
                 func_offset,
                 class_offset,
+                eval_context_offset,
             );
             self.ms.module.add_function(new_func);
         }
@@ -549,6 +554,13 @@ impl Lowerer {
                 .or_insert_with(|| defaults.clone());
         }
 
+        // Merge eval contexts from the imported module so that EvalCall
+        // context_idx values (remapped above) resolve correctly at codegen.
+        self.ms
+            .module
+            .eval_contexts
+            .extend(cache.eval_contexts.iter().cloned());
+
         // Update counters to reflect the actual module array lengths after merging.
         // This ensures the next lowering pass assigns correct IDs.
         self.ms.next_function = self
@@ -566,9 +578,17 @@ impl Lowerer {
         class_remap: &HashMap<u32, ClassId>,
         func_offset: u32,
         class_offset: u32,
+        eval_context_offset: u32,
     ) {
         for stmt in stmts.iter_mut() {
-            Self::remap_stmt_with(stmt, func_remap, class_remap, func_offset, class_offset);
+            Self::remap_stmt_with(
+                stmt,
+                func_remap,
+                class_remap,
+                func_offset,
+                class_offset,
+                eval_context_offset,
+            );
         }
     }
 
@@ -578,38 +598,39 @@ impl Lowerer {
         cr: &HashMap<u32, ClassId>,
         fo: u32,
         co: u32,
+        eco: u32,
     ) {
         match stmt {
             FirStmt::Let { value, .. } => {
-                Self::remap_expr_with(value, fr, cr, fo, co);
+                Self::remap_expr_with(value, fr, cr, fo, co, eco);
             }
             FirStmt::Assign { target, value } => {
-                Self::remap_place_with(target, fr, cr, fo, co);
-                Self::remap_expr_with(value, fr, cr, fo, co);
+                Self::remap_place_with(target, fr, cr, fo, co, eco);
+                Self::remap_expr_with(value, fr, cr, fo, co, eco);
             }
             FirStmt::Return(expr) | FirStmt::Expr(expr) => {
-                Self::remap_expr_with(expr, fr, cr, fo, co);
+                Self::remap_expr_with(expr, fr, cr, fo, co, eco);
             }
             FirStmt::If {
                 cond,
                 then_body,
                 else_body,
             } => {
-                Self::remap_expr_with(cond, fr, cr, fo, co);
-                Self::remap_stmts_with(then_body, fr, cr, fo, co);
-                Self::remap_stmts_with(else_body, fr, cr, fo, co);
+                Self::remap_expr_with(cond, fr, cr, fo, co, eco);
+                Self::remap_stmts_with(then_body, fr, cr, fo, co, eco);
+                Self::remap_stmts_with(else_body, fr, cr, fo, co, eco);
             }
             FirStmt::While {
                 cond,
                 body,
                 increment,
             } => {
-                Self::remap_expr_with(cond, fr, cr, fo, co);
-                Self::remap_stmts_with(body, fr, cr, fo, co);
-                Self::remap_stmts_with(increment, fr, cr, fo, co);
+                Self::remap_expr_with(cond, fr, cr, fo, co, eco);
+                Self::remap_stmts_with(body, fr, cr, fo, co, eco);
+                Self::remap_stmts_with(increment, fr, cr, fo, co, eco);
             }
             FirStmt::Block(body) => {
-                Self::remap_stmts_with(body, fr, cr, fo, co);
+                Self::remap_stmts_with(body, fr, cr, fo, co, eco);
             }
             FirStmt::Break | FirStmt::Continue | FirStmt::NoOp => {}
         }
@@ -621,19 +642,20 @@ impl Lowerer {
         cr: &HashMap<u32, ClassId>,
         fo: u32,
         co: u32,
+        eco: u32,
     ) {
         match place {
             FirPlace::Local(_) => {}
             FirPlace::Field { object, .. } => {
-                Self::remap_expr_with(object, fr, cr, fo, co);
+                Self::remap_expr_with(object, fr, cr, fo, co, eco);
             }
             FirPlace::Index { list, index } => {
-                Self::remap_expr_with(list, fr, cr, fo, co);
-                Self::remap_expr_with(index, fr, cr, fo, co);
+                Self::remap_expr_with(list, fr, cr, fo, co, eco);
+                Self::remap_expr_with(index, fr, cr, fo, co, eco);
             }
             FirPlace::MapIndex { map, key } => {
-                Self::remap_expr_with(map, fr, cr, fo, co);
-                Self::remap_expr_with(key, fr, cr, fo, co);
+                Self::remap_expr_with(map, fr, cr, fo, co, eco);
+                Self::remap_expr_with(key, fr, cr, fo, co, eco);
             }
         }
     }
@@ -657,111 +679,118 @@ impl Lowerer {
         cr: &HashMap<u32, ClassId>,
         fo: u32,
         co: u32,
+        eco: u32,
     ) {
         match expr {
             FirExpr::Call { func, args, .. } => {
                 *func = Self::resolve_fid(*func, fr, fo);
                 for arg in args.iter_mut() {
-                    Self::remap_expr_with(arg, fr, cr, fo, co);
+                    Self::remap_expr_with(arg, fr, cr, fo, co, eco);
                 }
             }
             FirExpr::Spawn { func, args, .. } => {
                 *func = Self::resolve_fid(*func, fr, fo);
                 for arg in args.iter_mut() {
-                    Self::remap_expr_with(arg, fr, cr, fo, co);
+                    Self::remap_expr_with(arg, fr, cr, fo, co, eco);
                 }
             }
             FirExpr::BlockOn { func, args, .. } => {
                 *func = Self::resolve_fid(*func, fr, fo);
                 for arg in args.iter_mut() {
-                    Self::remap_expr_with(arg, fr, cr, fo, co);
+                    Self::remap_expr_with(arg, fr, cr, fo, co, eco);
                 }
             }
             FirExpr::Construct { class, fields, .. } => {
                 *class = Self::resolve_cid(*class, cr, co);
                 for field_val in fields.iter_mut() {
-                    Self::remap_expr_with(field_val, fr, cr, fo, co);
+                    Self::remap_expr_with(field_val, fr, cr, fo, co, eco);
                 }
             }
             FirExpr::FieldGet { object, .. } => {
-                Self::remap_expr_with(object, fr, cr, fo, co);
+                Self::remap_expr_with(object, fr, cr, fo, co, eco);
             }
             FirExpr::FieldSet { object, value, .. } => {
-                Self::remap_expr_with(object, fr, cr, fo, co);
-                Self::remap_expr_with(value, fr, cr, fo, co);
+                Self::remap_expr_with(object, fr, cr, fo, co, eco);
+                Self::remap_expr_with(value, fr, cr, fo, co, eco);
             }
             FirExpr::BinaryOp { left, right, .. } => {
-                Self::remap_expr_with(left, fr, cr, fo, co);
-                Self::remap_expr_with(right, fr, cr, fo, co);
+                Self::remap_expr_with(left, fr, cr, fo, co, eco);
+                Self::remap_expr_with(right, fr, cr, fo, co, eco);
             }
             FirExpr::UnaryOp { operand, .. } => {
-                Self::remap_expr_with(operand, fr, cr, fo, co);
+                Self::remap_expr_with(operand, fr, cr, fo, co, eco);
             }
             FirExpr::RuntimeCall { args, .. } => {
                 for arg in args.iter_mut() {
-                    Self::remap_expr_with(arg, fr, cr, fo, co);
+                    Self::remap_expr_with(arg, fr, cr, fo, co, eco);
                 }
             }
             FirExpr::ListNew { elements, .. } => {
                 for elem in elements.iter_mut() {
-                    Self::remap_expr_with(elem, fr, cr, fo, co);
+                    Self::remap_expr_with(elem, fr, cr, fo, co, eco);
                 }
             }
             FirExpr::ListGet { list, index, .. } => {
-                Self::remap_expr_with(list, fr, cr, fo, co);
-                Self::remap_expr_with(index, fr, cr, fo, co);
+                Self::remap_expr_with(list, fr, cr, fo, co, eco);
+                Self::remap_expr_with(index, fr, cr, fo, co, eco);
             }
             FirExpr::ListSet {
                 list, index, value, ..
             } => {
-                Self::remap_expr_with(list, fr, cr, fo, co);
-                Self::remap_expr_with(index, fr, cr, fo, co);
-                Self::remap_expr_with(value, fr, cr, fo, co);
+                Self::remap_expr_with(list, fr, cr, fo, co, eco);
+                Self::remap_expr_with(index, fr, cr, fo, co, eco);
+                Self::remap_expr_with(value, fr, cr, fo, co, eco);
             }
             FirExpr::TagWrap { value, .. } => {
-                Self::remap_expr_with(value, fr, cr, fo, co);
+                Self::remap_expr_with(value, fr, cr, fo, co, eco);
             }
             FirExpr::TagUnwrap { value, .. } => {
-                Self::remap_expr_with(value, fr, cr, fo, co);
+                Self::remap_expr_with(value, fr, cr, fo, co, eco);
             }
             FirExpr::TagCheck { value, .. } => {
-                Self::remap_expr_with(value, fr, cr, fo, co);
+                Self::remap_expr_with(value, fr, cr, fo, co, eco);
             }
             FirExpr::ClosureCreate { func, env, .. } => {
                 *func = Self::resolve_fid(*func, fr, fo);
-                Self::remap_expr_with(env, fr, cr, fo, co);
+                Self::remap_expr_with(env, fr, cr, fo, co, eco);
             }
             FirExpr::ClosureCall { closure, args, .. } => {
-                Self::remap_expr_with(closure, fr, cr, fo, co);
+                Self::remap_expr_with(closure, fr, cr, fo, co, eco);
                 for arg in args.iter_mut() {
-                    Self::remap_expr_with(arg, fr, cr, fo, co);
+                    Self::remap_expr_with(arg, fr, cr, fo, co, eco);
                 }
             }
             FirExpr::EnvLoad { env, .. } => {
-                Self::remap_expr_with(env, fr, cr, fo, co);
+                Self::remap_expr_with(env, fr, cr, fo, co, eco);
             }
             FirExpr::GlobalFunc(fid) => {
                 *fid = Self::resolve_fid(*fid, fr, fo);
             }
             FirExpr::ResolveTask { task, .. } => {
-                Self::remap_expr_with(task, fr, cr, fo, co);
+                Self::remap_expr_with(task, fr, cr, fo, co, eco);
             }
             FirExpr::CancelTask { task } => {
-                Self::remap_expr_with(task, fr, cr, fo, co);
+                Self::remap_expr_with(task, fr, cr, fo, co, eco);
             }
             FirExpr::WaitCancel { task } => {
-                Self::remap_expr_with(task, fr, cr, fo, co);
+                Self::remap_expr_with(task, fr, cr, fo, co, eco);
             }
             FirExpr::IntToFloat(inner) => {
-                Self::remap_expr_with(inner, fr, cr, fo, co);
+                Self::remap_expr_with(inner, fr, cr, fo, co, eco);
             }
             FirExpr::Bitcast { value, .. } => {
-                Self::remap_expr_with(value, fr, cr, fo, co);
+                Self::remap_expr_with(value, fr, cr, fo, co, eco);
             }
-            FirExpr::EvalCall { code, env, .. } => {
-                Self::remap_expr_with(code, fr, cr, fo, co);
+            FirExpr::EvalCall {
+                code,
+                context_idx,
+                env,
+                ..
+            } => {
+                *context_idx += eco;
+                Self::remap_expr_with(code, fr, cr, fo, co, eco);
                 if let Some(e) = env {
-                    Self::remap_expr_with(e, fr, cr, fo, co);
+                    Self::remap_expr_with(e, fr, cr, fo, co, eco);
                 }
             }
             FirExpr::IntLit(_)
@@ -844,6 +873,21 @@ impl Lowerer {
             })
             .collect();
 
+        // Capture method defaults for class methods with default parameters.
+        let mut method_defaults = std::collections::HashMap::new();
+        if let Some(ref class_name) = current_class {
+            for method_name in class_info
+                .as_ref()
+                .map(|ci| ci.methods.keys().collect::<Vec<_>>())
+                .unwrap_or_default()
+            {
+                let qualified = format!("{}.{}", class_name, method_name);
+                if let Some(defaults) = self.ms.function_defaults.get(&qualified) {
+                    method_defaults.insert(qualified, defaults.clone());
+                }
+            }
+        }
+
         ContextSnapshot {
             current_class,
             class_info,
@@ -851,6 +895,7 @@ impl Lowerer {
             functions,
             env_layout: None,
             function_pointers: std::collections::HashMap::new(),
+            method_defaults,
         }
     }
 
@@ -894,6 +939,15 @@ impl Lowerer {
                 self.eval_class_methods
                     .insert(method_name.clone(), (qualified, method_type.clone()));
             }
+        }
+
+        // Load method defaults from the snapshot so the JIT lowerer can
+        // fill in missing args for calls to host methods with default params.
+        for (qualified, defaults) in &snapshot.method_defaults {
+            self.ms
+                .function_defaults
+                .entry(qualified.clone())
+                .or_insert_with(|| defaults.clone());
         }
 
         // Pre-register class layout if "self" is in the env (for field access)

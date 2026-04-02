@@ -681,6 +681,26 @@ impl TypeChecker {
                     tc.env.set_var_type(mname.clone(), mty.clone());
                 }
             }
+
+            // Register method default params so the typechecker accepts
+            // calls with missing args that have defaults.
+            for (qualified, defaults) in &snapshot.method_defaults {
+                let default_set: std::collections::HashSet<String> = defaults
+                    .iter()
+                    .filter(|(_, d)| d.is_some())
+                    .map(|(name, _)| name.clone())
+                    .collect();
+                if !default_set.is_empty() {
+                    // Register with both qualified name (Seedfile.override) and
+                    // short name (override) so bare calls find defaults too.
+                    tc.reg
+                        .default_params
+                        .insert(qualified.clone(), default_set.clone());
+                    if let Some(short) = qualified.split('.').next_back() {
+                        tc.reg.default_params.insert(short.to_string(), default_set);
+                    }
+                }
+            }
         }
 
         // Pre-populate local variables

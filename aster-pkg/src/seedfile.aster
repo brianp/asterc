@@ -1,3 +1,5 @@
+use std/runtime { evaluate, EvalError }
+
 pub class Dependency
   pub name: String
   pub version: String
@@ -49,3 +51,5 @@ pub class Seedfile includes DynamicReceiver
     let dep_trusted = args["trusted"].or(default: "false") == "true"
 
     deps.push(item: Dependency(name: dep_name, version: dep_version, path: dep_path, git: dep_git, dev: dep_dev, trusted: dep_trusted))
+  pub def execute(code: String) throws EvalError -> Void
+    evaluate(code: code)!

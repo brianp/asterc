@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::expr::Expr;
 use crate::types::Type;
 
 /// Snapshot of the type-level context at an `evaluate()` call site.
@@ -27,6 +28,11 @@ pub struct ContextSnapshot {
     /// Populated at runtime, not during serialization.
     #[serde(skip, default)]
     pub function_pointers: HashMap<String, u64>,
+    /// Default parameter values for class methods.
+    /// Maps qualified method name (e.g. "Seedfile.override") to ordered
+    /// parameter defaults. Used by the JIT lowerer to fill in missing args.
+    #[serde(default)]
+    pub method_defaults: HashMap<String, Vec<(String, Option<Expr>)>>,
 }
 
 /// Subset of class metadata needed for JIT typechecking of evaluated code.

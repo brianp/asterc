@@ -706,6 +706,10 @@ impl Lowerer {
             // In eval mode: bare call to a host-compiled class method.
             // Emits RuntimeCall with qualified name and self prepended.
             Ok(host_call)
+        } else if let Some(dr_call) = self.try_lower_eval_dynamic_receiver_call(name, args)? {
+            // In eval mode: unknown bare call on a DynamicReceiver class.
+            // Routes through method_missing with fn_name and Map args.
+            Ok(dr_call)
         } else if self.scope.locals.contains_key(name.as_str()) {
             // Local variable with function type — closure call (dynamic dispatch)
             let closure_var = self.lower_expr(func)?;
@@ -925,10 +929,9 @@ impl Lowerer {
             return Ok(None);
         }
 
-        // Lower user-provided args
-        for (_, _, arg) in args {
-            fir_args.push(self.lower_expr(arg)?);
-        }
+        // Lower user-provided args, filling in defaults for missing parameters.
+        let user_args = self.lower_call_args_with_defaults(&qualified, args)?;
+        fir_args.extend(user_args);
 
         // Determine return type from the method signature
         let ret_ty = match &method_type {
@@ -939,6 +942,77 @@ impl Lowerer {
         Ok(Some(FirExpr::RuntimeCall {
             name: qualified,
             args: fir_args,
+            ret_ty,
+        }))
+    }
+
+    /// In eval mode, handle unknown bare calls on a DynamicReceiver class
+    /// by routing through `method_missing(fn_name, args_map)`.
+    /// Returns None if not in eval mode or the class has no DynamicReceiver.
+    fn try_lower_eval_dynamic_receiver_call(
+        &mut self,
+        name: &str,
+        args: &[(String, ast::Span, Expr)],
+    ) -> Result<Option<FirExpr>, LowerError> {
+        // Only active when method_missing is a known host method
+        let (qualified_mm, mm_type) = match self.eval_class_methods.get("method_missing") {
+            Some((q, ty)) => (q.clone(), ty.clone()),
+            None => return Ok(None),
+        };
+
+        // Load self from the eval env
+        let eval_env = match &self.eval_env {
+            Some(env) => env,
+            None => return Ok(None),
+        };
+
+        let self_info = eval_env
+            .iter()
+            .enumerate()
+            .find(|(_, entry)| entry.name == "self");
+
+        let self_expr = if let Some((idx, entry)) = self_info {
+            let env_local = self
+                .scope
+                .locals
+                .get("__eval_env")
+                .copied()
+                .unwrap_or(LocalId(0));
+            FirExpr::EnvLoad {
+                env: Box::new(FirExpr::LocalVar(env_local, FirType::Ptr)),
+                offset: idx * 8,
+                ty: entry.fir_ty.clone(),
+            }
+        } else {
+            return Ok(None);
+        };
+
+        // Build the fn_name string arg
+        let fn_name_str = FirExpr::StringLit(name.to_string());
+
+        // Build the Map[String, String] of args
+        let mut map_expr = FirExpr::RuntimeCall {
+            name: "aster_map_new".to_string(),
+            args: vec![FirExpr::IntLit(4)],
+            ret_ty: FirType::Ptr,
+        };
+        for (arg_name, _, arg_expr) in args {
+            let fir_val = self.lower_expr(arg_expr)?;
+            map_expr = FirExpr::RuntimeCall {
+                name: "aster_map_set".to_string(),
+                args: vec![map_expr, FirExpr::StringLit(arg_name.clone()), fir_val],
+                ret_ty: FirType::Ptr,
+            };
+        }
+
+        let ret_ty = match &mm_type {
+            Type::Function { ret, .. } => self.lower_type(ret),
+            _ => FirType::Void,
+        };
+
+        Ok(Some(FirExpr::RuntimeCall {
+            name: qualified_mm,
+            args: vec![self_expr, fn_name_str, map_expr],
             ret_ty,
         }))
     }

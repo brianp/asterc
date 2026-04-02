@@ -1209,6 +1209,247 @@ def main() throws EvalError -> Int
     );
 }
 
+// ─── Phase 10: DSL mode Seedfile evaluation via evaluate() ──────────
+
+/// Helper: the modified seedfile.aster source with execute() method.
+fn seedfile_aster_source() -> &'static str {
+    r#"use std/runtime { evaluate, EvalError }
+
+pub class Dependency
+  pub name: String
+  pub version: String
+  pub path: String
+  pub git: String
+  pub dev: Bool
+  pub trusted: Bool
+
+
+pub class Task
+  pub name: String
+  pub cmd: String
+
+
+pub class Override
+  pub name: String
+  pub version: String
+  pub path: String
+  pub git: String
+  pub branch: String
+
+
+pub class Seedfile includes DynamicReceiver
+  pub aster_version: String
+  pub name: String
+  pub version_str: String
+  pub compiler_version: String
+  pub quarantine_days: Int
+  pub deps: List[Dependency]
+  pub tasks: List[Task]
+  pub overrides: List[Override]
+  pub def package(pkg_name: String, version: String = "0.0.0")
+    name = pkg_name
+    version_str = version
+  pub def compiler(ver: String)
+    compiler_version = ver
+  pub def quarantine(days: Int)
+    quarantine_days = days
+  pub def task(task_name: String, cmd: String)
+    tasks.push(item: Task(name: task_name, cmd: cmd))
+  pub def override(dep_name: String, version: String = "", path: String = "", git: String = "", branch: String = "")
+    overrides.push(item: Override(name: dep_name, version: version, path: path, git: git, branch: branch))
+  pub def method_missing(fn_name: String, args: Map[String, String])
+    let dep_name = args["name"].or(default: fn_name)
+    let dep_version = args["version"].or(default: "*")
+    let dep_path = args["path"].or(default: "")
+    let dep_git = args["git"].or(default: "")
+    let dep_dev = args["dev"].or(default: "false") == "true"
+    let dep_trusted = args["trusted"].or(default: "false") == "true"
+    deps.push(item: Dependency(name: dep_name, version: dep_version, path: dep_path, git: dep_git, dev: dep_dev, trusted: dep_trusted))
+  pub def execute(code: String) throws EvalError -> Void
+    evaluate(code: code)!
+"#
+}
+
+/// Helper: create temp dir with src/seedfile.aster for import.
+fn setup_seedfile_dir(name: &str) -> std::path::PathBuf {
+    let dir = crate::common::make_temp_dir(name);
+    let src_dir = dir.join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::write(src_dir.join("seedfile.aster"), seedfile_aster_source()).unwrap();
+    dir
+}
+
+/// Extract only stdout from command output (avoids FIR lowering warnings in stderr).
+fn stdout_text(output: &std::process::Output) -> String {
+    String::from_utf8_lossy(&output.stdout).to_string()
+}
+
+#[test]
+fn run_seedfile_execute_basic_dsl() {
+    // Phase 10: Seedfile.execute() populates fields via evaluate().
+    // DSL calls resolve through class methods and DynamicReceiver.
+    let dir = setup_seedfile_dir("seedfile-exec-basic");
+    let src = dir.join("test_exec.aster");
+    std::fs::write(
+        &src,
+        r#"use src/seedfile { Seedfile }
+
+def main() throws EvalError -> Int
+  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, deps: [], tasks: [], overrides: [])
+  seed.execute(code: "package(pkg_name: \"my-app\", version: \"1.0.0\")\ncompiler(ver: \"0.2.0\")")!
+  say(message: seed.name)
+  say(message: seed.version_str)
+  say(message: seed.compiler_version)
+  0
+"#,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    let text = stdout_text(&output);
+    assert!(
+        output.status.success(),
+        "Seedfile.execute() basic DSL should succeed: {}",
+        crate::common::output_text(&output),
+    );
+    let lines: Vec<&str> = text.trim().lines().collect();
+    assert_eq!(
+        lines,
+        vec!["my-app", "1.0.0", "0.2.0"],
+        "should populate name, version, compiler via execute: {text}",
+    );
+}
+
+#[test]
+fn run_seedfile_execute_method_missing_deps() {
+    // Phase 10: Unknown DSL calls in execute() go through method_missing,
+    // which adds dependencies to the deps list.
+    let dir = setup_seedfile_dir("seedfile-exec-deps");
+    let src = dir.join("test_deps.aster");
+    std::fs::write(
+        &src,
+        r#"use src/seedfile { Seedfile }
+
+def main() throws EvalError -> Int
+  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, deps: [], tasks: [], overrides: [])
+  seed.execute(code: "http(version: \"1.2.0\")\njson(version: \"0.4.0\")")!
+  say(message: to_string(value: seed.deps.len()))
+  0
+"#,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    let text = stdout_text(&output);
+    assert!(
+        output.status.success(),
+        "Seedfile.execute() method_missing deps should succeed: {}",
+        crate::common::output_text(&output),
+    );
+    assert_eq!(
+        text.trim(),
+        "2",
+        "should have 2 dependencies via method_missing: {text}",
+    );
+}
+
+#[test]
+fn run_seedfile_execute_full_dsl() {
+    // Phase 10: Full Seedfile DSL with package, compiler, quarantine,
+    // deps (via method_missing), tasks, and overrides.
+    let dir = setup_seedfile_dir("seedfile-exec-full");
+    let src = dir.join("test_full.aster");
+    std::fs::write(
+        &src,
+        r#"use src/seedfile { Seedfile, Dependency, Task, Override }
+
+def main() throws EvalError -> Int
+  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, deps: [], tasks: [], overrides: [])
+  let code = "package(pkg_name: \"aster-pkg\", version: \"0.1.0\")\ncompiler(ver: \"0.1.0\")\nquarantine(days: 3)\nhttp(version: \"1.2.0\")\njson(version: \"0.4.0\")\ntoml(version: \"0.5.0\")\naster_fmt(name: \"aster-fmt\", path: \"aster-fmt\")\nserde_json(version: \"1.0.0\", dev: \"true\")\ntask(task_name: \"test\", cmd: \"aster test --release\")\ntask(task_name: \"bench\", cmd: \"aster test --bench\")\noverride(dep_name: \"json\", version: \"0.3.0\")"
+  seed.execute(code: code)!
+  say(message: "name:" + seed.name)
+  say(message: "version:" + seed.version_str)
+  say(message: "compiler:" + seed.compiler_version)
+  say(message: "quarantine:" + to_string(value: seed.quarantine_days))
+  say(message: "deps:" + to_string(value: seed.deps.len()))
+  say(message: "tasks:" + to_string(value: seed.tasks.len()))
+  say(message: "overrides:" + to_string(value: seed.overrides.len()))
+  0
+"#,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    let text = stdout_text(&output);
+    assert!(
+        output.status.success(),
+        "Seedfile.execute() full DSL should succeed: {}",
+        crate::common::output_text(&output),
+    );
+    let lines: Vec<&str> = text.trim().lines().collect();
+    assert_eq!(lines[0], "name:aster-pkg", "package name: {text}");
+    assert_eq!(lines[1], "version:0.1.0", "version: {text}");
+    assert_eq!(lines[2], "compiler:0.1.0", "compiler: {text}");
+    assert_eq!(lines[3], "quarantine:3", "quarantine: {text}");
+    assert_eq!(lines[4], "deps:5", "5 deps: {text}");
+    assert_eq!(lines[5], "tasks:2", "2 tasks: {text}");
+    assert_eq!(lines[6], "overrides:1", "1 override: {text}");
+}
+
+#[test]
+fn run_seedfile_execute_eval_error() {
+    // Phase 10: Bad code in execute() causes a non-zero exit (runtime eval error).
+    // Error propagation through intermediate class methods is a known limitation,
+    // so the error surfaces as a process-level failure rather than a catchable EvalError.
+    let dir = setup_seedfile_dir("seedfile-exec-error");
+    let src = dir.join("test_error.aster");
+    std::fs::write(
+        &src,
+        r#"use src/seedfile { Seedfile }
+
+def main() throws EvalError -> Int
+  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, deps: [], tasks: [], overrides: [])
+  seed.execute(code: "bad syntax %%%")!
+  0
+"#,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    assert!(
+        !output.status.success(),
+        "Seedfile.execute() with bad code should fail: {}",
+        crate::common::output_text(&output),
+    );
+}
+
+#[test]
+fn run_seedfile_execute_comments_and_blanks() {
+    // Phase 10: Comments and blank lines in DSL code are handled correctly.
+    let dir = setup_seedfile_dir("seedfile-exec-comments");
+    let src = dir.join("test_comments.aster");
+    std::fs::write(
+        &src,
+        r##"use src/seedfile { Seedfile }
+
+def main() throws EvalError -> Int
+  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, deps: [], tasks: [], overrides: [])
+  let code = "# This is a comment\npackage(pkg_name: \"my-app\", version: \"1.0.0\")\n\n# Another comment\nhttp(version: \"1.0.0\")"
+  seed.execute(code: code)!
+  say(message: seed.name)
+  say(message: to_string(value: seed.deps.len()))
+  0
+"##,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    let text = stdout_text(&output);
+    assert!(
+        output.status.success(),
+        "Seedfile.execute() with comments should succeed: {}",
+        crate::common::output_text(&output),
+    );
+    let lines: Vec<&str> = text.trim().lines().collect();
+    assert_eq!(lines[0], "my-app", "package name set: {text}");
+    assert_eq!(lines[1], "1", "1 dep via method_missing: {text}");
+}
+
 // ─── Iterable closures with captured variables (GH-1) ───────────────
 
 #[test]
@@ -1714,5 +1955,9 @@ def main() -> Int
         crate::common::output_text(&output)
     );
     let text = crate::common::output_text(&output);
-    assert!(text.contains("--jit"), "error should mention --jit: {text}");
+    assert!(
+        text.contains("--jit"),
+        "error should mention --jit: {}",
+        text
+    );
 }
