@@ -748,6 +748,18 @@ fn translate_expr(
                 val
             }
         }
+
+        FirExpr::EvalCall { code, .. } => {
+            // Phase 3: translate as a plain runtime call to aster_runtime_jit_eval.
+            // Context passing will be wired in Phase 4+.
+            let code_val = translate_expr(builder, state, code);
+            if let Some(&func_ref) = state.runtime_refs.get("aster_runtime_jit_eval") {
+                let call = builder.ins().call(func_ref, &[code_val]);
+                builder.inst_results(call)[0]
+            } else {
+                builder.ins().iconst(types::I64, -1)
+            }
+        }
     }
 }
 
@@ -1215,6 +1227,7 @@ fn infer_operand_type(_state: &TranslationState, expr: &FirExpr) -> FirType {
         FirExpr::TagCheck { .. } => FirType::Bool,
         FirExpr::IntToFloat(_) => FirType::F64,
         FirExpr::Bitcast { to, .. } => to.clone(),
+        FirExpr::EvalCall { ret_ty, .. } => ret_ty.clone(),
     }
 }
 

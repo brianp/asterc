@@ -190,6 +190,9 @@ impl<'a> ValidationContext<'a> {
             FirExpr::IntToFloat(inner) | FirExpr::Bitcast { value: inner, .. } => {
                 self.validate_expr(inner);
             }
+            FirExpr::EvalCall { code, .. } => {
+                self.validate_expr(code);
+            }
             // Literals have no sub-expressions
             FirExpr::IntLit(_)
             | FirExpr::FloatLit(_)

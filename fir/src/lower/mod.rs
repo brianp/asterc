@@ -732,6 +732,9 @@ impl Lowerer {
             FirExpr::Bitcast { value, .. } => {
                 Self::remap_expr_with(value, fr, cr, fo, co);
             }
+            FirExpr::EvalCall { code, .. } => {
+                Self::remap_expr_with(code, fr, cr, fo, co);
+            }
             FirExpr::IntLit(_)
             | FirExpr::FloatLit(_)
             | FirExpr::BoolLit(_)
@@ -739,6 +742,87 @@ impl Lowerer {
             | FirExpr::NilLit
             | FirExpr::LocalVar(_, _)
             | FirExpr::Safepoint => {}
+        }
+    }
+
+    /// Build a [`ContextSnapshot`] of the current scope for an `evaluate()` call site.
+    ///
+    /// Captures local variables, current class context (if inside a method),
+    /// and available function signatures.
+    pub(crate) fn capture_context_snapshot(&self) -> ast::ContextSnapshot {
+        use ast::context_snapshot::{ContextSnapshot, SnapshotClassInfo};
+
+        // Determine if we're inside a class method by checking for "self" parameter
+        let (current_class, class_info) =
+            if let Some(Type::Custom(class_name, _)) = self.scope.local_ast_types.get("self") {
+                let ci = self
+                    .type_env
+                    .get_class(class_name)
+                    .map(|info| SnapshotClassInfo {
+                        fields: info
+                            .fields
+                            .iter()
+                            .map(|(n, t)| (n.clone(), t.clone()))
+                            .collect(),
+                        methods: info.methods.clone(),
+                        has_dynamic_receiver: info.dynamic_receiver.is_some(),
+                    });
+                (Some(class_name.clone()), ci)
+            } else {
+                (None, None)
+            };
+
+        // Capture local variable types (excluding "self" which is in class_info).
+        // Prefer local_ast_types (exact AST type) but fall back to reconstructing
+        // from FirType for variables whose AST type wasn't tracked (e.g. simple
+        // literals like `let x = 10`).
+        let mut variables: std::collections::HashMap<String, Type> =
+            std::collections::HashMap::new();
+        for (name, &local_id) in &self.scope.locals {
+            if name == "self" {
+                continue;
+            }
+            if let Some(ast_ty) = self.scope.local_ast_types.get(name) {
+                variables.insert(name.clone(), ast_ty.clone());
+            } else if let Some(fir_ty) = self.scope.local_types.get(&local_id)
+                && let Some(approx) = Self::fir_type_to_ast_approx(fir_ty)
+            {
+                variables.insert(name.clone(), approx);
+            }
+        }
+
+        // Capture available function signatures from the type environment
+        let functions: std::collections::HashMap<String, Type> = self
+            .type_env
+            .all_var_names()
+            .into_iter()
+            .filter_map(|name| {
+                let ty = self.type_env.get_var_type(name)?;
+                if matches!(ty, Type::Function { .. }) {
+                    Some((name.to_string(), ty.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        ContextSnapshot {
+            current_class,
+            class_info,
+            variables,
+            functions,
+        }
+    }
+
+    /// Best-effort conversion of a FirType back to an AST Type.
+    /// Returns None for ambiguous types (e.g. Ptr could be String, List, or Class).
+    fn fir_type_to_ast_approx(fir_ty: &FirType) -> Option<Type> {
+        match fir_ty {
+            FirType::I64 => Some(Type::Int),
+            FirType::F64 => Some(Type::Float),
+            FirType::Bool => Some(Type::Bool),
+            FirType::Void => Some(Type::Void),
+            _ => None,
         }
     }
 
@@ -1034,6 +1118,7 @@ impl Lowerer {
             FirExpr::GlobalFunc(_) => FirType::Ptr,
             FirExpr::IntToFloat(_) => FirType::F64,
             FirExpr::Bitcast { to, .. } => to.clone(),
+            FirExpr::EvalCall { ret_ty, .. } => ret_ty.clone(),
         }
     }
 

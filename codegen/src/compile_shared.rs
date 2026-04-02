@@ -535,6 +535,9 @@ fn collect_string_lits_expr(
         FirExpr::IntToFloat(inner) | FirExpr::Bitcast { value: inner, .. } => {
             collect_string_lits_expr(inner, strings);
         }
+        FirExpr::EvalCall { code, .. } => {
+            collect_string_lits_expr(code, strings);
+        }
         FirExpr::IntLit(_)
         | FirExpr::FloatLit(_)
         | FirExpr::BoolLit(_)

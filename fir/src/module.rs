@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::eval_context::EvalContext;
 use crate::stmts::FirStmt;
 use crate::types::{ClassId, FirType, FunctionId};
 
@@ -8,6 +9,9 @@ pub struct FirModule {
     pub functions: Vec<FirFunction>,
     pub classes: Vec<FirClass>,
     pub entry: Option<FunctionId>,
+    /// Serialized context snapshots for `evaluate()` call sites.
+    /// Indexed by `FirExpr::EvalCall::context_idx`.
+    pub eval_contexts: Vec<EvalContext>,
 }
 
 impl FirModule {
@@ -16,6 +20,7 @@ impl FirModule {
             functions: Vec::new(),
             classes: Vec::new(),
             entry: None,
+            eval_contexts: Vec::new(),
         }
     }
 

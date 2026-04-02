@@ -7,6 +7,9 @@ use crate::types::{ClassId, FirType, FunctionId, LocalId};
 use ast::Type;
 use ast::type_env::TypeEnv;
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 // ---------------------------------------------------------------------------
 // Helper: parse, typecheck, and lower Aster source to FIR
 // ---------------------------------------------------------------------------
@@ -17,6 +20,27 @@ fn lower_ok(src: &str) -> FirModule {
     let module = parser.parse_module("test").expect("parse ok");
     let mut tc = typecheck::TypeChecker::new();
     tc.check_module(&module).expect("typecheck ok");
+    let mut lowerer = Lowerer::new(tc.env, tc.type_table);
+    lowerer.lower_module(&module).expect("lower ok");
+    lowerer.finish()
+}
+
+/// Like `lower_ok` but with a module loader for `use std/...` imports.
+/// Builtin std modules (std/runtime, std/sys, etc.) don't produce FIR caches,
+/// so no merge step is needed.
+fn lower_ok_with_imports(src: &str) -> FirModule {
+    let tokens = lexer::lex(src).expect("lex ok");
+    let mut parser = parser::Parser::new(tokens);
+    let module = parser.parse_module("test.aster").expect("parse ok");
+    let resolver = typecheck::module_loader::FsResolver {
+        root: std::path::PathBuf::from("."),
+    };
+    let loader = Rc::new(RefCell::new(typecheck::module_loader::ModuleLoader::new(
+        Box::new(resolver),
+    )));
+    let mut tc = typecheck::TypeChecker::with_loader(loader);
+    let errors = tc.check_module_all(&module);
+    assert!(errors.is_empty(), "typecheck errors: {:?}", errors);
     let mut lowerer = Lowerer::new(tc.env, tc.type_table);
     lowerer.lower_module(&module).expect("lower ok");
     lowerer.finish()
@@ -3606,5 +3630,146 @@ fn non_main_inferred_return_not_affected() {
             .any(|s| matches!(s, FirStmt::Return(FirExpr::IntLit(0)))),
         "non-main function should not get implicit return 0: {:?}",
         helper.body
+    );
+}
+
+// ===========================================================================
+// Context capture serialization tests (Phase 3)
+// ===========================================================================
+
+#[test]
+fn evaluate_in_class_method_captures_class_context() {
+    let src = r#"use std/runtime { evaluate }
+
+class Counter
+  pub count: Int
+
+  pub def run_code(code: String) -> Void
+    evaluate(code: code)
+
+def main() -> Int
+  0
+"#;
+    let fir = lower_ok_with_imports(src);
+
+    // The module should have exactly one eval context
+    assert_eq!(
+        fir.eval_contexts.len(),
+        1,
+        "expected 1 eval context, got {}",
+        fir.eval_contexts.len()
+    );
+
+    // Deserialize the snapshot and verify class context
+    let snapshot: ast::ContextSnapshot =
+        serde_json::from_slice(&fir.eval_contexts[0].snapshot_json).expect("deserialize snapshot");
+    assert_eq!(snapshot.current_class.as_deref(), Some("Counter"));
+    let class_info = snapshot.class_info.as_ref().expect("class_info present");
+    assert!(
+        class_info.fields.iter().any(|(n, _)| n == "count"),
+        "class fields should include 'count': {:?}",
+        class_info.fields
+    );
+    // "code" should be in variables (it's a local parameter)
+    assert!(
+        snapshot.variables.contains_key("code"),
+        "variables should contain 'code': {:?}",
+        snapshot.variables
+    );
+}
+
+#[test]
+fn evaluate_in_bare_function_captures_locals_no_class() {
+    let src = r#"use std/runtime { evaluate }
+
+def main() -> Int
+  let x = 10
+  evaluate(code: "say(message: to_string(value: x))")
+  0
+"#;
+    let fir = lower_ok_with_imports(src);
+
+    assert_eq!(
+        fir.eval_contexts.len(),
+        1,
+        "expected 1 eval context, got {}",
+        fir.eval_contexts.len()
+    );
+
+    let snapshot: ast::ContextSnapshot =
+        serde_json::from_slice(&fir.eval_contexts[0].snapshot_json).expect("deserialize snapshot");
+    assert!(
+        snapshot.current_class.is_none(),
+        "bare function should have no class context"
+    );
+    assert!(
+        snapshot.class_info.is_none(),
+        "bare function should have no class info"
+    );
+    // "x" should be in variables
+    assert!(
+        snapshot.variables.contains_key("x"),
+        "variables should contain 'x': {:?}",
+        snapshot.variables
+    );
+    assert_eq!(
+        snapshot.variables.get("x"),
+        Some(&Type::Int),
+        "x should be Int"
+    );
+}
+
+#[test]
+fn evaluate_emits_eval_call_expr() {
+    let src = r#"use std/runtime { evaluate }
+
+def main() -> Int
+  evaluate(code: "0")
+  0
+"#;
+    let fir = lower_ok_with_imports(src);
+    let main_func = fir.functions.iter().find(|f| f.name == "main").unwrap();
+
+    // There should be an EvalCall expression somewhere in the body
+    fn has_eval_call(stmts: &[FirStmt]) -> bool {
+        stmts.iter().any(|s| match s {
+            FirStmt::Expr(FirExpr::EvalCall { .. }) => true,
+            _ => false,
+        })
+    }
+    assert!(
+        has_eval_call(&main_func.body),
+        "main body should contain EvalCall: {:?}",
+        main_func.body
+    );
+}
+
+#[test]
+fn multiple_evaluate_calls_produce_separate_contexts() {
+    let src = r#"use std/runtime { evaluate }
+
+def main() -> Int
+  let a = 1
+  evaluate(code: "first")
+  let b = 2
+  evaluate(code: "second")
+  0
+"#;
+    let fir = lower_ok_with_imports(src);
+    assert_eq!(
+        fir.eval_contexts.len(),
+        2,
+        "expected 2 eval contexts for 2 evaluate() calls, got {}",
+        fir.eval_contexts.len()
+    );
+}
+
+#[test]
+fn no_evaluate_means_no_eval_contexts() {
+    let src = "def main() -> Int\n  42\n";
+    let fir = lower_ok(src);
+    assert!(
+        fir.eval_contexts.is_empty(),
+        "module without evaluate() should have no eval contexts"
     );
 }

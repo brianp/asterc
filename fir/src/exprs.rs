@@ -157,4 +157,13 @@ pub enum FirExpr {
         value: Box<FirExpr>,
         to: FirType,
     },
+    /// Runtime evaluation call: `evaluate(code: expr)`.
+    /// The code expression is the string to compile and execute at runtime.
+    /// `context_idx` indexes into `FirModule::eval_contexts` for the serialized
+    /// type context snapshot captured at this call site.
+    EvalCall {
+        code: Box<FirExpr>,
+        context_idx: u32,
+        ret_ty: FirType,
+    },
 }

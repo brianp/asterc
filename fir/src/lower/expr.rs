@@ -715,6 +715,32 @@ impl Lowerer {
                 args: fir_args?,
                 ret_ty,
             })
+        } else if name == "evaluate" {
+            // Runtime evaluation: capture context snapshot and emit EvalCall
+            let code_arg = args
+                .iter()
+                .find(|(n, _, _)| n == "code")
+                .map(|(_, _, e)| e)
+                .or_else(|| args.first().map(|(_, _, e)| e));
+            let code_expr = if let Some(expr) = code_arg {
+                self.lower_expr(expr)?
+            } else {
+                FirExpr::StringLit(String::new())
+            };
+            let snapshot = self.capture_context_snapshot();
+            let context_idx = self.ms.module.eval_contexts.len() as u32;
+            self.ms
+                .module
+                .eval_contexts
+                .push(crate::eval_context::EvalContext {
+                    snapshot_json: serde_json::to_vec(&snapshot)
+                        .expect("ContextSnapshot serialization"),
+                });
+            Ok(FirExpr::EvalCall {
+                code: Box::new(code_expr),
+                context_idx,
+                ret_ty: FirType::Void,
+            })
         } else if let Some((runtime_name, ret_ty)) = Self::stdlib_runtime_mapping(name) {
             // Stdlib function imported via `use std/...`
             let fir_args: Result<Vec<_>, _> = args
