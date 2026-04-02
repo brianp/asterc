@@ -1033,6 +1033,182 @@ def main() -> Int
     );
 }
 
+// ─── Phase 9: std/runtime evaluate() in normal Aster code ───────────
+
+#[test]
+fn run_evaluate_bare_function_local_capture() {
+    // Phase 9: evaluate() in a bare function captures and reads local variables.
+    let dir = crate::common::make_temp_dir("eval-bare-capture");
+    let src = dir.join("eval_bare_capture.aster");
+    std::fs::write(
+        &src,
+        r#"use std/runtime { evaluate }
+
+def main() throws EvalError -> Int
+  let x = 10
+  evaluate(code: "say(message: to_string(value: x))")!
+  0
+"#,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    let text = crate::common::output_text(&output);
+    assert!(
+        output.status.success(),
+        "evaluate with local capture in bare function should succeed: {text}",
+    );
+    assert_eq!(
+        text.trim(),
+        "10",
+        "evaluate should print exactly captured local x=10: {text}",
+    );
+}
+
+#[test]
+fn run_evaluate_bare_function_no_captures() {
+    // Phase 9: evaluate() in a bare function with no local captures.
+    let dir = crate::common::make_temp_dir("eval-bare-no-cap");
+    let src = dir.join("eval_bare_no_cap.aster");
+    std::fs::write(
+        &src,
+        r#"use std/runtime { evaluate }
+
+def main() throws EvalError -> Int
+  evaluate(code: "say(message: \"hello from evaluate\")")!
+  0
+"#,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    let text = crate::common::output_text(&output);
+    assert!(
+        output.status.success(),
+        "evaluate with no captures should succeed: {text}",
+    );
+    assert_eq!(
+        text.trim(),
+        "hello from evaluate",
+        "evaluate should print exactly the message: {text}",
+    );
+}
+
+#[test]
+fn run_evaluate_multiple_calls_same_function() {
+    // Phase 9: multiple evaluate() calls in the same function each capture correctly.
+    let dir = crate::common::make_temp_dir("eval-multi-calls");
+    let src = dir.join("eval_multi.aster");
+    std::fs::write(
+        &src,
+        r#"use std/runtime { evaluate }
+
+def main() throws EvalError -> Int
+  let x = 10
+  let y = 20
+  evaluate(code: "say(message: to_string(value: x))")!
+  evaluate(code: "say(message: to_string(value: y))")!
+  0
+"#,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    let text = crate::common::output_text(&output);
+    assert!(
+        output.status.success(),
+        "multiple evaluate calls should succeed: {text}",
+    );
+    let lines: Vec<&str> = text.trim().lines().collect();
+    assert_eq!(
+        lines,
+        vec!["10", "20"],
+        "should print x=10 then y=20 in order: {text}",
+    );
+}
+
+#[test]
+fn run_evaluate_without_import_fails() {
+    // Phase 9: evaluate() without importing std/runtime should fail.
+    let dir = crate::common::make_temp_dir("eval-no-import");
+    let src = dir.join("eval_no_import.aster");
+    std::fs::write(
+        &src,
+        r#"def main() -> Int
+  evaluate(code: "say(message: \"hi\")")!
+  0
+"#,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    let text = crate::common::output_text(&output);
+    assert!(
+        !output.status.success(),
+        "evaluate without import should fail: {text}",
+    );
+    assert!(
+        text.contains("evaluate"),
+        "error should mention 'evaluate': {text}",
+    );
+}
+
+#[test]
+fn run_evaluate_evalerror_importable() {
+    // Phase 9: EvalError is importable from std/runtime and usable in catch.
+    let dir = crate::common::make_temp_dir("eval-error-import");
+    let src = dir.join("eval_err_import.aster");
+    std::fs::write(
+        &src,
+        r#"use std/runtime { evaluate, EvalError }
+
+def main() -> Int
+  evaluate(code: "bad syntax %%%")!.catch
+    EvalError err -> say(message: "kind:" + err.kind + " msg:" + err.message)
+  0
+"#,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    let text = crate::common::output_text(&output);
+    assert!(
+        output.status.success(),
+        "EvalError catch should work: {text}",
+    );
+    assert!(
+        text.contains("kind:syntax"),
+        "should catch syntax error with kind field: {text}",
+    );
+    assert!(text.contains("msg:"), "should have message field: {text}",);
+}
+
+#[test]
+fn run_evaluate_multiple_local_types() {
+    // Phase 9: evaluate() captures locals of different types (Int, String).
+    let dir = crate::common::make_temp_dir("eval-multi-types");
+    let src = dir.join("eval_multi_types.aster");
+    std::fs::write(
+        &src,
+        r#"use std/runtime { evaluate }
+
+def main() throws EvalError -> Int
+  let count = 42
+  let name = "world"
+  evaluate(code: "say(message: name)")!
+  count
+"#,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    let text = crate::common::output_text(&output);
+    assert_eq!(
+        output.status.code(),
+        Some(42),
+        "should return count=42: {text}",
+    );
+    assert_eq!(
+        text.trim(),
+        "world",
+        "evaluate should print exactly the captured string local: {text}",
+    );
+}
+
 // ─── Iterable closures with captured variables (GH-1) ───────────────
 
 #[test]
