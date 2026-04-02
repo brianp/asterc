@@ -750,7 +750,7 @@ impl Lowerer {
     /// Captures local variables, current class context (if inside a method),
     /// and available function signatures.
     pub(crate) fn capture_context_snapshot(&self) -> ast::ContextSnapshot {
-        use ast::context_snapshot::{ContextSnapshot, SnapshotClassInfo};
+        use ast::context_snapshot::{ContextSnapshot, SnapshotClassInfo, SnapshotDynamicReceiver};
 
         // Determine if we're inside a class method by checking for "self" parameter
         let (current_class, class_info) =
@@ -765,7 +765,16 @@ impl Lowerer {
                             .map(|(n, t)| (n.clone(), t.clone()))
                             .collect(),
                         methods: info.methods.clone(),
-                        has_dynamic_receiver: info.dynamic_receiver.is_some(),
+                        dynamic_receiver: info.dynamic_receiver.as_ref().map(|dr| {
+                            SnapshotDynamicReceiver {
+                                args_value_ty: dr.args_value_ty.clone(),
+                                return_ty: dr.return_ty.clone(),
+                                known_names: dr
+                                    .known_names
+                                    .as_ref()
+                                    .map(|s| s.iter().cloned().collect()),
+                            }
+                        }),
                     });
                 (Some(class_name.clone()), ci)
             } else {

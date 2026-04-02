@@ -27,6 +27,17 @@ pub struct SnapshotClassInfo {
     pub fields: Vec<(String, Type)>,
     /// Method signatures (name -> function type).
     pub methods: HashMap<String, Type>,
-    /// Whether this class includes DynamicReceiver.
-    pub has_dynamic_receiver: bool,
+    /// DynamicReceiver info, if the class includes DynamicReceiver.
+    pub dynamic_receiver: Option<SnapshotDynamicReceiver>,
+}
+
+/// Serializable subset of [`DynamicReceiverInfo`] for the context snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SnapshotDynamicReceiver {
+    /// The Map value type from method_missing's second parameter.
+    pub args_value_ty: Type,
+    /// The return type of method_missing.
+    pub return_ty: Type,
+    /// Known dynamic method names (closed set), or None for open dispatch.
+    pub known_names: Option<Vec<String>>,
 }

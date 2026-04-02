@@ -10,7 +10,7 @@ pub mod type_env;
 pub mod type_table;
 pub mod types;
 
-pub use context_snapshot::{ContextSnapshot, SnapshotClassInfo};
+pub use context_snapshot::{ContextSnapshot, SnapshotClassInfo, SnapshotDynamicReceiver};
 pub use diagnostic::{Diagnostic, Label, Severity};
 pub use expr::{
     BinOp, EnumVariant, ErrorCatchPattern, Expr, MatchPattern, Module, Stmt, StringPart, UnaryOp,

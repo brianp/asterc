@@ -14,7 +14,7 @@ use super::string::aster_string_to_rust;
 #[unsafe(no_mangle)]
 pub extern "C" fn aster_runtime_jit_eval(code_ptr: *const u8) -> i64 {
     let source = unsafe { aster_string_to_rust(code_ptr) };
-    match crate::eval_pipeline::jit_compile_and_run(&source, "<jit_eval>") {
+    match crate::eval_pipeline::jit_compile_and_run(&source, "<jit_eval>", None) {
         Ok(exit_code) => exit_code,
         Err(e) => {
             eprintln!("jit_run error: {e}");

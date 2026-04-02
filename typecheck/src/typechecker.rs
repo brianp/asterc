@@ -604,8 +604,71 @@ impl TypeChecker {
         (Rc::new(builtin_traits), Rc::new(builtin_enums))
     }
 
+    /// Create a TypeChecker pre-populated from a [`ContextSnapshot`].
+    ///
+    /// When a runtime `evaluate()` call compiles a code string, this
+    /// constructor sets up the typechecker so that the evaluated code
+    /// sees the class context, local variables, and functions that were
+    /// in scope at the call site.
+    pub fn from_snapshot(snapshot: &ast::ContextSnapshot) -> Self {
+        let mut tc = Self::new();
+
+        // Pre-populate class context
+        if let Some(class_name) = &snapshot.current_class {
+            tc.sc.current_class = Some(class_name.clone());
+
+            if let Some(ci) = &snapshot.class_info {
+                use indexmap::IndexMap;
+
+                let field_map: IndexMap<String, Type> = ci.fields.iter().cloned().collect();
+                let method_map: HashMap<String, Type> = ci.methods.clone();
+
+                let mut class_info = ClassInfo::new(
+                    Type::Custom(class_name.clone(), Vec::new()),
+                    field_map,
+                    method_map.clone(),
+                );
+
+                if let Some(dr) = &ci.dynamic_receiver {
+                    class_info.dynamic_receiver = Some(ast::DynamicReceiverInfo {
+                        args_value_ty: dr.args_value_ty.clone(),
+                        return_ty: dr.return_ty.clone(),
+                        known_names: dr
+                            .known_names
+                            .as_ref()
+                            .map(|names| names.iter().cloned().collect()),
+                    });
+                }
+
+                tc.env.set_class(class_name.clone(), class_info);
+
+                // Register class fields as local variables (mirroring check_class_stmt)
+                for (fname, fty) in &ci.fields {
+                    tc.env.set_var_type(fname.clone(), fty.clone());
+                }
+
+                // Register class methods as callable bare functions
+                for (mname, mty) in &method_map {
+                    tc.env.set_var_type(mname.clone(), mty.clone());
+                }
+            }
+        }
+
+        // Pre-populate local variables
+        for (name, ty) in &snapshot.variables {
+            tc.env.set_var_type(name.clone(), ty.clone());
+        }
+
+        // Pre-populate functions
+        for (name, ty) in &snapshot.functions {
+            tc.env.set_var_type(name.clone(), ty.clone());
+        }
+
+        tc
+    }
+
     /// Create a TypeChecker with a module loader for resolving `use` imports.
-    /// Protocol traits are NOT in scope — they must be imported via `use std/cmp { Eq }` etc.
+    /// Protocol traits are NOT in scope -- they must be imported via `use std/cmp { Eq }` etc.
     pub fn with_loader(loader: Rc<RefCell<ModuleLoader>>) -> Self {
         let mut tc = Self::new();
         tc.module_loader = Some(loader);

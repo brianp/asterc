@@ -12,6 +12,7 @@ pub mod translate;
 pub mod types;
 
 pub use aot::CraneliftAOT;
+pub use ast::ContextSnapshot;
 pub use config::{BuildConfig, OptLevel, Profile};
 pub use eval_pipeline::{RuntimeEvalError, jit_compile_and_run};
 pub use jit::CraneliftJIT;

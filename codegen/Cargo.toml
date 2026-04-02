@@ -7,6 +7,7 @@ edition = "2024"
 crate-type = ["lib", "staticlib"]
 
 [dependencies]
+ast = { path = "../ast" }
 fir = { path = "../fir" }
 lexer = { path = "../lexer" }
 parser = { path = "../parser" }
@@ -26,4 +27,3 @@ sha2 = "0.10"
 cc = "1"
 
 [dev-dependencies]
-ast = { path = "../ast" }
