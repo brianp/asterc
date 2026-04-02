@@ -183,8 +183,29 @@ pub fn jit_compile_and_run(
         message: "no main() function found".to_string(),
     })?;
 
-    // 6. JIT compile
-    let mut jit = CraneliftJIT::new();
+    // 6. JIT compile — register host function pointers as extra symbols
+    let extra_symbols: Vec<(String, *const u8)> = context
+        .map(|s| &s.function_pointers)
+        .into_iter()
+        .flatten()
+        .map(|(name, &addr)| (name.clone(), addr as *const u8))
+        .collect();
+
+    let mut jit = if extra_symbols.is_empty() {
+        CraneliftJIT::new()
+    } else {
+        let sym_refs: Vec<(&str, *const u8)> = extra_symbols
+            .iter()
+            .map(|(n, p)| (n.as_str(), *p))
+            .collect();
+        CraneliftJIT::with_extra_symbols(&sym_refs)
+    };
+
+    // Declare extra host functions so they appear in runtime_refs
+    if let Some(snapshot) = context {
+        jit.declare_extra_functions(snapshot)?;
+    }
+
     jit.compile_module(&fir_module)
         .map_err(|e| RuntimeEvalError {
             kind: "codegen",
@@ -284,6 +305,7 @@ def main() -> Int
             variables: HashMap::new(),
             functions: HashMap::new(),
             env_layout: None,
+            function_pointers: HashMap::new(),
         };
 
         // Bare call to set_name should typecheck because it's registered as a function
@@ -317,6 +339,7 @@ def main() -> Int
             variables: HashMap::new(),
             functions: HashMap::new(),
             env_layout: None,
+            function_pointers: HashMap::new(),
         };
 
         let result =
@@ -336,6 +359,7 @@ def main() -> Int
             variables: HashMap::from([("x".into(), ast::Type::Int)]),
             functions: HashMap::new(),
             env_layout: None,
+            function_pointers: HashMap::new(),
         };
 
         let result = jit_compile_and_run(
@@ -359,6 +383,7 @@ def main() -> Int
             variables: HashMap::from([("x".into(), ast::Type::Int)]),
             functions: HashMap::new(),
             env_layout: Some(vec![("x".into(), ast::Type::Int)]),
+            function_pointers: HashMap::new(),
         };
 
         // Create an env struct with x = 99 at offset 0
@@ -394,6 +419,7 @@ def main() -> Int
                 ("a".into(), ast::Type::Int),
                 ("b".into(), ast::Type::Int),
             ]),
+            function_pointers: HashMap::new(),
         };
 
         // env struct: a=10 at offset 0, b=32 at offset 8
@@ -428,6 +454,7 @@ def main() -> Int
                 ast::Type::func(vec!["n".into()], vec![ast::Type::Int], ast::Type::Int),
             )]),
             env_layout: None,
+            function_pointers: HashMap::new(),
         };
 
         let result = jit_compile_and_run("let y = compute(n: 42)", "<eval>", Some(&snapshot), None);
@@ -449,6 +476,7 @@ def main() -> Int
             variables: HashMap::new(),
             functions: HashMap::new(),
             env_layout: None,
+            function_pointers: HashMap::new(),
         };
 
         let result =
@@ -475,5 +503,94 @@ def main() -> Int
         assert!(err.message.contains("nesting depth"));
 
         super::JIT_DEPTH.store(original, Ordering::Relaxed);
+    }
+
+    // ── Phase 6: Function pointer capture ─────────────────────────────
+
+    #[test]
+    fn host_function_registry_round_trip() {
+        // Register a function pointer and retrieve it
+        use crate::host_function_registry;
+
+        extern "C" fn dummy_add_one(x: i64) -> i64 {
+            x + 1
+        }
+        let dummy_fn: extern "C" fn(i64) -> i64 = dummy_add_one;
+        let ptr = dummy_fn as *const u8;
+
+        host_function_registry::register("test_fn_roundtrip", ptr);
+        let result = host_function_registry::lookup("test_fn_roundtrip");
+        assert_eq!(result, Some(ptr));
+
+        // Unknown function returns None
+        let missing = host_function_registry::lookup("nonexistent_fn_xyz");
+        assert_eq!(missing, None);
+    }
+
+    #[test]
+    fn eval_with_host_method_call() {
+        // Phase 6: evaluated code in a class context calls a host-compiled method.
+        // This test compiles a class with a method, registers the method pointer,
+        // then evaluates code that calls it.
+        use ast::context_snapshot::SnapshotClassInfo;
+        use std::collections::HashMap;
+
+        // First, compile the host class with the method
+        let host_src = r#"
+class Adder
+  pub value: Int
+
+  pub def add(n: Int) -> Void
+    value = value + n
+
+def main() -> Int
+  0
+"#;
+        // Compile the host code to register function pointers
+        let host_result = jit_compile_and_run(host_src, "host.aster", None, None);
+        assert!(
+            host_result.is_ok(),
+            "host compilation failed: {:?}",
+            host_result.unwrap_err()
+        );
+
+        // Now set up a snapshot as if we're inside an Adder method
+        let snapshot = ContextSnapshot {
+            current_class: Some("Adder".into()),
+            class_info: Some(SnapshotClassInfo {
+                fields: vec![("value".into(), ast::Type::Int)],
+                methods: HashMap::from([(
+                    "add".into(),
+                    ast::Type::func(vec!["n".into()], vec![ast::Type::Int], ast::Type::Void),
+                )]),
+                dynamic_receiver: None,
+            }),
+            variables: HashMap::new(),
+            functions: HashMap::new(),
+            env_layout: Some(vec![(
+                "self".into(),
+                ast::Type::Custom("Adder".into(), vec![]),
+            )]),
+            function_pointers: HashMap::new(),
+        };
+
+        // Create an env with self pointing to an Adder instance
+        // The Adder has value: Int at field offset 0
+        // We need a heap-allocated object: [header, value_field]
+        // For this unit test, just verify the pipeline doesn't error on type/lower
+        // The full integration test validates actual execution
+        let result = jit_compile_and_run(
+            "add(n: 5)",
+            "<eval>",
+            Some(&snapshot),
+            None, // no env for this type-check-only test
+        );
+        // Should pass typechecking and lowering (may fail at runtime without env)
+        // The key assertion: it should NOT silently drop the call
+        assert!(
+            result.is_ok() || result.as_ref().unwrap_err().kind != "type",
+            "call to host method 'add' should not produce a type error: {:?}",
+            result
+        );
     }
 }

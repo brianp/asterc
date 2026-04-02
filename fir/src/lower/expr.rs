@@ -702,6 +702,10 @@ impl Lowerer {
             } else {
                 Ok(call)
             }
+        } else if let Some(host_call) = self.try_lower_eval_host_method_call(name, args)? {
+            // In eval mode: bare call to a host-compiled class method.
+            // Emits RuntimeCall with qualified name and self prepended.
+            Ok(host_call)
         } else if self.scope.locals.contains_key(name.as_str()) {
             // Local variable with function type — closure call (dynamic dispatch)
             let closure_var = self.lower_expr(func)?;
@@ -870,6 +874,73 @@ impl Lowerer {
             "jit_run" => Some(("aster_runtime_jit_eval", FirType::I64)),
             _ => None,
         }
+    }
+
+    /// In eval mode, check if a bare call matches a snapshot class method.
+    /// If so, emit a RuntimeCall with the qualified host name and self prepended.
+    /// Returns None if not in eval mode or the name doesn't match.
+    fn try_lower_eval_host_method_call(
+        &mut self,
+        name: &str,
+        args: &[(String, ast::Span, Expr)],
+    ) -> Result<Option<FirExpr>, LowerError> {
+        // Only active in eval mode with class methods registered
+        if self.eval_class_methods.is_empty() {
+            return Ok(None);
+        }
+
+        // Check if the name matches a snapshot class method
+        let (qualified, method_type) = match self.eval_class_methods.get(name) {
+            Some((q, ty)) => (q.clone(), ty.clone()),
+            None => return Ok(None),
+        };
+
+        // Find "self" in the eval env and load it
+        let eval_env = match &self.eval_env {
+            Some(env) => env,
+            None => return Ok(None),
+        };
+
+        let self_info = eval_env
+            .iter()
+            .enumerate()
+            .find(|(_, entry)| entry.name == "self");
+
+        let mut fir_args = Vec::new();
+
+        if let Some((idx, entry)) = self_info {
+            let env_local = self
+                .scope
+                .locals
+                .get("__eval_env")
+                .copied()
+                .unwrap_or(LocalId(0));
+            fir_args.push(FirExpr::EnvLoad {
+                env: Box::new(FirExpr::LocalVar(env_local, FirType::Ptr)),
+                offset: idx * 8,
+                ty: entry.fir_ty.clone(),
+            });
+        } else {
+            // No self in env, can't call class method
+            return Ok(None);
+        }
+
+        // Lower user-provided args
+        for (_, _, arg) in args {
+            fir_args.push(self.lower_expr(arg)?);
+        }
+
+        // Determine return type from the method signature
+        let ret_ty = match &method_type {
+            Type::Function { ret, .. } => self.lower_type(ret),
+            _ => FirType::Void,
+        };
+
+        Ok(Some(FirExpr::RuntimeCall {
+            name: qualified,
+            args: fir_args,
+            ret_ty,
+        }))
     }
 
     fn lower_random_call(

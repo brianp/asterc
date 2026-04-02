@@ -825,6 +825,83 @@ def main() -> Int
     );
 }
 
+// ─── Phase 6: Function pointer capture ──────────────────────────────
+
+#[test]
+fn run_evaluate_calls_host_method() {
+    // Phase 6 validation: evaluated code calls a host-compiled class method.
+    // The greet method is compiled in the host JIT, and the evaluated code
+    // calls it via bare name with self auto-prepended.
+    let dir = crate::common::make_temp_dir("eval-host-method");
+    let src = dir.join("eval_host_method.aster");
+    std::fs::write(
+        &src,
+        r#"use std/runtime { evaluate }
+
+class Greeter
+  pub greeting: String
+
+  pub def greet(name: String) -> Void
+    greeting = "Hello, " + name
+
+  pub def run_code(code: String) -> Void
+    evaluate(code: code)
+
+def main() -> Int
+  let g = Greeter(greeting: "")
+  g.run_code(code: "greet(name: \"world\")")
+  say(message: g.greeting)
+  0
+"#,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    let text = crate::common::output_text(&output);
+    assert!(
+        output.status.success(),
+        "evaluate() calling host method should succeed: {text}",
+    );
+    assert!(
+        text.contains("Hello, world"),
+        "greet should have set greeting to 'Hello, world': {text}",
+    );
+}
+
+#[test]
+fn run_evaluate_calls_host_method_with_return() {
+    // Phase 6: evaluated code calls a host method that returns a value,
+    // and uses that value.
+    let dir = crate::common::make_temp_dir("eval-host-method-ret");
+    let src = dir.join("eval_host_ret.aster");
+    std::fs::write(
+        &src,
+        r#"use std/runtime { evaluate }
+
+class Calculator
+  pub result: Int
+
+  pub def add(a: Int, b: Int) -> Int
+    a + b
+
+  pub def run_code(code: String) -> Void
+    evaluate(code: code)
+
+def main() -> Int
+  let c = Calculator(result: 0)
+  c.run_code(code: "result = add(a: 10, b: 32)")
+  c.result
+"#,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    assert_eq!(
+        output.status.code(),
+        Some(42),
+        "evaluate() calling host method with return value: {}",
+        crate::common::output_text(&output)
+    );
+}
+
 // ─── Iterable closures with captured variables (GH-1) ───────────────
 
 #[test]

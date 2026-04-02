@@ -145,6 +145,9 @@ pub struct Lowerer {
     /// When set, the entry function receives `__eval_env: Ptr` as first param
     /// and locals are loaded from the env struct at known offsets.
     pub(super) eval_env: Option<Vec<EvalEnvEntry>>,
+    /// In eval mode: class name and method signatures from the snapshot.
+    /// Maps bare method name to (qualified_name, method_type).
+    pub(super) eval_class_methods: HashMap<String, (String, Type)>,
 }
 
 impl Lowerer {
@@ -216,6 +219,7 @@ impl Lowerer {
             },
             pending_stmts: Vec::new(),
             eval_env: None,
+            eval_class_methods: HashMap::new(),
         }
     }
 
@@ -835,6 +839,7 @@ impl Lowerer {
             variables,
             functions,
             env_layout: None,
+            function_pointers: std::collections::HashMap::new(),
         }
     }
 
@@ -868,6 +873,17 @@ impl Lowerer {
             })
             .collect();
         self.eval_env = Some(entries);
+
+        // Pre-register class method mappings for host function pointer calls
+        if let Some(class_name) = &snapshot.current_class
+            && let Some(ci) = &snapshot.class_info
+        {
+            for (method_name, method_type) in &ci.methods {
+                let qualified = format!("{}.{}", class_name, method_name);
+                self.eval_class_methods
+                    .insert(method_name.clone(), (qualified, method_type.clone()));
+            }
+        }
 
         // Pre-register class layout if "self" is in the env (for field access)
         if let Some(class_name) = &snapshot.current_class

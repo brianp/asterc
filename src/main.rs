@@ -218,7 +218,7 @@ fn cmd_run(filename: &str, unstable: bool) {
     let entry = fir_module.entry.unwrap();
 
     // JIT compile and run
-    let mut jit = codegen::CraneliftJIT::new();
+    let mut jit = codegen::CraneliftJIT::new_host();
     if let Err(e) = jit.compile_module(&fir_module) {
         eprintln!("JIT compilation error: {}", e);
         std::process::exit(2);

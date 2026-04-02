@@ -6,6 +6,7 @@
 //!   with full context snapshot and captured env pointer.
 
 use super::string::aster_string_to_rust;
+use crate::host_function_registry;
 
 /// Compile and execute an Aster source string from within JIT-compiled code.
 /// Used by `jit_run` (no context or env).
@@ -39,7 +40,7 @@ pub extern "C" fn aster_runtime_eval_with_ctx(
 ) -> i64 {
     let source = unsafe { aster_string_to_rust(code_ptr) };
 
-    let context = if context_ptr.is_null() {
+    let mut context = if context_ptr.is_null() {
         None
     } else {
         let json_str = unsafe { aster_string_to_rust(context_ptr) };
@@ -52,6 +53,11 @@ pub extern "C" fn aster_runtime_eval_with_ctx(
         }
     };
 
+    // Populate function pointers from the global host function registry
+    if let Some(ref mut snapshot) = context {
+        populate_function_pointers(snapshot);
+    }
+
     let env = if env_ptr == 0 { None } else { Some(env_ptr) };
 
     match crate::eval_pipeline::jit_compile_and_run(&source, "<eval>", context.as_ref(), env) {
@@ -59,6 +65,23 @@ pub extern "C" fn aster_runtime_eval_with_ctx(
         Err(e) => {
             eprintln!("runtime eval error: {e}");
             -1
+        }
+    }
+}
+
+/// Resolve host function pointers from the global registry into the snapshot.
+/// Only resolves class methods (qualified as "ClassName.method_name").
+/// Standalone functions from snapshot.functions are not resolved here to
+/// avoid conflicts with eval module declarations (e.g. "main").
+fn populate_function_pointers(snapshot: &mut ast::ContextSnapshot) {
+    if let Some(class_name) = &snapshot.current_class
+        && let Some(ci) = &snapshot.class_info
+    {
+        for method_name in ci.methods.keys() {
+            let qualified = format!("{}.{}", class_name, method_name);
+            if let Some(ptr) = host_function_registry::lookup(&qualified) {
+                snapshot.function_pointers.insert(qualified, ptr as u64);
+            }
         }
     }
 }

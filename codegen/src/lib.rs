@@ -4,6 +4,7 @@ pub(crate) mod compile_shared;
 pub mod config;
 pub mod eval_pipeline;
 pub(crate) mod green;
+pub mod host_function_registry;
 pub mod jit;
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub mod runtime;

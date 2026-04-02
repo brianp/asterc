@@ -22,6 +22,11 @@ pub struct ContextSnapshot {
     /// Each entry is (variable_name, type), stored at offset `i * 8`.
     /// `None` means no env is passed (e.g. snapshot used only for typechecking).
     pub env_layout: Option<Vec<(String, Type)>>,
+    /// Runtime function pointer addresses for host-compiled functions.
+    /// Maps function name (qualified, e.g. "Greeter.greet") to its address.
+    /// Populated at runtime, not during serialization.
+    #[serde(skip, default)]
+    pub function_pointers: HashMap<String, u64>,
 }
 
 /// Subset of class metadata needed for JIT typechecking of evaluated code.
