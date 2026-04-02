@@ -687,6 +687,79 @@ def main() -> Int
     );
 }
 
+// ─── JIT-from-JIT (nested JIT invocation) ───────────────────────────
+
+#[test]
+fn run_jit_from_jit_basic() {
+    let dir = crate::common::make_temp_dir("jit-from-jit");
+    let src = dir.join("jit_from_jit.aster");
+    std::fs::write(
+        &src,
+        r#"use std/runtime { jit_run }
+
+def main() -> Int
+  jit_run(code: "def main() -> Int\n  0")
+  0
+"#,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "JIT-from-JIT should complete without crashing: {}",
+        crate::common::output_text(&output)
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        crate::common::output_text(&output)
+    );
+}
+
+#[test]
+fn run_jit_from_jit_returns_value() {
+    let dir = crate::common::make_temp_dir("jit-from-jit-val");
+    let src = dir.join("jit_from_jit_val.aster");
+    std::fs::write(
+        &src,
+        r#"use std/runtime { jit_run }
+
+def main() -> Int
+  jit_run(code: "def main() -> Int\n  42")
+"#,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    assert_eq!(
+        output.status.code(),
+        Some(42),
+        "JIT-from-JIT should return inner program's exit value: {}",
+        crate::common::output_text(&output)
+    );
+}
+
+#[test]
+fn run_jit_from_jit_syntax_error_prints_diagnostic() {
+    let dir = crate::common::make_temp_dir("jit-from-jit-err");
+    let src = dir.join("jit_from_jit_err.aster");
+    std::fs::write(
+        &src,
+        r#"use std/runtime { jit_run }
+
+def main() -> Int
+  jit_run(code: "def main( -> Int\n  42")
+"#,
+    )
+    .unwrap();
+    let output = crate::common::cli(&["run", src.to_str().unwrap()]);
+    let text = crate::common::output_text(&output);
+    assert!(
+        text.contains("syntax error"),
+        "JIT-from-JIT with invalid code should print syntax error diagnostic: {text}",
+    );
+}
+
 // ─── Iterable closures with captured variables (GH-1) ───────────────
 
 #[test]

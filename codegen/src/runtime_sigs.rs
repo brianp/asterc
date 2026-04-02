@@ -219,4 +219,6 @@ runtime_functions! {
     fn aster_process_run(I64, I64) -> I64;
     // std/crypto
     fn aster_crypto_sha256(I64) -> I64;
+    // std/runtime
+    fn aster_runtime_jit_eval(I64) -> I64;
 }

@@ -150,4 +150,15 @@ mod tests {
         let result = jit_compile_and_run("def main() -> Int\n  0", "test.aster");
         assert_eq!(result.unwrap(), 0);
     }
+
+    #[test]
+    fn nested_jit_invocation() {
+        let src = r#"use std/runtime { jit_run }
+
+def main() -> Int
+  jit_run(code: "def main() -> Int\n  7")
+"#;
+        let result = jit_compile_and_run(src, "test.aster");
+        assert_eq!(result.unwrap(), 7);
+    }
 }

@@ -608,6 +608,42 @@ fn std_process_import_nonexistent_fails() {
     );
 }
 
+// ─── std/runtime — JIT evaluation ───────────────────────────────────
+
+#[test]
+fn std_runtime_import_jit_run() {
+    crate::common::check_ok_with_files(
+        "use std/runtime { jit_run }\n\ndef main() -> Int\n  jit_run(code: \"def main() -> Int\\n  0\")\n",
+        HashMap::new(),
+    );
+}
+
+#[test]
+fn std_runtime_jit_run_returns_int() {
+    crate::common::check_ok_with_files(
+        "use std/runtime { jit_run }\n\ndef main() -> Int\n  let result: Int = jit_run(code: \"def main() -> Int\\n  42\")\n  result\n",
+        HashMap::new(),
+    );
+}
+
+#[test]
+fn std_runtime_import_nonexistent_fails() {
+    let err =
+        crate::common::check_err_with_files("use std/runtime { nonexistent }\n", HashMap::new());
+    assert!(
+        err.contains("not found") || err.contains("not exported"),
+        "expected not found error, got: {err}"
+    );
+}
+
+#[test]
+fn std_runtime_wildcard_import() {
+    crate::common::check_ok_with_files(
+        "use std/runtime\n\ndef main() -> Int\n  jit_run(code: \"def main() -> Int\\n  0\")\n",
+        HashMap::new(),
+    );
+}
+
 // ─── std/crypto — hashing ───────────────────────────────────────────
 
 #[test]

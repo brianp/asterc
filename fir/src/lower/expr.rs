@@ -763,6 +763,8 @@ impl Lowerer {
             "run" => Some(("aster_process_run", FirType::Ptr)),
             // std/crypto
             "sha256" => Some(("aster_crypto_sha256", FirType::Ptr)),
+            // std/runtime
+            "jit_run" => Some(("aster_runtime_jit_eval", FirType::I64)),
             _ => None,
         }
     }

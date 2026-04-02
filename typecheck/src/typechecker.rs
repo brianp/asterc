@@ -2093,6 +2093,10 @@ impl TypeChecker {
                 "sha256",
                 Type::func(vec!["data".into()], vec![Type::String], Type::String),
             )])),
+            "runtime" => Some(self.builtin_function_exports(&[(
+                "jit_run",
+                Type::func(vec!["code".into()], vec![Type::String], Type::Int),
+            )])),
             _ => None,
         }
     }
