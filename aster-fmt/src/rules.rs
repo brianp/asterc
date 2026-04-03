@@ -8,7 +8,7 @@ use ast::types::{Type, TypeConstraint};
 
 use crate::config::FormatConfig;
 use crate::doc::*;
-use crate::trivia::{self, Comment};
+use crate::trivia::{self, Comment, CommentCtx};
 
 // Magic trailing comma: stores byte offsets of closing brackets/parens
 // that are preceded by a trailing comma in the source.
@@ -229,6 +229,8 @@ pub(crate) fn format_module_with_comments(
         emit_import_entries(&entries, &mut result_docs);
     }
 
+    let ctx = CommentCtx { comments, source };
+
     for &(i, stmt) in &others {
         if !result_docs.is_empty() {
             result_docs.push(hardline());
@@ -240,7 +242,7 @@ pub(crate) fn format_module_with_comments(
             parts.push(text(c.trim()));
             parts.push(hardline());
         }
-        parts.push(format_stmt(stmt, config));
+        parts.push(format_stmt_with_comments(stmt, config, Some(&ctx)));
         result_docs.push(concat(parts));
     }
 
@@ -282,6 +284,15 @@ fn join_stmts(docs: &[Doc]) -> Doc {
 
 /// Format a single statement.
 pub fn format_stmt(stmt: &Stmt, config: &FormatConfig) -> Doc {
+    format_stmt_with_comments(stmt, config, None)
+}
+
+/// Format a single statement with optional comment context for nested bodies.
+fn format_stmt_with_comments(
+    stmt: &Stmt,
+    config: &FormatConfig,
+    ctx: Option<&CommentCtx<'_>>,
+) -> Doc {
     match stmt {
         Stmt::Let {
             name,
@@ -289,7 +300,7 @@ pub fn format_stmt(stmt: &Stmt, config: &FormatConfig) -> Doc {
             value,
             is_public,
             ..
-        } => format_let(name, type_ann, value, *is_public, config),
+        } => format_let(name, type_ann, value, *is_public, config, ctx),
 
         Stmt::Class {
             name,
@@ -309,6 +320,7 @@ pub fn format_stmt(stmt: &Stmt, config: &FormatConfig) -> Doc {
             extends,
             includes,
             config,
+            ctx,
         ),
 
         Stmt::Trait {
@@ -317,7 +329,7 @@ pub fn format_stmt(stmt: &Stmt, config: &FormatConfig) -> Doc {
             is_public,
             generic_params,
             ..
-        } => format_trait(name, methods, *is_public, generic_params, config),
+        } => format_trait(name, methods, *is_public, generic_params, config, ctx),
 
         Stmt::Return(expr, _) => concat(vec![text("return "), format_expr(expr, config)]),
 
@@ -329,13 +341,13 @@ pub fn format_stmt(stmt: &Stmt, config: &FormatConfig) -> Doc {
             elif_branches,
             else_body,
             ..
-        } => format_if(cond, then_body, elif_branches, else_body, config),
+        } => format_if(cond, then_body, elif_branches, else_body, config, ctx),
 
-        Stmt::While { cond, body, .. } => format_while(cond, body, config),
+        Stmt::While { cond, body, .. } => format_while(cond, body, config, ctx),
 
         Stmt::For {
             var, iter, body, ..
-        } => format_for(var, iter, body, config),
+        } => format_for(var, iter, body, config, ctx),
 
         Stmt::Assignment { target, value, .. } => concat(vec![
             format_expr(target, config),
@@ -361,7 +373,7 @@ pub fn format_stmt(stmt: &Stmt, config: &FormatConfig) -> Doc {
             includes,
             is_public,
             ..
-        } => format_enum(name, variants, methods, includes, *is_public, config),
+        } => format_enum(name, variants, methods, includes, *is_public, config, ctx),
 
         Stmt::Const {
             name,
@@ -397,6 +409,7 @@ fn format_let(
     value: &Expr,
     is_public: bool,
     config: &FormatConfig,
+    ctx: Option<&CommentCtx<'_>>,
 ) -> Doc {
     if let Expr::Lambda {
         params,
@@ -420,6 +433,7 @@ fn format_let(
             defaults,
             is_public,
             config,
+            ctx,
         );
     }
 
@@ -450,6 +464,7 @@ fn format_function_def(
     defaults: &[Option<Expr>],
     is_public: bool,
     config: &FormatConfig,
+    ctx: Option<&CommentCtx<'_>>,
 ) -> Doc {
     let mut header = Vec::new();
     if is_public {
@@ -496,18 +511,22 @@ fn format_function_def(
     let packed = pack_items_str(&param_strs, paren_col, config);
     header.push(text(format!("({})", packed)));
 
-    // throws comes BEFORE -> in Aster syntax
-    if let Some(throw_ty) = throws.as_deref() {
+    let is_main = short_name == "main";
+
+    // throws comes BEFORE -> in Aster syntax.
+    // main() implicitly throws, so throws is always redundant on main.
+    if !is_main && let Some(throw_ty) = throws.as_deref() {
         header.push(text(" throws "));
         header.push(format_type(throw_ty));
     }
 
-    // Detect redundant main() -> Int with body that just returns 0
-    let is_redundant_main = short_name == "main"
+    // Detect main() -> Int where the last statement is 0 or return 0.
+    // The implicit exit code is 0, so the return type and trailing 0 are redundant.
+    let is_redundant_main = is_main
         && *ret_type == Type::Int
-        && body.len() == 1
+        && !body.is_empty()
         && matches!(
-            &body[0],
+            body.last().unwrap(),
             Stmt::Return(Expr::Int(0, _), _) | Stmt::Expr(Expr::Int(0, _), _)
         );
 
@@ -535,10 +554,16 @@ fn format_function_def(
     }
 
     if is_redundant_main {
-        // Strip entire body (the 0 is implicit)
-        concat(header)
+        if body.len() == 1 {
+            // Single-statement body (just `0`), strip entire body
+            concat(header)
+        } else {
+            // Multi-statement body ending in 0: format body without the trailing 0
+            let trimmed = &body[..body.len() - 1];
+            format_block_inner(&concat(header), trimmed, false, config, ctx)
+        }
     } else {
-        format_block_inner(&concat(header), body, true, config)
+        format_block_inner(&concat(header), body, true, config, ctx)
     }
 }
 
@@ -547,8 +572,13 @@ fn format_function_def(
 // ---------------------------------------------------------------------------
 
 /// Format a block without return stripping (used for if/while/for/etc).
-fn format_block(header: &Doc, body: &[Stmt], config: &FormatConfig) -> Doc {
-    format_block_inner(header, body, false, config)
+fn format_block(
+    header: &Doc,
+    body: &[Stmt],
+    config: &FormatConfig,
+    ctx: Option<&CommentCtx<'_>>,
+) -> Doc {
+    format_block_inner(header, body, false, config, ctx)
 }
 
 /// Classify a statement for blank-line grouping.
@@ -613,22 +643,38 @@ fn format_block_inner(
     body: &[Stmt],
     strip_last_return: bool,
     config: &FormatConfig,
+    ctx: Option<&CommentCtx<'_>>,
 ) -> Doc {
     if body.is_empty() {
         return header.clone();
     }
+
+    // Assign comments to body statements if we have comment context.
+    let stmt_spans: Vec<ast::Span> = body.iter().map(stmt_span).collect();
+    let assigned = ctx
+        .map(|c| trivia::assign_comments_to_body(c, &stmt_spans))
+        .unwrap_or_else(|| vec![Vec::new(); body.len()]);
+
     let last_idx = body.len() - 1;
     let body_docs: Vec<Doc> = body
         .iter()
         .enumerate()
         .map(|(i, s)| {
+            let mut parts = Vec::new();
+            // Emit comments assigned to this statement.
+            for comment_text in &assigned[i] {
+                parts.push(text(comment_text.trim()));
+                parts.push(hardline());
+            }
             if strip_last_return
                 && i == last_idx
                 && let Stmt::Return(expr, _) = s
             {
-                return format_expr(expr, config);
+                parts.push(format_expr(expr, config));
+            } else {
+                parts.push(format_stmt_with_comments(s, config, ctx));
             }
-            format_stmt(s, config)
+            concat(parts)
         })
         .collect();
     let mut inner = Vec::new();
@@ -644,7 +690,10 @@ fn format_block_inner(
         } else {
             needs_blank_line(&body[i - 1], &body[i])
         };
-        if blank {
+        // Also insert a blank line when a comment precedes this statement
+        // (unless it's the first statement, which already has no blank).
+        let has_comment = !assigned[i].is_empty();
+        if blank || (has_comment && i > 0) {
             inner.push(blankline());
         } else {
             inner.push(hardline());
@@ -668,6 +717,7 @@ fn format_class(
     extends: &Option<String>,
     includes: &Option<Vec<(String, Vec<Type>)>>,
     config: &FormatConfig,
+    ctx: Option<&CommentCtx<'_>>,
 ) -> Doc {
     let mut header = Vec::new();
     if is_public {
@@ -716,16 +766,28 @@ fn format_class(
         body_parts.push(concat(field_parts));
     }
     for method in methods {
-        body_parts.push(format_stmt(method, config));
+        body_parts.push(format_stmt_with_comments(method, config, ctx));
     }
 
     if body_parts.is_empty() {
         concat(header)
     } else {
+        let field_count = fields.len();
         let mut inner = Vec::new();
-        for d in body_parts {
-            inner.push(hardline());
-            inner.push(d);
+        for (i, d) in body_parts.iter().enumerate() {
+            if i == 0 {
+                inner.push(hardline());
+            } else if i == field_count {
+                // Blank line between the last field and first method.
+                inner.push(blankline());
+            } else if i >= field_count {
+                // Blank line between consecutive methods.
+                inner.push(blankline());
+            } else {
+                // Fields stay together with single newlines.
+                inner.push(hardline());
+            }
+            inner.push(d.clone());
         }
         concat(vec![concat(header), indent(concat(inner))])
     }
@@ -741,6 +803,7 @@ fn format_trait(
     is_public: bool,
     generic_params: &Option<Vec<String>>,
     config: &FormatConfig,
+    ctx: Option<&CommentCtx<'_>>,
 ) -> Doc {
     let mut header = Vec::new();
     if is_public {
@@ -760,7 +823,7 @@ fn format_trait(
         header.push(text("]"));
     }
 
-    format_block(&concat(header), methods, config)
+    format_block(&concat(header), methods, config, ctx)
 }
 
 // ---------------------------------------------------------------------------
@@ -774,6 +837,7 @@ fn format_enum(
     includes: &[(String, Vec<Type>)],
     is_public: bool,
     config: &FormatConfig,
+    ctx: Option<&CommentCtx<'_>>,
 ) -> Doc {
     let mut header = Vec::new();
     if is_public {
@@ -813,7 +877,7 @@ fn format_enum(
         }
     }
     for method in methods {
-        body_parts.push(format_stmt(method, config));
+        body_parts.push(format_stmt_with_comments(method, config, ctx));
     }
 
     if body_parts.is_empty() {
@@ -838,16 +902,17 @@ fn format_if(
     elif_branches: &[(Expr, Vec<Stmt>)],
     else_body: &[Stmt],
     config: &FormatConfig,
+    ctx: Option<&CommentCtx<'_>>,
 ) -> Doc {
     let header = concat(vec![text("if "), format_expr(cond, config)]);
-    let mut result = format_block(&header, then_body, config);
+    let mut result = format_block(&header, then_body, config, ctx);
 
     for (elif_cond, elif_body) in elif_branches {
         let elif_header = concat(vec![text("elif "), format_expr(elif_cond, config)]);
         result = concat(vec![
             result,
             hardline(),
-            format_block(&elif_header, elif_body, config),
+            format_block(&elif_header, elif_body, config, ctx),
         ]);
     }
 
@@ -856,26 +921,37 @@ fn format_if(
         result = concat(vec![
             result,
             hardline(),
-            format_block(&else_header, else_body, config),
+            format_block(&else_header, else_body, config, ctx),
         ]);
     }
 
     result
 }
 
-fn format_while(cond: &Expr, body: &[Stmt], config: &FormatConfig) -> Doc {
+fn format_while(
+    cond: &Expr,
+    body: &[Stmt],
+    config: &FormatConfig,
+    ctx: Option<&CommentCtx<'_>>,
+) -> Doc {
     let header = concat(vec![text("while "), format_expr(cond, config)]);
-    format_block(&header, body, config)
+    format_block(&header, body, config, ctx)
 }
 
-fn format_for(var: &str, iter: &Expr, body: &[Stmt], config: &FormatConfig) -> Doc {
+fn format_for(
+    var: &str,
+    iter: &Expr,
+    body: &[Stmt],
+    config: &FormatConfig,
+    ctx: Option<&CommentCtx<'_>>,
+) -> Doc {
     let header = concat(vec![
         text("for "),
         text(var),
         text(" in "),
         format_expr(iter, config),
     ]);
-    format_block(&header, body, config)
+    format_block(&header, body, config, ctx)
 }
 
 // ---------------------------------------------------------------------------
@@ -1262,7 +1338,7 @@ fn format_lambda(
     }
     parts.push(text(":"));
     let header = concat(parts);
-    format_block(&header, body, config)
+    format_block(&header, body, config, None)
 }
 
 fn format_call(

@@ -68,7 +68,8 @@ impl TypeChecker {
                 // needing to declare `throws`. Only user-defined errors require it.
                 let is_cancelled =
                     matches!(err_ty.as_ref(), Type::Custom(n, _) if n == "CancelledError");
-                if !is_cancelled {
+                // main() implicitly allows all error propagation.
+                if !is_cancelled && !self.sc.is_main {
                     let caller_throws = self.sc.throws_type.as_ref().ok_or_else(|| {
                         Diagnostic::from_template(DiagnosticTemplate::ErrorPropagation(ErrorPropagation {
                             message: "Cannot use '!' to propagate errors outside of a function that declares 'throws'".to_string(),

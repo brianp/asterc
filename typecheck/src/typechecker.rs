@@ -26,6 +26,8 @@ pub struct ScopeContext {
     pub current_function: Option<String>,
     /// The error type this function declares via `throws`.
     pub throws_type: Option<Type>,
+    /// Whether we're inside main(). main() implicitly allows error propagation.
+    pub is_main: bool,
     /// Expected type from context (e.g., let binding type annotation, function arg type).
     /// Used to resolve ambiguous parametric trait methods like `.into()`.
     pub(crate) expected_type: Option<Type>,
@@ -87,6 +89,7 @@ struct ScopeState {
     expected_return_type: Option<Type>,
     current_function: Option<String>,
     throws_type: Option<Type>,
+    is_main: bool,
     diagnostics: Vec<Diagnostic>,
     expected_type: Option<Type>,
     const_names: std::collections::HashSet<String>,
@@ -111,6 +114,7 @@ impl TypeChecker {
                 expected_return_type: None,
                 current_function: None,
                 throws_type: None,
+                is_main: false,
                 expected_type: None,
                 const_names: std::collections::HashSet::new(),
                 consumed_tasks: std::collections::HashSet::new(),
@@ -758,6 +762,7 @@ impl TypeChecker {
                 expected_return_type: self.sc.expected_return_type.clone(),
                 current_function: self.sc.current_function.clone(),
                 throws_type: self.sc.throws_type.clone(),
+                is_main: self.sc.is_main,
                 expected_type: self.sc.expected_type.clone(),
                 const_names: self.sc.const_names.clone(),
                 consumed_tasks: self.sc.consumed_tasks.clone(),
@@ -816,6 +821,7 @@ impl TypeChecker {
             expected_return_type: self.sc.expected_return_type.clone(),
             current_function: self.sc.current_function.clone(),
             throws_type: self.sc.throws_type.clone(),
+            is_main: self.sc.is_main,
             diagnostics: std::mem::take(&mut self.reg.diagnostics),
             expected_type: self.sc.expected_type.clone(),
             const_names: self.sc.const_names.clone(),
@@ -832,6 +838,7 @@ impl TypeChecker {
         self.sc.expected_return_type = saved.expected_return_type;
         self.sc.current_function = saved.current_function;
         self.sc.throws_type = saved.throws_type;
+        self.sc.is_main = saved.is_main;
         self.reg.diagnostics = saved.diagnostics;
         self.sc.expected_type = saved.expected_type;
         self.sc.const_names = saved.const_names;

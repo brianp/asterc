@@ -468,6 +468,10 @@ impl TypeChecker {
 
         let mut sub = self.child_checker();
         sub.sc.throws_type = throws.as_deref().cloned();
+        // main() implicitly allows error propagation. There's nowhere for
+        // main to propagate to, so the runtime catches uncaught errors.
+        let is_main = self.sc.current_function.as_deref() == Some("main");
+        sub.sc.is_main = is_main;
         if effective_main_ret != Type::Void && effective_main_ret != Type::Inferred {
             sub.sc.expected_return_type = Some(effective_main_ret.clone());
         }

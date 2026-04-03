@@ -10,16 +10,18 @@
 #   run      (passthrough) Delegate to asterc run.
 #   check    (passthrough) Delegate to asterc check.
 #   fmt      (passthrough) Delegate to asterc fmt.
-use std/fs { exists, read_file }
 use std/crypto { sha256 }
+use std/fs { exists, read_file }
 use std/process { run }
 use std/sys { args }
-use src/seedfile { Seedfile, Dependency, Task, Override }
-use src/lock { read_lock_hash, read_lock_version, read_lock_output, write_lock }
+
+
+use src/lock { read_lock_hash, read_lock_output, read_lock_version, write_lock }
+use src/seedfile { Dependency, Override, Seedfile, Task }
 
 
 # ── CLI ──────────────────────────────────────────────────────────────
-def main() throws Error -> Int
+def main()
   let argv = args()
   let subcommand = find_subcommand(argv: argv)
 
@@ -131,19 +133,14 @@ def cmd_info() throws Error -> Int
     return 1
 
   let content = read_file(path: seedfile_path)!
-
-  # Phase 11: check for unrestricted mode
   let first_line = content.split(sep: "\n")[0].trim()
   let is_unrestricted = first_line == "allow_eval()"
 
-  # Phase 12: lockfile caching (disabled for unrestricted Seedfiles
-  # since they may use env vars or other side effects)
   if is_unrestricted == false
     let hash = sha256(data: content)
     let cached_hash = read_lock_hash(path: lock_path)!
 
     if cached_hash == hash and cached_hash.len() > 0
-      # Version check on cache hit
       let cached_ver = read_lock_version(path: lock_path)!
 
       if cached_ver != "0" and cached_ver != "1"
@@ -170,14 +167,12 @@ def cmd_info() throws Error -> Int
         code = code + "\n"
 
       code = code + lines[i]
-
       i = i + 1
 
     seed.execute_unrestricted(code: code)!
   else
     seed.execute(code: content)!
 
-  # Phase 12: version check after DSL evaluation
   if seed.seedfile_version != 0 and seed.seedfile_version != 1
     say(message: "aster: Seedfile requires version {seed.seedfile_version}, but this version of aster only supports version 1. Please upgrade aster.")
 
@@ -187,7 +182,6 @@ def cmd_info() throws Error -> Int
 
   say(message: output)
 
-  # Write lockfile for non-unrestricted Seedfiles
   if is_unrestricted == false
     let hash = sha256(data: content)
 
@@ -222,7 +216,6 @@ def format_info(seed: Seedfile) -> String
         suffix = suffix + " [dev]"
 
       out = out + "\n  {dep.name} {dep.version}{suffix}"
-
       i = i + 1
 
   if seed.tasks.len() > 0
@@ -234,7 +227,6 @@ def format_info(seed: Seedfile) -> String
       let t = seed.tasks[i]
 
       out = out + "\n  {t.name}: {t.cmd}"
-
       i = i + 1
 
   if seed.overrides.len() > 0
@@ -246,7 +238,6 @@ def format_info(seed: Seedfile) -> String
       let ov = seed.overrides[i]
 
       out = out + "\n  {ov.name} -> {ov.version}"
-
       i = i + 1
 
   out

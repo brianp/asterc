@@ -841,3 +841,70 @@ let y: Int = x.or(default: "not_int")
         err
     );
 }
+
+// ─── main() implicit throws ────────────────────────────────────────
+
+#[test]
+fn main_implicit_throws_allows_bang() {
+    // main() can use ! without declaring throws
+    crate::common::check_ok(
+        r#"class AppError
+  message: String
+
+def risky() throws AppError -> Int
+  42
+
+def main() -> Int
+  risky()!
+"#,
+    );
+}
+
+#[test]
+fn main_implicit_throws_with_explicit_still_works() {
+    // Explicit throws on main is redundant but accepted
+    crate::common::check_ok(
+        r#"class AppError
+  message: String
+
+def risky() throws AppError -> Int
+  42
+
+def main() throws AppError -> Int
+  risky()!
+"#,
+    );
+}
+
+#[test]
+fn main_implicit_throws_with_base_error() {
+    // main() with throws Error (base type) works
+    crate::common::check_ok(
+        r#"class AppError
+  message: String
+
+def risky() throws AppError -> Int
+  42
+
+def main() throws Error -> Int
+  risky()!
+"#,
+    );
+}
+
+#[test]
+fn non_main_still_requires_throws() {
+    // Non-main functions must still declare throws to use !
+    let err = crate::common::check_err(
+        r#"class AppError
+  message: String
+
+def risky() throws AppError -> Int
+  42
+
+def helper() -> Int
+  risky()!
+"#,
+    );
+    assert!(err.contains("throws") || err.contains("propagate"));
+}

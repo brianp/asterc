@@ -1,4 +1,5 @@
-use std/runtime { evaluate, evaluate_unrestricted, EvalError }
+use std/runtime { EvalError, evaluate, evaluate_unrestricted }
+
 
 pub class Dependency
   pub name: String
@@ -32,19 +33,26 @@ pub class Seedfile includes DynamicReceiver
   pub deps: List[Dependency]
   pub tasks: List[Task]
   pub overrides: List[Override]
+
   pub def seedfile(version: Int)
     seedfile_version = version
+
   pub def package(pkg_name: String, version: String = "0.0.0")
     name = pkg_name
     version_str = version
+
   pub def compiler(ver: String)
     compiler_version = ver
+
   pub def quarantine(days: Int)
     quarantine_days = days
+
   pub def task(task_name: String, cmd: String)
     tasks.push(item: Task(name: task_name, cmd: cmd))
+
   pub def override(dep_name: String, version: String = "", path: String = "", git: String = "", branch: String = "")
     overrides.push(item: Override(name: dep_name, version: version, path: path, git: git, branch: branch))
+
   pub def method_missing(fn_name: String, args: Map[String, String])
     let dep_name = args["name"].or(default: fn_name)
     let dep_version = args["version"].or(default: "*")
@@ -54,7 +62,9 @@ pub class Seedfile includes DynamicReceiver
     let dep_trusted = args["trusted"].or(default: "false") == "true"
 
     deps.push(item: Dependency(name: dep_name, version: dep_version, path: dep_path, git: dep_git, dev: dep_dev, trusted: dep_trusted))
-  pub def execute(code: String) throws EvalError -> Void
+
+  pub def execute(code: String) throws EvalError
     evaluate(code: code)!
-  pub def execute_unrestricted(code: String) throws EvalError -> Void
+
+  pub def execute_unrestricted(code: String) throws EvalError
     evaluate_unrestricted(code: code)!

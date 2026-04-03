@@ -1131,3 +1131,278 @@ fn format_non_main_int_return_zero_unchanged() {
     let out = fmt(source);
     assert_eq!(out, "def helper() -> Int\n  0\n");
 }
+
+#[test]
+fn format_main_multi_statement_strips_trailing_zero() {
+    // main() -> Int with multiple statements ending in 0 should strip -> Int and trailing 0
+    let source = "def main() -> Int\n  let x = 1\n\n  say(message: \"hi\")\n\n  0\n";
+    let out = fmt(source);
+    assert!(!out.contains("-> Int"), "should strip -> Int: {out}");
+    assert!(!out.ends_with("  0\n"), "should strip trailing 0: {out}");
+    assert!(out.contains("let x = 1"), "body preserved: {out}");
+    assert!(
+        out.contains("say(message: \"hi\")"),
+        "body preserved: {out}"
+    );
+}
+
+#[test]
+fn format_main_multi_statement_strips_trailing_return_zero() {
+    let source = "def main() -> Int\n  say(message: \"hi\")\n\n  return 0\n";
+    let out = fmt(source);
+    assert!(!out.contains("-> Int"), "should strip -> Int: {out}");
+    assert!(!out.contains("return 0"), "should strip return 0: {out}");
+    assert!(
+        out.contains("say(message: \"hi\")"),
+        "body preserved: {out}"
+    );
+}
+
+#[test]
+fn format_main_non_zero_return_preserved() {
+    // main() returning 1 (error) should NOT be stripped
+    let source = "def main() -> Int\n  say(message: \"fail\")\n\n  1\n";
+    let out = fmt(source);
+    assert!(
+        out.contains("-> Int"),
+        "-> Int preserved for non-zero: {out}"
+    );
+    assert!(out.contains("1"), "return value preserved: {out}");
+}
+
+#[test]
+fn format_main_strips_throws_error() {
+    let source = "def main() throws Error -> Int\n  0\n";
+    let out = fmt(source);
+    assert!(!out.contains("throws"), "throws stripped from main: {out}");
+    assert!(!out.contains("-> Int"), "-> Int stripped: {out}");
+}
+
+#[test]
+fn format_main_strips_throws_with_body() {
+    let source = "def main() throws Error\n  let x = 1\n\n  say(message: \"hi\")\n";
+    let out = fmt(source);
+    assert!(!out.contains("throws"), "throws stripped from main: {out}");
+    assert!(out.contains("let x = 1"), "body preserved: {out}");
+}
+
+#[test]
+fn format_main_strips_any_throws_type() {
+    // Any throws type on main is redundant, not just Error
+    let source = "def main() throws AppError -> Int\n  0\n";
+    let out = fmt(source);
+    assert!(
+        !out.contains("throws"),
+        "any throws stripped from main: {out}"
+    );
+}
+
+#[test]
+fn format_non_main_keeps_throws() {
+    let source = "def helper() throws Error -> Int\n  42\n";
+    let out = fmt(source);
+    assert!(out.contains("throws Error"), "non-main keeps throws: {out}");
+}
+
+// ===========================================================================
+// Comment preservation inside function bodies
+// ===========================================================================
+
+#[test]
+fn comment_inside_function_body() {
+    let source = "def foo() -> Int\n  # inside\n  42\n";
+    let out = fmt(source);
+    assert!(out.contains("# inside"), "comment inside body: {out}");
+    let comment_pos = out.find("# inside").unwrap();
+    let val_pos = out.find("42").unwrap();
+    assert!(comment_pos < val_pos);
+}
+
+#[test]
+fn comment_inside_function_body_idempotent() {
+    let source = "def foo() -> Int\n  # inside\n  42\n";
+    let first = fmt(source);
+    let second = fmt(&first);
+    assert_eq!(
+        first, second,
+        "body comment formatting should be idempotent"
+    );
+}
+
+#[test]
+fn comment_between_functions_not_lost() {
+    let source = "def foo() -> Int\n  0\n\n\n# between\ndef bar() -> Int\n  1\n";
+    let out = fmt(source);
+    assert!(out.contains("# between"), "between-function comment: {out}");
+    let foo_pos = out.find("def foo").unwrap();
+    let comment_pos = out.find("# between").unwrap();
+    let bar_pos = out.find("def bar").unwrap();
+    assert!(foo_pos < comment_pos);
+    assert!(comment_pos < bar_pos);
+}
+
+#[test]
+fn comment_inside_function_not_relocated() {
+    let source = "def foo() -> Int\n  # inside foo\n  42\n\n\ndef bar() -> Int\n  0\n";
+    let out = fmt(source);
+    assert!(
+        out.contains("# inside foo"),
+        "body comment preserved: {out}"
+    );
+    let comment_pos = out.find("# inside foo").unwrap();
+    let bar_pos = out.find("def bar").unwrap();
+    assert!(
+        comment_pos < bar_pos,
+        "comment should stay inside foo, not move to bar: {out}"
+    );
+    // Should only appear once (no duplication)
+    assert_eq!(
+        out.matches("# inside foo").count(),
+        1,
+        "no duplication: {out}"
+    );
+}
+
+#[test]
+fn comment_inside_if_body() {
+    let source = "def foo() -> Int\n  if true\n    # in if\n    42\n  0\n";
+    let out = fmt(source);
+    assert!(out.contains("# in if"), "comment inside if body: {out}");
+    assert_eq!(out.matches("# in if").count(), 1, "no duplication: {out}");
+}
+
+#[test]
+fn comment_inside_while_body() {
+    let source = "def foo()\n  while true\n    # loop comment\n    break\n";
+    let out = fmt(source);
+    assert!(
+        out.contains("# loop comment"),
+        "comment inside while: {out}"
+    );
+    assert_eq!(
+        out.matches("# loop comment").count(),
+        1,
+        "no duplication: {out}"
+    );
+}
+
+#[test]
+fn comment_inside_nested_if_not_duplicated() {
+    let source = "def bar() -> Int\n  let y = 10\n\n  # before if\n  if y > 5\n    # nested\n    y = y + 1\n\n  y\n";
+    let out = fmt(source);
+    assert!(out.contains("# before if"), "before-if comment: {out}");
+    assert!(out.contains("# nested"), "nested comment: {out}");
+    assert_eq!(
+        out.matches("# nested").count(),
+        1,
+        "nested comment not duplicated: {out}"
+    );
+    assert_eq!(
+        out.matches("# before if").count(),
+        1,
+        "before-if comment not duplicated: {out}"
+    );
+}
+
+#[test]
+fn multiple_comments_inside_function() {
+    let source = "def foo() -> Int\n  # first\n  let x = 1\n\n  # second\n  let y = 2\n\n  x + y\n";
+    let out = fmt(source);
+    assert!(out.contains("# first"), "first comment: {out}");
+    assert!(out.contains("# second"), "second comment: {out}");
+    let first_pos = out.find("# first").unwrap();
+    let x_pos = out.find("let x").unwrap();
+    let second_pos = out.find("# second").unwrap();
+    let y_pos = out.find("let y").unwrap();
+    assert!(first_pos < x_pos);
+    assert!(second_pos < y_pos);
+    assert!(x_pos < second_pos);
+}
+
+#[test]
+fn comment_inside_function_full_roundtrip() {
+    let source = "\
+# Module comment
+def foo() -> Int
+  # Compute result
+  let x = 42
+
+  # Return it
+  x
+
+
+# Helper
+def bar() -> Int
+  0
+";
+    let first = fmt(source);
+    let second = fmt(&first);
+    assert_eq!(first, second, "full roundtrip idempotent: {first}");
+    assert!(first.contains("# Compute result"));
+    assert!(first.contains("# Return it"));
+    assert!(first.contains("# Module comment"));
+    assert!(first.contains("# Helper"));
+}
+
+// ===========================================================================
+// Class body: blank lines between fields and methods
+// ===========================================================================
+
+#[test]
+fn class_blank_line_between_fields_and_methods() {
+    let source = "class Foo\n  x: Int\n  pub def bar()\n    let y = 1\n";
+    let out = fmt(source);
+    // There should be a blank line between the field and the method
+    assert!(
+        out.contains("x: Int\n\n  pub def bar"),
+        "blank line between field and method: {out}"
+    );
+}
+
+#[test]
+fn class_blank_line_between_methods() {
+    let source = "class Foo\n  pub def bar()\n    let x = 1\n  pub def baz()\n    let y = 2\n";
+    let out = fmt(source);
+    // Blank line between consecutive methods
+    let bar_end = out.find("let x = 1").unwrap();
+    let baz_start = out.find("pub def baz").unwrap();
+    let between = &out[bar_end..baz_start];
+    assert!(
+        between.contains("\n\n"),
+        "blank line between methods: {out}"
+    );
+}
+
+#[test]
+fn class_fields_stay_together() {
+    let source = "class Foo\n  x: Int\n  y: String\n  pub def bar()\n    let z = 1\n";
+    let out = fmt(source);
+    // Fields should NOT have blank lines between them
+    assert!(
+        out.contains("x: Int\n  y: String"),
+        "fields stay together: {out}"
+    );
+    // But blank line before method
+    assert!(
+        out.contains("y: String\n\n  pub def bar"),
+        "blank line before method: {out}"
+    );
+}
+
+#[test]
+fn class_spacing_idempotent() {
+    let source = "\
+class Foo
+  x: Int
+  y: String
+
+  pub def bar()
+    let z = 1
+
+  pub def baz()
+    let w = 2
+";
+    let first = fmt(source);
+    let second = fmt(&first);
+    assert_eq!(first, second, "class spacing idempotent: {first}");
+}

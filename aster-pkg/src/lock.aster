@@ -92,6 +92,7 @@ pub def read_lock_output(path: String) throws Error -> String
   output
 
 
-pub def write_lock(path: String, hash: String, version: String, output: String) throws Error -> Void
+pub def write_lock(path: String, hash: String, version: String, output: String) throws Error
   let content = "HASH:" + hash + "\nVERSION:" + version + "\n===\n" + output
+
   write_file(path: path, content: content)!
