@@ -489,7 +489,7 @@ impl TypeChecker {
                     }
                 }
             }
-            return Ok(Type::Custom(type_name.clone(), Vec::new()));
+            return Ok(Type::from_ident(type_name));
         }
 
         self.check_user_function_call(func, args, bypass_throws_check)
@@ -1663,8 +1663,15 @@ impl TypeChecker {
             .with_label(object.span(), "not a known dynamic method")));
         }
 
-        // Validate arg types against the Map value type
+        // Validate arg types against the Map value type.
+        // When the value type is an enum, accept args whose type matches any
+        // single-field variant's payload type (implicit enum coercion).
         let value_ty = &dr_info.args_value_ty;
+        let enum_info = if let Type::Custom(name, _) = value_ty {
+            self.env.get_enum(name).cloned()
+        } else {
+            None
+        };
         for (_, _, arg_expr) in args {
             let aty = match self.check_expr(arg_expr) {
                 Ok(t) => t,
@@ -1673,21 +1680,50 @@ impl TypeChecker {
             if aty.is_error() {
                 return Some(Ok(Type::Error));
             }
-            if aty != *value_ty
-                && !Self::is_nullable_compatible(value_ty, &aty)
-                && !Self::is_subtype_compatible(&aty, value_ty, &self.env)
+            if aty == *value_ty
+                || Self::is_nullable_compatible(value_ty, &aty)
+                || Self::is_subtype_compatible(&aty, value_ty, &self.env)
             {
-                return Some(Err(Diagnostic::from_template(
-                    DiagnosticTemplate::TypeMismatch(TypeMismatch {
-                        expected: value_ty.clone(),
-                        actual: aty.clone(),
-                    }),
-                )
-                .with_label(
-                    arg_expr.span(),
-                    format!("dynamic call args must match Map value type {}", value_ty),
-                )));
+                continue;
             }
+            // Check if arg type matches any enum variant's payload
+            if let Some(ref ei) = enum_info {
+                let matching: Vec<&str> = ei
+                    .variant_fields
+                    .iter()
+                    .filter(|(_, fields)| fields.len() == 1 && fields[0].1 == aty)
+                    .map(|(name, _)| name.as_str())
+                    .collect();
+                if matching.len() == 1 {
+                    continue;
+                }
+                if matching.len() > 1 {
+                    return Some(Err(Diagnostic::from_template(
+                        DiagnosticTemplate::TypeMismatch(TypeMismatch {
+                            expected: value_ty.clone(),
+                            actual: aty.clone(),
+                        }),
+                    )
+                    .with_label(
+                        arg_expr.span(),
+                        format!(
+                            "ambiguous enum coercion: {} matches variants {}",
+                            aty,
+                            matching.join(", ")
+                        ),
+                    )));
+                }
+            }
+            return Some(Err(Diagnostic::from_template(
+                DiagnosticTemplate::TypeMismatch(TypeMismatch {
+                    expected: value_ty.clone(),
+                    actual: aty.clone(),
+                }),
+            )
+            .with_label(
+                arg_expr.span(),
+                format!("dynamic call args must match Map value type {}", value_ty),
+            )));
         }
 
         Some(Ok(dr_info.return_ty.clone()))

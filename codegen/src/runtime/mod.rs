@@ -28,8 +28,8 @@ pub use string::{
     aster_bool_to_string, aster_float_to_string, aster_int_to_string, aster_string_char_len,
     aster_string_compare, aster_string_concat, aster_string_contains, aster_string_ends_with,
     aster_string_eq, aster_string_len, aster_string_new, aster_string_replace, aster_string_slice,
-    aster_string_split, aster_string_starts_with, aster_string_to_lower, aster_string_to_upper,
-    aster_string_trim,
+    aster_string_split, aster_string_starts_with, aster_string_to_int, aster_string_to_lower,
+    aster_string_to_upper, aster_string_trim,
 };
 
 pub use list::{

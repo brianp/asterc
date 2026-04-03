@@ -3773,3 +3773,31 @@ fn no_evaluate_means_no_eval_contexts() {
         "module without evaluate() should have no eval contexts"
     );
 }
+
+// ===========================================================================
+// Int.from() lowering
+// ===========================================================================
+
+#[test]
+fn lower_int_from_string_to_runtime_call() {
+    let src = "\
+def parse(s: String) throws IntParseError -> Int
+  Int.from(text: s)!
+";
+    let fir = lower_ok(src);
+    let func = &fir.functions[0];
+    let body = real_body(func);
+    let has_runtime_call = body.iter().any(|s| match s {
+        FirStmt::Let {
+            value: FirExpr::RuntimeCall { name, .. },
+            ..
+        } => name == "aster_string_to_int",
+        FirStmt::Expr(FirExpr::RuntimeCall { name, .. }) => name == "aster_string_to_int",
+        _ => false,
+    });
+    assert!(
+        has_runtime_call,
+        "expected RuntimeCall(aster_string_to_int) in body: {:?}",
+        body
+    );
+}

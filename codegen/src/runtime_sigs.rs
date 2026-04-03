@@ -128,6 +128,7 @@ runtime_functions! {
     fn aster_float_to_string(F64) -> I64;
     fn aster_bool_to_string(I8) -> I64;
     fn aster_list_to_string(I64) -> I64;
+    fn aster_string_to_int(I64) -> I64;
     // Map operations
     fn aster_map_new(I64) -> I64;
     fn aster_map_set(I64, I64, I64) -> I64;

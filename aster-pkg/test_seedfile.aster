@@ -1,25 +1,27 @@
-use src/seedfile { Dependency, Override, Seedfile, Task }
+use src/seedfile { Dependency, Override, Seedfile, Task, Version, VersionReq }
 
 
 # Simulate a Seedfile
 def main()
-  let s = Seedfile(aster_version: "0.1.0", name: "", version_str: "", compiler_version: "", quarantine_days: 0, seedfile_version: 0, deps: [], tasks: [], overrides: [])
+  let s = Seedfile(aster_version: "0.1.0", name: "", version: Version(major: 0, minor: 0, patch: 0), compiler_version: "", quarantine_days: 0, seedfile_version: 0, deps: [], tasks: [], overrides: [])
 
   s.package(pkg_name: "my-app", version: "0.1.0")
   s.compiler(ver: "0.1.0")
   s.http(version: "1.2.0")
   s.json(version: "0.4.0")
   s.aster_fmt(name: "aster-fmt", path: "aster-fmt")
-  s.serde_json(version: "1", dev: "true")
+  s.serde_json(version: "1", dev: true)
   s.task(task_name: "test", cmd: "aster test --release")
   say(message: "name: {s.name}")
-  say(message: "version: {s.version_str}")
+  let ver = s.version.to_string()
+  say(message: "version: {ver}")
   say(message: "compiler: {s.compiler_version}")
   say(message: "deps: {s.deps.len()}")
   say(message: "tasks: {s.tasks.len()}")
 
   for dep in s.deps
-    say(message: "  {dep.name} {dep.version} path={dep.path} dev={dep.dev}")
+    let dep_ver = dep.version.to_string()
+    say(message: "  {dep.name} {dep_ver} path={dep.path} dev={dep.dev}")
 
   for t in s.tasks
     say(message: "  {t.name} -> {t.cmd}")

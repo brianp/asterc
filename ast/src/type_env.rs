@@ -73,7 +73,7 @@ pub struct TraitInfo {
     pub generic_params: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EnumInfo {
     pub name: String,
     pub variants: Vec<String>,
@@ -274,6 +274,17 @@ impl TypeEnv {
             names.extend(parent.all_var_names());
         }
         names
+    }
+
+    pub fn all_enums(&self) -> HashMap<String, EnumInfo> {
+        let mut result: HashMap<String, EnumInfo> = HashMap::new();
+        if let Some(ref parent) = self.parent {
+            result.extend(parent.all_enums());
+        }
+        for (name, info) in self.enums.iter() {
+            result.insert(name.clone(), info.clone());
+        }
+        result
     }
 }
 

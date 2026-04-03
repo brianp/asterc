@@ -17,7 +17,7 @@ use std/sys { args }
 
 
 use src/lock { read_lock_hash, read_lock_output, read_lock_version, write_lock }
-use src/seedfile { Dependency, Override, Seedfile, Task }
+use src/seedfile { Dependency, Override, Seedfile, Task, Version, VersionReq }
 
 
 # ── CLI ──────────────────────────────────────────────────────────────
@@ -155,7 +155,7 @@ def cmd_info() throws Error -> Int
 
         return 0
 
-  let seed = Seedfile(aster_version: "", name: "", version_str: "", compiler_version: "", quarantine_days: 0, seedfile_version: 0, deps: [], tasks: [], overrides: [])
+  let seed = Seedfile(aster_version: "", name: "", version: Version(major: 0, minor: 0, patch: 0), compiler_version: "", quarantine_days: 0, seedfile_version: 0, deps: [], tasks: [], overrides: [])
 
   if is_unrestricted
     let lines = content.split(sep: "\n")
@@ -185,14 +185,16 @@ def cmd_info() throws Error -> Int
   if is_unrestricted == false
     let hash = sha256(data: content)
 
-    write_lock(path: lock_path, hash: hash, version: to_string(value: seed.seedfile_version), output: output)!
+    let seedfile_ver = to_string(value: seed.seedfile_version)
+    write_lock(path: lock_path, hash: hash, version: seedfile_ver, output: output)!
 
   0
 
 
 # ── Output formatting ────────────────────────────────────────────────
 def format_info(seed: Seedfile) -> String
-  let out = "Package: {seed.name} v{seed.version_str}"
+  let ver = seed.version.to_string()
+  let out = "Package: {seed.name} v{ver}"
 
   if seed.compiler_version.len() > 0
     out = out + "\nCompiler: {seed.compiler_version}"
@@ -215,7 +217,8 @@ def format_info(seed: Seedfile) -> String
       if dep.dev
         suffix = suffix + " [dev]"
 
-      out = out + "\n  {dep.name} {dep.version}{suffix}"
+      let dep_ver = dep.version.to_string()
+      out = out + "\n  {dep.name} {dep_ver}{suffix}"
       i = i + 1
 
   if seed.tasks.len() > 0

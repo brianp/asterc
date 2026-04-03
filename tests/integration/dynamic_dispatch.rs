@@ -651,3 +651,94 @@ def main() -> Int
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+// =====================================================================
+//
+//   DynamicReceiver with enum-typed Map values
+//
+// =====================================================================
+
+#[test]
+fn dynamic_receiver_enum_coercion_string_arg() {
+    // String literal should auto-wrap into matching enum variant
+    crate::common::check_ok(
+        r#"
+enum Val
+  Text(value: String)
+  Flag(value: Bool)
+
+class Config includes DynamicReceiver
+  pub name: String
+
+  pub def method_missing(fn_name: String, args: Map[String, Val])
+    nil
+
+Config(name: "test").something(key: "hello")
+"#,
+    );
+}
+
+#[test]
+fn dynamic_receiver_enum_coercion_bool_arg() {
+    // Bool literal should auto-wrap into matching enum variant
+    crate::common::check_ok(
+        r#"
+enum Val
+  Text(value: String)
+  Flag(value: Bool)
+
+class Config includes DynamicReceiver
+  pub name: String
+
+  pub def method_missing(fn_name: String, args: Map[String, Val])
+    nil
+
+Config(name: "test").something(enabled: true)
+"#,
+    );
+}
+
+#[test]
+fn dynamic_receiver_enum_coercion_mixed_args() {
+    // Mixed types in same call should each coerce to the correct variant
+    crate::common::check_ok(
+        r#"
+enum Val
+  Text(value: String)
+  Flag(value: Bool)
+
+class Config includes DynamicReceiver
+  pub name: String
+
+  pub def method_missing(fn_name: String, args: Map[String, Val])
+    nil
+
+Config(name: "test").something(version: "1.0", dev: true)
+"#,
+    );
+}
+
+#[test]
+fn dynamic_receiver_enum_coercion_rejects_unmatched_type() {
+    // Int literal should fail if no variant accepts Int
+    let err = crate::common::check_err(
+        r#"
+enum Val
+  Text(value: String)
+  Flag(value: Bool)
+
+class Config includes DynamicReceiver
+  pub name: String
+
+  pub def method_missing(fn_name: String, args: Map[String, Val])
+    nil
+
+Config(name: "test").something(count: 42)
+"#,
+    );
+    assert!(
+        err.contains("mismatch") || err.contains("variant") || err.contains("Val"),
+        "expected type mismatch for unmatched enum variant, got: {}",
+        err
+    );
+}

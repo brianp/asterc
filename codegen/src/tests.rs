@@ -4510,3 +4510,67 @@ fn main_no_return_type_implicit_last_expr() {
     let result = jit.call_i64(fir.entry.unwrap());
     assert_eq!(result, 3);
 }
+
+// ===========================================================================
+// Int.from() — string to integer conversion
+// ===========================================================================
+
+#[test]
+fn int_from_string_valid_returns_int() {
+    let src = r#"
+def main() -> Int
+  Int.from(text: "42")!.or(0)
+"#;
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn int_from_string_negative_returns_negative_int() {
+    let src = r#"
+def main() -> Int
+  Int.from(text: "-7")!.or(0)
+"#;
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, -7);
+}
+
+#[test]
+fn int_from_string_invalid_returns_default() {
+    let src = r#"
+def main() -> Int
+  Int.from(text: "abc")!.or(-1)
+"#;
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, -1);
+}
+
+#[test]
+fn int_from_string_empty_returns_default() {
+    let src = r#"
+def main() -> Int
+  Int.from(text: "")!.or(-1)
+"#;
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, -1);
+}
+
+#[test]
+fn int_from_string_zero() {
+    let src = r#"
+def main() -> Int
+  Int.from(text: "0")!.or(-1)
+"#;
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 0);
+}

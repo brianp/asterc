@@ -1,9 +1,49 @@
 use std/runtime { EvalError, evaluate, evaluate_unrestricted }
 
 
+pub class Version includes From
+  pub major: Int
+  pub minor: Int
+  pub patch: Int
+
+  pub def from(text: String) throws IntParseError -> Version
+    let parts = text.split(sep: ".")
+    let major = Int.from(text: parts[0])!
+    let minor = if parts.len() > 1
+      Int.from(text: parts[1])!
+    else
+      0
+    let patch_val = if parts.len() > 2
+      Int.from(text: parts[2])!
+    else
+      0
+    Version(major: major, minor: minor, patch: patch_val)
+
+  pub def to_string() -> String
+    "{major}.{minor}.{patch}"
+
+
+pub class VersionReq includes From
+  pub raw: String
+
+  pub def from(text: String) -> VersionReq
+    VersionReq(raw: text)
+
+  pub def is_any() -> Bool
+    raw == "*"
+
+  pub def to_string() -> String
+    raw
+
+
+pub enum SeedValue
+  Text(value: String)
+  Flag(value: Bool)
+
+
 pub class Dependency
   pub name: String
-  pub version: String
+  pub version: VersionReq
   pub path: String
   pub git: String
   pub dev: Bool
@@ -26,7 +66,7 @@ pub class Override
 pub class Seedfile includes DynamicReceiver
   pub aster_version: String
   pub name: String
-  pub version_str: String
+  pub version: Version
   pub compiler_version: String
   pub quarantine_days: Int
   pub seedfile_version: Int
@@ -39,7 +79,7 @@ pub class Seedfile includes DynamicReceiver
 
   pub def package(pkg_name: String, version: String = "0.0.0")
     name = pkg_name
-    version_str = version
+    self.version = Version.from(text: version)!.or(Version(major: 0, minor: 0, patch: 0))
 
   pub def compiler(ver: String)
     compiler_version = ver
@@ -53,13 +93,13 @@ pub class Seedfile includes DynamicReceiver
   pub def override(dep_name: String, version: String = "", path: String = "", git: String = "", branch: String = "")
     overrides.push(item: Override(name: dep_name, version: version, path: path, git: git, branch: branch))
 
-  pub def method_missing(fn_name: String, args: Map[String, String])
-    let dep_name = args["name"].or(default: fn_name)
-    let dep_version = args["version"].or(default: "*")
-    let dep_path = args["path"].or(default: "")
-    let dep_git = args["git"].or(default: "")
-    let dep_dev = args["dev"].or(default: "false") == "true"
-    let dep_trusted = args["trusted"].or(default: "false") == "true"
+  pub def method_missing(fn_name: String, args: Map[String, SeedValue])
+    let dep_name = extract_text(args: args, key: "name", default: fn_name)
+    let dep_version = VersionReq.from(text: extract_text(args: args, key: "version", default: "*"))
+    let dep_path = extract_text(args: args, key: "path", default: "")
+    let dep_git = extract_text(args: args, key: "git", default: "")
+    let dep_dev = extract_flag(args: args, key: "dev", default: false)
+    let dep_trusted = extract_flag(args: args, key: "trusted", default: false)
 
     deps.push(item: Dependency(name: dep_name, version: dep_version, path: dep_path, git: dep_git, dev: dep_dev, trusted: dep_trusted))
 
@@ -68,3 +108,17 @@ pub class Seedfile includes DynamicReceiver
 
   pub def execute_unrestricted(code: String) throws EvalError
     evaluate_unrestricted(code: code)!
+
+
+def extract_text(args: Map[String, SeedValue], key: String, default: String) -> String
+  let val = args[key]
+  match val
+    SeedValue.Text(value) => value
+    _ => default
+
+
+def extract_flag(args: Map[String, SeedValue], key: String, default: Bool) -> Bool
+  let val = args[key]
+  match val
+    SeedValue.Flag(value) => value
+    _ => default

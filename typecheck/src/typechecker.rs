@@ -302,6 +302,46 @@ impl TypeChecker {
             ),
         );
 
+        // IntParseError — thrown by Int.from() on invalid string input
+        env.set_class("IntParseError".into(), {
+            let mut info = ClassInfo::new(
+                Type::Custom("IntParseError".into(), Vec::new()),
+                IndexMap::new(),
+                HashMap::new(),
+            );
+            info.extends = Some("Error".into());
+            info
+        });
+        env.set_var_type(
+            "IntParseError".into(),
+            Type::func(
+                vec!["message".into()],
+                vec![Type::String],
+                Type::Custom("IntParseError".into(), Vec::new()),
+            ),
+        );
+
+        // Int — primitive type registered as a class for From protocol support
+        env.set_class("Int".into(), {
+            let int_parse_err = || Some(Box::new(Type::Custom("IntParseError".into(), Vec::new())));
+            let mut info = ClassInfo::new(
+                Type::Int,
+                IndexMap::new(),
+                HashMap::from([(
+                    "from".into(),
+                    Type::Function {
+                        param_names: vec!["text".into()],
+                        params: vec![Type::String],
+                        ret: Box::new(Type::Int),
+                        throws: int_parse_err(),
+                        suspendable: false,
+                    },
+                )]),
+            );
+            info.includes = vec!["From".into()];
+            info
+        });
+
         // ProcessResult — returned by std/process run()
         env.set_class(
             "ProcessResult".into(),
@@ -315,6 +355,9 @@ impl TypeChecker {
                 HashMap::new(),
             ),
         );
+
+        // Primitive type namespaces — for static methods like Int.from()
+        env.set_var_type("Int".into(), Type::Custom("Int".into(), Vec::new()));
 
         // I/O namespaces — static methods only, no instances
         for name in ["File", "TcpListener", "TcpStream"] {
@@ -715,6 +758,11 @@ impl TypeChecker {
         // Pre-populate functions
         for (name, ty) in &snapshot.functions {
             tc.env.set_var_type(name.clone(), ty.clone());
+        }
+
+        // Restore enum definitions for DynamicReceiver enum coercion
+        for (name, info) in &snapshot.enums {
+            tc.env.set_enum(name.clone(), info.clone());
         }
 
         tc

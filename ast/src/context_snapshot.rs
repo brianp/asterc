@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::expr::Expr;
+use crate::type_env::EnumInfo;
 use crate::types::Type;
 
 /// Snapshot of the type-level context at an `evaluate()` call site.
@@ -38,6 +39,10 @@ pub struct ContextSnapshot {
     /// `evaluate_unrestricted()` for code-mode Seedfile evaluation.
     #[serde(default)]
     pub allow_imports: bool,
+    /// Enum definitions visible at the call site. Needed for DynamicReceiver
+    /// enum coercion so the JIT typechecker knows variant payload types.
+    #[serde(default)]
+    pub enums: HashMap<String, EnumInfo>,
 }
 
 /// Subset of class metadata needed for JIT typechecking of evaluated code.

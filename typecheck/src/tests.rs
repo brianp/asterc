@@ -1944,3 +1944,65 @@ def main() -> Int
         "Expected 'x' use to appear in symbol index after child scope merge"
     );
 }
+
+// ===========================================================================
+// Int.from() via From protocol
+// ===========================================================================
+
+#[test]
+fn int_from_string_returns_int() {
+    // Int.from(text: "42")! should typecheck as Int in a throwing function
+    let src = "\
+def parse(s: String) throws IntParseError -> Int
+  Int.from(text: s)!
+";
+    let tokens = lexer::lex(src).expect("lex ok");
+    let mut parser = parser::Parser::new(tokens);
+    let module = parser.parse_module("test").expect("parse ok");
+    let mut tc = super::typechecker::TypeChecker::new();
+    tc.check_module(&module).expect("typecheck ok");
+}
+
+#[test]
+fn int_from_string_requires_error_handling() {
+    // Int.from(text: "42") without ! should error — it throws
+    let src = "\
+def parse(s: String) -> Int
+  Int.from(text: s)
+";
+    let msg = module_err(src);
+    assert!(
+        msg.contains("throwing") || msg.contains("error handling") || msg.contains("throws"),
+        "expected error about unhandled throwing call, got: {}",
+        msg
+    );
+}
+
+#[test]
+fn int_from_wrong_arg_type_errors() {
+    // Int.from(text: 42) should fail — expects String, not Int
+    let src = "\
+def parse() throws IntParseError -> Int
+  Int.from(text: 42)!
+";
+    let msg = module_err(src);
+    assert!(
+        msg.contains("mismatch") || msg.contains("expected"),
+        "expected type mismatch error, got: {}",
+        msg
+    );
+}
+
+#[test]
+fn int_from_with_or_default() {
+    // Int.from(text: s)!.or(0) should typecheck in non-throwing function
+    let src = "\
+def safe_parse(s: String) -> Int
+  Int.from(text: s)!.or(0)
+";
+    let tokens = lexer::lex(src).expect("lex ok");
+    let mut parser = parser::Parser::new(tokens);
+    let module = parser.parse_module("test").expect("parse ok");
+    let mut tc = super::typechecker::TypeChecker::new();
+    tc.check_module(&module).expect("typecheck ok");
+}

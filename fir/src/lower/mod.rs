@@ -888,6 +888,9 @@ impl Lowerer {
             }
         }
 
+        // Capture enum definitions for DynamicReceiver enum coercion in JIT context.
+        let enums = self.type_env.all_enums();
+
         ContextSnapshot {
             current_class,
             class_info,
@@ -897,6 +900,7 @@ impl Lowerer {
             function_pointers: std::collections::HashMap::new(),
             method_defaults,
             allow_imports: false,
+            enums,
         }
     }
 

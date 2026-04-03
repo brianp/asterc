@@ -90,6 +90,20 @@ impl Lowerer {
             }
         }
 
+        // Int.from(text: s) — builtin string-to-int conversion via From protocol
+        if let Expr::Ident(name, _) = object
+            && name == "Int"
+            && method == "from"
+            && !self.scope.locals.contains_key("Int")
+        {
+            let fir_arg = self.lower_named_or_positional_arg(args, "text", 0)?;
+            return Ok(FirExpr::RuntimeCall {
+                name: "aster_string_to_int".to_string(),
+                args: vec![fir_arg],
+                ret_ty: FirType::I64,
+            });
+        }
+
         // Check for static method calls on class names: ClassName.method(args)
         // e.g. Celsius.from(value: x) — the method has a self param in FIR (all methods do),
         // so pass nil (0) as the self pointer since no receiver instance exists.
@@ -953,11 +967,23 @@ impl Lowerer {
             let dr_dispatch = self.type_env.get_class(&class_name).and_then(|ci| {
                 let dr = ci.dynamic_receiver.as_ref()?;
                 let ret_ty = dr.return_ty.clone();
-                Some(ret_ty)
+                let value_ty = dr.args_value_ty.clone();
+                Some((ret_ty, value_ty))
             });
-            if let Some(dr_return_ty) = dr_dispatch {
+            if let Some((dr_return_ty, dr_value_ty)) = dr_dispatch {
                 let qualified = format!("{}.method_missing", class_name);
                 if let Some(&func_id) = self.ms.functions.get(&qualified) {
+                    // Check if value type is an enum for implicit coercion
+                    let enum_name = if let Type::Custom(name, _) = &dr_value_ty {
+                        if self.type_env.get_enum(name).is_some() {
+                            Some(name.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
                     let fn_name_str = FirExpr::StringLit(method.to_string());
                     let mut map_expr = FirExpr::RuntimeCall {
                         name: "aster_map_new".to_string(),
@@ -966,9 +992,14 @@ impl Lowerer {
                     };
                     for (arg_name, _, arg_expr) in args {
                         let fir_val = self.lower_expr(arg_expr)?;
+                        let wrapped = if let Some(ref ename) = enum_name {
+                            self.wrap_in_enum_variant(ename, arg_expr, fir_val)?
+                        } else {
+                            fir_val
+                        };
                         map_expr = FirExpr::RuntimeCall {
                             name: "aster_map_set".to_string(),
-                            args: vec![map_expr, FirExpr::StringLit(arg_name.clone()), fir_val],
+                            args: vec![map_expr, FirExpr::StringLit(arg_name.clone()), wrapped],
                             ret_ty: FirType::Ptr,
                         };
                     }
@@ -986,6 +1017,43 @@ impl Lowerer {
             UnsupportedFeatureKind::Other(format!("method call: .{}()", method)),
             object.span(),
         ))
+    }
+
+    /// Wrap a FIR expression in the matching enum variant constructor.
+    /// Finds the variant whose single payload field matches the expression's AST type.
+    fn wrap_in_enum_variant(
+        &self,
+        enum_name: &str,
+        ast_expr: &Expr,
+        fir_val: FirExpr,
+    ) -> Result<FirExpr, LowerError> {
+        let ast_ty = self
+            .resolve_expr_ast_type(ast_expr)
+            .or(match ast_expr {
+                Expr::Str(..) => Some(Type::String),
+                Expr::Bool(..) => Some(Type::Bool),
+                Expr::Int(..) => Some(Type::Int),
+                Expr::Float(..) => Some(Type::Float),
+                _ => None,
+            });
+        let ei = self.type_env.get_enum(enum_name);
+        if let (Some(aty), Some(ei)) = (ast_ty, ei) {
+            for (variant_name, fields) in &ei.variant_fields {
+                if fields.len() == 1 && fields[0].1 == aty {
+                    let ctor_name = format!("{}.{}", enum_name, variant_name);
+                    if let Some(&ctor_id) = self.ms.functions.get(&ctor_name) {
+                        return Ok(FirExpr::Call {
+                            func: ctor_id,
+                            args: vec![fir_val],
+                            ret_ty: FirType::Ptr,
+                        });
+                    }
+                }
+            }
+        }
+        // No matching variant found; pass through unwrapped (typechecker
+        // already accepted it, so it matches the enum type directly).
+        Ok(fir_val)
     }
 
     /// Lower the first argument of a method call (by name or position).

@@ -908,3 +908,63 @@ def helper() -> Int
     );
     assert!(err.contains("throws") || err.contains("propagate"));
 }
+
+// ─── Int.from() via From protocol ──────────────────────────────────
+
+#[test]
+fn int_from_string_typechecks_with_propagation() {
+    crate::common::check_ok(
+        r#"def parse(s: String) throws IntParseError -> Int
+  Int.from(text: s)!
+"#,
+    );
+}
+
+#[test]
+fn int_from_string_typechecks_with_or_default() {
+    crate::common::check_ok(
+        r#"def safe_parse(s: String) -> Int
+  Int.from(text: s)!.or(0)
+"#,
+    );
+}
+
+#[test]
+fn int_from_string_requires_error_handling() {
+    let err = crate::common::check_err(
+        r#"def parse(s: String) -> Int
+  Int.from(text: s)
+"#,
+    );
+    assert!(
+        err.contains("throwing") || err.contains("error handling") || err.contains("throws"),
+        "expected error about unhandled throwing call, got: {}",
+        err
+    );
+}
+
+#[test]
+fn int_from_wrong_type_errors() {
+    let err = crate::common::check_err(
+        r#"def parse() throws IntParseError -> Int
+  Int.from(text: 42)!
+"#,
+    );
+    assert!(
+        err.contains("mismatch") || err.contains("expected"),
+        "expected type mismatch error, got: {}",
+        err
+    );
+}
+
+#[test]
+fn int_from_string_typechecks_with_or_else() {
+    crate::common::check_ok(
+        r#"def fallback() -> Int
+  -1
+
+def safe_parse(s: String) -> Int
+  Int.from(text: s)!.or_else(-> fallback())
+"#,
+    );
+}

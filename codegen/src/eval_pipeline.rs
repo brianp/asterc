@@ -377,6 +377,9 @@ def main() -> Int
             functions: HashMap::new(),
             env_layout: None,
             function_pointers: HashMap::new(),
+            method_defaults: HashMap::new(),
+            allow_imports: false,
+            enums: HashMap::new(),
         };
 
         // Bare call to set_name should typecheck because it's registered as a function
@@ -411,6 +414,9 @@ def main() -> Int
             functions: HashMap::new(),
             env_layout: None,
             function_pointers: HashMap::new(),
+            method_defaults: HashMap::new(),
+            allow_imports: false,
+            enums: HashMap::new(),
         };
 
         let result =
@@ -431,6 +437,9 @@ def main() -> Int
             functions: HashMap::new(),
             env_layout: None,
             function_pointers: HashMap::new(),
+            method_defaults: HashMap::new(),
+            allow_imports: false,
+            enums: HashMap::new(),
         };
 
         let result = jit_compile_and_run(
@@ -455,6 +464,9 @@ def main() -> Int
             functions: HashMap::new(),
             env_layout: Some(vec![("x".into(), ast::Type::Int)]),
             function_pointers: HashMap::new(),
+            method_defaults: HashMap::new(),
+            allow_imports: false,
+            enums: HashMap::new(),
         };
 
         // Create an env struct with x = 99 at offset 0
@@ -491,6 +503,9 @@ def main() -> Int
                 ("b".into(), ast::Type::Int),
             ]),
             function_pointers: HashMap::new(),
+            method_defaults: HashMap::new(),
+            allow_imports: false,
+            enums: HashMap::new(),
         };
 
         // env struct: a=10 at offset 0, b=32 at offset 8
@@ -526,6 +541,9 @@ def main() -> Int
             )]),
             env_layout: None,
             function_pointers: HashMap::new(),
+            method_defaults: HashMap::new(),
+            allow_imports: false,
+            enums: HashMap::new(),
         };
 
         let result = jit_compile_and_run("let y = compute(n: 42)", "<eval>", Some(&snapshot), None);
@@ -548,6 +566,9 @@ def main() -> Int
             functions: HashMap::new(),
             env_layout: None,
             function_pointers: HashMap::new(),
+            method_defaults: HashMap::new(),
+            allow_imports: false,
+            enums: HashMap::new(),
         };
 
         let result =
@@ -623,6 +644,9 @@ def main() -> Int
             functions: HashMap::new(),
             env_layout: None,
             function_pointers: HashMap::new(),
+            method_defaults: HashMap::new(),
+            allow_imports: false,
+            enums: HashMap::new(),
         };
         let result = jit_compile_and_run("def broken(", "<eval>", Some(&snapshot), None);
         let err = result.unwrap_err();
@@ -640,6 +664,9 @@ def main() -> Int
             functions: HashMap::new(),
             env_layout: None,
             function_pointers: HashMap::new(),
+            method_defaults: HashMap::new(),
+            allow_imports: false,
+            enums: HashMap::new(),
         };
         let result = jit_compile_and_run(
             "let x: Int = \"not an int\"",
@@ -696,6 +723,9 @@ def main() -> Int
                 ast::Type::Custom("Adder".into(), vec![]),
             )]),
             function_pointers: HashMap::new(),
+            method_defaults: HashMap::new(),
+            allow_imports: false,
+            enums: HashMap::new(),
         };
 
         // Create an env with self pointing to an Adder instance
