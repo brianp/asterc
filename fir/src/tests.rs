@@ -3801,3 +3801,48 @@ def parse(s: String) throws IntParseError -> Int
         body
     );
 }
+
+// ===========================================================================
+// to_int() free-function lowering (issue #44)
+// ===========================================================================
+
+fn body_has_string_to_int(func: &FirFunction) -> bool {
+    real_body(func).iter().any(|s| match s {
+        FirStmt::Let {
+            value: FirExpr::RuntimeCall { name, .. },
+            ..
+        } => name == "aster_string_to_int",
+        FirStmt::Expr(FirExpr::RuntimeCall { name, .. }) => name == "aster_string_to_int",
+        _ => false,
+    })
+}
+
+#[test]
+fn lower_to_int_named_arg_to_runtime_call() {
+    let src = "\
+def parse(s: String) throws IntParseError -> Int
+  to_int(text: s)!
+";
+    let fir = lower_ok(src);
+    let func = &fir.functions[0];
+    assert!(
+        body_has_string_to_int(func),
+        "expected RuntimeCall(aster_string_to_int) in body: {:?}",
+        real_body(func)
+    );
+}
+
+#[test]
+fn lower_to_int_positional_arg_to_runtime_call() {
+    let src = "\
+def parse() throws IntParseError -> Int
+  to_int(\"42\")!
+";
+    let fir = lower_ok(src);
+    let func = &fir.functions[0];
+    assert!(
+        body_has_string_to_int(func),
+        "expected RuntimeCall(aster_string_to_int) in body: {:?}",
+        real_body(func)
+    );
+}

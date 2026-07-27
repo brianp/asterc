@@ -276,6 +276,22 @@ impl TypeChecker {
                 }
                 "log" | "say" => return self.check_print_call(func, args),
                 "random" => return self.check_random_call(func, args),
+                "to_int" if !matches!(self.env.get_var_type("to_int"), Some(t) if !Self::is_builtin_to_int(t)) =>
+                {
+                    // `to_int(text: String) throws IntParseError -> Int` accepts both
+                    // positional (`to_int("5")`) and named (`to_int(text: "5")`) forms.
+                    // Normalize a lone positional arg to the `text` parameter, then
+                    // dispatch through the generic call path so the registered throwing
+                    // signature drives error handling and catchability. The guard keeps a
+                    // user-defined `to_int` on the normal path untouched.
+                    if let [(arg_name, span, expr)] = args
+                        && arg_name == "_0"
+                    {
+                        let renamed = vec![("text".to_string(), *span, expr.clone())];
+                        return self.check_user_function_call(func, &renamed, bypass_throws_check);
+                    }
+                    return self.check_user_function_call(func, args, bypass_throws_check);
+                }
                 "resolve_all" => return self.check_resolve_builtin(func, args, true),
                 "resolve_first" => return self.check_resolve_builtin(func, args, false),
                 "Mutex" => return self.check_mutex_constructor(func, args),
@@ -680,6 +696,23 @@ impl TypeChecker {
             );
         };
         Ok(Type::Custom(name, vec![elem_ty]))
+    }
+
+    /// True when `ty` is the built-in `to_int` signature registered in
+    /// `register_builtins`, i.e. `to_int(text: String) throws IntParseError -> Int`.
+    /// Used to distinguish the builtin from a user-defined `to_int` of the same name.
+    fn is_builtin_to_int(ty: &Type) -> bool {
+        matches!(
+            ty,
+            Type::Function {
+                param_names,
+                params,
+                throws: Some(err),
+                ..
+            } if param_names.as_slice() == ["text"]
+                && params.as_slice() == [Type::String]
+                && matches!(err.as_ref(), Type::Custom(n, _) if n == "IntParseError")
+        )
     }
 
     fn check_user_function_call(
@@ -1733,14 +1766,11 @@ impl TypeChecker {
     fn find_dynamic_receiver_info(&self, class_name: &str) -> Option<ast::DynamicReceiverInfo> {
         let mut current = Some(class_name.to_string());
         while let Some(ref cname) = current {
-            if let Some(info) = self.env.get_class(cname) {
-                if let Some(ref dr) = info.dynamic_receiver {
-                    return Some(dr.clone());
-                }
-                current = info.extends.clone();
-            } else {
-                return None;
+            let info = self.env.get_class(cname)?;
+            if let Some(ref dr) = info.dynamic_receiver {
+                return Some(dr.clone());
             }
+            current = info.extends.clone();
         }
         None
     }

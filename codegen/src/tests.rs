@@ -4574,3 +4574,109 @@ def main() -> Int
     let result = jit.call_i64(fir.entry.unwrap());
     assert_eq!(result, 0);
 }
+
+// ===========================================================================
+// to_int() free-function spelling — string to integer conversion (issue #44)
+// ===========================================================================
+
+#[test]
+fn to_int_string_valid_returns_int() {
+    let src = r#"
+def main() -> Int
+  to_int("123")!.or(0)
+"#;
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 123);
+}
+
+#[test]
+fn to_int_string_negative_returns_negative_int() {
+    let src = r#"
+def main() -> Int
+  to_int("-5")!.or(0)
+"#;
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, -5);
+}
+
+#[test]
+fn to_int_named_arg_valid_returns_int() {
+    let src = r#"
+def main() -> Int
+  to_int(text: "42")!.or(0)
+"#;
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn to_int_string_invalid_raises_catchable_error() {
+    // "abc" is unparseable — must raise a catchable error (recovered to -1),
+    // not silently yield 0.
+    let src = r#"
+def main() -> Int
+  to_int("abc")!.or(-1)
+"#;
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, -1);
+}
+
+#[test]
+fn to_int_string_empty_raises_catchable_error() {
+    let src = r#"
+def main() -> Int
+  to_int("")!.or(-1)
+"#;
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, -1);
+}
+
+#[test]
+fn to_int_string_float_raises_catchable_error() {
+    // "1.5" is not a base-10 integer — must raise, not truncate or yield 0.
+    let src = r#"
+def main() -> Int
+  to_int("1.5")!.or(-1)
+"#;
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, -1);
+}
+
+#[test]
+fn to_int_string_overflow_raises_catchable_error() {
+    // Beyond i64 range — must raise a catchable error, not wrap or yield 0.
+    let src = r#"
+def main() -> Int
+  to_int("99999999999999999999999")!.or(-1)
+"#;
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, -1);
+}
+
+#[test]
+fn to_int_error_recovered_via_catch() {
+    // !.catch binds the IntParseError and returns the arm value.
+    let src = r#"
+def main() -> Int
+  to_int("nope")!.catch
+    _ -> -7
+"#;
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, -7);
+}

@@ -160,6 +160,20 @@ impl TypeChecker {
         // builtins in check_call_inner rather than registered here, because
         // their type signatures depend on context.
         env.set_var_type("random".into(), Type::func(vec![], vec![], Type::Int));
+        // `to_int(text: String) throws IntParseError -> Int` — free-function
+        // spelling for string-to-int conversion (issue #44). Registered with the
+        // full Function form so the `throws` clause survives; the Type::func
+        // helper hardcodes throws=None and would drop it.
+        env.set_var_type(
+            "to_int".into(),
+            Type::Function {
+                param_names: vec!["text".into()],
+                params: vec![Type::String],
+                ret: Box::new(Type::Int),
+                throws: Some(Box::new(Type::Custom("IntParseError".into(), Vec::new()))),
+                suspendable: false,
+            },
+        );
 
         // Built-in error hierarchy: Exception (root) -> Error (app base)
         env.set_class(
@@ -2039,21 +2053,19 @@ impl TypeChecker {
                     );
                 }
             }
-            Type::Map(key, _) => {
-                if !self.type_is_hashable(key) {
-                    return Err(
-                        Diagnostic::from_template(DiagnosticTemplate::ConstraintError(
-                            ConstraintError {
-                                message: format!(
-                                    "Map key type {} does not include Eq. \
+            Type::Map(key, _) if !self.type_is_hashable(key) => {
+                return Err(
+                    Diagnostic::from_template(DiagnosticTemplate::ConstraintError(
+                        ConstraintError {
+                            message: format!(
+                                "Map key type {} does not include Eq. \
                              Add 'includes Eq' to use as a Map key",
-                                    key
-                                ),
-                            },
-                        ))
-                        .with_label(span, "Map requires Eq on key type"),
-                    );
-                }
+                                key
+                            ),
+                        },
+                    ))
+                    .with_label(span, "Map requires Eq on key type"),
+                );
             }
             _ => {}
         }

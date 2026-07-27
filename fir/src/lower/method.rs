@@ -1027,15 +1027,13 @@ impl Lowerer {
         ast_expr: &Expr,
         fir_val: FirExpr,
     ) -> Result<FirExpr, LowerError> {
-        let ast_ty = self
-            .resolve_expr_ast_type(ast_expr)
-            .or(match ast_expr {
-                Expr::Str(..) => Some(Type::String),
-                Expr::Bool(..) => Some(Type::Bool),
-                Expr::Int(..) => Some(Type::Int),
-                Expr::Float(..) => Some(Type::Float),
-                _ => None,
-            });
+        let ast_ty = self.resolve_expr_ast_type(ast_expr).or(match ast_expr {
+            Expr::Str(..) => Some(Type::String),
+            Expr::Bool(..) => Some(Type::Bool),
+            Expr::Int(..) => Some(Type::Int),
+            Expr::Float(..) => Some(Type::Float),
+            _ => None,
+        });
         let ei = self.type_env.get_enum(enum_name);
         if let (Some(aty), Some(ei)) = (ast_ty, ei) {
             for (variant_name, fields) in &ei.variant_fields {
@@ -1069,7 +1067,7 @@ impl Lowerer {
     }
 
     /// Lower a named argument, falling back to positional index.
-    fn lower_named_or_positional_arg(
+    pub(crate) fn lower_named_or_positional_arg(
         &mut self,
         args: &[(String, ast::Span, Expr)],
         name: &str,

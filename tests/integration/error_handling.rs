@@ -968,3 +968,82 @@ def safe_parse(s: String) -> Int
 "#,
     );
 }
+
+// ─── to_int() free-function spelling (issue #44) ───────────────────
+
+#[test]
+fn to_int_free_function_typechecks_with_propagation() {
+    crate::common::check_ok(
+        r#"def parse(s: String) throws IntParseError -> Int
+  to_int(text: s)!
+"#,
+    );
+}
+
+#[test]
+fn to_int_free_function_positional_typechecks() {
+    crate::common::check_ok(
+        r#"def parse() throws IntParseError -> Int
+  to_int("42")!
+"#,
+    );
+}
+
+#[test]
+fn to_int_free_function_requires_error_handling() {
+    let err = crate::common::check_err(
+        r#"def parse(s: String) -> Int
+  to_int(text: s)
+"#,
+    );
+    assert!(
+        err.contains("throwing") || err.contains("error handling") || err.contains("throws"),
+        "expected error about unhandled throwing call, got: {}",
+        err
+    );
+}
+
+#[test]
+fn to_int_free_function_wrong_type_errors() {
+    let err = crate::common::check_err(
+        r#"def parse() throws IntParseError -> Int
+  to_int(text: 42)!
+"#,
+    );
+    assert!(
+        err.contains("mismatch") || err.contains("expected"),
+        "expected type mismatch error, got: {}",
+        err
+    );
+}
+
+#[test]
+fn to_int_free_function_catchable() {
+    crate::common::check_ok(
+        r#"def safe_parse(s: String) -> Int
+  to_int(text: s)!.catch
+    IntParseError e -> -1
+    _ -> -2
+"#,
+    );
+}
+
+#[test]
+fn user_defined_to_int_is_not_shadowed_by_builtin() {
+    // A user-defined `to_int` keeps its own signature/behavior; the builtin
+    // free-function spelling must not hijack it.
+    crate::common::check_ok(
+        r#"enum Color
+  Red
+  Green
+
+def to_int(c: Color) -> Int
+  match c
+    Color.Red => 1
+    Color.Green => 2
+
+def main() -> Int
+  to_int(c: Color.Red)
+"#,
+    );
+}

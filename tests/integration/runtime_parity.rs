@@ -529,3 +529,30 @@ def main() -> Int
 ",
     );
 }
+
+// ─── to_int() free-function (issue #44) ────────────────────────────
+
+#[test]
+fn parity_to_int_valid_and_error_paths() {
+    // Same observable behavior for the string-to-int free function under
+    // both JIT and AOT: valid parses, negatives, and recovered errors.
+    assert_parity(
+        "to-int",
+        "\
+def main() -> Int
+  let a = to_int(\"123\")!.or(-1)
+  say(message: to_string(a))
+  let b = to_int(text: \"42\")!.or(-1)
+  say(message: to_string(b))
+  let c = to_int(\"-5\")!.or(-1)
+  say(message: to_string(c))
+  let d = to_int(\"abc\")!.or(-1)
+  say(message: to_string(d))
+  let e = to_int(\"1.5\")!.or(-1)
+  say(message: to_string(e))
+  let f = to_int(\"\")!.or(-1)
+  say(message: to_string(f))
+  a
+",
+    );
+}

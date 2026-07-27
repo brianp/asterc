@@ -556,6 +556,23 @@ impl Lowerer {
             return self.lower_random_call(args, call_expr);
         }
 
+        // to_int(text: s) → aster_string_to_int(s). Free-function spelling of the
+        // string-to-int conversion (issue #44); reuses the same runtime symbol as
+        // Int.from. This bodyless builtin has no FuncId, so early-return before the
+        // generic user-function resolution below. Accepts positional or named `text`.
+        // Guarded so a user-defined `to_int` (a real FuncId) keeps its own body.
+        if name == "to_int"
+            && !self.ms.functions.contains_key("to_int")
+            && !self.scope.closure_info.contains_key("to_int")
+        {
+            let fir_arg = self.lower_named_or_positional_arg(args, "text", 0)?;
+            return Ok(FirExpr::RuntimeCall {
+                name: "aster_string_to_int".to_string(),
+                args: vec![fir_arg],
+                ret_ty: FirType::I64,
+            });
+        }
+
         // Mutex(value: x) → aster_mutex_new(x)
         if name == builtin_class::MUTEX {
             let value_arg = args

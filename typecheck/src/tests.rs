@@ -2006,3 +2006,95 @@ def safe_parse(s: String) -> Int
     let mut tc = super::typechecker::TypeChecker::new();
     tc.check_module(&module).expect("typecheck ok");
 }
+
+// ===========================================================================
+// to_int() free-function spelling (issue #44)
+// ===========================================================================
+
+#[test]
+fn to_int_named_arg_returns_int() {
+    // to_int(text: s)! should typecheck as Int in a throwing function
+    let src = "\
+def parse(s: String) throws IntParseError -> Int
+  to_int(text: s)!
+";
+    let tokens = lexer::lex(src).expect("lex ok");
+    let mut parser = parser::Parser::new(tokens);
+    let module = parser.parse_module("test").expect("parse ok");
+    let mut tc = super::typechecker::TypeChecker::new();
+    tc.check_module(&module).expect("typecheck ok");
+}
+
+#[test]
+fn to_int_positional_arg_returns_int() {
+    // to_int("42")! (positional) should typecheck as Int in a throwing function
+    let src = "\
+def parse() throws IntParseError -> Int
+  to_int(\"42\")!
+";
+    let tokens = lexer::lex(src).expect("lex ok");
+    let mut parser = parser::Parser::new(tokens);
+    let module = parser.parse_module("test").expect("parse ok");
+    let mut tc = super::typechecker::TypeChecker::new();
+    tc.check_module(&module).expect("typecheck ok");
+}
+
+#[test]
+fn to_int_requires_error_handling() {
+    // to_int(text: s) without ! should error — it throws IntParseError
+    let src = "\
+def parse(s: String) -> Int
+  to_int(text: s)
+";
+    let msg = module_err(src);
+    assert!(
+        msg.contains("throwing") || msg.contains("error handling") || msg.contains("throws"),
+        "expected error about unhandled throwing call, got: {}",
+        msg
+    );
+}
+
+#[test]
+fn to_int_wrong_arg_type_errors() {
+    // to_int(text: 42) should fail — expects String, not Int
+    let src = "\
+def parse() throws IntParseError -> Int
+  to_int(text: 42)!
+";
+    let msg = module_err(src);
+    assert!(
+        msg.contains("mismatch") || msg.contains("expected"),
+        "expected type mismatch error, got: {}",
+        msg
+    );
+}
+
+#[test]
+fn to_int_with_or_default() {
+    // to_int(text: s)!.or(0) should typecheck in non-throwing function
+    let src = "\
+def safe_parse(s: String) -> Int
+  to_int(text: s)!.or(0)
+";
+    let tokens = lexer::lex(src).expect("lex ok");
+    let mut parser = parser::Parser::new(tokens);
+    let module = parser.parse_module("test").expect("parse ok");
+    let mut tc = super::typechecker::TypeChecker::new();
+    tc.check_module(&module).expect("typecheck ok");
+}
+
+#[test]
+fn to_int_catchable_error_binds_error_var() {
+    // to_int(...)!.catch should see IntParseError as the thrown type
+    let src = "\
+def safe_parse(s: String) -> Int
+  to_int(text: s)!.catch
+    IntParseError e -> -1
+    _ -> -2
+";
+    let tokens = lexer::lex(src).expect("lex ok");
+    let mut parser = parser::Parser::new(tokens);
+    let module = parser.parse_module("test").expect("parse ok");
+    let mut tc = super::typechecker::TypeChecker::new();
+    tc.check_module(&module).expect("typecheck ok");
+}
