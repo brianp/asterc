@@ -203,9 +203,25 @@ pub fn output_text(output: &Output) -> String {
 
 pub fn build_and_run<P: AsRef<Path>>(source: P) -> Output {
     let output_path = temp_path("asterc-bin", "out");
+    // Isolate the build directory per invocation. Without an explicit
+    // --build-dir, `asterc` resolves the build root by walking up from the
+    // source file to the nearest `.aster/`/`.git/` marker; when a stray
+    // `/tmp/.aster/` exists, every test source (all named `test.aster`)
+    // collides on the same `test.o`/`manifest.json` under `/tmp/.aster/build`
+    // and the incremental cache serves one test's object to another. A unique
+    // per-call build dir keeps AOT builds hermetic.
+    let build_dir = temp_path("asterc-build", "");
     let source_arg = source.as_ref().to_string_lossy().into_owned();
     let output_arg = output_path.to_string_lossy().into_owned();
-    let build = cli(&["build", &source_arg, "-o", &output_arg]);
+    let build_dir_arg = build_dir.to_string_lossy().into_owned();
+    let build = cli(&[
+        "build",
+        &source_arg,
+        "-o",
+        &output_arg,
+        "--build-dir",
+        &build_dir_arg,
+    ]);
     assert!(
         build.status.success(),
         "build failed for {}:\n{}",

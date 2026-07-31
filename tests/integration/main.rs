@@ -43,6 +43,7 @@ mod shadow_warning;
 mod stdlib;
 mod string_interpolation;
 mod string_methods;
+mod typed_error_tags;
 mod types_collections;
 mod unstable_api;
 mod visibility;

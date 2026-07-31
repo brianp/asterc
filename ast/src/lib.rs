@@ -1,5 +1,6 @@
 #![deny(unsafe_code)]
 
+pub mod builtin_errors;
 pub mod context_snapshot;
 pub mod diagnostic;
 pub mod eval_error;

@@ -210,6 +210,53 @@ impl Lowerer {
             ],
         );
 
+        // Built-in runtime error classes. Each is thrown by a runtime builtin
+        // whose typechecker signature declares `throws T`. The runtime
+        // constructs the object and writes each field string at the offset
+        // registered here, so `e.message` / `e.command` in a catch arm resolve
+        // through this same layout. `message` is inherited from Error but must
+        // be registered explicitly at the offset the runtime writes it.
+        use ast::builtin_errors as be;
+        for (name, id) in [
+            ("IOError", be::IO_ERROR_CLASS_ID),
+            ("IntParseError", be::INT_PARSE_ERROR_CLASS_ID),
+            ("ChannelFullError", be::CHANNEL_FULL_ERROR_CLASS_ID),
+            ("ChannelEmptyError", be::CHANNEL_EMPTY_ERROR_CLASS_ID),
+            ("ChannelClosedError", be::CHANNEL_CLOSED_ERROR_CLASS_ID),
+            ("LockTimeoutError", be::LOCK_TIMEOUT_ERROR_CLASS_ID),
+            ("CancelledError", be::CANCELLED_ERROR_CLASS_ID),
+        ] {
+            let cid = ClassId(id);
+            classes.insert(name.to_string(), cid);
+            class_fields.insert(
+                cid,
+                vec![(
+                    "message".into(),
+                    FirType::Ptr,
+                    be::BUILTIN_ERROR_MESSAGE_OFFSET,
+                )],
+            );
+        }
+
+        // ProcessError additionally carries `command` after `message`.
+        let pe_id = ClassId(be::PROCESS_ERROR_CLASS_ID);
+        classes.insert("ProcessError".to_string(), pe_id);
+        class_fields.insert(
+            pe_id,
+            vec![
+                (
+                    "message".into(),
+                    FirType::Ptr,
+                    be::BUILTIN_ERROR_MESSAGE_OFFSET,
+                ),
+                (
+                    "command".into(),
+                    FirType::Ptr,
+                    be::PROCESS_ERROR_COMMAND_OFFSET,
+                ),
+            ],
+        );
+
         Self {
             type_env,
             type_table,
@@ -456,7 +503,7 @@ impl Lowerer {
                 class_remap.insert(class.id.0, existing_id);
                 continue;
             }
-            if class.id.0 >= u32::MAX - 10 {
+            if class.id.0 >= ast::builtin_errors::SENTINEL_CLASS_ID_FLOOR {
                 class_remap.insert(class.id.0, class.id);
             } else {
                 // New class: assign next sequential ID
@@ -472,7 +519,7 @@ impl Lowerer {
                 .unwrap_or(FunctionId(old.0 + func_offset))
         };
         let resolve_class = |old: ClassId| -> ClassId {
-            if old.0 >= u32::MAX - 10 {
+            if old.0 >= ast::builtin_errors::SENTINEL_CLASS_ID_FLOOR {
                 return old;
             }
             class_remap
@@ -667,7 +714,7 @@ impl Lowerer {
 
     /// Resolve a ClassId using the remap table, falling back to offset.
     fn resolve_cid(cid: ClassId, cr: &HashMap<u32, ClassId>, co: u32) -> ClassId {
-        if cid.0 >= u32::MAX - 10 {
+        if cid.0 >= ast::builtin_errors::SENTINEL_CLASS_ID_FLOOR {
             return cid;
         }
         cr.get(&cid.0).copied().unwrap_or(ClassId(cid.0 + co))

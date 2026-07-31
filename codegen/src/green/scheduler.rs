@@ -459,7 +459,17 @@ pub(crate) fn consume_thread_result(thread_ptr: *const GreenThread) -> i64 {
 
     let result = match st.status {
         ThreadStatus::Ready => st.result,
-        ThreadStatus::Failed | ThreadStatus::Cancelled => {
+        ThreadStatus::Cancelled => {
+            // Resolving a cancelled task raises a typed CancelledError so a
+            // `.catch(CancelledError e)` arm dispatches (see check_call.rs,
+            // which declares `resolve` as `throws CancelledError`).
+            crate::runtime::set_message_error(
+                ast::builtin_errors::CANCELLED_ERROR_CLASS_ID,
+                "task was cancelled",
+            );
+            0
+        }
+        ThreadStatus::Failed => {
             crate::runtime::error_flag_set(true);
             0
         }

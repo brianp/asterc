@@ -46,6 +46,11 @@ thread_local! {
     static SHADOW_STACK: Cell<*mut u8> = const { Cell::new(std::ptr::null_mut()) };
     /// Guard against reentrant collection.
     static GC_COLLECTING: Cell<bool> = const { Cell::new(false) };
+    /// Nesting depth of `pause_gc` scopes. While > 0, `gc_alloc_inner` still
+    /// allocates and tracks bytes but never collects, so a burst of small
+    /// allocations that hold their intermediate objects only in un-rooted Rust
+    /// locals can't have one swept out from under another mid-sequence.
+    static GC_SUSPEND: Cell<u32> = const { Cell::new(0) };
     /// Lowest GC heap payload address ever returned.
     static GC_HEAP_LO: Cell<usize> = const { Cell::new(usize::MAX) };
     /// Highest GC heap payload address ever returned (exclusive: addr + size).
@@ -146,7 +151,7 @@ pub(super) fn gc_alloc_inner(payload_size: usize, obj_ty: u8) -> *mut u8 {
         let total = b.get() + payload_size + HEADER_SIZE;
         b.set(total);
         GC_NEXT_THRESHOLD.with(|thresh| {
-            if total >= thresh.get() {
+            if total >= thresh.get() && GC_SUSPEND.with(|s| s.get()) == 0 {
                 gc_collect_inner();
                 b.set(0);
             }
@@ -402,6 +407,27 @@ pub extern "C" fn aster_gc_pop_roots() {
             ss.set(prev);
         }
     });
+}
+
+/// Run `f` with collection suspended, so every object it allocates survives
+/// until the scope ends regardless of the GC threshold. Use this from Rust
+/// runtime helpers that build a small object graph while holding the
+/// intermediate objects only in local variables (not on the shadow stack) —
+/// without it, a later allocation in the sequence could collect and free an
+/// earlier, still-un-rooted one. Nests safely; the caller is responsible for
+/// rooting the result before allocating heavily again once the scope closes.
+pub(crate) fn pause_gc<R>(f: impl FnOnce() -> R) -> R {
+    GC_SUSPEND.with(|s| s.set(s.get() + 1));
+    // Restore the depth even if `f` panics, so a suspend leak can't wedge the
+    // collector off for the rest of the thread's life.
+    struct Resume;
+    impl Drop for Resume {
+        fn drop(&mut self) {
+            GC_SUSPEND.with(|s| s.set(s.get() - 1));
+        }
+    }
+    let _resume = Resume;
+    f()
 }
 
 /// Force a garbage collection cycle.

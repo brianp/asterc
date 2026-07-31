@@ -319,14 +319,17 @@ pub extern "C" fn aster_bool_to_string(val: i8) -> *mut u8 {
     aster_string_new(s.as_ptr(), s.len())
 }
 
-/// Parse an Aster heap string as an i64. Sets the error flag on failure.
+/// Parse an Aster heap string as an i64. Sets a typed IntParseError on failure.
 #[unsafe(no_mangle)]
 pub extern "C" fn aster_string_to_int(ptr: *mut u8) -> i64 {
     let s = unsafe { aster_string_to_rust(ptr) };
     match s.parse::<i64>() {
         Ok(val) => val,
-        Err(_) => {
-            super::error::aster_error_set();
+        Err(e) => {
+            super::error::set_message_error(
+                ast::builtin_errors::INT_PARSE_ERROR_CLASS_ID,
+                &e.to_string(),
+            );
             0
         }
     }

@@ -47,7 +47,7 @@ pub use error::{
     aster_async_scope_enter, aster_async_scope_exit, aster_error_check, aster_error_get_tag,
     aster_error_get_value, aster_error_set, aster_error_set_typed, aster_panic, aster_safepoint,
 };
-pub(crate) use error::{error_flag_get, error_flag_set};
+pub(crate) use error::{error_flag_get, error_flag_set, set_message_error};
 
 pub use task::{
     aster_task_block_on, aster_task_cancel, aster_task_from_f64, aster_task_from_i8,

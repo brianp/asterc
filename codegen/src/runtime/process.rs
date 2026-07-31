@@ -1,4 +1,4 @@
-use super::error::aster_error_set;
+use super::error::set_process_error;
 use super::list::aster_list_get;
 use super::string::{aster_string_new_from_rust, aster_string_to_rust};
 
@@ -23,9 +23,12 @@ pub extern "C" fn aster_process_run(cmd_ptr: *mut u8, args_list: *mut u8) -> *mu
 
     let output = match std::process::Command::new(&cmd).args(&args).output() {
         Ok(o) => o,
-        Err(_) => {
-            aster_error_set();
-            // Return a zeroed result struct (3 fields * 8 bytes)
+        Err(e) => {
+            // Build the zeroed result struct first, then set the typed error
+            // last. The ProcessError object lives only in the error thread-local
+            // (not a GC root), so any allocation after set_process_error could
+            // sweep it mid-flight; keeping the error the final step before
+            // return closes that window, matching every other typed-error path.
             let result = super::alloc::aster_class_alloc(3 * 8);
             unsafe {
                 let base = result as *mut i64;
@@ -36,6 +39,7 @@ pub extern "C" fn aster_process_run(cmd_ptr: *mut u8, args_list: *mut u8) -> *mu
                 // stderr = empty string
                 *base.add(2) = aster_string_new_from_rust("") as i64;
             }
+            set_process_error(&e.to_string(), &cmd);
             return result;
         }
     };

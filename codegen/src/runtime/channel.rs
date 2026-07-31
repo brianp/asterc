@@ -3,7 +3,8 @@ use std::sync::{Arc, Mutex};
 use crate::green::scheduler;
 use crate::green::thread::GreenThread;
 
-use super::error::aster_error_set;
+use super::error::{aster_error_set, set_message_error};
+use ast::builtin_errors::{CHANNEL_EMPTY_ERROR_CLASS_ID, CHANNEL_FULL_ERROR_CLASS_ID};
 
 // ---------------------------------------------------------------------------
 // Channel — Phase 8
@@ -123,17 +124,18 @@ pub extern "C" fn aster_channel_wait_send(ch: *mut u8, value: i64) {
     }
 }
 
-/// Try-send. Sets error flag if buffer full or closed.
+/// Try-send. Sets a typed ChannelFullError if the buffer is full or closed
+/// (the declared `throws` type for try_send).
 #[unsafe(no_mangle)]
 pub extern "C" fn aster_channel_try_send(ch: *mut u8, value: i64) {
     if ch.is_null() {
-        aster_error_set();
+        set_message_error(CHANNEL_FULL_ERROR_CLASS_ID, "channel is null");
         return;
     }
     let c = unsafe { &*(ch as *const AsterChannel) };
     let mut state = c.inner.lock().unwrap();
     if state.closed {
-        aster_error_set();
+        set_message_error(CHANNEL_FULL_ERROR_CLASS_ID, "channel is closed");
         return;
     }
     // Direct delivery only when buffer is empty (preserves FIFO)
@@ -147,7 +149,7 @@ pub extern "C" fn aster_channel_try_send(ch: *mut u8, value: i64) {
     if state.buffer.len() < state.capacity {
         state.buffer.push_back(value);
     } else {
-        aster_error_set();
+        set_message_error(CHANNEL_FULL_ERROR_CLASS_ID, "channel buffer is full");
     }
 }
 
@@ -220,11 +222,12 @@ pub extern "C" fn aster_channel_wait_receive(ch: *mut u8) -> i64 {
     }
 }
 
-/// Try-receive. Sets error flag if empty or closed.
+/// Try-receive. Sets a typed ChannelEmptyError if empty or closed (the
+/// declared `throws` type for try_receive).
 #[unsafe(no_mangle)]
 pub extern "C" fn aster_channel_try_receive(ch: *mut u8) -> i64 {
     if ch.is_null() {
-        aster_error_set();
+        set_message_error(CHANNEL_EMPTY_ERROR_CLASS_ID, "channel is null");
         return 0;
     }
     let c = unsafe { &*(ch as *const AsterChannel) };
@@ -237,7 +240,12 @@ pub extern "C" fn aster_channel_try_receive(ch: *mut u8) -> i64 {
         }
         return value;
     }
-    aster_error_set();
+    let message = if state.closed {
+        "channel is closed"
+    } else {
+        "channel is empty"
+    };
+    set_message_error(CHANNEL_EMPTY_ERROR_CLASS_ID, message);
     0
 }
 

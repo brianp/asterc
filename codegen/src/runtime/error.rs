@@ -27,6 +27,54 @@ pub extern "C" fn aster_error_set_typed(type_tag: i64, value: i64) {
     ERROR_VALUE.set(value);
 }
 
+/// Construct a built-in error object carrying a single `message: String`
+/// field and set it as the current typed error. `class_id` is the sentinel
+/// ClassId of the error type declared in the builtin's `throws` signature
+/// (see `ast::builtin_errors`). Both AOT and JIT reference this same helper,
+/// so the runtime representation is identical across backends.
+pub(crate) fn set_message_error(class_id: u32, message: &str) {
+    use super::alloc::aster_class_alloc_typed;
+    use super::string::aster_string_new_from_rust;
+    use ast::builtin_errors::{MESSAGE_ONLY_PTR_COUNT, MESSAGE_ONLY_SIZE};
+
+    // Pause GC across the object + string allocation: `obj` lives only in this
+    // local (not on the shadow stack, and the error thread-local is not a GC
+    // root), so a collection triggered by the string allocation would otherwise
+    // sweep `obj` before we write into it.
+    let obj = super::gc::pause_gc(|| {
+        let obj = aster_class_alloc_typed(MESSAGE_ONLY_SIZE, MESSAGE_ONLY_PTR_COUNT);
+        unsafe {
+            *(obj as *mut i64) = aster_string_new_from_rust(message) as i64;
+        }
+        obj
+    });
+    aster_error_set_typed(class_id as i64, obj as i64);
+}
+
+/// Construct a `ProcessError` object (`message` + `command`) and set it as the
+/// current typed error.
+pub(crate) fn set_process_error(message: &str, command: &str) {
+    use super::alloc::aster_class_alloc_typed;
+    use super::string::aster_string_new_from_rust;
+    use ast::builtin_errors::{
+        PROCESS_ERROR_CLASS_ID, PROCESS_ERROR_PTR_COUNT, PROCESS_ERROR_SIZE,
+    };
+
+    // Pause GC across all three allocations: `obj` and the first string are
+    // held only in locals until the whole graph is built, so a collection
+    // triggered by a later string allocation would otherwise free them.
+    let obj = super::gc::pause_gc(|| {
+        let obj = aster_class_alloc_typed(PROCESS_ERROR_SIZE, PROCESS_ERROR_PTR_COUNT);
+        unsafe {
+            let base = obj as *mut i64;
+            *base = aster_string_new_from_rust(message) as i64;
+            *base.add(1) = aster_string_new_from_rust(command) as i64;
+        }
+        obj
+    });
+    aster_error_set_typed(PROCESS_ERROR_CLASS_ID as i64, obj as i64);
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn aster_error_check() -> i8 {
     let was = ERROR_FLAG.get();
