@@ -7,6 +7,8 @@ sidebar:
     variant: success
 ---
 
+*Implementation state: see [Implementation Status](/reference/status/)*
+
 ## 1. Core Thesis
 
 Aster is designed for a world where AI agents are active participants
@@ -134,7 +136,7 @@ The less guessing, the less training data you need.
 ## 5. Structured Diagnostics Over Prose
 
 Diagnostics shouldn't be prose-first. They should be structured data
-that the LLM interprets.
+that the LLM interprets. (See `toons-rfc.md` for full specification.)
 
 Instead of:
 
@@ -198,7 +200,7 @@ This philosophy drives specific design decisions:
 | One syntax form per concept | Reduces LLM ambiguity |
 | Opinionated formatter | Canonical representation = less variance |
 | Whitelist type checker | No hidden rules = predictable errors |
-| Structured diagnostic format | Structured truth for machines |
+| TOONS diagnostic format | Structured truth for machines |
 | Node IDs on AST | Precise references for repair candidates |
 | Message templates not prose | Audience-adaptive explanations |
 | Candidate fixes with confidence | Compiler suggests, LLM picks |

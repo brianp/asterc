@@ -1,6 +1,10 @@
-# RFC 0001: Unicode Identifier Support
+---
+title: "RFC 0001: Unicode Identifier Support"
+description: Design for UAX #31 Unicode identifiers with NFC normalization in the Aster lexer.
+---
 
-- **Status:** Draft
+*Implementation state: see [Implementation Status](/reference/status/)* · tracked in [#39](https://github.com/brianp/asterc/issues/39)
+
 - **Date:** 2026-03-25
 
 ## Summary
@@ -171,11 +175,6 @@ The only behavioral change is that sequences that were previously lexer errors (
 - String interpolation with non-ASCII identifiers: `f"{\u5024}"`
 - Error messages pointing at multi-byte tokens display correct column positions
 - Round-trip through the formatter preserves non-ASCII identifiers exactly
-
-**Fuzz testing:**
-
-- Feed random UTF-8 strings to the lexer and verify it does not panic
-- Feed mixed valid/invalid UTF-8 byte sequences to the file reader and verify graceful rejection
 
 ## Alternatives Considered
 

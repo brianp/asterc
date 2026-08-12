@@ -1,6 +1,9 @@
-# RFC: Transparent BigInt Promotion
+---
+title: "RFC: Transparent BigInt Promotion"
+description: Design for transparent promotion of Int to arbitrary-precision integers via a tagged representation.
+---
 
-Status: DRAFT
+*Implementation state: see [Implementation Status](/reference/status/)* · tracked in [#35](https://github.com/brianp/asterc/issues/35)
 
 > **Interim measure (2026-03-25):** Overflow-checked arithmetic is now in place.
 > `aster_int_add`, `aster_int_sub`, and `aster_int_mul` runtime functions abort
@@ -212,7 +215,7 @@ All integer arithmetic becomes runtime calls to handle the tag checking and pote
 
 For the common case (both operands are small ints, no overflow), the compiler can inline the fast path:
 
-```cranelift
+```
 ; Check both are small ints (both have low bit = 1)
 and a, b -> both_tagged
 and both_tagged, 1 -> is_small

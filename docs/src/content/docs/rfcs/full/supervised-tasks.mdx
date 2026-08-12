@@ -7,6 +7,8 @@ sidebar:
     variant: caution
 ---
 
+*Implementation state: see [Implementation Status](/reference/status/)* · tracked in [#34](https://github.com/brianp/asterc/issues/34)
+
 ## 1. Motivation
 
 `detached async` tasks that throw log the error and die. For long-running
@@ -20,10 +22,10 @@ Erlang/OTP supervisors). Aster could make it a language-level feature.
 
 - Keyword (`supervised async`) or utility function?
 - Backoff strategy: fixed, exponential, jitter? Configurable?
-- Max retries -- then what? Log and give up? Call a handler? Crash?
+- Max retries — then what? Log and give up? Call a handler? Crash?
 - What state resets on restart? Fresh function call from scratch?
-- Supervisor trees -- can you supervise groups of tasks?
-- Relationship to `async scope` -- does a supervised task live inside a scope?
+- Supervisor trees — can you supervise groups of tasks?
+- Relationship to `async scope` — does a supervised task live inside a scope?
 - Health checks / heartbeats?
 - Graceful shutdown semantics
 
@@ -36,13 +38,13 @@ Erlang/OTP supervisors). Aster could make it a language-level feature.
 ## 4. Rough Sketch
 
 ```
-# Supervised detached task -- restarts on failure
+# Supervised detached task — restarts on failure
 supervised async process_queue()
   retries: 5
   backoff: exponential
 
-# After 5 failures -- logs final error, gives up
+# After 5 failures — logs final error, gives up
 # Each restart is a fresh function call
 ```
 
-Details TBD -- this RFC needs full design discussion.
+Details TBD — this RFC needs full design discussion.

@@ -7,14 +7,16 @@ sidebar:
     variant: success
 ---
 
+*Implementation state: see [Implementation Status](/reference/status/)*
+
 ## 1. Design Principles
 
-- Async is an execution strategy, not a type signature -- no viral async
-- The caller decides how to invoke a function -- sync, async, or resolve
-- The runtime is invisible -- developers never initialize or manage it
-- Green threads, not futures/state machines -- every function can suspend
-- Data races are warned, not blocked -- the compiler warns you, it doesn't block you
-- One concurrency model -- no split between sync and async worlds
+- Async is an execution strategy, not a type signature — no viral async
+- The caller decides how to invoke a function — sync, async, or resolve
+- The runtime is invisible — developers never initialize or manage it
+- Green threads, not futures/state machines — every function can suspend
+- Data races are warned, not blocked — the compiler warns you, it doesn't block you
+- One concurrency model — no split between sync and async worlds
 
 ---
 
@@ -36,15 +38,15 @@ queue is empty, it steals work from another thread's queue (takes half).
 This self-balances across cores.
 
 The scheduling loop per OS thread:
-1. Check local queue -- run a green thread if available
-2. Check global queue -- steal a batch if available
+1. Check local queue — run a green thread if available
+2. Check global queue — steal a batch if available
 3. Steal from another thread's local queue
-4. Nothing to do -- poll for I/O or park
+4. Nothing to do — poll for I/O or park
 
 ### OS Thread Pool
 
 Default: one OS thread per CPU core. Configurable at runtime via the
-`ASTER_OS_THREADS` environment variable. Not configurable at compile time --
+`ASTER_OS_THREADS` environment variable. Not configurable at compile time —
 the binary adapts to the deployment environment.
 
 ```
@@ -64,14 +66,14 @@ developer never initializes or configures a runtime.
 ### Yield Points
 
 The compiler inserts preemption checks at:
-- **Function calls** -- every call is a potential yield point
-- **Loop back-edges** -- top of every `while`/`for` iteration
+- **Function calls** — every call is a potential yield point
+- **Loop back-edges** — top of every `while`/`for` iteration
 
 Each check reads a scheduler-set flag: "have you been running too long?"
 If yes, the green thread yields to the scheduler. Cost: one memory read
 per check. Negligible.
 
-This is cooperative preemption -- technically cooperative, but the compiler
+This is cooperative preemption — technically cooperative, but the compiler
 handles it automatically. From the developer's perspective it's preemptive.
 
 ### I/O Suspension
@@ -80,12 +82,12 @@ When a green thread performs I/O:
 
 **Network I/O:**
 1. Runtime calls non-blocking `read()`/`write()` on the socket
-2. If data is available -- return immediately, no suspension
-3. If not available -- register the file descriptor with the I/O poller
+2. If data is available — return immediately, no suspension
+3. If not available — register the file descriptor with the I/O poller
    (epoll on Linux, kqueue on macOS, IOCP on Windows), suspend the
    green thread
 4. OS thread picks up another green thread from its queue
-5. When data arrives, the I/O poller wakes the green thread -- it goes
+5. When data arrives, the I/O poller wakes the green thread — it goes
    back on a run queue and resumes where it left off
 
 **Disk I/O:**
@@ -118,7 +120,7 @@ execution strategy:
 | Async | `async f()` | `Task[T]` | Spawns new green thread, returns handle |
 | Resolve | `resolve task` | `T` | Consumes an existing `Task[T]`, suspending until it finishes |
 
-### Sync -- `f()`
+### Sync — `f()`
 
 Plain function call. Runs on the current green thread. It is only valid
 for non-suspendable callees. If a callee can suspend, the caller must
@@ -128,7 +130,7 @@ write `blocking f()` or `async f()` explicitly.
 let user = fetch_user(1)    # sequential, returns User
 ```
 
-### Blocking -- `blocking f()`
+### Blocking — `blocking f()`
 
 Calls suspendable work and waits for its result without materializing a
 user-visible `Task[T]`. The current green thread may suspend while the
@@ -138,7 +140,7 @@ callee runs, but the call still returns `T` directly.
 let user = blocking fetch_user(1)    # waits, returns User
 ```
 
-### Async -- `async f()`
+### Async — `async f()`
 
 Spawns a new green thread to run `f()`. Returns immediately with a
 `Task[T]` handle. The work runs concurrently.
@@ -149,7 +151,7 @@ let task = async fetch_user(1)    # returns Task[User] immediately
 # execution continues here
 ```
 
-### Resolve -- `resolve task`
+### Resolve — `resolve task`
 
 Suspends the current green thread until a task completes. Always
 requires `!` because any task can be cancelled (CancelledError).
@@ -163,7 +165,7 @@ let user = resolve task!          # suspend until task finishes
 The current green thread is parked (not burning CPU). The OS thread picks
 up other green threads. When the result is ready, the green thread resumes.
 
-### Detached -- `detached async f()`
+### Detached — `detached async f()`
 
 Spawns a green thread with no handle. Fire-and-forget. The developer
 can't retrieve the result or check status.
@@ -176,7 +178,7 @@ If the detached function throws, the error is logged and the program
 continues. The error has nowhere to propagate.
 
 `detached` is an explicit opt-out of structured concurrency. It must be
-intentional -- the must-consume rule (section 4) prevents accidental
+intentional — the must-consume rule (section 4) prevents accidental
 fire-and-forget.
 
 ---
@@ -228,7 +230,7 @@ You must either:
 Standalone functions for working with multiple tasks. All tasks must be
 the same type.
 
-**`resolve_all(tasks)` -- wait for all:**
+**`resolve_all(tasks)` — wait for all:**
 ```
 let tasks = [async fetch_user(1), async fetch_user(2), async fetch_user(3)]
 let users = resolve_all(tasks)    # List[User]
@@ -236,10 +238,10 @@ let users = resolve_all(tasks)    # List[User]
 
 All tasks run concurrently. Returns when all are complete.
 
-**`resolve_first(tasks)` -- wait for fastest:**
+**`resolve_first(tasks)` — wait for fastest:**
 ```
 let tasks = [async fetch_from_primary(), async fetch_from_backup()]
-let data = resolve_first(tasks)    # T -- whichever finishes first
+let data = resolve_first(tasks)    # T — whichever finishes first
 ```
 
 Returns the first result. Cancels all remaining tasks.
@@ -249,18 +251,18 @@ Returns the first result. Cancels all remaining tasks.
 ## 5. Async + Error Handling
 
 Error handling composes naturally with async. The rules follow from the
-error handling RFC -- `!` propagates, `!.catch` matches, `!.or()` provides
+error handling RFC — `!` propagates, `!.catch` matches, `!.or()` provides
 defaults.
 
 ### `resolve` always requires `!`
 
 `resolve` is always a throwing operation because any task can be
-cancelled -- via scope exit, `resolve_first`, or explicit `.cancel()`.
+cancelled — via scope exit, `resolve_first`, or explicit `.cancel()`.
 Cancellation produces `CancelledError`. This applies regardless of
 whether the underlying function throws.
 
 ```
-# Non-throwing function -- resolve still requires !
+# Non-throwing function — resolve still requires !
 def add(a: Int, b: Int) -> Int
 
 let task = async add(a: 1, b: 2)
@@ -271,7 +273,7 @@ let sum = resolve task!.catch
 ```
 
 ```
-# Throwing function -- CancelledError joins the function's errors
+# Throwing function — CancelledError joins the function's errors
 def fetch(url: String) throws NetworkError -> String
 
 let task = async fetch(url: url)
@@ -285,7 +287,7 @@ let data = resolve task!.catch
 ### `resolve_all` + `throws`
 
 If any task threw or was cancelled, `resolve_all` throws. All tasks are
-resolved -- errors surface after completion.
+resolved — errors surface after completion.
 
 ```
 let tasks = [async fetch(url1), async fetch(url2)]
@@ -295,7 +297,7 @@ let results = resolve_all(tasks)!    # throws if any task threw or was cancelled
 ### `resolve_first` + `throws`
 
 If the winning task threw, `resolve_first` throws. Losing tasks are
-cancelled (their CancelledErrors are not surfaced -- only the winner matters).
+cancelled (their CancelledErrors are not surfaced — only the winner matters).
 
 ```
 let first = resolve_first(tasks)!.catch
@@ -334,13 +336,13 @@ async scope
   let u3 = resolve t3!
 
   process(u1, u2, u3)
-# scope exits -- all tasks guaranteed complete
+# scope exits — all tasks guaranteed complete
 ```
 
 ### Scope Exit Cleanup
 
-**When execution leaves a scope for any reason -- normal completion, error
-propagation, return, break -- all unresolved tasks in that scope are
+**When execution leaves a scope for any reason — normal completion, error
+propagation, return, break — all unresolved tasks in that scope are
 canceled.** This is non-negotiable. No orphaned green threads.
 
 ```
@@ -348,8 +350,8 @@ async scope
   let t1 = async fetch_user(1)
   let t2 = async fetch_user(2)
 
-  let u1 = resolve t1!    # throws -- propagates out of scope
-  # t2 is CANCELED -- scope exit cleans up unresolved tasks
+  let u1 = resolve t1!    # throws — propagates out of scope
+  # t2 is CANCELED — scope exit cleans up unresolved tasks
   let u2 = resolve t2     # never reached
 ```
 
@@ -361,7 +363,7 @@ async scope
   let t1 = async fetch_user(1)
   let t2 = async fetch_user(2)
 
-  let u1 = resolve t1!.or(default_user())  # handled -- scope continues
+  let u1 = resolve t1!.or(default_user())  # handled — scope continues
   let u2 = resolve t2!                      # still runs
   process(u1, u2)
 ```
@@ -384,7 +386,7 @@ work and stops at a safe point. No corrupted state.
 When a task is cancelled and subsequently resolved, it throws
 `CancelledError` (extends `Error`). Because any task can be cancelled
 (via scope exit, `resolve_first`, or explicit `.cancel()`), `resolve`
-on a task handle always requires `!` -- even for non-throwing functions.
+on a task handle always requires `!` — even for non-throwing functions.
 
 ```
 # Even a pure function can be cancelled
@@ -398,7 +400,7 @@ resolve task!.catch
 ```
 
 ```
-# Throwing functions -- CancelledError is one of the possible errors
+# Throwing functions — CancelledError is one of the possible errors
 def fetch(url: String) throws NetworkError -> String
 
 let task = async fetch(url: url)
@@ -413,9 +415,9 @@ resolve task!.catch
 
 ### Cleanup Traits
 
-- **`Drop`** -- synchronous cleanup. Free memory, release locks. Runs
+- **`Drop`** — synchronous cleanup. Free memory, release locks. Runs
   during stack unwinding. Cannot perform I/O.
-- **`Close`** -- async-capable cleanup. Close database connections, flush
+- **`Close`** — async-capable cleanup. Close database connections, flush
   buffers to disk. Runs on the green thread before it exits. Can perform
   I/O (the green thread is still alive during Close).
 
@@ -448,7 +450,7 @@ user.name = "Rick"     # works, but only affects local copy
 ```
 let user = fetch_user(1)
 let task = async save_user(user)
-# user never referenced again -- no warning
+# user never referenced again — no warning
 ```
 
 ### Warning Scope
@@ -469,10 +471,10 @@ When you want an independent copy intentionally:
 
 ```
 let task = async process(user.copy())    # explicit deep copy
-log(user.name)                           # no warning -- original unaffected
+log(user.name)                           # no warning — original unaffected
 ```
 
-### Mutex[T] -- Shared Mutable State
+### Mutex[T] — Shared Mutable State
 
 For state that must be shared and mutated across green threads, use
 `Mutex[T]`.
@@ -496,7 +498,7 @@ state.lock(s ->
 
 **Rules:**
 - `.lock()` acquires the mutex and provides direct access to the data
-- Nothing obtained inside `.lock()` can escape the block -- the compiler
+- Nothing obtained inside `.lock()` can escape the block — the compiler
   enforces this. Assigning lock-scoped references to outer variables or
   returning them is a compile error
 - Mutations inside `.lock()` are direct (no deep copy overhead)
@@ -645,37 +647,37 @@ user.name = "Rick"     # warning: copied to channel context
 1. Green threads with stackful coroutines (~2-8KB stack, grows on demand)
 2. M:N scheduling with work-stealing across OS threads
 3. OS thread pool defaults to CPU core count, `ASTER_OS_THREADS` to override
-4. Runtime starts implicitly before `main()` -- invisible to developer
+4. Runtime starts implicitly before `main()` — invisible to developer
 5. `main()` runs on a green thread
 6. Compiler inserts yield checks at function calls and loop back-edges
 7. I/O suspension: epoll/kqueue for network, thread pool for disk
 8. Standard library functions are always synchronous
 
 ### Invocation Modes
-9. `f()` -- sync, runs on current green thread
-10. `async f()` -- spawns green thread, returns `Task[T]`
-11. `resolve task!` -- suspends until task complete, always requires `!`
-12. `detached async f()` -- fire-and-forget, no handle
+9. `f()` — sync, runs on current green thread
+10. `async f()` — spawns green thread, returns `Task[T]`
+11. `resolve task!` — suspends until task complete, always requires `!`
+12. `detached async f()` — fire-and-forget, no handle
 
 ### Task Interface
 13. `Task[T]` with `.is_ready()` for non-blocking status check
-14. `resolve task` to consume -- suspends if not ready
-15. Must-consume rule -- dropping a task is a compile error
-16. `resolve_all(List[Task[T]])` -- wait for all, returns `List[T]`
-17. `resolve_first(List[Task[T]])` -- wait for fastest, cancel rest
-18. No `.then()` -- use sequential code + `resolve` instead
+14. `resolve task` to consume — suspends if not ready
+15. Must-consume rule — dropping a task is a compile error
+16. `resolve_all(List[Task[T]])` — wait for all, returns `List[T]`
+17. `resolve_first(List[Task[T]])` — wait for fastest, cancel rest
+18. No `.then()` — use sequential code + `resolve` instead
 
 ### Error Handling
-19. `resolve task` always requires `!` -- any task can be cancelled (CancelledError)
+19. `resolve task` always requires `!` — any task can be cancelled (CancelledError)
 21. `resolve_all` throws if any task threw or was cancelled
 22. `resolve_first` throws if the winning task threw; losers cancelled silently
 23. `detached async` on throwing functions logs errors, continues
 
 ### Structured Concurrency
 24. `async scope` creates a lifetime boundary for tasks
-25. Scope exit (any reason) cancels all unresolved tasks -- non-negotiable
-26. Cancellation is cooperative -- flag checked at yield points
-27. Cancelled tasks throw `CancelledError` on `resolve` -- all task resolves require `!`
+25. Scope exit (any reason) cancels all unresolved tasks — non-negotiable
+26. Cancellation is cooperative — flag checked at yield points
+27. Cancelled tasks throw `CancelledError` on `resolve` — all task resolves require `!`
 28. `Drop` for sync cleanup, `Close` for async-capable cleanup
 29. Cleanup errors are logged, never propagated
 
@@ -685,8 +687,8 @@ user.name = "Rick"     # warning: copied to channel context
 31. `allow(copied_non_shared_resource)` to suppress warning
 32. Deeper alias tracking noted as future static analysis improvement
 33. `Mutex[T]` for shared mutable state with scoped `.lock()` block
-34. Nothing escapes `.lock()` -- compiler enforced
-35. All locks have timeouts -- no infinite deadlocks
+34. Nothing escapes `.lock()` — compiler enforced
+35. All locks have timeouts — no infinite deadlocks
 36. `LockTimeoutError` thrown on timeout
 37. Manual `acquire()`/`release()` available for advanced use
 
@@ -714,7 +716,7 @@ user.name = "Rick"     # warning: copied to channel context
 
 ## 11. Deferred
 
-- Supervised tasks -- automatic restart with backoff for detached tasks
+- Supervised tasks — automatic restart with backoff for detached tasks
   (see supervised-tasks-rfc.md)
 - Advanced static analysis for deep alias tracking across functions and
   modules

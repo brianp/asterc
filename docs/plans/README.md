@@ -43,3 +43,4 @@ on the docs Roadmap page or as GitHub issues — not in the plan files.
 | [os-primitives.md](completed/os-primitives.md) | Complete |
 | [entropy-benchmark.md](completed/entropy-benchmark.md) | Measurement done (70/76 token budget); no CI enforcement yet |
 | [package-management.md](completed/package-management.md) | Superseded by package-manager.md |
+| [runtime-jit-eval-plan.md](completed/runtime-jit-eval-plan.md) | Complete — shipped as `std/runtime` (`evaluate`, `jit_run`), `--jit`-gated |
