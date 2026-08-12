@@ -3,6 +3,12 @@ import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 
 export default defineConfig({
+	vite: {
+		server: {
+			// dev over tailscale: short MagicDNS name + any full tailnet FQDN
+			allowedHosts: ['rainbox', '.ts.net'],
+		},
+	},
 	integrations: [
 		starlight({
 			title: 'Aster',
@@ -90,6 +96,7 @@ export default defineConfig({
 					label: 'Reference',
 					items: [
 						{ label: 'Glossary', slug: 'reference/glossary' },
+						{ label: 'Implementation Status', slug: 'reference/status' },
 						{ label: 'Roadmap & Future Work', slug: 'reference/roadmap' },
 					],
 				},

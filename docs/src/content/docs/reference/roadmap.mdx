@@ -30,6 +30,23 @@ The rest of the documentation describes only what is actually implemented.
   but has no supporting implementation yet.
 - **Parametric enum `include`s** — enums cannot include parametric traits (a code
   comment in the typechecker marks this as not yet supported).
+- **Hash trait & non-string Map keys** — the runtime Map is a linear-scan,
+  string-keyed store; Set and Map keys were gated on `Eq` instead of the planned
+  implicit `Hash`. User-defined key types need both.
+- **Iterable long tail** — `reject`, `take`, `skip`, `zip`, `flat_map`, `group_by`,
+  `sort_by`, and `to_map` are missing from the iterable vocabulary, and neither
+  `String` nor `Map` is iterable.
+- **Match ergonomics** — no guards, no block-bodied arms, and `if` is not an
+  expression (match already is).
+- **Operator gaps** — compound assignment (`+=`), null coalescing (`??`), bitwise
+  operators, and string repetition (`"ab" * 3`) are all unimplemented.
+- **`super()` dispatch, general overloading, trait-conflict resolution** — parent
+  methods resolve through the chain, but there is no explicit `super` call; only
+  `from()` supports overloading today.
+- **BigInt auto-promotion** — integers are interim i64 with overflow handling;
+  the design lives in `docs/design/bigint-rfc.md`.
+- **Indirect async calls** — `async (expr)()` is the last audited
+  `UnsupportedFeature` from the old codegen gap analysis.
 
 ## Runtime
 
@@ -75,6 +92,18 @@ The rest of the documentation describes only what is actually implemented.
   to it; it is a leftover from the retired C-runtime generation path.
 - **LSP server** — a symbol index is maintained by the typechecker for hover and
   go-to-definition, but the server itself is still at the planning stage.
+- **Testing story** — no `asterc test` subcommand and no `std/test` module; the
+  oldest high-priority open item in the project.
+- **REPL** — the eval-with-persistent-context core exists
+  (`eval_pipeline`/`ContextSnapshot`, powering `evaluate()`); the interactive
+  driver, multiline handling, and meta commands do not.
+- **Machine-readable compiler output** — no `--emit fir/clif` IR dumps, no
+  `--output-format json` on `check`/`run`, no `--explain <code>`, no stable
+  artifact directory for agent tooling; several plans (MCP server, agent hooks)
+  are blocked behind this.
+- **Toolchain manager** — only the Seedfile `compiler(ver:)` hook exists; version
+  pinning is parsed and displayed but never enforced, and there is no install /
+  shim / dispatch machinery.
 
 ## Known stale code comments
 

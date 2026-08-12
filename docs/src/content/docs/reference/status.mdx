@@ -1,0 +1,127 @@
+---
+title: Implementation Status
+description: What is done, in progress, and not started — audited against the code, plan by plan.
+---
+
+This page is the successor to the old planning documents and status tracker. Every
+verdict below was verified against the code and test suite in August 2026 — plan
+frontmatter and old trackers had drifted badly (several plans marked "in progress"
+were finished; several "implemented" claims were stale), so treat this page, not the
+plan files, as current. Unfinished work is inventoried thematically on the
+[Roadmap](/reference/roadmap/) page.
+
+## Summary
+
+| Area | Verdict |
+|---|---|
+| Syntax buildout (operators, control flow, collections, modules) | **Complete** |
+| Protocols (named args, enums, Self, parametric traits, Eq/Ord/Printable/From/Into) | **Mostly complete** |
+| Ranges & random | **Complete** |
+| Execution path (FIR, Cranelift JIT/AOT, parity gate) | **Complete** |
+| Green threads runtime (scheduler, safepoints, poller, blocking pool) | **Mostly complete** |
+| Concurrency primitives (Mutex, channels, must-consume, Drop/Close) | **Partial — known gaps** |
+| Diagnostics (spans, templates, recovery, rendering) | **Mostly complete** |
+| Formatter | **Complete** |
+| Build system (profiles, caching, clean) | **Mostly complete** |
+| OS-primitive stdlib (sys, fs, process, crypto) | **Complete** |
+| Package manager (Seedfile DSL, aster CLI) | **Partial** |
+| std networking (TCP, TLS, HTTP, JSON) | **Not started** |
+| REPL | **Not started** (core machinery exists) |
+| LSP server | **Not started** (prerequisites done) |
+| MCP server | **Not started** (language readiness mostly done) |
+| Toolchain manager | **Not started** |
+| Bundled linker | **Not started** (parked) |
+
+## Language
+
+**Shipped and test-covered:** the full protocol arc — named-only arguments, enums with
+payload variants and destructuring patterns, `Self` typing, parametric traits,
+auto-derived `Eq`/`Ord`/`Printable`, `From`/`Into` with expected-type resolution and
+fallible `Int.from` / `to_int()`, `Iterable`/`Iterator` with a 14-method vocabulary,
+`Drop`/`Close`, `DynamicReceiver`/`method_missing`, `FieldAccessible`, ranges
+(`1..10`, `1..=10`) with `std/random`, `const`, enforced `pub` visibility, `Set[T]`,
+map literals, string interpolation, and the caller-side async model
+(`async`/`blocking`/`detached async`) with must-consume task tracking (E027) and
+data-sharing warnings (W002).
+
+**Open language work** (detail on the [Roadmap](/reference/roadmap/)):
+
+| Item | Status |
+|---|---|
+| Hash trait / non-string Map keys | Not started — runtime Map is a linear-scan, string-keyed store; Set/Map went Eq-gated instead |
+| Iterable long tail (`reject`, `take`, `skip`, `zip`, `flat_map`, `group_by`, `sort_by`, `to_map`) | Not started |
+| String / Map as Iterable | Not started |
+| Match guards, block-bodied arms, if-expressions | Not started (match itself is an expression) |
+| Compound assignment (`+=`), `??`, bitwise operators, string repetition | Not started |
+| `super()` dispatch, general method overloading, trait-conflict resolution | Not started (only `from()` is overloadable today) |
+| BigInt auto-promotion | Not started — interim i64 overflow handling; RFC exists |
+| Indirect async calls (`async (expr)()`) | Unsupported — the one remaining codegen gap-analysis item |
+
+## Execution path
+
+**Complete.** All milestones of the original codegen plan landed: FIR with a
+Serialize-able module format, Cranelift JIT and AOT sharing one translation layer and
+one Rust runtime staticlib (the planned separate C runtime was superseded, not
+skipped), monomorphized generics, typed error tags with multi-arm `catch` dispatch,
+class/enum lowering, iterables, and top-level statements. The parity contract is
+enforced by tests: a coverage meta-test over every FIR expression variant plus an
+audited list of the remaining `UnsupportedFeature` sites, and the E028 gate turns
+unlowerable features into a clean "not executable yet" diagnostic instead of a crash.
+
+## Concurrency
+
+**Runtime: mostly complete.** Assembly context switching (x86-64/aarch64), M:N
+work-stealing scheduler, safepoint-based cancellation and preemption, epoll/kqueue
+I/O poller, blocking pool, shadow-stack GC integration, and AOT parity — all real,
+all tested end-to-end.
+
+**Primitives: partial, with three known correctness gaps** (see
+[#49](https://github.com/brianp/asterc/issues/49) for the related GC question):
+
+1. **Cancellation skips user cleanup** — a green thread cancelled at a safepoint
+   flips to `Cancelled` without running `Close`/`Drop` on live locals.
+2. **`mutex.lock(block:)` can leak the lock** — unlock is emitted straight-line
+   after the inlined body rather than as a cleanup local, so a `throw` inside the
+   block (or cancellation) skips the release. Escape analysis and the planned
+   `timeout:`/`LockTimeoutError` are also absent.
+3. **`MultiSend`/`MultiReceive` are surface-only** — `clone_sender`/`clone_receiver`
+   return the same handle; no reference counting, no close-on-last-drop EOF
+   semantics, no multi-producer tests.
+
+Also open: data-sharing warnings only track the `async f(x)` boundary (channel sends
+cross silently), and `main()` runs on the OS main thread behind a condvar rather
+than as a green thread — a deliberate deviation from the original design that has
+not been formally decided.
+
+## Tooling
+
+| Tool | Status | Notes |
+|---|---|---|
+| Diagnostics | Mostly complete | Spans, typed templates in five code families, recovery, ariadne rendering, Levenshtein suggestions. Missing: `--explain`, machine-readable artifact output ("TOONS"), NodeIds |
+| Formatter | Complete | Doc-IR printer, magic trailing comma, comment preservation incl. nested bodies, `--check/--diff/--stdin/--output-format json`, idempotency tests. Missing: config-file loading, AST-equality safety check |
+| Build system | Mostly complete | Profiles, `--opt`, SHA-256 manifest caching, `clean`. Missing: skip-relink when fresh; vestigial `runtime_hash`/`gen/` leftovers |
+| Testing story | Not started | No `asterc test`, no `std/test` — the highest-priority tracker item that never moved |
+| REPL | Not started | `eval_pipeline` + `ContextSnapshot` already implement eval-with-persistent-context; missing only the interactive driver |
+| `--emit fir/clif` IR dumps | Not started | Wanted by three separate plans for agent tooling |
+
+## Ecosystem
+
+| Component | Status | Notes |
+|---|---|---|
+| Package manager | Partial | Phases 0–2 done: OS primitives, DynamicReceiver, Seedfile DSL (JIT-evaluated, versioned, well-tested), `aster info` + passthrough CLI. Phase 3 (resolver) untouched: `VersionReq` does no matching; `quarantine`/`override` parse but nothing consumes them; `Seedfile.lock` is an eval cache, not a dependency lock |
+| std networking | Not started | No `aster_tcp_*`/`aster_net_*` runtime symbols. The `TcpListener`/`TcpStream` typecheck stubs are the abandoned static-method style with no runtime backing — scheduled for removal or rework as free functions |
+| LSP server | Not started | SymbolIndex prerequisite is done but unconsumed; the VS Code extension ships grammar + a stub activation; aster.nvim already tries to launch an `aster-lsp` binary that doesn't exist |
+| MCP server | Not started | Language readiness (Map, fs, process, typed errors, string ops) is done; blocked on a stdin builtin, a JSON module, and compiler artifact emission |
+| Toolchain manager | Not started | Only the Seedfile `compiler(ver:)` hook exists — parsed and displayed, never enforced |
+| Bundled linker / libc | Not started | Parked by its own plan; link still shells to system `cc` |
+
+## Watch items
+
+Small standing rules the audit surfaced that nothing currently enforces:
+
+- **Token budget** — the lexer sits at exactly 70 `TokenKind` variants against a
+  self-imposed ceiling of 76 (Go has 77). No test asserts the count; adding one
+  would mechanize the rule.
+- **Diagnostic code stability** — codes have been silently reassigned in the past
+  (see [#50](https://github.com/brianp/asterc/issues/50)); append-only is the
+  intended policy.
