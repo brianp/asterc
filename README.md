@@ -6,7 +6,7 @@ Writing code should feel good. Not wrestling-with-the-type-system good. Not fina
 
 Aster is an opinionated language that gets out of your way. You get safety, strong types, and real error handling without the ceremony that usually comes with them. The syntax is small. The rules are strict but not annoying. There's one way to do most things, and that one way is the obvious one.
 
-It's also built for a world where AI writes code alongside you. The compiler emits structured data, not prose error messages, so when your AI tools try to fix something they're working with facts instead of guessing from text.
+It's also built for a world where AI writes code alongside you. One syntax per concept means less for a model to get wrong, and named arguments mean a transposed call doesn't silently compile. The compiler emits structured diagnostics with stable codes, so tools work with facts instead of guessing from prose.
 
 ## What it looks like
 
@@ -32,7 +32,7 @@ def load(url: String) throws AppError -> String
   fetch(url)!
 ```
 
-Errors are typed and visible at the call site. `!` means "pass it up." No try/catch, no `if err != nil` boilerplate. You see exactly where things can fail by reading the code.
+Errors are typed and visible at the call site. `!` means "pass it up." No try/catch pyramids, no `if err != nil` boilerplate. You see exactly where things can fail by reading the code.
 
 ```
 let message = match status
@@ -51,103 +51,102 @@ Most languages make you choose: you get safety or you get a short learning curve
 - Errors are part of the type system but they're not heavy. `throws`/`!` reads like English.
 - Async isn't a color that infects your whole codebase. The caller decides, not the function.
 - Nullable types (`T?`) have exactly four operations. You can't ignore them and you can't get clever with them.
-- Max 3 function arguments (planned, not yet enforced). More than that and you use a struct. The language pushes you toward clean APIs by default.
+- Named arguments everywhere, so `resize(width: 100, height: 50)` can't silently become `resize(50, 100)`. Single-argument calls are getting a label-free form ([#52](https://github.com/brianp/asterc/issues/52)); two or more will always need names.
 
 The goal is that you spend your time thinking about what the code should do, not fighting the language to express it.
 
 ## Status
 
-The compiler works end-to-end for a growing slice of the language. The front-end (lexer, parser, type checker) is well ahead of the back-end (codegen, runtime), so `check` accepts more programs than `run` or `build` can execute today. That gap is shrinking with each release.
+The compiler runs end-to-end: lexer, parser, type checker, FIR lowering, and a Cranelift back-end with both JIT and native AOT builds sharing one Rust runtime. Most of the language executes today, including the parts that usually lag: generics, protocols with auto-derive, typed catch dispatch, closures, and the whole green-thread concurrency stack (spawn/resolve, channels, mutexes, work-stealing scheduler, I/O poller). The few constructs that type-check but don't lower yet fail with a clean "not executable yet" diagnostic instead of a crash.
+
+The audited, code-verified breakdown lives in the docs site: [Implementation Status](docs/src/content/docs/reference/status.mdx) for what's done, [Roadmap](docs/src/content/docs/reference/roadmap.mdx) for what isn't.
 
 ```
 asterc check examples/spec/12_async_errors_matching.aster   # type-check only
 asterc run examples/executable/hello.aster                  # JIT compile and run
 asterc build examples/executable/hello.aster -o hello       # produce a native binary
+asterc fmt src/                                             # format in place
 ```
-
-### What works today
-
-**Full pipeline (check + run + build):**
-Functions, arithmetic, conditionals, recursion, classes, single inheritance, string interpolation, closures, lists, maps, pattern matching on literals, for/while loops, basic I/O, and the `examples/executable/*` contract programs.
-
-**Front-end only (check):**
-Generics with constraints, traits and protocols (Eq, Ord, Printable, Iterable, From/Into), async/blocking/resolve, typed error handling (throws/catch), nullable types, modules with selective and wildcard imports, re-exports, and the full `examples/spec/*` tour.
-
-**Formatter:**
-`asterc fmt` ships with a Wadler-Lindig pretty printer, comment preservation, magic trailing comma, import sorting, and `--check`/`--diff`/`--stdin` modes.
 
 ### What's next
 
-The big-ticket items right now are closing the remaining codegen gaps (so more of the front-end surface actually executes), building out the standard library, and getting a testing story in place. After that: REPL, LSP, and an MCP server that gives AI agents direct access to compiler internals.
+The testing story (`asterc test` plus `std/test`), the package manager's resolver, the REPL (the eval-with-persistent-context core already exists; it needs a driver), std networking, and an LSP. The docs Roadmap has the full list with honest verdicts.
 
 ## Build and run
 
-You'll need a Rust toolchain and a C compiler (for the runtime).
+You'll need a Rust toolchain. A C compiler is only used as the linker driver for `asterc build`; the runtime itself is Rust, compiled into the workspace.
 
 ```
-cargo build
+cargo build -p codegen   # integration tests link the runtime staticlib
 cargo test
 ```
 
-The test suite has 1500+ tests across the workspace. If they all pass, you're good.
+For the docs site:
+
+```
+cd docs && pnpm install && pnpm dev
+```
 
 ## Project layout
 
 ```
 lexer/       Tokenizer, indent/dedent handling
-ast/         AST nodes, types, type environment, diagnostics
-parser/      Recursive descent + Pratt precedence
+ast/         AST nodes, types, diagnostics with typed templates
+parser/      Recursive descent + table-driven precedence
 typecheck/   Type inference, unification, generics, traits, modules
 fir/         Flat intermediate representation (FIR) lowering
-codegen/     Cranelift JIT + AOT backends, C runtime, GC
+codegen/     Cranelift JIT + AOT, Rust runtime, green threads, GC
 aster-fmt/   Opinionated formatter
-src/         Compiler driver (check/run/build)
-tests/       Integration tests (organized by feature)
+aster-pkg/   Package manager CLI, written in Aster (Seedfile DSL)
+src/         Compiler driver (check/run/build/fmt/clean)
+tests/       Integration tests, one module per feature
 examples/    Executable contracts + front-end-only spec examples
-docs/design/ Design RFCs
+docs/        Starlight docs site: language docs, internals, RFCs, plans
 ```
 
 ## Features
 
 **Syntax and basics:**
-Indent-based (no braces, no semicolons), functions with named arguments, classes with single inheritance (`extends`), traits (`includes`), closures with capture and type inference, pattern matching (`match`/`=>`), control flow (`while`, `for`, `break`, `continue`, `elif`).
+Indent-based (no braces, no semicolons), functions with named arguments, classes with single inheritance (`extends`), traits (`includes`), closures with capture and type inference, pattern matching (`match`/`=>`) with enum destructuring, ranges (`1..10`, `1..=10`), control flow (`while`, `for`, `break`, `continue`, `elif`).
 
 **Type system:**
-Generics with constraints (`T extends Class`, `T includes Trait`), parametric traits (`trait From[T]`), auto-derivable protocols (Eq, Ord, Printable, Iterable, From/Into), nullable types (`T?`) with `.or()`, `.or_else()`, `.or_throw()`.
+Generics with constraints (`T extends Class`, `T includes Trait`), parametric traits (`trait From[T]`), auto-derivable protocols (Eq, Ord, Printable, Iterable, From/Into), dynamic dispatch (`DynamicReceiver`/`method_missing`), nullable types (`T?`) with `.or()`, `.or_else()`, `.or_throw()`.
 
 **Error handling:**
-`throws` declarations, `throw`, `!` propagation, `!.or(default)`, `!.or_else(-> expr)`, `!.catch` with typed arms. Errors are part of the type system but they read like English.
+`throws` declarations, `throw`, `!` propagation, `!.or(default)`, `!.or_else(-> expr)`, `!.catch` with typed arms that dispatch on the error's actual type at runtime.
 
-**Async:**
-Call-site async (`async f()` returns `Task[T]`, `blocking f()` for suspendable calls, `resolve task!` to consume). The function doesn't decide if it's async, the caller does.
+**Concurrency:**
+Call-site async (`async f()` returns `Task[T]`, `blocking` for suspendable calls, `resolve task!` to consume), M:N green threads with work stealing and safepoint preemption, `Mutex[T]`, `Channel[T]`, must-consume task tracking, `Drop`/`Close` cleanup on every scope exit (cancellation-path cleanup is [#51](https://github.com/brianp/asterc/issues/51)).
 
-**Modules:**
-`use`/`pub` imports, selective and wildcard, namespace imports (`as`), re-exports (`pub use`), virtual stdlib with prelude.
+**Standard library:**
+Virtual stdlib with prelude plus `std/cmp`, `std/fmt`, `std/collections`, `std/convert`, `std/random`, `std/sys`, `std/fs`, `std/process`, `std/crypto`, and gated `std/runtime` (JIT eval) and `std/unstable`.
 
 **Diagnostics:**
-Structured `Diagnostic` type with spans, error codes (L/P/E series), Ariadne rendering, did-you-mean suggestions, parser recovery, multi-error accumulation.
+Structured diagnostics with typed templates and stable codes (L/P/E/M/W series), Ariadne rendering, did-you-mean suggestions, parser recovery, multi-error accumulation.
 
 ## Codegen
 
 The back-end compiles through Cranelift in two modes:
 
-- **JIT** (`asterc run`): Compiles in-memory and executes immediately.
-- **AOT** (`asterc build`): Emits an object file, links against a C runtime, produces a native binary.
+- **JIT** (`asterc run`): compiles in-memory and executes immediately.
+- **AOT** (`asterc build`): emits an object file and links it against the same Rust runtime, built as a static library. Incremental builds are cached under `.aster/build/` with content hashing.
 
-Both share the same FIR (Flat Intermediate Representation) lowering and C runtime source, so they don't drift apart. Memory management is a non-moving mark-and-sweep GC with shadow stack root tracking.
+Both modes share one FIR lowering, one translation layer, and one runtime, so they can't drift apart. Memory management is a non-moving mark-and-sweep GC with shadow-stack roots and precise tracing of pointer fields.
 
-## Design decisions
+## Design docs
 
-All the "why" lives in the design RFCs:
+The "why" lives in the docs site. Summaries under RFCs, complete texts under Full RFCs:
 
-- [Language Philosophy](docs/design/language-philosophy.md)
-- [Error Handling](docs/design/error-handling-rfc.md) — `throws`/`!`/`T?`
-- [Async](docs/design/async-rfc.md) — green threads, channels, mutexes
-- [Type System](docs/design/type-system-rfc.md) — inheritance, traits, generics, the 3-arg rule
-- [Protocols](docs/design/protocols-rfc.md) — Eq, Ord, Printable, Iterable, From/Into
-- [Closures](docs/design/closures-rfc.md) — capture, lambda lifting
-- [Modules](docs/design/modules-rfc.md) — imports, namespacing, re-exports
-- [Introspection](docs/design/introspection-rfc.md) — runtime type info, Ruby-inspired
+- [Language Philosophy](docs/src/content/docs/rfcs/full/language-philosophy.mdx)
+- [Error Handling](docs/src/content/docs/rfcs/full/error-handling.mdx) covering `throws`, `!`, and `T?`
+- [Concurrency and Async](docs/src/content/docs/rfcs/full/async.mdx) covering green threads, channels, mutexes
+- [Type System](docs/src/content/docs/rfcs/full/type-system.mdx) covering inheritance, traits, generics
+- [Standard Protocols](docs/src/content/docs/rfcs/full/protocols.mdx) covering Eq, Ord, Printable, Iterable, From/Into, and the named-arguments rule
+- [Closures](docs/src/content/docs/rfcs/full/closures.mdx) covering capture and lambda lifting
+- [Modules and Imports](docs/src/content/docs/rfcs/full/modules.mdx)
+- [Introspection](docs/src/content/docs/rfcs/full/introspection.mdx) covering runtime type info
+
+The compiler's own internals (lexer through codegen, the runtime, the GC) are documented under Compiler Internals on the docs site, verified against the code they describe.
 
 ## Contributing
 

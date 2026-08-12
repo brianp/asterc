@@ -11,6 +11,7 @@ frontmatter drifts, the status page is verified against code (last full audit:
 
 | Plan | State |
 |---|---|
+| [arity-1-args.md](arity-1-args.md) | Pending — decided rule ([#52](https://github.com/brianp/asterc/issues/52)), not yet implemented |
 | [package-manager.md](package-manager.md) | Phases 0–2 shipped (Seedfile DSL); Phase 3 resolver not started |
 | [std-networking.md](std-networking.md) | Not started; poller/blocking-pool prerequisites exist |
 | [std-networking-followups.md](std-networking-followups.md) | Deferred behind std-networking v1 |

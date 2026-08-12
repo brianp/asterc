@@ -11,6 +11,12 @@ The rest of the documentation describes only what is actually implemented.
 
 ## Language
 
+- **Arity-1 named arguments (decided, unimplemented)** — one argument may go
+  unnamed, two or more must be named, uniformly including constructors (which
+  currently accept positional at any arity — drift being reverted). Decided
+  2026-08-12; RFC amendment in the protocols RFC, plan at
+  `docs/plans/arity-1-args.md`, tracked in
+  [#52](https://github.com/brianp/asterc/issues/52).
 - **`async scope` blocks** — older design docs describe an explicit `async scope`
   construct. No such keyword or AST node exists; today every function body acts as an
   implicit task scope. Whether an explicit block form is still wanted is open.

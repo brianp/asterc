@@ -9,6 +9,19 @@ sidebar:
 
 *Implementation state: see [Implementation Status](/reference/status/)*
 
+## Amendment (2026-08-12): Arity-1 Named Arguments
+
+The original rule below says names are always required. That's now refined: a call with exactly one argument may omit the label. Two or more arguments must be named. This applies uniformly to functions, methods, and constructors.
+
+The reasoning: labels exist to disambiguate between parameters. With one parameter there's nothing to disambiguate, so `say(hello)` can't be wrong the way `Point(1, 2)` can (transposed fields that still compile). At two or more arguments the label is exactly what catches silent transposition, which is the failure mode this convention exists to prevent.
+
+Two consequences:
+
+- The explicit label stays legal at arity 1. `say(message: hello)` and `say(hello)` are both valid.
+- Constructors had drifted into accepting positional arguments at any arity, contradicting this RFC. That acceptance tightens to the same arity-1 rule.
+
+This supersedes the earlier three-positional-arguments rule (issue #30), which was removed in favor of full consistency before this refinement. Tracked in [#52](https://github.com/brianp/asterc/issues/52); implementation plan: `docs/plans/arity-1-args.md`.
+
 ## 1. Design Principles
 
 - Standard protocols are how user types become first-class citizens of the language
@@ -66,6 +79,8 @@ When `Point includes Eq`, `Self` becomes `Point`. The compiler enforces
 that `eq` takes a `Point`, not any arbitrary `Eq` type.
 
 ### Named Arguments Everywhere
+
+> Amended 2026-08-12: labels are optional at arity 1. See the amendment at the top of this RFC.
 
 All function calls and class construction use named arguments. Names are
 always required. Argument order at the call site does not matter — the
