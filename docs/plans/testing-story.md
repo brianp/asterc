@@ -29,13 +29,22 @@ Rust locking libtest in is not a good look and we're not repeating it.
 
 ## Design
 
-### Conventions
+### Conventions (decided 2026-08-13)
 
-- Test files: `*_test.aster`, discovered under `tests/` from the project root
+Two test locations, one purpose each — not two ways to do the same thing:
+
+- **Integration tests**: `*_test.aster` under `tests/` from the project root
   (Seedfile root, then `.aster/`, then `.git/` — same discovery as the build
-  system; relates to #43).
-- Tests: top-level `def test_*` functions. Zero args, or one arg for context
-  injection (below). May declare `throws`.
+  system). These exercise the project's `pub` API only. Colocation
+  (`foo_test.aster` beside `foo.aster`) is rejected.
+- **Unit tests**: top-level `def test_*` functions inside ordinary source
+  files, Rust-inline-module style. They see the file's private items. No
+  `#[cfg(test)]` machinery: the `test_` naming convention IS the conditional —
+  the lowerer skips `test_*` defs outside test mode (a special case of
+  dead-code elimination; relates to #45). `test_` is a reserved-by-convention
+  prefix on top-level defs, documented.
+- Tests: zero args, or one arg for context injection (below). May declare
+  `throws`.
 - Classification per test, via typed catch in the harness: clean return = PASS,
   `AssertionError` = FAIL (message shown), any other `Error` = ERROR.
 
@@ -47,6 +56,10 @@ Rust locking libtest in is not a good look and we're not repeating it.
 - `assert_throws(f: Fn() -> Void)` — passes if `f` throws, with a typed
   variant to be designed once we see real usage
 - All throw `AssertionError extends Error` carrying the failure message.
+- Failure rendering (decided): `Eq` is the only requirement. When the type
+  includes `Printable`, failures render values via `debug()` (which defaults
+  to `to_string()`); without it, the message degrades to "values differ".
+  No second function, no Printable requirement.
 - Arity-1 (#52) applies: `assert(x > 3)` reads clean.
 - These are deliberately simple enough to become the first tenants of an
   Aster-source stdlib layer later.
@@ -86,7 +99,9 @@ Everything that renders is a formatter, including future machine output:
   plugs in rather than a second design.
 
 Selection: `--formatter name`, with a Seedfile default
-(`test(formatter: "plain")`) once the pkg CLI grows test config. Custom
+(`test(formatter: "plain")`) once the pkg CLI grows test config. No TTY
+auto-detection (decided): pride is the default everywhere, including CI —
+you get what you ask for; want something else, ask for it. Custom
 formatters are Aster classes including `Formatter`, compiled in from the
 project's tests tree by convention (exact registration convention to be
 settled in implementation — likely a `pub def formatter() -> F` in
@@ -107,6 +122,16 @@ except you keep discovery, hooks metadata, and the event/formatter contract.
 `asterc test [filter] [--seed N] [--formatter name]` — filter is a substring
 match on test names, minitest-style. Runs all discovered test files when no
 path given.
+
+## Sequencing prerequisites (decided 2026-08-13)
+
+1. **#43 — root-relative module resolution** is a hard prerequisite: a test
+   in `tests/` must `use geometry { Point }` against the project's modules.
+   The chain is #43 → testing story → hand-written resolver.
+2. **#15 — the stacktrace story** gets worked before (or with) the
+   failure-location task below. Assertion call-site spans injected at lowering
+   (`#[track_caller]`-style) cover the common case; traces cover the rest.
+   The event format reserves a trace field either way.
 
 ## Tasks
 
