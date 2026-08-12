@@ -11,7 +11,6 @@ frontmatter drifts, the status page is verified against code (last full audit:
 
 | Plan | State |
 |---|---|
-| [arity-1-args.md](arity-1-args.md) | Pending — decided rule ([#52](https://github.com/brianp/asterc/issues/52)), not yet implemented |
 | [testing-story.md](testing-story.md) | Pending — grounded design ([#2](https://github.com/brianp/asterc/issues/2)); asterc test + std/test, open formatter/harness seams |
 | [stacktraces.md](stacktraces.md) | Pending — native FP-walk capture at throw ([#15](https://github.com/brianp/asterc/issues/15)); prerequisite-adjacent to testing |
 | [package-manager.md](package-manager.md) | Phases 0–2 shipped (Seedfile DSL); Phase 3 resolver not started |
@@ -31,6 +30,7 @@ on the docs Roadmap page or as GitHub issues — not in the plan files.
 
 | Plan | Outcome |
 |---|---|
+| [arity-1-args.md](completed/arity-1-args.md) | Complete — one declared param takes a positional, 2+ require names ([#52](https://github.com/brianp/asterc/issues/52)); constructors included |
 | [syntax-buildout.md](completed/syntax-buildout.md) | Complete — original bootstrap plan, long surpassed |
 | [protocols.md](completed/protocols.md) | Complete except Hash trait (→ Roadmap) |
 | [random-and-ranges.md](completed/random-and-ranges.md) | Complete |

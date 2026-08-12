@@ -142,10 +142,10 @@ Every `def` is desugared at parse time (`parse_def_as_let` in `parser/src/class_
 
 Function calls use named arguments: `f(x: 1, y: 2)`. Arguments are matched by name, not position, so `f(y: 2, x: 1)` is identical. The typechecker uses `param_names` on `Type::Function` to validate argument names, and suggests the closest parameter name (edit distance) when an argument name is misspelled.
 
-The parser accepts positional arguments — it synthesizes names `_0`, `_1`, … for them — and the *typechecker* decides what to do with them:
+The parser accepts positional arguments — it synthesizes names `_0`, `_1`, … for them — and the *typechecker* applies the **arity-1 rule**, keyed off the callee's declared parameter/field count:
 
-- On a plain function call, positional arguments are rejected with a hint diagnostic (``add `name: ` before this``).
-- On a **constructor-style call** (an identifier starting with an uppercase letter), positional arguments are accepted and mapped to fields by index, so `Point(1, 2)` typechecks.
+- A callee that declares **exactly one** parameter or field accepts a single positional argument, so `say("hi")` and a single-field `Wrapper(42)` both typecheck. Functions, methods, lambdas, and constructors follow the same rule.
+- A callee that declares **two or more** parameters or fields rejects every positional with a hint diagnostic (``add `name: ` before this``), so `Point(1, 2)` on a two-field class is a type error — it must be `Point(x: 1, y: 2)`. This keys off the declared count, not the argument count, so a defaulted second parameter still forces names.
 
 ### Constructor syntax
 

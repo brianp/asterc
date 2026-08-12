@@ -39,7 +39,7 @@ Let's break it down:
 def add(a: Int, b: Int) -> Int
   a + b
 
-let result = add(2, 3)
+let result = add(a: 2, b: 3)
 log(to_string(result))
 ```
 
@@ -47,6 +47,7 @@ Notice:
 - **Explicit type annotations** on parameters and return types
 - **Implicit return** — the last expression in a function is its return value
 - `let` bindings for variables
+- **Named arguments** — a call with two or more arguments names each one, so `add(a: 2, b: 3)` can't silently transpose into `add(3, 2)`
 
 ## Type Inference
 

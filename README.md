@@ -51,7 +51,7 @@ Most languages make you choose: you get safety or you get a short learning curve
 - Errors are part of the type system but they're not heavy. `throws`/`!` reads like English.
 - Async isn't a color that infects your whole codebase. The caller decides, not the function.
 - Nullable types (`T?`) have exactly four operations. You can't ignore them and you can't get clever with them.
-- Named arguments everywhere, so `resize(width: 100, height: 50)` can't silently become `resize(50, 100)`. Single-argument calls are getting a label-free form ([#52](https://github.com/brianp/asterc/issues/52)); two or more will always need names.
+- Named arguments everywhere, so `resize(width: 100, height: 50)` can't silently become `resize(50, 100)`. A callee that declares a single parameter takes a label-free argument ([#52](https://github.com/brianp/asterc/issues/52)); two or more always need names.
 
 The goal is that you spend your time thinking about what the code should do, not fighting the language to express it.
 

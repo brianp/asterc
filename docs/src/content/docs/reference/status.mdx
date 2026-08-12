@@ -15,6 +15,7 @@ plan files, as current. Unfinished work is inventoried thematically on the
 | Area | Verdict |
 |---|---|
 | Syntax buildout (operators, control flow, collections, modules) | **Complete** |
+| Arity-1 named-argument rule (one declared param → positional OK, else named; constructors included) | **Complete** |
 | Protocols (named args, enums, Self, parametric traits, Eq/Ord/Printable/From/Into) | **Mostly complete** |
 | Ranges & random | **Complete** |
 | Execution path (FIR, Cranelift JIT/AOT, parity gate) | **Complete** |
@@ -34,7 +35,9 @@ plan files, as current. Unfinished work is inventoried thematically on the
 
 ## Language
 
-**Shipped and test-covered:** the full protocol arc — named-only arguments, enums with
+**Shipped and test-covered:** the full protocol arc — the arity-1 named-argument rule (a
+callee declaring one parameter or field takes a lone positional; two or more require
+names, constructors included), enums with
 payload variants and destructuring patterns, `Self` typing, parametric traits,
 auto-derived `Eq`/`Ord`/`Printable`, `From`/`Into` with expected-type resolution and
 fallible `Int.from` / `to_int()`, `Iterable`/`Iterator` with a 14-method vocabulary,

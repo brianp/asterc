@@ -11,16 +11,17 @@ sidebar:
 
 ## Amendment (2026-08-12): Arity-1 Named Arguments
 
-The original rule below says names are always required. That's now refined: a call with exactly one argument may omit the label. Two or more arguments must be named. This applies uniformly to functions, methods, and constructors.
+The original rule below says names are always required. That's now refined, keyed off the callee's **declared parameter or field count**: a callee that declares exactly one parameter (functions, methods, lambdas) or exactly one field (constructors) may be called with a single unnamed argument. A callee that declares two or more parameters or fields requires a name on every argument, at every call-site arity. This applies uniformly to functions, methods, and constructors.
 
-The reasoning: labels exist to disambiguate between parameters. With one parameter there's nothing to disambiguate, so `say(hello)` can't be wrong the way `Point(1, 2)` can (transposed fields that still compile). At two or more arguments the label is exactly what catches silent transposition, which is the failure mode this convention exists to prevent.
+The reasoning: labels exist to disambiguate between parameters. With one declared parameter there's nothing to disambiguate, so `say(hello)` can't be wrong the way `Point(1, 2)` can (transposed fields that still compile). At two or more declared parameters the label is exactly what catches silent transposition, which is the failure mode this convention exists to prevent. Keying off the declared count rather than the number of arguments passed keeps the rule stateable in one line — one param, positional OK, else name it — and preserves that transposition safety as a signature evolves: adding a second parameter (even a defaulted one) flips the callee into the names-required regime, so `Config(name, timeout = 30)` must be called `Config(name: "prod")`, never `Config("prod")`.
 
-Two consequences:
+Three consequences:
 
 - The explicit label stays legal at arity 1. `say(message: hello)` and `say(hello)` are both valid.
-- Constructors had drifted into accepting positional arguments at any arity, contradicting this RFC. That acceptance tightens to the same arity-1 rule.
+- A 2+-parameter callee rejects a lone positional even when the remaining parameters have defaults, because the rule keys off declared count, not arguments supplied.
+- Constructors had drifted into accepting positional arguments at any arity, contradicting this RFC. That acceptance tightens to the same declared-count rule: a single-field class takes a lone positional, a multi-field class requires names.
 
-This supersedes the earlier three-positional-arguments rule (issue #30), which was removed in favor of full consistency before this refinement. Tracked in [#52](https://github.com/brianp/asterc/issues/52); implementation plan: `docs/plans/arity-1-args.md`.
+This supersedes the earlier three-positional-arguments rule (issue #30), which was removed in favor of full consistency before this refinement. Tracked in [#52](https://github.com/brianp/asterc/issues/52); implementation plan: `docs/plans/completed/arity-1-args.md`.
 
 ## 1. Design Principles
 
@@ -80,7 +81,7 @@ that `eq` takes a `Point`, not any arbitrary `Eq` type.
 
 ### Named Arguments Everywhere
 
-> Amended 2026-08-12: labels are optional at arity 1. See the amendment at the top of this RFC.
+> Amended 2026-08-12: labels are optional when the callee declares exactly one parameter or field. See the amendment at the top of this RFC.
 
 All function calls and class construction use named arguments. Names are
 always required. Argument order at the call site does not matter — the

@@ -94,7 +94,7 @@ Enums also carry `methods` and trait `includes` of their own.
 
 `Lambda` is the richest variant — it carries typed `params`, a `ret_type` (possibly `Type::Inferred`), the `body`, optional `generic_params`, an optional `throws` type, `type_constraints` for generic parameters (`T extends Foo includes Bar`), and `defaults` (per-position optional default value expressions).
 
-**Call arguments are `Vec<(String, Span, Expr)>`** — name, name span, and value for each argument. Calls are named-argument based; for positional arguments (allowed on constructors), the parser synthesizes the names `_0`, `_1`, … and the type checker maps them to parameters by index. The dedicated name span lets diagnostics underline exactly the argument label ("did you mean `y`?").
+**Call arguments are `Vec<(String, Span, Expr)>`** — name, name span, and value for each argument. Calls are named-argument based; the parser synthesizes the names `_0`, `_1`, … for positional arguments, and the type checker applies the arity-1 rule — a synthesized positional is accepted only when the callee (function, method, lambda, or constructor) declares exactly one parameter or field, otherwise it is rejected with a hint naming the parameter it would have bound to. The dedicated name span lets diagnostics underline exactly the argument label ("did you mean `y`?").
 
 Patterns come in two flavors:
 

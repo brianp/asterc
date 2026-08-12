@@ -273,9 +273,12 @@ class Report includes Printable, Loggable
 ## 5. Function Arguments — Named Args & The 3-Arg Rule
 
 **UPDATED by protocols-rfc.md:** All function calls and class construction
-use named arguments. Names are always required. This replaces the earlier
-positional-only design to ensure one consistent calling convention
-everywhere.
+use named arguments. This replaces the earlier positional-only design to
+ensure one consistent calling convention everywhere. Names are required once
+the callee declares two or more parameters or fields; a callee that declares
+exactly one may take a lone positional (the arity-1 amendment in
+protocols-rfc.md). The "no exceptions" and "maximum 3 parameters" wording below
+is the original design record and no longer describes the implemented rule.
 
 ### Named arguments everywhere
 

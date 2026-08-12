@@ -26,7 +26,29 @@ let result = add(a: 2, b: 3)    # 5
 let same = add(b: 3, a: 2)      # 5 — order-independent
 ```
 
-Positional arguments on a user-defined function are a compile error; the diagnostic tells you which name to add. (Built-in functions like `log` and `len` accept a bare positional argument.)
+### The arity-1 rule
+
+A callee that declares **exactly one** parameter may take a single unnamed argument. The label stays legal at arity 1, so both forms typecheck the same:
+
+```
+def say_hi(message: String) -> String
+  message
+
+say_hi("hi")            # positional, allowed at arity 1
+say_hi(message: "hi")   # named, also allowed
+```
+
+A callee that declares **two or more** parameters requires a name on every argument. This keys off the declared parameter count, not how many arguments you pass, so it holds even when the extra parameters have defaults:
+
+```
+def config(name: String, timeout: Int = 30) -> String
+  name
+
+config("prod")            # error: add `name: ` before this
+config(name: "prod")      # ok
+```
+
+Passing a positional argument to a 2+-parameter function is a compile error; the diagnostic tells you which name to add. Mixing positional and named arguments in one call is likewise rejected. Built-in functions like `log`, `say`, and `len` declare one parameter, so they accept a bare positional argument by the same rule.
 
 ## Explicit Return
 

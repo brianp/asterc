@@ -101,7 +101,7 @@ class Point
     x: Int
     y: Int
 
-let p: Point = Point(1, 2)
+let p: Point = Point(x: 1, y: 2)
 ";
     assert_redundant_warning(src, "Point");
 }

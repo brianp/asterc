@@ -223,7 +223,7 @@ Point(x: 1.0, y: 2.0)     # named
 Point(1.0, 2.0)           # positional -- synthesized names _0, _1
 ```
 
-The parser accepts both forms. Enforcement is split with the typechecker: positional arguments are valid for constructors, while for regular calls the typechecker rejects them with a hint about the real parameter name. What the parser *does* reject is a duplicate argument name (`f(x: 1, x: 2)`) and argument lists over 10,000 entries. Trailing commas and newlines inside the parentheses are allowed.
+The parser accepts both forms and synthesizes `_N` names for every positional. Enforcement is split with the typechecker: it applies the **arity-1 rule**, accepting a synthesized positional only when the callee declares exactly one parameter or field (functions, methods, lambdas, and constructors alike), and rejecting positionals on any 2+-parameter callee with a hint about the real parameter name. So `Point(1.0, 2.0)` above — a two-field class — parses fine but is a type error; it must be `Point(x: 1.0, y: 2.0)`. What the parser *does* reject is a duplicate argument name (`f(x: 1, x: 2)`) and argument lists over 10,000 entries. Trailing commas and newlines inside the parentheses are allowed.
 
 ### Primary expressions
 

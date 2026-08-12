@@ -1610,10 +1610,18 @@ impl Lowerer {
         args: &[(String, ast::Span, Expr)],
     ) -> Result<Vec<FirExpr>, LowerError> {
         if let Some(param_defaults) = self.ms.function_defaults.get(func_name).cloned() {
-            // Build args in parameter order, using defaults for missing args
+            // Build args in parameter order, using defaults for missing args.
+            // A caller-supplied arg matches a param either by its explicit name
+            // or by the synthesized positional token `_i` for the param at index
+            // `i` (the arity-1 rule lets a lone positional reach a single-param
+            // callee that also has a default). Match positional before default so
+            // the supplied value wins over the default.
             let mut fir_args = Vec::new();
-            for (param_name, default_expr) in &param_defaults {
-                if let Some((_, _, arg_expr)) = args.iter().find(|(name, _, _)| name == param_name)
+            for (i, (param_name, default_expr)) in param_defaults.iter().enumerate() {
+                let positional = format!("_{i}");
+                if let Some((_, _, arg_expr)) = args
+                    .iter()
+                    .find(|(name, _, _)| name == param_name || name == &positional)
                 {
                     fir_args.push(self.lower_expr(arg_expr)?);
                 } else if let Some(default) = default_expr {

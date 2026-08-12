@@ -95,21 +95,178 @@ let s: String = to_string(value: 42)
 }
 
 #[test]
-fn named_args_missing_name_error() {
-    // Positional args give a typecheck error hinting at the correct param name
+fn named_args_multi_param_positional_error() {
+    // A callee with 2+ params rejects any positional arg, hinting the param name.
     let err = crate::common::check_err(
         r#"
-def greet(name: String) -> String
-    name
-let x = greet("Alice")
+def add(a: Int, b: Int) -> Int
+    a + b
+let x = add(1, 2)
 "#,
     );
     assert!(
-        err.contains("name: value")
+        err.contains("add `a: ` before this")
             || err.contains("positional argument")
             || err.contains("named argument"),
-        "expected hint about 'name' param, got: {}",
+        "expected hint about 'a' param, got: {}",
         err
+    );
+}
+
+// ── Arity-1 named-argument rule (issue #52) ─────────────────────────
+
+#[test]
+fn arity1_positional_function_accepted() {
+    // A function declaring exactly one param accepts a lone positional arg.
+    crate::common::check_ok(
+        r#"
+def say_hi(message: String) -> String
+    message
+let x: String = say_hi("hi")
+"#,
+    );
+}
+
+#[test]
+fn arity1_labeled_function_accepted() {
+    // The explicit label stays legal at arity 1.
+    crate::common::check_ok(
+        r#"
+def say_hi(message: String) -> String
+    message
+let x: String = say_hi(message: "hi")
+"#,
+    );
+}
+
+#[test]
+fn arity1_positional_method_accepted() {
+    // A method declaring exactly one param accepts a lone positional arg.
+    crate::common::check_ok(
+        r#"
+class Greeter
+    prefix: String
+    def greet(message: String) -> String
+        message
+let g = Greeter(prefix: "hi")
+let x: String = g.greet("hello")
+"#,
+    );
+}
+
+#[test]
+fn arity1_positional_constructor_accepted() {
+    // A class declaring exactly one field accepts a lone positional arg.
+    crate::common::check_ok(
+        r#"
+class Box
+    value: Int
+let b = Box(42)
+"#,
+    );
+}
+
+#[test]
+fn arity1_labeled_constructor_accepted() {
+    // The explicit label stays legal at arity 1 for constructors too.
+    crate::common::check_ok(
+        r#"
+class Box
+    value: Int
+let b = Box(value: 42)
+"#,
+    );
+}
+
+#[test]
+fn arity2_positional_function_rejected() {
+    // A function declaring 2+ params rejects positional args.
+    let err = crate::common::check_err(
+        r#"
+def add(a: Int, b: Int) -> Int
+    a + b
+let x = add(1, 2)
+"#,
+    );
+    assert!(
+        err.contains("add `a: ` before this")
+            || err.contains("positional argument")
+            || err.contains("named argument"),
+        "expected rejection hinting first param, got: {}",
+        err
+    );
+}
+
+#[test]
+fn arity2_positional_constructor_rejected() {
+    // A class declaring 2+ fields rejects positional construction; hint names
+    // the first unnamed field.
+    let err = crate::common::check_err(
+        r#"
+class Point
+    x: Int
+    y: Int
+let p = Point(1, 2)
+"#,
+    );
+    assert!(
+        err.contains("add `x: ` before this")
+            || err.contains("positional argument")
+            || err.contains("named argument"),
+        "expected rejection hinting first field, got: {}",
+        err
+    );
+}
+
+#[test]
+fn arity2_lone_positional_with_defaults_rejected() {
+    // Declared param count, not call-site arg count, drives the rule: a 2-param
+    // callee rejects a lone positional even when the rest have defaults.
+    let err = crate::common::check_err(
+        r#"
+def config(name: String, timeout: Int = 30) -> String
+    name
+let x = config("prod")
+"#,
+    );
+    assert!(
+        err.contains("add `name: ` before this")
+            || err.contains("positional argument")
+            || err.contains("named argument"),
+        "expected rejection hinting 'name', got: {}",
+        err
+    );
+}
+
+#[test]
+fn mixed_positional_and_named_rejected() {
+    // A single call mixing positional and named args is rejected.
+    let err = crate::common::check_err(
+        r#"
+def add(a: Int, b: Int) -> Int
+    a + b
+let x = add(1, b: 2)
+"#,
+    );
+    assert!(
+        err.contains("add `a: ` before this")
+            || err.contains("positional argument")
+            || err.contains("named argument"),
+        "expected mixed args rejected, got: {}",
+        err
+    );
+}
+
+#[test]
+fn arity1_builtin_positional_still_accepted() {
+    // The single-arg builtins keep accepting their lone positional argument.
+    crate::common::check_ok(
+        r#"
+say("hi")
+log("hello")
+let n: Int = len([1, 2, 3])
+let s: String = to_string(42)
+"#,
     );
 }
 

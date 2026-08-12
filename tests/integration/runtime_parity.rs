@@ -556,3 +556,26 @@ def main() -> Int
 ",
     );
 }
+
+// ─── Arity-1 positional binds over a param default (issue #52) ──────
+
+#[test]
+fn parity_arity1_positional_overrides_default() {
+    // A single-param callee that also has a default accepts a lone positional
+    // (arity-1 rule). The supplied value must win over the default at runtime,
+    // not get dropped in favor of it. Regression for a lowering bug where the
+    // positional `_0` failed to match the named param and the default leaked
+    // through.
+    assert_parity(
+        "arity1-positional-default",
+        "\
+def f(x: Int = 5) -> Int
+  x
+def main() -> Int
+  say(message: to_string(f(42)))
+  say(message: to_string(f()))
+  say(message: to_string(f(x: 9)))
+  0
+",
+    );
+}

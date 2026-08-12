@@ -276,22 +276,6 @@ impl TypeChecker {
                 }
                 "log" | "say" => return self.check_print_call(func, args),
                 "random" => return self.check_random_call(func, args),
-                "to_int" if !matches!(self.env.get_var_type("to_int"), Some(t) if !Self::is_builtin_to_int(t)) =>
-                {
-                    // `to_int(text: String) throws IntParseError -> Int` accepts both
-                    // positional (`to_int("5")`) and named (`to_int(text: "5")`) forms.
-                    // Normalize a lone positional arg to the `text` parameter, then
-                    // dispatch through the generic call path so the registered throwing
-                    // signature drives error handling and catchability. The guard keeps a
-                    // user-defined `to_int` on the normal path untouched.
-                    if let [(arg_name, span, expr)] = args
-                        && arg_name == "_0"
-                    {
-                        let renamed = vec![("text".to_string(), *span, expr.clone())];
-                        return self.check_user_function_call(func, &renamed, bypass_throws_check);
-                    }
-                    return self.check_user_function_call(func, args, bypass_throws_check);
-                }
                 "resolve_all" => return self.check_resolve_builtin(func, args, true),
                 "resolve_first" => return self.check_resolve_builtin(func, args, false),
                 "Mutex" => return self.check_mutex_constructor(func, args),
@@ -698,23 +682,6 @@ impl TypeChecker {
         Ok(Type::Custom(name, vec![elem_ty]))
     }
 
-    /// True when `ty` is the built-in `to_int` signature registered in
-    /// `register_builtins`, i.e. `to_int(text: String) throws IntParseError -> Int`.
-    /// Used to distinguish the builtin from a user-defined `to_int` of the same name.
-    fn is_builtin_to_int(ty: &Type) -> bool {
-        matches!(
-            ty,
-            Type::Function {
-                param_names,
-                params,
-                throws: Some(err),
-                ..
-            } if param_names.as_slice() == ["text"]
-                && params.as_slice() == [Type::String]
-                && matches!(err.as_ref(), Type::Custom(n, _) if n == "IntParseError")
-        )
-    }
-
     fn check_user_function_call(
         &mut self,
         func: &Expr,
@@ -756,14 +723,14 @@ impl TypeChecker {
                 }))
                 .with_label(func.span(), "throwing function requires error handling"));
             }
-            // Detect whether this is a constructor-style call (uppercase first letter)
-            let is_constructor = matches!(
-                func,
-                Expr::Ident(name, _) if name.starts_with(|c: char| c.is_uppercase())
-            );
-
-            // If any positional args on a non-constructor call, reject early with hint
-            if !is_constructor {
+            // Arity-1 named-argument rule (issue #52): a synthesized positional
+            // (`_N`) is only legal when the callee declares exactly one
+            // parameter/field. With 2+ declared params, every argument must be
+            // named, at every call-site arity. This keys off the DECLARED count,
+            // not the number of args passed, so a 2-param callee whose extra
+            // params have defaults still rejects a lone positional. Applies to
+            // functions, methods, and constructors uniformly.
+            if param_names.len() != 1 {
                 for (arg_name, _, arg_expr) in args {
                     if arg_name.starts_with('_')
                         && !param_names.contains(arg_name)

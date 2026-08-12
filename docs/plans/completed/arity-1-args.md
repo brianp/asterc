@@ -1,6 +1,6 @@
 # Plan: Arity-1 Named Arguments
 
-status: pending
+status: complete
 rfc: protocols amendment 2026-08-12
 issue: https://github.com/brianp/asterc/issues/52
 
