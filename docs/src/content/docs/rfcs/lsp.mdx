@@ -1,0 +1,33 @@
+---
+title: "RFC: LSP Server"
+description: Language Server Protocol for inline errors, go-to-definition, hover, and autocomplete.
+sidebar:
+  badge:
+    text: Planned
+    variant: note
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+
+**Status:** Planned
+
+Language Server Protocol implementation enabling inline errors, go-to-definition, hover type info, and autocomplete in editors. Uses tower-lsp with full re-lex/re-parse on change. Includes custom `aster/` methods for agent tooling.
+
+## Key Decisions
+
+- **tower-lsp** framework (async, community standard).
+- **Full re-lex/re-parse** on each change — fast enough for small-to-medium files, incremental parsing deferred.
+- **MVP priorities**: diagnostics > hover + go-to-def > autocomplete (covers 90% of daily use).
+- **SymbolIndex** built during typecheck: maps use-site spans to definition info.
+- **Five phases**: diagnostics, hover + go-to-def, autocomplete, find-references + outline, VS Code extension.
+- **Custom agent hooks** (Phase 6):
+  - `aster/dumpAst`, `aster/dumpTokens`, `aster/dumpTypes`, `aster/typeAt`, `aster/symbolsFlat`
+  - `aster/diagnosticsRich` with AST context, scope, candidate fixes
+  - `aster/compilationResult` event stream
+- **VS Code extension**: TextMate grammar for syntax highlighting, thin extension launching LSP binary.
+
+## Dependencies
+
+Requires the diagnostics plan (spans, error recovery, JSON output).
+
+<LinkCard title="Full Plan" href="https://github.com/example/asterc/blob/main/docs/plans/lsp.md" description="Read the complete LSP server plan." />

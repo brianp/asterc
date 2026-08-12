@@ -1,0 +1,71 @@
+---
+title: Hello World
+description: Write and run your first Aster program.
+---
+
+Let's write a simple Aster program to see the language in action.
+
+## Your First Program
+
+Create a file called `hello.aster`:
+
+```
+def main() -> Void
+  log("Hello, Aster!")
+  if true
+    log("Welcome to the future of web development")
+  else
+    log("This won't run")
+```
+
+Run it:
+
+```bash
+aster hello.aster
+```
+
+## What Just Happened?
+
+Let's break it down:
+
+- `def main() -> Void` — defines a function named `main` that returns nothing
+- Blocks are **indentation-based** — no `end` keywords, no curly braces
+- `log(...)` is a built-in function for output
+- `if`/`else` works exactly as you'd expect — no parentheses needed around the condition
+
+## A Function That Returns a Value
+
+```
+def add(a: Int, b: Int) -> Int
+  a + b
+
+let result = add(2, 3)
+log(to_string(result))
+```
+
+Notice:
+- **Explicit type annotations** on parameters and return types
+- **Implicit return** — the last expression in a function is its return value
+- `let` bindings for variables
+
+## Type Inference
+
+Aster infers types where it can:
+
+```
+let x = 42          # Int
+let name = "Aster"  # String
+let flag = true     # Bool
+let pi = 3.14       # Float
+```
+
+You don't need to annotate every variable — the compiler figures it out. But you can always be explicit:
+
+```
+let x: Int = 42
+let name: String = "Aster"
+```
+
+## What's Next?
+
+<a href="/language/primitives/" style="display: inline-flex; align-items: center; gap: 0.35rem; font-weight: 600;">Learn about types &rarr;</a>

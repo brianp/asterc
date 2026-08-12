@@ -1,0 +1,65 @@
+---
+title: Variables & Constants
+description: Declaring and using variables in Aster.
+---
+
+## Let Bindings
+
+Variables are declared with `let`. The type is inferred from the value:
+
+```
+let name = "Aster"       # String
+let count = 42           # Int
+let active = true        # Bool
+```
+
+## Type Annotations
+
+You can explicitly annotate the type:
+
+```
+let name: String = "Aster"
+let count: Int = 42
+let scores: List[Int] = [100, 95, 87]
+```
+
+This is especially useful for empty collections or when you want to be explicit:
+
+```
+let empty: List[String] = []
+```
+
+## Visibility
+
+Variables and definitions are **private by default**. Use `pub` to export:
+
+```
+pub let VERSION = 1
+
+pub def greet(name: String) -> String
+  "Hello, " + name
+```
+
+The `pub` modifier applies consistently to `let` bindings, functions, and classes.
+
+## Naming Convention
+
+Aster uses `snake_case` for all identifiers:
+
+```
+let user_name = "brian"
+let max_retries = 3
+
+def fetch_user_profile(user_id: Int) -> UserProfile
+  # ...
+```
+
+Types use `PascalCase`:
+
+```
+class UserProfile
+  name: String
+  email: String
+```
+
+This is enforced by convention and the canonical formatter (`aster fmt`).

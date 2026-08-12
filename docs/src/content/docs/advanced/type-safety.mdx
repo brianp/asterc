@@ -1,0 +1,73 @@
+---
+title: Type Safety
+description: Memory safety, data-race freedom, and the effect system.
+---
+
+Aster aims for **Rust-level safety with Ruby/Python ergonomics**. The compiler does the heavy lifting so you write less ceremony.
+
+## Memory Safety
+
+- Ownership and borrows with inference — no dangling references, no use-after-free
+- Shared mutation requires sync primitives or actors; otherwise the type checker rejects it
+- `unsafe` blocks exist for FFI but are quarantined behind capability gates
+
+## Data-Race Freedom
+
+- `Send` and `Share` traits are auto-derived by the compiler when safe
+- No aliasing of mutable data across threads/tasks without synchronization
+- Atomics and locks carry effect markers to prevent hidden blocking
+
+## Effect System
+
+Every function has an implicit effect signature inferred by the compiler:
+
+```
+# The compiler infers this function is pure (no IO, no suspension)
+def add(a: Int, b: Int) -> Int
+  a + b
+
+# The compiler infers this may perform IO
+def save_user(user: User) -> Void
+  db.insert(user)
+```
+
+Possible effects: `pure`, `io`, `fs`, `net`, `may_block`, `alloc`, `panic`, `ffi`.
+
+You never write effect annotations. The compiler infers them from the call graph and checks compatibility at call sites:
+
+- `f()` sync call: only valid if `f` is pure
+- `async f()`: valid if `f` may suspend
+- `resolve f()`: valid, resolves suspension
+
+## What Makes It Feel Simple
+
+Despite the safety guarantees, writing Aster feels like writing Ruby:
+
+| Feature | Ruby/Python | Rust | Aster |
+|---------|-------------|------|-------|
+| `async` in signatures | No | Yes | **No** |
+| `await` keyword | No | Yes | **No** |
+| Implicit returns | Yes | Yes | **Yes** |
+| Indentation blocks | Python: yes | No | **Yes** |
+| Lifetime annotations | No | Yes | **No** (inferred) |
+| Type inference | Dynamic | Partial | **Strong** |
+| Memory safety | No | Yes | **Yes** |
+
+## Send / Share
+
+Values crossing task boundaries must be safe to move between threads:
+
+- **`Send`** — type can be moved to another thread/task
+- **`Share`** — type can be referenced from multiple threads simultaneously
+
+Both are auto-derived by the compiler when safe. The goal is better inference than Rust so developers rarely need to think about it.
+
+## The Whitelist Principle
+
+The type checker is a whitelist:
+- Defined rule exists = allowed
+- No rule = compile error
+- No implicit coercions, no silent nil, no NaN
+- New operator/type combinations are added as explicit rules
+
+This makes the language predictable. Every operation that compiles is intentionally supported.

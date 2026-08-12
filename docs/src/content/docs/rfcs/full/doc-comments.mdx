@@ -1,0 +1,186 @@
+---
+title: "Full RFC: Documentation Comments"
+description: The complete documentation comments and doc generation RFC for Aster.
+sidebar:
+  badge:
+    text: Draft
+    variant: caution
+---
+
+## 1. Design Principles
+
+- Humans write only what compilers can't infer -- intent, nuance, examples
+- Signatures, visibility, module paths come from the AST, never from annotations
+- No redundant tags -- no `@param`, `@returns`, `@type` in a strongly-typed language
+- Minimal tag vocabulary -- four tags total
+- Doc-tests are first-class -- fenced blocks in doc-comments are compiled and run
+- Anti-patterns are first-class -- showing what NOT to do is as valuable as showing what to do
+- Low friction -- if anyone is writing docs, we're already winning
+- One source of truth -- doc-comments produce all output formats (human, agent, machine)
+
+---
+
+## 2. Comment Syntax
+
+`#` for regular comments. `##` for doc-comments.
+
+```
+# This is a private note. The doc generator never sees it.
+
+## This becomes published documentation.
+```
+
+The doc generator extracts `##` and ignores `#`. The parser already distinguishes them.
+
+---
+
+## 3. Doc-Comment Structure
+
+A doc-comment has three optional parts:
+
+1. **Summary** -- the first sentence, extracted automatically
+2. **Nuance** -- why, when, gotchas, edge cases (free-form prose)
+3. **Examples** -- fenced code blocks that run as tests
+
+### Minimum viable doc-comment
+
+```
+## Normalizes a vector to unit length.
+```
+
+That's it. One sentence. The doc generator combines this with the AST-derived
+signature and you get a complete entry.
+
+### Complete doc-comment
+
+```
+## Normalizes to unit length.
+##
+## Returns None for zero-magnitude vectors rather than panicking.
+## Prefer this over manual division -- it handles the edge case
+## and uses fast inverse sqrt when SIMD is available.
+##
+## ``` test
+## v = Vector3.new(3.0, 4.0, 0.0)
+## assert v.normalize().unwrap().magnitude() ~= 1.0
+## ```
+##
+## ``` should_fail
+## zero = Vector3.new(0.0, 0.0, 0.0)
+## zero.normalize().unwrap()  # => None, not a panic
+## ```
+fn normalize(self) -> Option<Vector3>
+```
+
+### Module-level docs
+
+File-level doc-comments appear before any declarations and describe the module:
+
+```
+## 3D vector operations with optional SIMD acceleration.
+##
+## This module provides the core vector types used throughout
+## the math library. All operations are const-evaluable.
+
+fn new(x: Float, y: Float, z: Float) -> Vector3
+  ...
+```
+
+---
+
+## 4. What NOT to Document
+
+- **Parameters and return types** -- the type system says this. Restating it is noise.
+- **Visibility** -- the compiler knows what's public and private.
+- **Module paths** -- derived from file structure and the AST.
+- **Type signatures** -- the generated output includes them automatically.
+
+The human writes intent. The machine writes structure.
+
+---
+
+## 5. Tag Vocabulary
+
+Four tags. That's the whole vocabulary.
+
+| Tag | Purpose | Example |
+|-----|---------|---------|
+| `@see` | Cross-reference to related symbol | `@see Vector3.magnitude` |
+| `@since` | Version when symbol appeared | `@since 0.3.0` |
+| `@deprecated` | Migration guidance | `@deprecated Use normalize_fast` |
+| `@safety` | Unsafe/security considerations | `@safety Caller must ensure non-null` |
+
+Everything else is prose or derived from the AST.
+
+---
+
+## 6. Doc-Tests
+
+Fenced code blocks inside doc-comments are compiled and executed as tests.
+
+### Block modifiers
+
+| Modifier | Behavior |
+|----------|----------|
+| *(none)* | Runs as test, must pass |
+| `should_fail` | Runs, must return an error |
+| `should_panic` | Runs, must panic |
+| `no_run` | Type-checks but doesn't execute (network calls, destructive ops) |
+| `ignore` | Shown in docs, never tested (last resort escape hatch) |
+
+### Anti-pattern examples
+
+`should_fail` and `should_panic` blocks document what NOT to do. These are
+first-class -- they show up in generated docs under a "Don't" heading and
+they're tested in CI like everything else.
+
+---
+
+## 7. Doc Generation Pipeline
+
+```
+source files
+  -> AST parse (visibility, names, signatures, types, generics)
+  -> doc-comment parse (summary, body, fenced examples)
+  -> merge AST + doc data
+  -> run doc-tests (CI gate)
+  -> emit output formats
+```
+
+### Human output
+
+- **HTML** -- searchable, cross-linked, source view toggle (rustdoc model)
+- **Markdown** -- flat files for GitHub and static site generators
+
+### Agent output
+
+- **llms.txt** -- top-level project summary, token-minimal, hierarchical
+- **llms-full.txt** -- every public symbol flattened into one file for full-context ingestion
+- **Agent READMEs** -- per-module structured docs
+
+Agent formats merge AST-derived signatures with human-written summaries:
+
+```
+# Vector3.normalize
+fn normalize(self) -> Option<Vector3>
+Normalizes to unit length. None for zero-magnitude.
+Example: Vector3.new(3.0, 4.0, 0.0).normalize().unwrap()
+```
+
+One line of signature, one line of summary, one line of example. Token-minimal.
+
+---
+
+## 8. Open Questions
+
+- **llms.txt spec** -- exact format, section ordering, depth levels
+- **llms-full.txt spec** -- flattening strategy, ordering, size limits
+- **Agent README spec** -- exact schema for per-module agent docs
+- **Generator architecture** -- standalone tool vs compiler plugin
+- **Doc-test runtime** -- extraction, compilation, execution, sandboxing
+- **Cross-reference resolution** -- how `@see` links resolve across modules
+- **Staleness detection** -- tracking doc-comment freshness vs source changes
+- **HTML template/theme** -- rustdoc-style vs custom
+- **Token budget metadata** -- should agent output include byte/token counts?
+- **Capability tags** -- should modules declare system capabilities?
+- **Breaking change tracking** -- how to surface API breaks in agent-facing docs

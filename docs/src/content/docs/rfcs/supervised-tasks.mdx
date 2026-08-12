@@ -1,0 +1,23 @@
+---
+title: "RFC: Supervised Tasks"
+description: Automatic restart and recovery for long-running background tasks.
+sidebar:
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+
+**Status:** Draft
+
+Early-stage design for automatic restart and recovery of long-running background tasks. Configurable backoff and retry strategies, deferred from the main async RFC for independent exploration.
+
+## Key Ideas
+
+- **Supervised task lifecycle**: automatic restart on failure with configurable retry policies.
+- **Backoff strategies**: exponential, linear, or custom backoff between restarts.
+- **Integration with async scope**: supervised tasks respect structured concurrency boundaries.
+- **Deferred scope**: deliberately separated from the core async RFC for independent design iteration.
+
+<LinkCard title="Full RFC" href="https://github.com/example/asterc/blob/main/docs/design/supervised-tasks-rfc.md" description="Read the complete supervised tasks RFC on GitHub." />

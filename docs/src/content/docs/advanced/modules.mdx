@@ -1,0 +1,101 @@
+---
+title: Modules & Imports
+description: Code organization with modules and imports.
+---
+
+## Importing Modules
+
+Use the `use` keyword to import modules. There are three forms:
+
+```
+use models/user { User, Admin }    # selective — import specific names
+use helpers as h                   # namespace — access via h.name
+use utils                          # wildcard — import all pub items
+```
+
+| Syntax | What it does |
+|--------|--------------|
+| `use foo { Bar }` | Import specific names into the current scope |
+| `use foo as ns` | Import all exports behind the namespace `ns` |
+| `use foo` | Import all exports directly into scope |
+| `pub use foo { Bar }` | Import and re-export to downstream modules |
+
+Combining the selective and namespace forms (`use foo { Bar } as ns`) is a compile error — pick one.
+
+Module paths map to files: `use models/user` loads `models/user.aster` relative to the project. Circular imports are detected and reported as a compile error.
+
+## Namespace Access
+
+With `use foo as ns`, exports are reached with dot notation — classes, functions, and enums alike:
+
+```
+use math as m
+
+let sum = m.add(x: 1, y: 2)
+let v = m.Vector(x: 1.0, y: 2.0)
+```
+
+## Re-Exports
+
+`pub use` re-exports names from another module as part of your own public API. Downstream importers see them alongside your own `pub` items:
+
+```
+# shapes.aster
+pub use shapes/circle { Circle }
+pub use shapes/rect { Rect }
+```
+
+## Visibility
+
+Everything is **private by default**. Use `pub` to export:
+
+```
+pub let VERSION = 1
+
+pub def greet(name: String) -> String
+  "Hello, " + name
+
+pub class Config
+  debug: Bool
+```
+
+`pub` applies consistently to:
+- `let` bindings
+- `def` functions
+- `class` definitions
+- Class fields and methods
+
+## Standard Library Modules
+
+The `std` modules built into the compiler today:
+
+| Module | Exports |
+|--------|---------|
+| `std/cmp` | `Eq`, `Ord` traits, `Ordering` enum |
+| `std/fmt` | `Printable` trait |
+| `std/collections` | `Iterable`, `Iterator` traits |
+| `std/convert` | `From`, `Into` traits |
+| `std/random` | `Random` trait |
+| `std/sys` | `args`, `env`, `set_env`, `exit` |
+| `std/fs` | `read_file`, `write_file`, `append_file`, `exists`, `is_dir`, `mkdir`, `remove`, `list_dir`, `copy`, `rename` |
+| `std/process` | `run` (returns `ProcessResult`, throws `ProcessError`) |
+| `std/crypto` | `sha256` |
+| `std/runtime` | `evaluate`, `evaluate_unrestricted`, `jit_run` (requires the `--jit` flag) |
+| `std/unstable` | `FieldAccessible` (requires the `--unstable` flag) |
+
+Bare `use std` is not supported — always import from a submodule, e.g. `use std/cmp { Eq }`.
+
+Note that in a multi-module project, the protocol traits (`Eq`, `Ord`, `Printable`, `From`, `Into`, `Iterable`, ...) must be imported explicitly; only single-file programs have them preloaded.
+
+## Module Path Convention
+
+Modules use `/` as the path separator, and common English words for names:
+
+```
+use std/fs
+use std/process
+use aster_web/router
+use db_postgres
+```
+
+This convention is designed for AI-friendly tokenization — no exotic paths or abbreviations.

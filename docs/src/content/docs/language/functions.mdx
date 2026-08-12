@@ -1,0 +1,153 @@
+---
+title: Functions
+description: Defining and calling functions in Aster.
+---
+
+Aster uses the `def` keyword for all functions.
+
+## Basic Functions
+
+```
+def add(a: Int, b: Int) -> Int
+  a + b
+```
+
+- Parameters have explicit type annotations
+- Return type follows the `->` arrow
+- The last expression is implicitly returned
+- Blocks are indentation-based — no `end` or `{}`
+
+## Calling Functions
+
+Arguments are passed **by name**, and order doesn't matter:
+
+```
+let result = add(a: 2, b: 3)    # 5
+let same = add(b: 3, a: 2)      # 5 — order-independent
+```
+
+Positional arguments on a user-defined function are a compile error; the diagnostic tells you which name to add. (Built-in functions like `log` and `len` accept a bare positional argument.)
+
+## Explicit Return
+
+Use `return` for early returns:
+
+```
+def classify(n: Int) -> String
+  if n < 0
+    return "negative"
+  if n == 0
+    return "zero"
+  "positive"
+```
+
+## Void Functions
+
+Functions that don't return a value use `-> Void`:
+
+```
+def main() -> Void
+  log("Hello, world!")
+```
+
+## Top-Level Functions
+
+Functional style, defined at the module level:
+
+```
+def square(x: Int) -> Int
+  x ** 2
+```
+
+## Instance Methods
+
+Defined inside a class, operate on `self`:
+
+```
+class Circle
+  radius: Float
+
+  def area() -> Float
+    3.14159 * radius ** 2
+```
+
+## No Class Methods
+
+All `def` inside a class body is an instance method. There is no `static` keyword. Factories, utilities, and queries live in namespace files:
+
+```
+# models/user.aster
+pub class User
+  name: String
+  email: String
+
+  def display() -> String
+    name + " <" + email + ">"
+
+# factories/user.aster
+use models/user { User }
+
+pub def from_json(json: Json) -> User
+  User(name: json.get("name").or(""), email: json.get("email").or(""))
+```
+
+## Functions That Throw
+
+Functions that can fail declare `throws` between the parameters and return type:
+
+```
+def fetch(url: String) throws NetworkError -> String
+  throw TimeoutError(kind: "timeout", url: url, timeout_ms: 5000)
+```
+
+See [Error Handling](/advanced/errors) for details.
+
+## Lambdas and Closures
+
+Inline lambdas use `->` followed by parameters, a colon, and a single expression body:
+
+```
+-> x: x + 1          # one parameter
+-> a, b: a + b       # two parameters
+-> : 42              # zero parameters
+```
+
+Parameter types are not written — they are inferred from the context the lambda is used in:
+
+```
+let nums = [1, 2, 3]
+let doubled = nums.map(f: -> x: x * 2)     # x inferred as Int
+```
+
+Lambdas are closures: they can reference variables from the enclosing scope. Captured values are copied when the lambda is created — the closure sees a snapshot, not a live reference:
+
+```
+let multiplier = 3
+let scale: Fn(Int) -> Int = -> x: x * multiplier
+let result = scale(x: 10)     # 30
+```
+
+A lambda bound directly to a `let` needs a function type annotation (`Fn(Int) -> Int`), because there is no surrounding context to infer the parameter types from. When the lambda is passed straight to a function parameter, the annotation is unnecessary.
+
+Function-typed parameters use the `Fn(ParamTypes) -> Ret` type syntax:
+
+```
+def apply_twice(f: Fn(Int) -> Int, x: Int) -> Int
+  f(f(x))
+
+let r = apply_twice(f: -> n: n + 1, x: 5)    # 7
+```
+
+## Built-in Functions
+
+Aster provides several built-in functions:
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `log` | `(Any) -> Void` | Print to stdout with newline |
+| `say` | `(Any) -> Void` | Alias of `log` |
+| `len` | `(List[T]) -> Int` or `(String) -> Int` | Length of collection or string |
+| `to_string` | `(Int \| Float \| Bool \| String) -> String` | Convert to string representation |
+| `to_int` | `(text: String) throws IntParseError -> Int` | Parse an integer from a string |
+
+Built-ins accept their argument positionally or by name — `log("hi")` and `log(message: "hi")` both work. `to_int` throws, so it needs error handling: `to_int("42")!` or `to_int(text: s)!.or(0)`.

@@ -1,0 +1,599 @@
+---
+title: Green Threads Internals
+description: How Aster's green thread runtime works, from assembly context switching to work-stealing scheduling.
+---
+
+This page is a deep walkthrough of how Aster's green thread runtime works under the hood. It covers the full path from `async f()` in user code down to the assembly instructions that swap CPU registers between threads.
+
+## Architecture
+
+Aster uses an **M:N threading model**: M green threads are multiplexed across N OS worker threads. The OS thread count is the number of CPU cores (`available_parallelism`), with a minimum of 2. Green threads are lightweight — each one has a 64KB stack allocated via `mmap`, compared to the 8MB default for OS threads.
+
+The runtime has four layers:
+
+1. **Assembly** — Platform-specific `context_switch` and `context_init` functions that save/restore CPU registers and swap the stack pointer.
+2. **Stack allocator** — `mmap`-based stack allocation with guard pages and a freelist pool.
+3. **Scheduler** — A work-stealing scheduler with per-worker local deques and a global injector queue.
+4. **Runtime API** — The FFI functions that compiled Aster code calls: `aster_task_spawn`, `aster_task_resolve_i64`, `aster_safepoint`, etc.
+
+```
+┌─────────────────────────────────────────────────┐
+│  Aster code                                     │
+│    async fetch_user(id: 1)                      │
+├─────────────────────────────────────────────────┤
+│  Runtime API                                    │
+│    aster_task_spawn(entry, args, scope)          │
+├─────────────────────────────────────────────────┤
+│  Scheduler                                      │
+│    spawn_green_thread → injector.push → wake     │
+├─────────────────────────────────────────────────┤
+│  Assembly                                       │
+│    aster_context_switch(old_ctx, new_ctx)        │
+│    aster_context_init(ctx, stack_top, entry, arg)│
+├─────────────────────────────────────────────────┤
+│  Stack allocator                                │
+│    mmap 64KB + 4KB guard page                   │
+└─────────────────────────────────────────────────┘
+```
+
+---
+
+## Assembly Context Switching
+
+Context switching is the foundation. When a green thread yields (preemption, I/O, resolve), the runtime saves its CPU state and loads the scheduler's CPU state — or vice versa. This happens entirely in hand-written assembly, with one implementation per target architecture.
+
+### What Gets Saved
+
+Only **callee-saved registers** need saving. The calling convention guarantees that caller-saved registers are already saved by the compiler-generated code before the call to `aster_context_switch`. This minimizes the cost of each switch.
+
+| Architecture | Callee-saved GPRs | Other | Total slots | Context size |
+|---|---|---|---|---|
+| x86_64 | `rbx`, `rbp`, `r12`-`r15` | `rsp` | 7 | 56 bytes |
+| aarch64 | `x19`-`x28`, `x29`(fp), `x30`(lr) | `sp`, `d8`-`d15` (SIMD) | 21 | 168 bytes |
+
+The Rust side represents this as:
+
+```rust
+#[repr(C)]
+pub struct MachineContext {
+    regs: [u64; CONTEXT_REGS],  // 7 on x86_64, 21 on aarch64
+}
+```
+
+The `#[repr(C)]` layout guarantee is critical — the assembly accesses these fields by byte offset, so the Rust struct must match exactly.
+
+### x86_64 Assembly
+
+The x86_64 implementation has three functions: `aster_context_switch`, `aster_context_init`, and `aster_green_trampoline`.
+
+#### `aster_context_switch`
+
+This is the hot path — called every time a green thread yields or is resumed. It takes two pointers: the old context (to save into) and the new context (to restore from).
+
+```asm
+// void aster_context_switch(MachineContext *old, const MachineContext *new)
+// rdi = old, rsi = new
+aster_context_switch:
+    // Save callee-saved registers into old context
+    movq %rbx,  0(%rdi)
+    movq %rbp,  8(%rdi)
+    movq %r12, 16(%rdi)
+    movq %r13, 24(%rdi)
+    movq %r14, 32(%rdi)
+    movq %r15, 40(%rdi)
+    movq %rsp, 48(%rdi)
+
+    // Restore callee-saved registers from new context
+    movq  0(%rsi), %rbx
+    movq  8(%rsi), %rbp
+    movq 16(%rsi), %r12
+    movq 24(%rsi), %r13
+    movq 32(%rsi), %r14
+    movq 40(%rsi), %r15
+    movq 48(%rsi), %rsp
+
+    ret     // pops return address from restored stack
+```
+
+The `ret` at the end is the key trick. When we restore `rsp`, we're now pointing at the **new** context's stack. The `ret` instruction pops the return address from that stack and jumps to it. For a resumed green thread, this returns into the Rust code that originally called `aster_context_switch` to yield. For a brand-new green thread, this jumps to the trampoline (explained below).
+
+**Cost**: 14 `movq` instructions + 1 `ret`. No system calls, no kernel transitions. This is why green thread switches are orders of magnitude faster than OS thread switches.
+
+#### `aster_context_init`
+
+Sets up the initial context for a new green thread so that the first `context_switch` into it starts executing the task's entry function.
+
+```asm
+// void aster_context_init(MachineContext *ctx, void *stack_top,
+//                         uintptr_t entry, uintptr_t arg)
+// rdi = ctx, rsi = stack_top, rdx = entry, rcx = arg
+aster_context_init:
+    // Align stack_top down to 16 bytes
+    andq $-16, %rsi
+
+    // Push trampoline address onto the new stack.
+    // When context_switch does 'ret', it pops this address and jumps there.
+    // After ret pops 8 bytes, rsp is 16-aligned (correct for ABI calls).
+    leaq aster_green_trampoline(%rip), %rax
+    subq $8, %rsi
+    movq %rax, (%rsi)
+
+    // Store entry and arg in callee-saved register slots.
+    // context_switch will restore these into rbx and r12.
+    movq %rdx,  0(%rdi)       // rbx slot ← entry function pointer
+    movq $0,    8(%rdi)        // rbp ← 0 (clean frame pointer)
+    movq %rcx, 16(%rdi)       // r12 slot ← arg pointer
+    movq $0,   24(%rdi)        // r13 ← 0
+    movq $0,   32(%rdi)        // r14 ← 0
+    movq $0,   40(%rdi)        // r15 ← 0
+    movq %rsi, 48(%rdi)        // rsp ← prepared stack (with trampoline on top)
+
+    ret
+```
+
+The alignment dance is important. The x86_64 ABI requires `rsp` to be 16-byte aligned **before** a `call` instruction. Since `call` pushes an 8-byte return address, `rsp` must be `16n + 8` at function entry. The `context_switch`'s `ret` pops 8 bytes, so we place the trampoline address at `stack_top - 8` (after 16-byte alignment), leaving `rsp` correctly aligned for the trampoline's `callq`.
+
+#### `aster_green_trampoline`
+
+The first code a brand-new green thread ever executes. `context_switch` restores the callee-saved registers (including `rbx = entry`, `r12 = arg`) and then `ret` jumps here.
+
+```asm
+aster_green_trampoline:
+    movq %r12, %rdi            // arg → first parameter (rdi in SysV ABI)
+    callq *%rbx                // call entry(arg) → result in rax
+    movq %rax, %rdi            // result → first parameter
+    callq aster_green_thread_exit
+    ud2                        // illegal instruction trap — exit never returns
+```
+
+After the entry function returns, `aster_green_thread_exit` is called. This Rust function stores the result, sets the yield reason to `Completed`, and context-switches back to the scheduler. The `ud2` instruction is a safety net — if `aster_green_thread_exit` somehow returns (it shouldn't), the CPU faults immediately rather than executing garbage.
+
+### aarch64 Assembly (Apple Silicon)
+
+The aarch64 implementation follows the same pattern but saves more registers (21 slots vs 7) because ARM has more callee-saved state including 8 SIMD registers.
+
+#### `aster_context_switch`
+
+```asm
+// void aster_context_switch(MachineContext *old, const MachineContext *new)
+// x0 = old, x1 = new
+aster_context_switch:
+    // Save callee-saved GPRs (store-pair instructions for efficiency)
+    stp x19, x20, [x0, #0]
+    stp x21, x22, [x0, #16]
+    stp x23, x24, [x0, #32]
+    stp x25, x26, [x0, #48]
+    stp x27, x28, [x0, #64]
+    str x29, [x0, #80]        // frame pointer
+    str x30, [x0, #88]        // link register (return address)
+    mov x9, sp
+    str x9, [x0, #96]         // stack pointer
+    // Save callee-saved SIMD registers
+    stp d8,  d9,  [x0, #104]
+    stp d10, d11, [x0, #120]
+    stp d12, d13, [x0, #136]
+    stp d14, d15, [x0, #152]
+
+    // Restore callee-saved GPRs
+    ldp x19, x20, [x1, #0]
+    ldp x21, x22, [x1, #16]
+    ldp x23, x24, [x1, #32]
+    ldp x25, x26, [x1, #48]
+    ldp x27, x28, [x1, #64]
+    ldr x29, [x1, #80]
+    ldr x30, [x1, #88]        // link register
+    ldr x9,  [x1, #96]
+    mov sp, x9
+    // Restore callee-saved SIMD
+    ldp d8,  d9,  [x1, #104]
+    ldp d10, d11, [x1, #120]
+    ldp d12, d13, [x1, #136]
+    ldp d14, d15, [x1, #152]
+
+    ret     // branches to restored x30 (lr)
+```
+
+ARM uses `stp`/`ldp` (store-pair/load-pair) instructions that save two 64-bit registers in one instruction, making the save/restore more efficient. The `ret` instruction on ARM branches to the address in `x30` (the link register), which plays the same role as the return address on the x86_64 stack.
+
+ARM also requires saving `d8`-`d15` — the callee-saved SIMD/floating-point registers. Even if Aster code doesn't use SIMD directly, the C calling convention mandates preserving these across function calls.
+
+#### `aster_context_init`
+
+```asm
+aster_context_init:
+    and x1, x1, #~0xf         // 16-byte align stack
+
+    str x2, [x0, #0]          // x19 slot ← entry function pointer
+    str x3, [x0, #8]          // x20 slot ← arg pointer
+
+    // Zero remaining callee-saved slots
+    stp xzr, xzr, [x0, #16]   // x21, x22
+    stp xzr, xzr, [x0, #32]   // x23, x24
+    stp xzr, xzr, [x0, #48]   // x25, x26
+    stp xzr, xzr, [x0, #64]   // x27, x28
+    str xzr, [x0, #80]        // fp = 0
+
+    // Load trampoline address into lr slot (position-independent)
+    adrp x9, aster_green_trampoline@PAGE
+    add  x9, x9, aster_green_trampoline@PAGEOFF
+    str x9, [x0, #88]         // lr ← trampoline
+
+    str x1, [x0, #96]         // sp ← aligned stack top
+
+    // Zero SIMD slots
+    stp xzr, xzr, [x0, #104]
+    stp xzr, xzr, [x0, #120]
+    stp xzr, xzr, [x0, #136]
+    stp xzr, xzr, [x0, #152]
+
+    ret
+```
+
+On ARM, the trampoline address goes directly into the `lr` (x30) slot. When `context_switch` does `ret`, it branches to whatever `x30` was restored to — no stack-based return address tricks needed. The `adrp`/`add` sequence loads the trampoline address in a position-independent way (required on macOS and for ASLR).
+
+#### `aster_green_trampoline`
+
+```asm
+aster_green_trampoline:
+    mov x0, x20              // arg → first parameter (x0 in AAPCS64)
+    blr x19                  // call entry(arg) → result in x0
+    bl  aster_green_thread_exit
+    brk #1                   // breakpoint trap — exit never returns
+```
+
+Same pattern as x86_64. `x19` and `x20` were restored by `context_switch` with the entry function pointer and arg pointer respectively.
+
+### Platform Symbol Names
+
+Both assembly files use a macro `SYM(name)` that prepends an underscore on macOS (`_aster_context_switch`) and leaves the name bare on Linux (`aster_context_switch`). This is because macOS's Mach-O format prefixes all C symbols with `_`, while Linux's ELF format does not.
+
+```asm
+#ifdef __APPLE__
+#define SYM(name) _##name
+#else
+#define SYM(name) name
+#endif
+```
+
+---
+
+## Stack Allocation
+
+Each green thread gets its own stack, allocated via `mmap`:
+
+```
+┌─────────────────┐  ← base + total (stack top — grows downward)
+│                 │
+│  64 KB usable   │
+│                 │
+├─────────────────┤  ← base + 4096
+│  4 KB guard     │  PROT_NONE — touching this → SIGSEGV
+└─────────────────┘  ← base (mmap return value)
+```
+
+- **`mmap(MAP_PRIVATE | MAP_ANON)`** allocates 68KB (64KB usable + 4KB guard).
+- **`mprotect(PROT_NONE)`** marks the bottom 4KB as inaccessible. If a green thread overflows its stack, it hits the guard page and the OS delivers a `SIGSEGV` — a clean crash instead of silent memory corruption.
+- Stacks grow downward, so the entry point gets `stack_top` (the highest address).
+
+### Stack Pooling
+
+Allocating stacks via `mmap` for every task would be expensive. The `StackPool` maintains a freelist:
+
+- **`get()`**: Pop from the freelist, or `mmap` a new one if empty.
+- **`put()`**: Push back to the freelist if under the cap (`worker_count * 16`), otherwise drop (triggers `munmap`).
+
+When a green thread completes or is cancelled, its stack is recycled back to the pool. Under steady-state load, no new `mmap` calls are needed.
+
+---
+
+## Green Thread Lifecycle
+
+A `GreenThread` holds the full state of a single task:
+
+```rust
+pub struct GreenThread {
+    context: MachineContext,          // CPU register state
+    stack: Option<GreenStack>,        // mmap'd stack (None after recycled)
+    error_flag: bool,                 // per-thread error propagation
+    shadow_stack_top: *mut u8,        // GC root tracking
+    state: Mutex<TaskState>,          // status + result + waiters
+    cv: Condvar,                      // wake notification
+}
+```
+
+### Status Transitions
+
+```
+                ┌──────────┐
+                │ Runnable │ ← spawn
+                └────┬─────┘
+                     │ dequeued by worker
+                     ▼
+                ┌──────────┐
+         ┌──────│ Running  │──────┐
+         │      └────┬─────┘      │
+         │           │            │
+    preempted    completed    waiting on task
+         │           │            │
+         ▼           ▼            ▼
+    ┌──────────┐ ┌────────┐ ┌───────────┐
+    │ Runnable │ │ Ready  │ │ Suspended │
+    └──────────┘ │ Failed │ └─────┬─────┘
+                 └────────┘       │ target completes
+                                  ▼
+                             ┌──────────┐
+                             │ Runnable │
+                             └──────────┘
+```
+
+Cancellation can transition any non-terminal state to `Cancelled`:
+- **Runnable**: Marked `Cancelled` immediately when dequeued.
+- **Running**: `cancel_requested` flag set; next safepoint catches it.
+- **Suspended**: Marked `Cancelled` immediately, waiters notified.
+
+### Thread Safety
+
+The `GreenThread` struct is `Send + Sync` with a careful invariant: the non-`Mutex` fields (`context`, `error_flag`, `shadow_stack_top`) are only ever accessed by the single OS worker thread currently executing that green thread. The scheduler guarantees exclusive access — a green thread is either running on exactly one worker, sitting in a deque, or terminal. The `Mutex<TaskState>` serializes all status transitions that make a thread available to a different worker.
+
+---
+
+## Work-Stealing Scheduler
+
+The scheduler is the core of the runtime. It manages N OS worker threads, each running a loop that picks up green threads and context-switches to them.
+
+### Data Structures
+
+```rust
+struct GreenScheduler {
+    injector: Injector<ThreadPtr>,     // global MPMC queue
+    stealers: Vec<Stealer<ThreadPtr>>, // one per worker (steal handles)
+    stack_pool: StackPool,             // shared stack freelist
+    park_mutex: Mutex<()>,             // idle worker parking
+    park_cv: Condvar,                  // wake idle workers
+}
+```
+
+The scheduler uses **crossbeam-deque** for lock-free work distribution:
+- Each worker has a local FIFO `Worker<ThreadPtr>` deque.
+- The `Injector` is a global queue for newly spawned tasks.
+- Each `Stealer` lets other workers steal from a victim's local deque.
+
+### Worker Loop
+
+Each OS worker thread runs this loop:
+
+```
+loop:
+    1. Pop from local deque
+    2. If empty → steal batch from global injector
+    3. If empty → steal from a random victim worker
+    4. If empty → park (condvar wait with 1ms timeout)
+
+    When a green thread is found:
+        a. Check if already terminal or cancelled → skip
+        b. Set status to Running
+        c. Set thread-local state (current thread, error flag, shadow stack)
+        d. aster_context_switch(scheduler_ctx, green_thread.context)
+           ──── execution is now inside the green thread ────
+        e. Green thread yields → execution returns here
+        f. Save per-green-thread state back
+        g. Handle yield reason:
+           - Preempted    → re-enqueue to local deque
+           - Completed    → mark Ready/Failed, wake waiters, recycle stack
+           - Cancelled    → mark Cancelled, wake waiters, recycle stack
+           - WaitingOnTask → if target done, re-enqueue; else suspend
+```
+
+The 1ms park timeout prevents idle workers from burning CPU while still allowing quick wake-up when new tasks arrive.
+
+### Spawning a Task
+
+When Aster code executes `async f(args)`:
+
+1. `aster_task_spawn` is called (runtime FFI).
+2. A `GreenStack` is obtained from the pool.
+3. A `GreenThread` is heap-allocated with status `Runnable`.
+4. `aster_context_init` sets up the context so the first `context_switch` into it will jump to the trampoline → entry function.
+5. The thread is pushed to the global `injector` queue.
+6. Idle workers are notified via `park_cv.notify_all()`.
+7. A `*mut GreenThread` handle is returned to the caller as `Task[T]`.
+
+### Resolving a Task
+
+When Aster code executes `resolve task`:
+
+1. `aster_task_resolve_i64` is called with the task handle.
+2. If the target is already terminal, return its result immediately.
+3. If not, the current green thread **yields with `WaitingOnTask(target)`**.
+4. The scheduler suspends the current green thread and registers it as a waiter on the target.
+5. When the target completes, the scheduler wakes all waiters by pushing them back to the injector.
+6. The waiting green thread resumes and reads the result.
+
+If `resolve` is called from the **main thread** (which is not a worker thread), it blocks with a `Condvar` instead of yielding. This is because the main thread doesn't have a scheduler context to yield to.
+
+---
+
+## Cooperative Preemption (Safepoints)
+
+Green threads are cooperatively scheduled — they yield at **safepoints** inserted by the compiler. A safepoint is a call to `aster_safepoint()` that the codegen emits at:
+
+- Every function call site
+- Every loop back-edge (`while`, `for`)
+
+### Safepoint Logic
+
+```rust
+pub fn safepoint() {
+    let current = WORKER_CURRENT_THREAD.get();
+    if current.is_null() {
+        return;  // not on a worker thread
+    }
+
+    // 1. Check cancellation
+    let cancel = current.state.lock().cancel_requested;
+    if cancel {
+        yield_to_scheduler(YieldReason::Cancelled);
+        return;
+    }
+
+    // 2. Tick-based preemption
+    let ticks = PREEMPT_TICKS.get() + 1;
+    if ticks >= 1024 {
+        PREEMPT_TICKS.set(0);
+        yield_to_scheduler(YieldReason::Preempted);
+    } else {
+        PREEMPT_TICKS.set(ticks);
+    }
+}
+```
+
+**Fast path**: Increment a thread-local tick counter. If under the threshold (1024), return immediately. Cost: one thread-local read + write + compare. No atomic operations, no syscalls.
+
+**Slow path**: Every 1024 safepoints, yield back to the scheduler. The scheduler re-enqueues the green thread and picks the next one. This prevents any single green thread from monopolizing a worker.
+
+**Cancellation**: Before checking ticks, the safepoint checks the `cancel_requested` flag. If set, the green thread yields with `Cancelled` and never resumes. The scheduler marks it terminal and notifies any waiters.
+
+### Yielding
+
+`yield_to_scheduler` is the reverse of the worker loop's context switch:
+
+```rust
+pub fn yield_to_scheduler(reason: YieldReason) {
+    WORKER_YIELD_REASON.set(reason);
+    let scheduler_ctx = WORKER_SCHEDULER_CTX.get();
+    let current = WORKER_CURRENT_THREAD.get();
+    aster_context_switch(&mut current.context, scheduler_ctx);
+    // Execution resumes here when the scheduler switches back to us
+}
+```
+
+This saves the green thread's registers and restores the scheduler's registers. Execution continues in the worker loop right after the `aster_context_switch` call that originally switched *to* this green thread. The worker loop reads the yield reason and handles it accordingly.
+
+---
+
+## Thread Exit
+
+When a green thread's entry function returns normally, the assembly trampoline calls `aster_green_thread_exit`:
+
+```rust
+pub extern "C" fn aster_green_thread_exit(result: i64) {
+    let failed = error_flag_get();
+    error_flag_set(false);
+    yield_to_scheduler(YieldReason::Completed { result, failed });
+    unreachable!();
+}
+```
+
+This captures the return value and whether an error occurred, then yields back to the scheduler with a `Completed` reason. The scheduler:
+
+1. Stores the result in the `TaskState`.
+2. Sets status to `Ready` (or `Failed` if the error flag was set).
+3. Notifies all green threads waiting on this task via `wake_waiters`.
+4. Recycles the stack back to the pool.
+
+---
+
+## Async Scopes
+
+`async scope` blocks provide structured concurrency. The runtime tracks which tasks were spawned inside a scope:
+
+```rust
+struct AsyncScopeHandle {
+    state: Mutex<AsyncScopeState>,  // Vec<*mut GreenThread>
+}
+```
+
+When the scope exits:
+1. All unresolved tasks in the scope are **cancelled** via `cancel_thread`.
+2. The runtime waits for all tasks to reach a terminal state.
+3. Stacks are recycled, waiters notified.
+
+This guarantees no task outlives its scope — no leaked green threads, no orphaned resources.
+
+---
+
+## Per-Green-Thread State
+
+Each green thread has isolated state that the scheduler saves and restores on every context switch:
+
+- **`error_flag`**: Aster's error propagation mechanism. When an operation fails, the error flag is set. The caller checks it. Each green thread has its own flag, so errors in one task don't leak to another.
+- **`shadow_stack_top`**: Points to the green thread's GC root set. The garbage collector walks shadow stacks to find live references. Saving/restoring this ensures GC works correctly across green threads.
+
+On context switch **to** a green thread, the worker restores these from the `GreenThread` struct into thread-local storage. On context switch **from** a green thread, the worker saves them back.
+
+---
+
+## The Full Journey: `async f(x)` to Result
+
+Here's the complete path when Aster code runs `let t = async compute(n: 42)`:
+
+1. **Codegen** emits a call to `aster_task_spawn(compute_entry, args_ptr, scope_ptr)`.
+2. **`spawn_green_thread`** allocates a stack from the pool, creates a `GreenThread`, calls `aster_context_init` to set up the initial context, pushes to the injector queue, wakes idle workers.
+3. **Worker thread** dequeues the new green thread, sets TLS, calls `aster_context_switch(scheduler_ctx, thread.context)`.
+4. **`aster_context_switch`** (assembly) saves the scheduler's registers, restores the green thread's registers (including `rsp` → the new stack), and `ret` jumps to...
+5. **`aster_green_trampoline`** (assembly) moves the arg to the first parameter register and calls the entry function.
+6. **`compute`** runs on its own green thread. Safepoints at every function call and loop back-edge check for preemption/cancellation.
+7. **`compute` returns**. The trampoline calls `aster_green_thread_exit(result)`.
+8. **`aster_green_thread_exit`** captures the result and yields with `Completed`.
+9. **`yield_to_scheduler`** saves the green thread's registers and restores the scheduler's registers. The worker loop resumes.
+10. **Worker loop** sees `Completed`, stores the result, marks the thread `Ready`, wakes any green threads that called `resolve t`, recycles the stack.
+
+When the caller later executes `let result = resolve t`:
+
+1. **Codegen** emits a call to `aster_task_resolve_i64(task_handle)`.
+2. If the task is already `Ready`, the result is returned immediately.
+3. If not, the caller's green thread yields with `WaitingOnTask(target)`.
+4. The scheduler suspends the caller and registers it as a waiter.
+5. When the target completes (step 10 above), the caller is pushed back to the injector.
+6. A worker picks up the caller, context-switches to it, and execution resumes after the `yield_to_scheduler` call inside `resolve`.
+7. The result is read from the target's `TaskState` and returned.
+
+---
+
+## Build Integration
+
+The assembly files are compiled and linked via the `codegen` crate's `build.rs`:
+
+```rust
+fn main() {
+    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+    let mut build = cc::Build::new();
+    match target_arch.as_str() {
+        "aarch64" => { build.file("src/green/asm/aarch64.S"); }
+        "x86_64"  => { build.file("src/green/asm/x86_64.S"); }
+        other => panic!("unsupported architecture: {other}"),
+    }
+    build.compile("green_asm");
+}
+```
+
+The `cc` crate invokes the system assembler, producing a static library (`libgreen_asm.a`) that Rust links against. The FFI declarations in Rust connect the dots:
+
+```rust
+unsafe extern "C" {
+    fn aster_context_switch(old: *mut MachineContext, new: *const MachineContext);
+    fn aster_context_init(ctx: *mut MachineContext, stack_top: *mut u8,
+                          entry: usize, arg: usize);
+}
+```
+
+---
+
+## Built On Top
+
+Several higher-level primitives are layered on this scheduler — all green-thread-aware, yielding instead of blocking an OS worker:
+
+- **I/O poller** — idle workers poll `kqueue` (macOS) / `epoll` (Linux) for fd readiness and re-enqueue the waiting green threads.
+- **Blocking pool** — four dedicated OS threads run blocking work on behalf of green threads (used for operations the poller can't cover, like disk I/O).
+- **`Mutex[T]`** and **typed channels** (`Channel[T]`, `MultiSend[T]`/`MultiReceive[T]`) with green-thread-aware suspension.
+- **`Drop` and `Close` traits** for deterministic cleanup on scope exit and cancellation.
+- **Must-consume `Task[T]` enforcement** — dropping a task without consuming or detaching it is a compile error.
+- **Data sharing warnings** — the compiler warns when a variable is used after crossing a thread boundary.
+
+See [Mutex, Channels & I/O](/concurrency/primitives/) for the primitives built on this runtime.
+
+## Current Limitations
+
+- **TCP not wired**: `TcpListener` and `TcpStream` type-check (the methods and error types resolve), but there are no runtime functions behind them yet. The poller infrastructure they will use exists and is tested.
+- **MultiSend/MultiReceive refcounting stubbed**: the type system enforces the sender/receiver split, but `clone_sender()`/`clone_receiver()` return the same handle without reference counting.
+- **File I/O is synchronous**: `File.read`/`File.write` call the OS directly instead of routing through the blocking pool.

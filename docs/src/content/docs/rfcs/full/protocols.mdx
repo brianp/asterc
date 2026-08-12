@@ -1,0 +1,358 @@
+---
+title: "Full RFC: Standard Protocols"
+description: The complete standard protocols RFC covering type conversion, equality, ordering, display, and iteration.
+sidebar:
+  badge:
+    text: Decided
+    variant: success
+---
+
+## Implementation Status
+
+| Protocol | Status |
+|----------|--------|
+| Self type in traits | Implemented |
+| Named arguments everywhere | Implemented |
+| Ordering enum | Implemented |
+| Eq (==, !=, auto-derive) | Implemented |
+| Ord (&lt;, &gt;, &lt;=, &gt;=, auto-derive) | Implemented |
+| Ord includes Eq | Implemented |
+| Foreign type diagnostic pattern | Not implemented |
+| From[T] / Into[T] | Not implemented |
+| Printable (to_string, debug) | Not implemented |
+| Iterable[T] / Iterator[T] | Not implemented |
+| Hash (invisible, auto from Eq) | Not implemented |
+| Default | Deferred |
+
+---
+
+## 1. Design Principles
+
+- Standard protocols are how user types become first-class citizens of the language
+- Operators (`==`, `<`, `>`) and constructs (`for`, string interpolation) desugar to protocol methods
+- One way to do things -- each protocol has exactly one shape
+- Implement on the type you own -- never modify foreign types
+- Auto-derive where the compiler can generate a correct implementation
+- Hash is not a protocol -- it's an invisible consequence of Eq
+- Named arguments are required everywhere
+
+---
+
+## 2. Prerequisites: Parametric Traits, Self, Named Arguments
+
+### Parametric Traits
+
+Traits can be parameterized by types:
+
+```
+trait Into[T]
+  def into() -> T
+
+trait Iterable[T]
+  def each() -> Iterator[T]
+```
+
+A class can include the same trait multiple times with different type
+parameters:
+
+```
+class Celsius includes Into[Fahrenheit], Into[Kelvin]
+  value: Float
+
+  def into() -> Fahrenheit
+    Fahrenheit(value: value * 9.0 / 5.0 + 32.0)
+
+  def into() -> Kelvin
+    Kelvin(value: value + 273.15)
+```
+
+### Self Type in Traits
+
+Traits can use `Self` to refer to the implementing type:
+
+```
+trait Eq
+  def eq(other: Self) -> Bool
+```
+
+### Named Arguments Everywhere
+
+All function calls and class construction use named arguments. Names are
+always required. Argument order at the call site does not matter.
+
+---
+
+## 3. From / Into -- Type Conversion
+
+### Two Traits, Two Directions
+
+**`Into[T]`** -- include on the source type you own. Instance method.
+
+```
+trait Into[T]
+  def into() -> T
+```
+
+**`From[T]`** -- include on the target type you own. Construction protocol.
+
+```
+trait From[T]
+  def from(value: T) -> Self
+```
+
+### Into -- When You Own the Source
+
+```
+class Celsius includes Into[Fahrenheit]
+  value: Float
+
+  def into() -> Fahrenheit
+    Fahrenheit(value: value * 9.0 / 5.0 + 32.0)
+
+# Usage
+let temp: Fahrenheit = celsius.into()
+```
+
+### From -- When You Own the Target
+
+`From[T]` is a construction protocol. Invoked via `Type.from(value: x)`.
+
+```
+class User includes From[PgRow]
+  name: String
+  email: String
+
+  def from(row: PgRow) -> Self
+    User(name: row.get(key: "name"), email: row.get(key: "email"))
+
+# Usage
+let user = User.from(value: pg_row)
+```
+
+### Auto-Derived Reverse
+
+When `User includes From[PgRow]`, the compiler automatically enables
+`pg_row.into()` in contexts where `User` is expected.
+
+### From as the Only Custom Initializer
+
+`From[T]` is the only path to custom initialization. No custom constructors.
+
+### Fallible Conversion
+
+Aster's `throws` mechanism handles fallible conversion. No separate
+TryFrom / TryInto traits needed:
+
+```
+class Celsius includes Into[Fahrenheit]
+  value: Float
+
+  def into() throws ConversionError -> Fahrenheit
+    if value < -273.15
+      throw ConversionError(message: "below absolute zero")
+    Fahrenheit(value: value * 9.0 / 5.0 + 32.0)
+```
+
+---
+
+## 4. Eq -- Equality
+
+### Trait Definition
+
+```
+trait Eq
+  def eq(other: Self) -> Bool
+```
+
+### Operator Desugaring
+
+- `a == b` desugars to `a.eq(other: b)`
+- `a != b` desugars to `not a.eq(other: b)`
+
+### No PartialEq
+
+Aster has one trait. Float's `eq` follows IEEE 754 behavior -- `NaN.eq(other: NaN)` returns `false`.
+
+### Auto-Derive
+
+When a class writes `includes Eq` without defining `eq()`, the compiler
+generates a field-by-field comparison. All fields must include `Eq`.
+
+---
+
+## 5. Ord -- Ordering
+
+### Trait Definition
+
+```
+enum Ordering
+  Less
+  Equal
+  Greater
+
+trait Ord includes Eq
+  def cmp(other: Self) -> Ordering
+```
+
+`Ord includes Eq` because ordering implies equality.
+
+### Operator Desugaring
+
+- `a < b` desugars to `a.cmp(other: b) == Ordering.Less`
+- `a > b` desugars to `a.cmp(other: b) == Ordering.Greater`
+- `a <= b` desugars to `a.cmp(other: b) != Ordering.Greater`
+- `a >= b` desugars to `a.cmp(other: b) != Ordering.Less`
+
+### Auto-Derive
+
+Field-by-field comparison in declaration order. First field is the
+primary sort key.
+
+---
+
+## 6. Printable -- String Representation
+
+```
+trait Printable
+  def to_string() -> String
+  def debug() -> String
+    to_string()
+```
+
+Two methods, one trait. `to_string()` is for users. `debug()` is for
+developers. String interpolation always calls `to_string()`.
+
+### Auto-Derive
+
+Generates structural form: `ClassName(field1: value1, field2: value2)`.
+
+---
+
+## 7. Iterable -- Iteration and Collection Vocabulary
+
+### Design Inspiration
+
+Ruby's `Enumerable` module: implement one method (`each`), get dozens
+of collection methods for free. Tree-shaking removes unused methods.
+
+### Trait Definitions
+
+```
+trait Iterator[T]
+  def next() -> T?
+
+trait Iterable[T]
+  def each() -> Iterator[T]
+
+  # Transform
+  def map(f: (T) -> U) -> List[U]
+  def flat_map(f: (T) -> List[U]) -> List[U]
+
+  # Filter
+  def filter(f: (T) -> Bool) -> List[T]
+  def reject(f: (T) -> Bool) -> List[T]
+
+  # Search
+  def find(f: (T) -> Bool) -> T?
+  def any(f: (T) -> Bool) -> Bool
+  def all(f: (T) -> Bool) -> Bool
+  def none(f: (T) -> Bool) -> Bool
+
+  # Reduce
+  def reduce(init: U, f: (U, T) -> U) -> U
+  def count() -> Int
+
+  # Access
+  def first() -> T?
+  def last() -> T?
+  def take(n: Int) -> List[T]
+  def skip(n: Int) -> List[T]
+
+  # Order (requires T includes Ord)
+  def min() -> T?
+  def max() -> T?
+  def sort() -> List[T]
+  def sort_by(f: (T) -> U includes Ord) -> List[T]
+
+  # Group
+  def group_by(f: (T) -> K) -> Map[K, List[T]]
+  def zip(other: Iterable[U]) -> List[Pair[T, U]]
+
+  # Convert
+  def to_list() -> List[T]
+  def to_map(f: (T) -> Pair[K, V]) -> Map[K, V]
+```
+
+### Iterator Uses T? for Completion
+
+`next() -> T?` returns the next value, or `nil` when done.
+
+### For Loop Desugaring
+
+`for x in thing` desugars to `thing.each()` + `next()` with nil check.
+
+---
+
+## 8. Hash -- Invisible, Automatic
+
+Hash is not a trait. If a type includes `Eq`, it is automatically hashable.
+The compiler generates a hash function based on the same fields that `eq()` uses.
+
+The hashing algorithm is an internal implementation detail. No public interface
+for custom hashers.
+
+### Why No Trait
+
+- Writing correct hash functions is hard
+- The hash/eq contract is a common source of subtle bugs
+- Exposing it adds surface area with no practical benefit
+
+---
+
+## 9. Default -- Deferred
+
+Field defaults on classes and parameter defaults on functions cover the
+construction case. A `Default` protocol may be added in the future if
+generic programming patterns demand it.
+
+---
+
+## 10. Foreign Type Diagnostic Pattern
+
+Whenever a protocol trait cannot be satisfied because a field's type
+is foreign and lacks the required trait, the compiler guides the
+developer toward decoupling via `From[T]` into a local type.
+
+---
+
+## 11. Summary of Decided Design
+
+### Protocols
+
+1. **From[T]** -- construction protocol on target type
+2. **Into[T]** -- instance method on source type
+3. **From implies Into** -- auto-derived reverse
+4. **Fallible conversion** -- add `throws`, no separate TryFrom/TryInto
+5. **Eq** -- `def eq(other: Self) -> Bool`
+6. **Ord** -- `def cmp(other: Self) -> Ordering`, includes Eq
+7. **Printable** -- `to_string()` + `debug()`
+8. **Iterable[T]** -- implement `each()`, get full vocabulary
+9. **Hash** -- invisible, automatic from Eq
+
+### Auto-Derive Rules
+
+| Trait | Auto-Derive Behavior |
+|-------|---------------------|
+| Eq | Field-by-field comparison |
+| Ord | Field-by-field in declaration order |
+| Printable | Structural form `ClassName(field: value)` |
+| Hash | Always automatic from Eq |
+
+## 12. What Was Rejected
+
+- `From[T]` via constructor syntax -- ambiguous with field construction
+- `PartialEq` / `PartialOrd` -- not worth the complexity
+- `TryFrom` / `TryInto` -- `throws` covers it
+- Manual `hash()` implementations
+- `Default` trait (for now)
+- Positional function arguments

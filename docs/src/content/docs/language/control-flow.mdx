@@ -1,0 +1,81 @@
+---
+title: Control Flow
+description: Conditionals and loops in Aster.
+---
+
+## If / Else
+
+```
+if temperature > 30
+  log("It's hot")
+else
+  log("It's fine")
+```
+
+No parentheses needed around the condition. Blocks are indentation-based.
+
+## Elif Chains
+
+```
+def classify(score: Int) -> String
+  if score >= 90
+    "A"
+  elif score >= 80
+    "B"
+  elif score >= 70
+    "C"
+  else
+    "F"
+```
+
+`elif` avoids deep nesting — no `else if` two-keyword construct.
+
+## While Loops
+
+```
+let count = 0
+while count < 10
+  log(to_string(count))
+  count = count + 1
+```
+
+The condition must be `Bool`.
+
+## For-In Loops
+
+Iterate over collections:
+
+```
+let names = ["Alice", "Bob", "Charlie"]
+for name in names
+  log(name)
+
+let nums = [1, 2, 3, 4, 5]
+for n in nums
+  let doubled = n * 2
+  log(to_string(doubled))
+```
+
+## Break and Continue
+
+```
+for n in [1, 2, 3, 4, 5]
+  if n == 3
+    continue
+  if n == 5
+    break
+  log(to_string(n))
+```
+
+## If as an Expression
+
+`if`/`else` blocks are expressions — they return the last value of the taken branch:
+
+```
+let label = if active
+  "on"
+else
+  "off"
+```
+
+This works naturally with Aster's implicit return — no ternary operator needed.

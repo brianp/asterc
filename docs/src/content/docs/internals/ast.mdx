@@ -1,0 +1,307 @@
+---
+title: The AST
+description: The shared ast crate — statements, expressions, types, environments, spans, and diagnostics used by every compiler phase.
+---
+
+The `ast` crate holds the data structures shared by every compiler phase: the syntax tree the parser produces, the `Type` representation the type checker manipulates, the environment types, source spans, and the diagnostic machinery. The crate is `#![deny(unsafe_code)]` and most core types derive `Serialize`/`Deserialize` so ASTs and type info can cross process boundaries (the JIT `evaluate()` pipeline relies on this).
+
+| File | Contents |
+|---|---|
+| `ast/src/expr.rs` | `Module`, `Stmt`, `Expr`, patterns, operators |
+| `ast/src/types.rs` | `Type`, `TypeConstraint`, type-tree traversal helpers |
+| `ast/src/type_env.rs` | `TypeEnv`, `Binding`, `ClassInfo`, `TraitInfo`, `EnumInfo`, `NamespaceInfo`, `DynamicReceiverInfo` |
+| `ast/src/span.rs` | `Span` |
+| `ast/src/diagnostic.rs` | `Diagnostic`, `Severity`, `Label` |
+| `ast/src/templates/` | `DiagnosticTemplate` — coded, structured diagnostic definitions |
+| `ast/src/type_table.rs` | `TypeTable` — span → resolved type, for the FIR lowerer |
+| `ast/src/symbol_index.rs` | `SymbolIndex` — span → symbol info, for LSP features |
+| `ast/src/context_snapshot.rs` | `ContextSnapshot` — captured scope for runtime `evaluate()` |
+| `ast/src/builtin_errors.rs`, `ast/src/eval_error.rs` | Sentinel ClassIds and object layouts for built-in runtime error classes |
+
+The crate also defines `ParseResult` — the parser's error-recovery output: a best-effort `Module` plus all collected diagnostics.
+
+---
+
+## Statements (Stmt)
+
+Every Aster program is a `Module` — a name, a `Vec<Stmt>` body, and a span. The `Stmt` enum:
+
+| Variant | Description | Example |
+|---|---|---|
+| `Let` | Variable/function binding | `let x = 42`, `def f()` |
+| `Const` | Compile-time constant binding | `const MAX = 100` |
+| `Class` | Class definition | `class Point` |
+| `Trait` | Trait definition | `trait Eq` |
+| `Enum` | Enum definition | `enum Color` |
+| `Return` | Return from function | `return x` |
+| `Expr` | Expression as statement | `f(x: 1)` |
+| `If` | Conditional with elif/else | `if cond ... elif ... else ...` |
+| `While` | While loop | `while cond ...` |
+| `For` | For-in loop | `for item in list ...` |
+| `Assignment` | Assignment to existing target | `x = 42` |
+| `Break` / `Continue` | Loop control | `break`, `continue` |
+| `Use` | Import statement | `use std/cmp { Eq }`, `use foo as ns` |
+
+Several variants carry visibility: `Let`, `Const`, `Class`, `Trait`, `Enum`, and `Use` all have an `is_public` flag, and `Class` fields are `(name, type, is_public)` triples — this is what backs `pub` and the cross-module visibility checks. `Use` carries a `path`, optional selective `names`, and an optional `alias`.
+
+`Enum` variants are `EnumVariant` values that can carry named, typed fields:
+
+```rust
+pub struct EnumVariant {
+    pub name: String,
+    pub fields: Vec<(String, Type)>,   // payload fields, e.g. Circle(radius: Float)
+    pub span: Span,
+}
+```
+
+Enums also carry `methods` and trait `includes` of their own.
+
+**Key design: functions are not a separate statement.** They are `Let` bindings whose value is a `Lambda` expression. The parser's `parse_def_as_let()` performs this conversion for `def` syntax. This simplifies the rest of the compiler — there is only one way to bind a name to a value, and higher-order functions fall out for free.
+
+`Stmt::span()` and `Expr::span()` return the node's source span, used everywhere diagnostics need a location.
+
+---
+
+## Expressions (Expr)
+
+| Variant | Description | Example |
+|---|---|---|
+| `Int(i64, Span)` | Integer literal | `42` |
+| `Float(f64, Span)` | Float literal | `3.14` |
+| `Str(String, Span)` | String literal | `"hello"` |
+| `Bool(bool, Span)` | Boolean literal | `true`, `false` |
+| `Nil(Span)` | Nil literal | `nil` |
+| `Ident(String, Span)` | Variable reference | `x`, `add` |
+| `Member` | Field/method access | `point.x`, `list.len` |
+| `Lambda` | Function value | `def f() ...` or `-> x: x + 1` |
+| `Call` | Function call | `add(x: 1, y: 2)` |
+| `BinaryOp` / `UnaryOp` | Operators | `x + y`, `-x`, `not flag` |
+| `ListLiteral` | List construction | `[1, 2, 3]` |
+| `Map` | Map literal (key/value entry pairs) | `{"a": 1}` |
+| `Range` | Range with `inclusive` flag | `0..10`, `0..=10` |
+| `Index` | Indexing | `list[0]`, `map[key]` |
+| `Match` | Match expression | `match x ...` |
+| `StringInterpolation` | Interpolated string parts | `"hi {name}"` |
+| `AsyncCall` | Spawn a green thread | `async fetch(url: u)` |
+| `BlockingCall` | Blocking call boundary | `blocking read_all()` |
+| `DetachedCall` | Fire-and-forget spawn | `detached async f()` |
+| `Resolve` | Task resolution | `resolve task` |
+| `Propagate` | Error propagation | `expr!` |
+| `Throw` | Throw an error | `throw err` |
+| `ErrorOr` | Eager error fallback | `expr!.or(default)` |
+| `ErrorOrElse` | Lazy error fallback | `expr!.or_else(-> recovery)` |
+| `ErrorCatch` | Error catch with arms | `expr!.catch ...` |
+
+`Lambda` is the richest variant — it carries typed `params`, a `ret_type` (possibly `Type::Inferred`), the `body`, optional `generic_params`, an optional `throws` type, `type_constraints` for generic parameters (`T extends Foo includes Bar`), and `defaults` (per-position optional default value expressions).
+
+**Call arguments are `Vec<(String, Span, Expr)>`** — name, name span, and value for each argument. Calls are named-argument based; for positional arguments (allowed on constructors), the parser synthesizes the names `_0`, `_1`, … and the type checker maps them to parameters by index. The dedicated name span lets diagnostics underline exactly the argument label ("did you mean `y`?").
+
+Patterns come in two flavors:
+
+```rust
+pub enum MatchPattern {
+    Literal(Box<Expr>, Span),
+    Ident(String, Span),      // catch-all that binds
+    Wildcard(Span),           // `_`
+    EnumVariant {
+        enum_name: String,
+        variant: String,
+        bindings: Vec<(String, String)>,  // (field_name, binding_name) destructuring
+        span: Span,
+    },
+}
+
+pub enum ErrorCatchPattern {
+    Typed { error_type: String, var: String, span: Span },  // `IOError e`
+    Wildcard(Span),                                          // `_`
+}
+```
+
+`BinOp` covers `Add`, `Sub`, `Mul`, `Div`, `Mod`, `Pow`, the comparisons, and `And`/`Or`; `UnaryOp` is `Neg` and `Not`. `StringPart` is either a `Literal(String)` or an `Expr` for interpolation holes.
+
+One subtlety: `Expr` implements `PartialEq` by hand, comparing `f64` literals **bitwise** so that `NaN == NaN` (and `-0.0 != 0.0`) — AST nodes get structural equality rather than IEEE 754 numeric equality. The impl matches exhaustively on `self`, so adding a new `Expr` variant is a compile error until its equality is defined.
+
+---
+
+## The Type Enum
+
+```rust
+pub enum Type {
+    Int, Float, Bool, String, Nil, Void, Never,
+    Error,     // sentinel for error recovery — compatible with everything
+    Inferred,  // lambda params/returns whose types come from context
+    List(Box<Type>),
+    Set(Box<Type>),
+    Map(Box<Type>, Box<Type>),
+    Custom(String, Vec<Type>),            // class/enum types, possibly generic
+    TypeVar(String, Vec<TypeConstraint>), // generic type parameter
+    Function {
+        param_names: Vec<String>,
+        params: Vec<Type>,
+        ret: Box<Type>,
+        throws: Option<Box<Type>>,
+        suspendable: bool,
+    },
+    Task(Box<Type>),
+    Nullable(Box<Type>),
+}
+
+pub enum TypeConstraint {
+    Extends(String),               // T extends ClassName
+    Includes(String, Vec<Type>),   // T includes TraitName[Args]
+}
+```
+
+Key types:
+
+- `Error` — the error-recovery sentinel. When the type checker fails on a subexpression it assigns `Type::Error`, and everything that consumes an `Error` value silently produces `Error` too, preventing one mistake from cascading into dozens of diagnostics.
+- `Inferred` — placeholder for lambda parameters (and returns) whose types will be resolved from the call-site or annotation context.
+- `Never` — the type of expressions that never complete (`throw`). Match arms of type `Never` are exempt from arm-type unification.
+- `Function` — stores parameter **names** and **types** separately, which is what makes order-independent named-argument matching possible. It also carries the declared `throws` type and a `suspendable` flag (set by the type checker for functions that cross a suspension boundary — plain calls to suspendable functions are rejected).
+- `TypeVar` — a generic type parameter with its constraints attached.
+
+Helpers: `Type::func(names, params, ret)` builds a non-throwing, non-suspendable function type; `Type::from_ident(name)` maps `"Int"` → `Type::Int` etc., falling back to `Custom`. Three traversal combinators — `map_type` (top-down rewrite), `any_type` (predicate search), and `collect_types` — walk the whole type tree including function params/returns/throws, container elements, `Custom` args, and even the type arguments inside `Includes` constraints. Type-variable substitution in the checker is a one-liner over `map_type`.
+
+`Display` renders types the way users write them: `List[Int]`, `Int?`, `Map[String, Int]`, `Task[Int]`, `Fn(Int) -> Int throws IOError`.
+
+---
+
+## TypeEnv
+
+`TypeEnv` tracks what names are in scope. Its maps are private and individually `Rc`-wrapped:
+
+```rust
+pub struct TypeEnv {
+    variables: Rc<HashMap<String, Binding>>,
+    classes: Rc<HashMap<String, ClassInfo>>,
+    traits: Rc<HashMap<String, TraitInfo>>,
+    enums: Rc<HashMap<String, EnumInfo>>,
+    namespaces: Rc<HashMap<String, NamespaceInfo>>,
+    pub parent: Option<Rc<TypeEnv>>,
+}
+
+pub struct Binding {
+    pub ty: Type,
+    pub def_span: Span,  // definition site; Span::dummy() for builtins
+}
+```
+
+Variables map to a `Binding` — type *plus definition span* — so go-to-definition and "shadows earlier binding" labels can point at the original `let`. `set_var_type()` is the convenience for builtins and synthetic nodes (dummy span); `set_var_with_span()` records real definitions.
+
+Lexical scoping works through the parent chain: `get_var`, `get_class`, etc. check the current level, then walk up. Shadowing is just inserting the same name at a deeper level; `parent_has_var()` powers the shadowing warning.
+
+**Rust pattern: copy-on-write scope creation.** Creating a scope never clones a `HashMap`:
+
+- `into_child(self)` consumes the environment and *moves* it into the child's `parent` slot — O(1), no `Rc` refcount bumps.
+- `enter_scope()` / `exit_scope()` do the same in place: enter snapshots the current maps (via `std::mem::take`) into a new parent link; exit unwraps the parent back out (cloning only if the parent `Rc` is shared).
+- Mutation goes through `Rc::make_mut`, which clones a map only when it is actually shared.
+
+The net effect: the common pattern "enter scope, add a few bindings, exit" allocates almost nothing, and a deep environment is shared structurally between sibling scopes.
+
+`find_children(parent_name)` walks the full scope chain collecting every class whose `extends` names the given class (sorted, deduplicated) — used for exhaustiveness-style reasoning over class hierarchies.
+
+---
+
+## ClassInfo and Friends
+
+```rust
+pub struct ClassInfo {
+    pub ty: Type,                              // the class's own type
+    pub fields: IndexMap<String, Type>,        // field name -> type (ordered)
+    pub methods: HashMap<String, Type>,        // method name -> function type
+    pub generic_params: Option<Vec<String>>,   // [T, U] for generic classes
+    pub extends: Option<String>,               // parent class name
+    pub includes: Vec<String>,                 // trait names (["Eq", "Printable"])
+    pub overloaded_methods: HashMap<String, Vec<Type>>,  // parametric trait overloads
+    pub parametric_includes: Vec<(String, Vec<Type>)>,   // [(Into, [Fahrenheit]), ...]
+    pub pub_fields: HashSet<String>,           // fields visible outside the module
+    pub pub_methods: HashSet<String>,          // methods visible outside the module
+    pub dynamic_receiver: Option<DynamicReceiverInfo>,
+}
+```
+
+`fields` uses `IndexMap` (from the `indexmap` crate) instead of `HashMap` because declaration order matters: constructor parameters are derived from field order, so it must be deterministic.
+
+`overloaded_methods` and `parametric_includes` exist because a class can include the *same* parametric trait more than once — `includes Into[Fahrenheit]` and `includes Into[Kelvin]` give `into()` two signatures, and the checker disambiguates by expected type.
+
+`DynamicReceiverInfo` is extracted from a `DynamicReceiver` class's `method_missing` implementation:
+
+```rust
+pub struct DynamicReceiverInfo {
+    pub args_value_ty: Type,               // T from method_missing's Map[String, T] param
+    pub return_ty: Type,                   // method_missing's return type
+    pub known_names: Option<HashSet<String>>, // Some = closed set; None = any name
+}
+```
+
+`known_names` is `Some` when the catch-all arm throws `FunctionNotFound` — the compiler then rejects unknown dynamic method names statically.
+
+The remaining info structs:
+
+```rust
+pub struct TraitInfo {
+    pub name: String,
+    pub methods: HashMap<String, Type>,
+    pub required_methods: Vec<String>,        // methods with no body (abstract)
+    pub generic_params: Option<Vec<String>>,  // [T] for From[T], Into[T], ...
+}
+
+pub struct EnumInfo {
+    pub name: String,
+    pub variants: Vec<String>,
+    pub includes: Vec<String>,
+    pub variant_fields: HashMap<String, Vec<(String, Type)>>, // payload fields
+}
+
+pub struct NamespaceInfo {   // public exports of `use foo as ns`
+    pub variables: HashMap<String, Type>,
+    pub classes: HashMap<String, ClassInfo>,
+    pub traits: HashMap<String, TraitInfo>,
+    pub enums: HashMap<String, EnumInfo>,
+}
+```
+
+---
+
+## Span
+
+```rust
+pub struct Span {
+    pub start: usize,   // byte offset of first character
+    pub end: usize,     // byte offset one past the last character
+}
+```
+
+Every AST node carries a `Span` pointing back to the source; this is how error messages know where to draw underlines. `Span::dummy()` creates the zero-width sentinel used for builtins and test-constructed nodes, `is_dummy()` detects it (so the symbol index can distinguish "no real source location"), and `merge()` combines two spans into one covering both — used for things like underlining a whole binary expression.
+
+---
+
+## Diagnostics
+
+```rust
+pub enum Severity { Error, Warning }
+
+pub struct Diagnostic {
+    pub severity: Severity,
+    pub message: String,
+    pub labels: Vec<Label>,        // (span, message) pairs — the underlines
+    pub notes: Vec<String>,        // "did you mean 'foo'?" etc.
+    pub template: Option<Box<DiagnosticTemplate>>,
+}
+```
+
+Diagnostics are built either ad hoc (`Diagnostic::error("...")`) or — preferably — from a `DiagnosticTemplate`, a big enum in `ast/src/templates/` where each variant is a small struct with typed fields, a stable code, and a render function. Codes are grouped by phase: lex errors `L001`–`L012`, parse errors `P001`–`P003`, type errors `E001`–`E032`, module errors `M001`–`M006`, and warnings `W001`–`W006`. `Diagnostic::code()` exposes the code, and severity is derived from the template (a handful of variants are warnings; everything else is an error). Builders (`with_label`, `with_note`, `with_template`) chain fluently, and `Diagnostic` implements `std::error::Error` so it composes with `?` in Rust code.
+
+---
+
+## Side Tables and Snapshots
+
+Three more structures round out the crate:
+
+**`TypeTable`** — `HashMap<Span, Type>`. The type checker records the resolved type of call, index, and other expressions here; the FIR lowerer consumes it so `Type::Inferred` and `Type::TypeVar` become concrete types instead of defaulting to I64.
+
+**`SymbolIndex`** — `HashMap<Span, SymbolInfo>` where `SymbolInfo` holds the name, resolved type, optional definition span, and a `SymbolKind` (`Variable`, `Function`, `Class`, `Trait`, `Field`, `Method`, `Parameter`, `EnumVariant`). Populated at every identifier and member-access use site during type checking; consumed for hover and go-to-definition.
+
+**`ContextSnapshot`** — the serialized type-level context at a runtime `evaluate()` call site: current class (with a `SnapshotClassInfo` subset of `ClassInfo`), visible variables and function signatures, enum definitions, method default parameters, the captured-environment layout, and runtime function pointer addresses (populated at runtime, skipped in serialization). `TypeChecker::from_snapshot()` rebuilds a checker from it so evaluated code sees the same scope the host code did.
+
+Finally, `builtin_errors.rs` and `eval_error.rs` pin down the ABI for built-in runtime error classes: each (IOError, ProcessError, IntParseError, the channel errors, LockTimeoutError, CancelledError, EvalError, and the introspection classes) gets a fixed sentinel ClassId counting down from `u32::MAX`, with `SENTINEL_CLASS_ID_FLOOR` (`u32::MAX - 64`) reserving the range so user classes are never remapped onto them, plus byte offsets for their fields (`message` at offset 0, `ProcessError.command` at offset 8, …). The lowerer and the runtime both reference these constants, so the AOT and JIT backends agree on object layout — this is what lets a typed `catch` arm read `e.message` from an error object the runtime allocated.

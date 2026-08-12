@@ -1,0 +1,81 @@
+---
+title: Editor Setup
+description: Set up syntax highlighting and language support for Aster in your editor.
+---
+
+Aster has editor plugins for Neovim and VS Code. Both provide syntax highlighting, comment toggling, auto-indentation, and bracket pairing out of the box.
+
+## Neovim
+
+**[aster.nvim](https://github.com/brianp/aster.nvim)** provides tree-sitter-based highlighting with a vim syntax fallback.
+
+### Install with lazy.nvim
+
+```lua
+{
+  "brianp/aster.nvim",
+  ft = { "aster" },
+  opts = {},
+}
+```
+
+The tree-sitter parser compiles automatically on first load. No `:TSInstall` needed.
+
+### What you get
+
+- Tree-sitter parsing and highlighting
+- Smart indentation for Aster's block structure
+- Code folding
+- Comment toggling (`gc`)
+- `.aster` and `.astr` file detection
+
+### LSP (future)
+
+When `aster-lsp` is available, add it to your config:
+
+```lua
+{
+  "brianp/aster.nvim",
+  ft = { "aster" },
+  opts = {
+    lsp = {
+      cmd = { "aster-lsp" },
+    },
+  },
+}
+```
+
+## VS Code
+
+**[Aster Language](https://github.com/brianp/aster-vscode)** provides TextMate grammar-based highlighting.
+
+### Install from VSIX
+
+```bash
+git clone https://github.com/brianp/aster-vscode
+cd aster-vscode
+npm install
+npx vsce package
+code --install-extension aster-lang-0.1.0.vsix
+```
+
+### What you get
+
+- Syntax highlighting with string interpolation support
+- Auto-closing brackets and strings
+- Comment toggling
+- Indentation-aware folding
+- `.aster` and `.astr` file detection
+
+## File extensions
+
+Both plugins recognize two extensions:
+
+| Extension | Description |
+|-----------|-------------|
+| `.aster`  | Standard extension |
+| `.astr`   | Short form |
+
+## Tree-sitter grammar
+
+The [tree-sitter-aster](https://github.com/brianp/tree-sitter-aster) grammar is shared across editor plugins. It includes an external scanner for Aster's indentation-based syntax and query files for highlights, indents, folds, and locals.

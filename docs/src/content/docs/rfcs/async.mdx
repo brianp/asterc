@@ -1,0 +1,31 @@
+---
+title: "RFC: Async & Concurrency"
+description: Green threads, call-site async, structured concurrency, and data sharing.
+sidebar:
+  badge:
+    text: Decided
+    variant: success
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+
+**Status:** Decided
+
+Establishes the complete concurrency model. M:N green threads with a work-stealing scheduler, four invocation modes, `Task[T]` handles, structured concurrency with `async scope`, and data sharing via shallow copy.
+
+## Key Decisions
+
+- **Green threads**, M:N work-stealing scheduler, implicit runtime.
+- **Call-site async** — `async` is never declared at the function definition. The caller decides.
+- **Four call modes**: sync `f()`, `blocking f()` → `T`, `async f()` → `Task[T]`, `resolve task` consumes a `Task[T]`.
+- **`resolve`** is reserved for joining `Task[T]` handles. It is not the general suspension-capable call form.
+- **`Task[T]`**: `.is_ready()` check, must-consume rule (dropping unconsumed is a compile error), no `.then()`.
+- **`detached async f()`** remains an explicit fire-and-forget escape hatch outside the main four-mode call model.
+- **`resolve_all(List[Task[T]])` and `resolve_first(List[Task[T]])`** for fan-out patterns.
+- **`async scope`** cancels all unresolved tasks on exit — non-negotiable structured concurrency.
+- **Data sharing**: shallow copy at thread boundaries, compiler warns on reuse after send.
+- **`Mutex[T]`** with scoped `.lock()`, nothing escapes, timeout + `LockTimeoutError`.
+- **Channels**: `Channel[T]`, `MultiSend[T]`, `MultiReceive[T]`, always buffered. API: send/receive (fire-forget), wait_send/wait_receive (suspend), try_send/try_receive (throw).
+- **`ASTER_OS_THREADS`** env var controls OS thread count, defaults to CPU cores.
+
+<LinkCard title="Full RFC" href="https://github.com/example/asterc/blob/main/docs/design/async-rfc.md" description="Read the complete async & concurrency RFC on GitHub." />

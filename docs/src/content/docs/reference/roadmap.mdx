@@ -1,0 +1,90 @@
+---
+title: Roadmap & Future Work
+description: Features that are designed, partially scaffolded, or described in planning docs but not yet implemented.
+---
+
+This page collects everything that is *not* in the compiler today. Some items have
+scaffolding in the code (a type that checks but has no runtime, a config field nothing
+reads), some appear in older design documents, and some are known gaps. Nothing here is
+a commitment — it's an honest inventory, verified against the code as of August 2026.
+The rest of the documentation describes only what is actually implemented.
+
+## Language
+
+- **`async scope` blocks** — older design docs describe an explicit `async scope`
+  construct. No such keyword or AST node exists; today every function body acts as an
+  implicit task scope. Whether an explicit block form is still wanted is open.
+- **Tuple types** — the type parser deliberately rejects bare-paren function types
+  (`(Int, Int) -> Bool` must be written `Fn(Int, Int) -> Bool`) to keep `(` free for a
+  future tuple syntax.
+- **Class destructuring patterns** — `match` supports enum-variant destructuring
+  (`Shape.Circle(radius: r)`), but not destructuring class fields in patterns.
+- **Explicit constructor type arguments** — `Stack[Int](items: [])` is not supported;
+  generic constructor types are inferred only.
+- **Effect system** — only a `suspendable` flag exists on function types. The richer
+  effect annotations sketched in design docs (`pure`, `io`, `fs`, `net`, …) are not
+  implemented, nor are `Send`/`Share` traits, ownership/borrow inference, or `unsafe`
+  capability gates.
+- **Trait conflict namespacing** — accessing a conflicting trait method through a
+  namespace path (e.g. `service.logger.log_entry()`) is described in the traits docs
+  but has no supporting implementation yet.
+- **Parametric enum `include`s** — enums cannot include parametric traits (a code
+  comment in the typechecker marks this as not yet supported).
+
+## Runtime
+
+- **TCP networking** — `TcpListener`/`TcpStream` typecheck, but there are no
+  `aster_tcp_*` runtime symbols; socket programs cannot run. The internal I/O poller
+  (`aster_io_wait_read/write`) has no user-facing API.
+- **Channel endpoint lifecycle** — `MultiSend`/`MultiReceive` clones return the same
+  handle; reference counting with automatic close when the last sender/receiver drops
+  is not implemented.
+- **File I/O on the blocking pool** — `File.*` and `std/fs` calls run directly on the
+  worker thread instead of being routed through the blocking pool, so large file
+  operations can stall a worker.
+- **Cross-worker stop-the-world GC** — heaps are per-OS-thread and collection is
+  per-worker. Coordinated stop-the-world collection across workers (rendezvous via
+  safepoints) does not exist.
+- **`TaggedUnion` native layout** — nullable values are represented as `i64` in
+  codegen (marked `TODO` in `fir/src/types.rs`); a proper tagged-union layout is
+  future work.
+- **Bytecode/interpreter runtime** — a `vm` crate is reserved as a commented-out
+  workspace member in `Cargo.toml`; nothing exists yet.
+
+## Standard library
+
+- **Unwritten modules** — earlier drafts referenced `std/http`, `std/json`, `std/io`,
+  `std/async`, `std/config`, `std/logging`, `std/tracing`, and `std/sql`. None exist.
+  The real surface is: `std/cmp`, `std/fmt`, `std/collections`, `std/convert`,
+  `std/random`, `std/sys`, `std/fs`, `std/process`, `std/crypto`, plus gated
+  `std/runtime` (`--jit`) and `std/unstable` (`--unstable`).
+- **`std/crypto` breadth** — currently `sha256` only.
+
+## Diagnostics & tooling
+
+- **Error stacktraces** — there is no stack trace capture on thrown errors.
+- **Unreachable catch arm detection** — the compiler does not warn when an earlier
+  `catch` arm shadows a later one.
+- **L008 `MissingNewline`** — the diagnostic template exists but the lexer never
+  emits it.
+- **Formatter configuration** — `FormatConfig.quote_style` exists but is unused
+  (the lexer only supports double quotes); line width (88) and indent (2) cannot be
+  changed from the CLI; the magic-trailing-comma branch for map literals is dead code
+  (the detector only records `]` and `)`).
+- **Build directory** — `.aster/build/<profile>/gen/` is created but nothing writes
+  to it; it is a leftover from the retired C-runtime generation path.
+- **LSP server** — a symbol index is maintained by the typechecker for hover and
+  go-to-definition, but the server itself is still at the planning stage.
+
+## Known stale code comments
+
+Small source cleanups discovered while validating the docs — the code works, but the
+comments describe an older design:
+
+- `ast/src/types.rs` — says Map is "scaffolding … no literal syntax or runtime yet";
+  map literals parse and typecheck.
+- `fir/src/lower/closure.rs` — a doc comment still describes the old
+  dummy-value/direct-call closure scheme; lowering actually produces first-class
+  `ClosureCreate` values.
+- A comment describing channel capacity `0` as "unbounded"; the runtime maps
+  non-positive capacities to the default of 64.

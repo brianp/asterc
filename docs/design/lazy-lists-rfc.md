@@ -1,0 +1,470 @@
+# RFC: Lazy Lists — Default Lazy Evaluation for Collections
+
+Status: DRAFT
+
+---
+
+## 1. Motivation
+
+Aster's list operations (`map`, `filter`, etc.) eagerly materialize intermediate results:
+
+```
+let result = (1..=1000000)
+  .map(f: -> x: x * x)
+  .filter(f: -> x: x % 2 == 0)
+  .take(count: 10)
+```
+
+Today this creates a list of 1,000,000 squares, then filters to ~500,000 evens, then takes 10. Two intermediate lists, millions of allocations, for 10 values.
+
+With lazy evaluation, this builds a recipe. Values flow through one at a time, and only 10 elements are ever computed. No intermediate lists exist.
+
+### Design Goal
+
+**Lists are lazy by default.** Chained operations build a pipeline. Values are computed on demand and cached. Materialization happens only when a consuming operation requires it (iteration, printing, indexing, `count()`, etc.).
+
+The user never thinks about "lazy vs eager." They write list operations naturally, and the runtime does the right thing.
+
+---
+
+## 2. Design Principles
+
+1. **Lazy by default** — `xs.map(f: ...).filter(f: ...)` does no work until consumed.
+2. **Transparent** — lazy and materialized lists are the same type (`List[T]`). Any function accepting `List[T]` accepts either.
+3. **Cached** — once a value is forced, the result is memoized. A second traversal reuses cached values (Haskell-style).
+4. **Predictable** — side effects in callbacks execute in order, once, when forced.
+5. **Backwards compatible** — existing code that uses `map`/`filter`/etc. continues to work identically. It just uses less memory.
+
+---
+
+## 3. Mental Model
+
+A lazy list is a recipe: "here's how to compute element N." A materialized list is a buffer: "here are all the elements."
+
+```
+let xs = [1, 2, 3, 4, 5]           # materialized — values exist in memory
+let ys = xs.map(f: -> x: x * 2)    # lazy — recipe: "take from xs, multiply by 2"
+let zs = ys.filter(f: -> x: x > 4) # lazy — recipe: "take from ys, keep if > 4"
+
+say(message: "{zs}")                # forces evaluation: [6, 8, 10]
+say(message: "{zs}")                # uses cached result: [6, 8, 10] (no recomputation)
+```
+
+Forcing happens when a value is needed:
+- **Terminal operations**: `count()`, `reduce()`, `any()`, `all()`, `min()`, `max()`, `sum()`
+- **Materialization**: `to_list()`, string interpolation, `say()`
+- **Indexing**: `xs[3]` forces elements 0 through 3
+- **Iteration**: `for x in xs` forces one element per iteration
+
+Non-forcing (lazy) operations build the pipeline:
+- `map(f: ...)`, `filter(f: ...)`, `take(count: N)`, `skip(count: N)`
+- `flat_map(f: ...)` (future), `zip(other: ...)` (future)
+
+---
+
+## 4. Runtime Representation
+
+### 4.1 Materialized List (Current)
+
+No change to the current representation:
+
+```
+Handle: [block_ptr] → Block: [len: i64][cap: i64][elements: i64 × cap]
+```
+
+### 4.2 Lazy List
+
+A lazy list is a different kind of handle that stores a pipeline of operations:
+
+```
+Handle: [lazy_ptr] → LazyList:
+  [source: i64]        # pointer to source (another list handle, or a range, or a generator)
+  [operation: u8]       # LAZY_MAP, LAZY_FILTER, LAZY_TAKE, LAZY_SKIP, etc.
+  [callback: i64]       # closure pointer (for map/filter)
+  [param: i64]          # extra parameter (e.g., count for take/skip)
+  [cache: i64]          # pointer to materialized cache block (initially null)
+  [cache_len: i64]      # number of cached elements so far
+  [exhausted: i8]       # 1 if source is fully consumed
+```
+
+### 4.3 Lazy Range Source
+
+Ranges (`1..=100`) are already lazy — they don't store all values. A range as a source:
+
+```
+RangeSource:
+  [start: i64][end: i64][inclusive: i8][current: i64]
+```
+
+### 4.4 GC Object Types
+
+New GC types:
+- `OBJ_LAZY_LIST` — lazy list node (traced: source, callback, cache)
+- Existing `OBJ_LIST_HANDLE` / `OBJ_LIST_HANDLE_NOPTR` — unchanged for materialized lists
+
+### 4.5 Uniform Handle
+
+Both materialized and lazy lists are `Ptr` (i64) values. The GC type tag distinguishes them. Runtime functions that operate on lists check the tag:
+
+```rust
+fn is_lazy_list(handle: *const u8) -> bool {
+    let header = payload_header(handle);
+    obj_type(header) == OBJ_LAZY_LIST
+}
+```
+
+---
+
+## 5. Operations
+
+### 5.1 Lazy Operations (Build Pipeline)
+
+These return a new lazy list wrapping the source:
+
+```
+xs.map(f: -> x: x * 2)       # LazyList { source: xs, op: MAP, callback: f }
+xs.filter(f: -> x: x > 0)    # LazyList { source: xs, op: FILTER, callback: f }
+xs.take(count: 10)            # LazyList { source: xs, op: TAKE, param: 10 }
+xs.skip(count: 5)             # LazyList { source: xs, op: SKIP, param: 5 }
+```
+
+Chaining composes:
+```
+xs.map(f: -> x: x * 2).filter(f: -> x: x > 4).take(count: 10)
+→ LazyList {
+    source: LazyList {
+      source: LazyList { source: xs, op: MAP, ... },
+      op: FILTER, ...
+    },
+    op: TAKE, param: 10
+  }
+```
+
+### 5.2 Eager Operations (Force Evaluation)
+
+These consume the lazy list, forcing computation:
+
+| Operation | Forces | Returns |
+|-----------|--------|---------|
+| `count()` | All elements | `Int` |
+| `reduce(initial:, f:)` | All elements | `T` |
+| `any(f:)` | Until first true | `Bool` |
+| `all(f:)` | Until first false | `Bool` |
+| `min()` / `max()` | All elements | `T` |
+| `sum()` | All elements | `T` |
+| `first()` | First element | `T` |
+| `last()` | All elements | `T` |
+| `to_list()` | All elements | materialized `List[T]` |
+| `sort()` | All elements | materialized `List[T]` (sorting requires all values) |
+| `each(f:)` | All elements | `Void` |
+| String interpolation | All elements | `String` |
+| `for x in ...` | One per iteration | element |
+| Index `xs[i]` | Up to index `i` | element |
+
+### 5.3 Forcing Mechanics
+
+When a lazy list is forced for element N:
+
+```
+force(lazy, index):
+  if index < lazy.cache_len:
+    return lazy.cache[index]  # cache hit
+
+  while lazy.cache_len <= index and not lazy.exhausted:
+    next_val = pull_next(lazy)
+    if next_val is available:
+      append to lazy.cache
+    else:
+      lazy.exhausted = true
+
+  if index < lazy.cache_len:
+    return lazy.cache[index]
+  else:
+    error: index out of bounds
+
+pull_next(lazy):
+  match lazy.operation:
+    MAP:
+      src_val = force(lazy.source, lazy.src_index++)
+      return callback(src_val)
+    FILTER:
+      loop:
+        src_val = force(lazy.source, lazy.src_index++)
+        if callback(src_val): return src_val
+        # skip non-matching, continue pulling
+    TAKE:
+      if lazy.cache_len >= lazy.param: exhausted
+      return force(lazy.source, lazy.src_index++)
+    SKIP:
+      while lazy.src_index < lazy.param:
+        lazy.src_index++  # skip silently
+      return force(lazy.source, lazy.src_index++)
+```
+
+### 5.4 Full Materialization
+
+`to_list()`, `sort()`, and string interpolation force all elements:
+
+```
+materialize(lazy):
+  while not lazy.exhausted:
+    force(lazy, lazy.cache_len)
+  return lazy.cache as materialized list
+```
+
+---
+
+## 6. Type System
+
+### 6.1 No Separate Type
+
+There is no `LazyList[T]` type visible to the user. A lazy list IS a `List[T]`. The type checker treats them identically. The distinction is purely a runtime representation detail.
+
+```
+def process(items: List[Int]) -> Int
+  items.filter(f: -> x: x > 0).count()
+
+let xs = [1, -2, 3, -4]          # materialized List[Int]
+let ys = (1..=100).map(f: -> x: x * x)  # lazy List[Int]
+
+process(items: xs)   # works
+process(items: ys)   # works — same type
+```
+
+### 6.2 Element Type Propagation
+
+Lazy operations preserve or transform the element type:
+
+- `List[T].map(f: -> T: U)` → `List[U]`
+- `List[T].filter(f: -> T: Bool)` → `List[T]`
+- `List[T].take(count: N)` → `List[T]`
+
+The type checker already handles these. No change needed.
+
+---
+
+## 7. Ranges as Lazy Sources
+
+Ranges are the natural first lazy source. Currently, `for a in 1..=100` already avoids materialization (the FIR lowers it to a while loop). But `(1..=100).map(f: ...)` currently materializes the range into a list first.
+
+With lazy lists, `(1..=100).map(f: -> x: x * x)` returns a lazy list with a range source. No materialization until consumed.
+
+### 7.1 Infinite Ranges (Future)
+
+Lazy evaluation enables infinite ranges:
+
+```
+let naturals = 1..    # infinite range — no upper bound
+let squares = naturals.map(f: -> x: x * x)
+let first_10 = squares.take(count: 10)
+say(message: "{first_10}")  # [1, 4, 9, 16, 25, 36, 49, 64, 81, 100]
+```
+
+This is a future extension. For now, all ranges have bounds.
+
+---
+
+## 8. Caching Semantics
+
+### 8.1 Haskell-Style Memoization
+
+Once an element is forced, the result is stored in the cache block. Subsequent accesses return the cached value. This means:
+
+```
+let expensive = (1..=1000000).map(f: -> x: slow_computation(x: x))
+let first = expensive.first()        # computes element 0, caches it
+let also_first = expensive.first()   # cache hit — no recomputation
+let tenth = expensive[9]             # computes elements 1-9, caches them
+```
+
+### 8.2 Memory Implications
+
+The cache grows as elements are forced. A lazy list that is fully iterated uses the same memory as a materialized list. The benefit is:
+
+1. **Partial evaluation**: `xs.filter(f: ...).take(count: 10)` only caches 10 elements, not the entire filtered result.
+2. **Pipeline fusion**: intermediate results are never fully materialized. `xs.map(f: ...).filter(f: ...)` doesn't create an intermediate mapped list.
+3. **No double materialization**: the source is consumed once and intermediate values are not stored separately.
+
+### 8.3 Releasing Lazy Lists
+
+When a lazy list handle becomes unreachable, the GC frees both the lazy node and its cache. Chains of lazy lists are collected together when the terminal handle becomes unreachable.
+
+---
+
+## 9. For Loops
+
+`for x in expr` must work with both materialized and lazy lists.
+
+### 9.1 Current: Materialized Lists
+
+```
+for x in xs:
+  → idx = 0; while idx < len(xs): x = xs[idx]; body; idx++
+```
+
+### 9.2 New: Lazy-Aware Iteration
+
+```
+for x in expr:
+  if expr is materialized:
+    → same as today (index-based)
+  if expr is lazy:
+    → idx = 0; loop: x = force(expr, idx); if exhausted: break; body; idx++
+```
+
+The FIR lowering checks the type. For `for x in xs.map(f: ...).take(count: 10)`, the iterable is a lazy list, so iteration uses the pull-based protocol.
+
+Alternatively, a uniform approach: all `for` loops use a `next()`-style protocol, and materialized lists implement it trivially (increment index, return element).
+
+---
+
+## 10. Interaction with Other Features
+
+### 10.1 String Interpolation
+
+`"{lazy_list}"` forces all elements, formats them as `[1, 2, 3, ...]`. The `aster_list_to_string` function must handle lazy lists by materializing first.
+
+### 10.2 sort()
+
+`lazy_list.sort()` forces all elements (sorting requires random access), returns a materialized list.
+
+### 10.3 Eq / Ord
+
+Comparing two lists (if we ever support that) would force both lazily, element by element, short-circuiting on first difference.
+
+### 10.4 Closures and Capture
+
+Lazy operations capture closures. The closure must remain alive as long as the lazy list is alive. GC handles this: the lazy list node references the closure, keeping it reachable.
+
+```
+def make_doubler() -> List[Int]
+  let factor = 2
+  (1..=10).map(f: -> x: x * factor)  # closure captures 'factor'
+  # The lazy list keeps the closure alive
+```
+
+### 10.5 Side Effects
+
+Callbacks in `map`/`filter` execute when elements are forced, not when the pipeline is built. This is predictable but different from eager evaluation:
+
+```
+let xs = [1, 2, 3]
+let ys = xs.map(f: -> x:
+  say(message: "computing {x}")   # prints when forced, not now
+  x * 2
+)
+say(message: "pipeline built")     # prints first
+say(message: "{ys.first()}")       # "computing 1" then "2"
+```
+
+This is the standard lazy evaluation contract. Document it clearly.
+
+---
+
+## 11. Runtime Functions
+
+### 11.1 New Runtime Functions
+
+```
+aster_lazy_map(source: i64, callback: i64) -> i64
+aster_lazy_filter(source: i64, callback: i64) -> i64
+aster_lazy_take(source: i64, count: i64) -> i64
+aster_lazy_skip(source: i64, count: i64) -> i64
+aster_lazy_force(handle: i64, index: i64) -> i64       # force element at index
+aster_lazy_force_all(handle: i64) -> i64                # materialize into list
+aster_lazy_is_exhausted(handle: i64) -> i8
+aster_lazy_cached_len(handle: i64) -> i64
+```
+
+### 11.2 Updated Runtime Functions
+
+These must become lazy-aware (check if handle is lazy or materialized):
+
+```
+aster_list_len(handle)       # lazy: force all, return count. materialized: return len.
+aster_list_get(handle, idx)  # lazy: force up to idx. materialized: direct access.
+aster_list_to_string(handle) # lazy: force all, format. materialized: format directly.
+```
+
+### 11.3 Iterator Protocol (Internal)
+
+Internal to the runtime, a pull-based protocol:
+
+```
+aster_iter_next(handle: i64, state: i64) -> (value: i64, done: i8)
+```
+
+Or, track state inside the lazy list node itself (simpler, since each lazy list has its own position tracker).
+
+---
+
+## 12. FIR Changes
+
+### 12.1 Lazy Operations in FIR
+
+Current FIR lowers `xs.map(f: ...)` to a loop that builds a new list. With lazy evaluation, this becomes:
+
+**Before:**
+```
+result = list_new()
+for elem in xs:
+  result.push(callback(elem))
+return result
+```
+
+**After:**
+```
+return RuntimeCall("aster_lazy_map", [xs, callback])
+```
+
+The loop-based lowering is only used when materialization is required.
+
+### 12.2 Determining Laziness
+
+At the FIR level, the decision of lazy vs eager is based on the operation:
+- `map`, `filter`, `take`, `skip` → always lazy (return `RuntimeCall`)
+- `reduce`, `count`, `any`, `all`, `sort`, `each` → always eager (consume the lazy pipeline)
+- `to_list` → force materialization
+
+---
+
+## 13. Implementation Phases
+
+### Phase 1: Lazy List Runtime
+- Implement `LazyList` struct in the runtime
+- Implement `force(index)` and `materialize()` logic
+- GC support for `OBJ_LAZY_LIST` (trace source, callback, cache)
+- Test independently with hand-crafted lazy lists
+
+### Phase 2: Lazy map/filter
+- Change FIR lowering for `map` and `filter` to emit lazy runtime calls
+- Update `aster_list_len`, `aster_list_get`, `aster_list_to_string` to handle lazy lists
+- Update `for` loop codegen to handle lazy iteration
+- Ensure terminal operations (`count`, `reduce`, etc.) materialize correctly
+
+### Phase 3: Lazy take/skip and Ranges
+- Implement `take` and `skip` as lazy operations
+- Make ranges work as lazy sources for chained operations
+- `(1..=100).map(f: ...).take(count: 10)` works end-to-end
+
+### Phase 4: Caching and Optimization
+- Implement memoization cache on lazy list nodes
+- Ensure re-iteration uses cached results
+- Profile and optimize the common case (short pipelines, small results)
+- Consider pipeline fusion (collapsing adjacent map/filter into single node)
+
+---
+
+## 14. Open Questions
+
+1. **push() on a lazy list**: Should `lazy_list.push(item: x)` materialize the list first, then push? Or is it an error? Materializing is probably correct — you're choosing to treat it as a concrete collection.
+
+2. **Mutation after lazy reference**: If `ys = xs.map(f: ...)` and then `xs.push(item: 99)`, does `ys` see the new element? Haskell avoids this by being immutable. Ruby's lazy enumerators do see mutations. Since Aster lists are mutable, we need a decision. Simplest: lazy lists snapshot the source length at creation time, ignoring later mutations.
+
+3. **set() on a lazy list**: `lazy_list.set(index: 3, value: 99)` — materialize first? Error? Probably materialize.
+
+4. **Debugging**: Lazy evaluation makes debugging harder. Should there be a way to inspect a lazy pipeline? A `debug()` representation that shows the recipe?
+
+5. **Performance of closure calls**: Each element pull invokes a closure. For tight loops this may be slower than the current eager approach with direct function calls. Profile and compare.
+
+6. **Stack depth**: Deep lazy chains (many chained map/filter calls) create deep pull chains. Each `force()` call recurses through the chain. For very deep chains this could overflow the stack. Limit chain depth? Use trampolining?

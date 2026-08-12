@@ -1,0 +1,251 @@
+---
+title: Lexer
+description: How the Aster lexer turns source text into tokens, including indentation, strings, and interpolation.
+---
+
+This page is a walkthrough of the first compiler phase: lexing (tokenization). The lexer lives in its own crate — `lexer/src/lib.rs` holds the implementation and `lexer/src/token.rs` defines the token types. The entire crate is `#![deny(unsafe_code)]`.
+
+Lexing breaks the source text into a flat list of **tokens**. Each token is a meaningful unit: a keyword, an identifier, a number, an operator. Whitespace between tokens is consumed and discarded, with two exceptions: indentation becomes `Indent` and `Dedent` tokens, and line endings become `Newline` tokens.
+
+The single entry point is:
+
+```rust
+pub fn lex(input: &str) -> Result<Vec<Token>, Diagnostic>
+```
+
+On the first error, lexing stops and returns a `Diagnostic` (defined in the `ast` crate) carrying an error code, a message, and labeled source spans.
+
+---
+
+## The Token Type
+
+Every token has a kind and a position:
+
+```rust
+pub struct Token {
+    pub kind: TokenKind,
+    pub line: usize,
+    pub col: usize,
+    /// Byte offset of the first character of this token in the source.
+    pub start: usize,
+    /// Byte offset one past the last character of this token in the source.
+    pub end: usize,
+}
+```
+
+`Token::span()` converts the byte offsets into an `ast::Span`, which is what diagnostics and later phases use to point back at source locations.
+
+`TokenKind` is one big enum covering everything the language can contain:
+
+| Category | Variants |
+|---|---|
+| Keywords | `Def`, `Class`, `Async`, `Blocking`, `Return`, `If`, `Else`, `Elif`, `While`, `For`, `In`, `Break`, `Continue`, `True`, `False`, `Nil`, `Let`, `Use`, `As`, `Pub`, `Trait`, `Enum`, `Includes`, `Extends`, `Throw`, `Throws`, `Match`, `Catch`, `Resolve`, `Detached`, `Const` |
+| Structure | `Indent`, `Dedent`, `Newline`, `EOF` |
+| Punctuation | `LParen`, `RParen`, `Comma`, `Colon`, `Arrow` (`->`), `FatArrow` (`=>`), `Dot`, `DotDot` (`..`), `DotDotEq` (`..=`), `Equals`, `LBracket`, `RBracket`, `LBrace`, `RBrace`, `Question`, `Bang` |
+| Operators | `Plus`, `Minus`, `Star`, `Slash`, `Percent`, `StarStar` (`**`), `EqualEqual`, `BangEqual`, `Less`, `Greater`, `LessEqual`, `GreaterEqual`, `And`, `Or`, `Not` |
+| Literals / identifiers | `Int(i64)`, `Float(f64)`, `Str(String)`, `Ident(String)` |
+| Interpolation | `StringStart(String)`, `StringMid(String)`, `StringEnd(String)` |
+
+`And`, `Or`, and `Not` are word-form operators: they are spelled `and`, `or`, `not` in source and recognized by the keyword table, but they behave as operators in the grammar.
+
+`TokenKind` implements `Display`, rendering each token the way it appears in source (`def`, `->`, `end of file`, …). Parser error messages lean on this to say things like ``expected `:`, found `->` ``.
+
+---
+
+## The lex() Pipeline
+
+`lex()` processes the input line by line:
+
+1. **Size check** — inputs over 10 MB are rejected up front (`L009`).
+2. **Compute line starts** — `compute_line_starts()` builds a table mapping line index to byte offset. Token byte offsets are computed as `line_start + column`, so this table is the backbone of span construction.
+3. **For each line** (via `input.lines()`):
+   1. Reject tab indentation (`L003`) and count leading spaces.
+   2. If the line is blank or a full-line comment (first non-space character is `#`), emit a `Newline` token and move on — no indentation processing happens for these lines, so a comment at column 0 inside an indented block does not force a dedent.
+   3. Emit `Indent` / `Dedent` tokens based on the indentation change — but only when not inside brackets (see below).
+   4. Tokenize the line content character by character.
+   5. Emit a `Newline` token at the end of the line.
+4. **At EOF** — emit one `Dedent` for each indentation level still on the stack, then a final `EOF` token.
+
+Every line produces a trailing `Newline` token, including lines inside brackets; the parser decides where newlines are meaningful and where they are skipped as whitespace.
+
+---
+
+## Indent/Dedent: Python-Style Scoping
+
+Aster uses indentation for scoping. The lexer maintains an `indent_stack: Vec<usize>` (initialized to `[0]`) tracking the active indentation levels:
+
+```
+def add(x: Int, y: Int) -> Int    # indent_stack = [0]
+    return x + y                  # indent_stack = [0, 4] -- emits Indent
+                                  # back to 0 -- emits Dedent
+```
+
+The logic lives in `emit_indent_dedent_tokens()`:
+
+- When the indent **increases** past the top of the stack, push the new level and emit one `Indent`.
+- When it **decreases**, pop levels and emit one `Dedent` per popped level.
+- If after popping, the new indent width does not match a level that was on the stack, that is an inconsistent-indentation error (`L010`).
+
+Tabs are rejected separately and earlier: `reject_tabs_and_measure_indent()` errors (`L003`) if a line's leading whitespace contains a tab. Indentation must be spaces. (A tab *between* tokens later in the line is silently skipped, like any other inter-token whitespace — only leading indentation is strict.)
+
+Converting indentation into explicit `Indent`/`Dedent` tokens means the parser never has to think about whitespace — block structure looks like matched open/close tokens, just as it would in a braced language.
+
+---
+
+## Bracket Depth: Implicit Line Continuation
+
+Indentation rules should not interfere when you write a multi-line list or a long function call. Python solves this with implicit line continuation inside brackets, and Aster does the same thing.
+
+The lexer maintains a `bracket_depth: usize` counter. Every `(`, `[`, or `{` increments it; every `)`, `]`, or `}` decrements it (with `saturating_sub` so malformed input with extra closers can't underflow). While `bracket_depth > 0`, the lexer skips all `Indent`/`Dedent` emission. This means you can write:
+
+```
+let items = [
+  1,
+  2,
+  3,
+]
+```
+
+Without bracket depth tracking, the indentation after `[` would emit an `Indent` and the dedent after `]` a `Dedent`, and the parser would see block structure (like an if-body) instead of list content. With it, the entire list interior is flat from the parser's perspective — just comma-separated expressions.
+
+The same mechanism enables multi-line function calls, map literals, and nested data structures. `Newline` tokens are still emitted inside brackets; the parser consumes them as whitespace at strategic points (after commas in argument lists, for example) rather than as statement terminators.
+
+---
+
+## The Character Loop
+
+Within a line, the lexer walks a `Peekable<Chars>` iterator. Two `macro_rules!` macros keep token emission terse:
+
+- `push!(kind)` — emit a single-character token at the current position.
+- `try_two_char!(second, compound, single)` — peek one character ahead; if it matches, emit the two-character compound token, otherwise the single. This handles `->` vs `-`, `**` vs `*`, `!=` vs `!`, `<=` vs `<`, `>=` vs `>`.
+
+A few characters need custom handling beyond the macros:
+
+- `=` three-ways into `==`, `=>`, or `=`.
+- `.` three-ways into `..=`, `..`, or `.`.
+- `(`/`[`/`{` and their closers also adjust `bracket_depth`.
+- `#` breaks out of the line loop entirely — everything after it is a trailing comment.
+- `"` enters string lexing (below).
+- Digits enter `lex_number()`, letters and `_` enter `lex_ident_or_keyword()`.
+- Anything else is an unexpected-character error (`L011`).
+
+### Numbers
+
+`lex_number()` parses integers and floats from the same starting digit. A `.` only becomes a decimal point if the character *after* it is a digit — the lexer clones the iterator (`chars.clone()`) to look two characters ahead without consuming anything. This one decision makes three different constructs work:
+
+```
+3.14              # Float(3.14)     -- dot followed by digit
+42.to_string()    # Int(42), Dot, Ident("to_string"), ...
+1..10             # Int(1), DotDot, Int(10)
+```
+
+Errors: an integer literal that overflows `i64` is `L007`; other unparseable integers are `L012`; bad float literals are `L006`.
+
+### Identifiers and Keywords
+
+`lex_ident_or_keyword()` reads a word of ASCII alphanumerics and underscores, then checks it against the keyword table. If it matches (`def`, `class`, `async`, `blocking`, `return`, `if`, `else`, `elif`, `while`, `for`, `in`, `break`, `continue`, `true`, `false`, `nil`, `let`, `use`, `as`, `pub`, `trait`, `enum`, `includes`, `extends`, `throw`, `throws`, `match`, `catch`, `resolve`, `detached`, `const`, plus the word operators `and`/`or`/`not`), the corresponding keyword token is produced; otherwise it becomes `Ident(word)`.
+
+Identifiers are ASCII-only. Non-ASCII characters outside of string literals are rejected with `L011`; inside string literals they are allowed, and the lexer advances its column tracking by `len_utf8()` bytes so spans stay correct.
+
+---
+
+## Strings
+
+`lex_string_full()` is called after the opening `"` has been consumed. It accumulates characters until the closing quote, handling two special characters along the way: `\` starts an escape sequence, and `{` starts an interpolation.
+
+Escape sequences are handled by `lex_escape_char()`:
+
+| Escape | Meaning |
+|---|---|
+| `\n` | newline |
+| `\t` | tab |
+| `\\` | backslash |
+| `\"` | double quote |
+| `\r` | carriage return |
+| `\0` | NUL |
+| `\{` | literal `{` (suppresses interpolation) |
+| `\}` | literal `}` |
+
+Any other escape is an error (`L004`). A string that reaches end of line without a closing quote is unterminated (`L002`), and a string longer than 1,000,000 bytes is rejected (`L005`).
+
+A string with no interpolations produces a single `Str(String)` token.
+
+---
+
+## String Interpolation
+
+String interpolation embeds expressions inside string literals: `"hello {name}, you are {age + 1} years old"`. The tricky part is that the lexer operates on characters, but the embedded expressions need token-level structure for the parser.
+
+The solution splits interpolated strings into a token sequence. When the lexer encounters `"hello {name} world"`, it emits:
+
+1. `StringStart("hello ")` — the text before the first `{`
+2. The tokens for the expression `name`
+3. `StringEnd(" world")` — the text after the `}` and before the closing quote
+
+For multiple interpolations like `"{a} and {b}"`, the sequence is `StringStart("")`, tokens for `a`, `StringMid(" and ")`, tokens for `b`, `StringEnd("")`.
+
+### How the Expression Is Tokenized
+
+When `lex_string_full()` hits an unescaped `{`, it hands off to `lex_interpolation_expr()`. That function first scans the raw expression text up to the matching `}`, tracking nested braces with a depth counter so an inner `{` doesn't terminate the interpolation early. Then it runs a **mini-lexer** over the captured text that recognizes exactly three things:
+
+- operators and punctuation, via the shared `match_operator()` helper (parens, brackets, arithmetic, comparisons, `.`, `,`, `:`, `?`, `->`, `**`, and friends),
+- number literals, via the same `lex_number()` used by the main loop,
+- identifiers and keywords, via the same `lex_ident_or_keyword()`.
+
+This is deliberately a subset of the full lexer. In particular, a nested string literal inside an interpolation is not supported — an unescaped `"` inside `{...}` is an error (reported as `L002`), and any other unrecognized character is an interpolation error (`L001`). An interpolation left open at the end of the string is also `L002`.
+
+The mini-lexer computes token positions relative to the enclosing line, so spans inside interpolations still point at the right source characters.
+
+### What the Parser and Later Phases Do
+
+The parser reconstructs the interpolation in `parse_string_interpolation()` (`parser/src/expr.rs`). It consumes the `StringStart`, parses a full expression with the regular expression parser, then expects either `StringMid` (more interpolations follow) or `StringEnd` (done). Empty literal segments are dropped rather than stored. The result is an `Expr::StringInterpolation { parts }` where each part is an `ast::StringPart::Literal(String)` or `ast::StringPart::Expr(Box<Expr>)`.
+
+During FIR lowering (`fir/src/lower/closure.rs`, `lower_string_interpolation()`), each expression part is converted to a string via the same `to_string` machinery used for `print`, and the parts are folded left-to-right into `aster_string_concat` runtime calls. So `"x is {x}!"` becomes roughly `concat(concat("x is ", to_string(x)), "!")`.
+
+---
+
+## Comments
+
+Comments start with `#` and run to the end of the line. Neither form produces a token — a full-line comment yields only a `Newline`, and a trailing comment simply ends tokenization of that line.
+
+The lexer crate also exposes a second public function used by the formatter:
+
+```rust
+pub fn extract_comments(input: &str) -> Vec<(usize, usize, String)>
+```
+
+It returns `(line_number, byte_offset, comment_text)` for every comment in the source, covering both full-line and trailing comments. A helper, `find_comment_start()`, scans each line tracking string/escape state so that a `#` inside a string literal is not mistaken for a comment. This runs in O(n) independently of `lex()` and is how `aster-fmt` preserves comments, since the compiler's token stream discards them.
+
+---
+
+## Safety Limits and Error Codes
+
+Hard limits enforced by the lexer:
+
+- Maximum input size: 10 MB (`L009`)
+- Maximum string literal length: 1,000,000 bytes (`L005`)
+
+All lexer diagnostics are defined as templates in `ast/src/templates/lex_errors/mod.rs`:
+
+| Code | Template | Trigger |
+|---|---|---|
+| `L001` | `InterpolationError` | unexpected character inside `{...}` interpolation |
+| `L002` | `UnterminatedString` | string, escape, or interpolation never closed |
+| `L003` | `TabIndentation` | tab character in leading indentation |
+| `L004` | `InvalidEscape` | unknown escape sequence in a string |
+| `L005` | `StringTooLong` | string literal over 1,000,000 bytes |
+| `L006` | `BadFloatLiteral` | float literal that fails to parse |
+| `L007` | `IntegerOverflow` | integer literal outside `i64` range |
+| `L009` | `InputTooLarge` | source file over 10 MB |
+| `L010` | `InconsistentIndentation` | dedent to a level not on the indent stack |
+| `L011` | `UnexpectedCharacter` | character the lexer doesn't recognize |
+| `L012` | `BadIntegerLiteral` | integer literal that fails to parse (non-overflow) |
+
+---
+
+## Rust Patterns Used
+
+- **`Peekable<Chars>`** — one character of lookahead without consuming; two characters of lookahead where needed by cloning the iterator (`chars.clone()` in `lex_number()`).
+- **`macro_rules!`** — the `push!` and `try_two_char!` macros eliminate the boilerplate of constructing `Token` structs with positions for every operator.
+- **Shared helpers** — `match_operator()`, `lex_number()`, and `lex_ident_or_keyword()` are reused by both the main loop and the interpolation mini-lexer, so operator and literal behavior can't drift between the two.
+- **Pattern matching on `char` ranges** — `'0'..='9'` dispatches digits to number lexing.

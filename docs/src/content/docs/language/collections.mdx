@@ -1,0 +1,88 @@
+---
+title: Collections
+description: Lists, maps, and collection operations in Aster.
+---
+
+## Lists
+
+Lists are ordered, typed collections:
+
+```
+let nums = [1, 2, 3]
+let words = ["hello", "world"]
+let scores: List[Int] = [100, 95, 87]
+```
+
+Empty lists need a type annotation:
+
+```
+let empty: List[String] = []
+```
+
+## Indexing
+
+Access elements by index (zero-based):
+
+```
+let nums = [1, 2, 3]
+let first = nums[0]      # 1
+let second = nums[1]     # 2
+```
+
+## Iterating
+
+```
+let items = ["apple", "banana", "cherry"]
+for item in items
+  log(item)
+```
+
+## Length
+
+```
+let count = len([1, 2, 3])    # 3
+let size = len("hello")       # 5
+```
+
+## Maps
+
+Maps are key-value collections, written with brace literals:
+
+```
+let config: Map[String, Int] = {
+  "port": 8080,
+  "timeout": 30
+}
+```
+
+Indexing a map returns a nullable value — the key might not be there:
+
+```
+let port = config["port"].or(0)
+```
+
+## Collection Methods
+
+Lists carry mutation helpers — `push(item:)`, `pop()`, `insert(at:, item:)`, `remove(at:)`, `contains(item:)`, `len()` — plus the full iteration vocabulary that comes with `Iterable`: `map`, `filter`, `reduce`, `find`, `any`, `all`, `count`, `first`, `last`, `to_list`, `min`, `max`, `sort`, and `unique`.
+
+```
+let nums = [1, 2, 3, 4]
+let doubled = nums.map(f: -> x: x * 2)             # [2, 4, 6, 8]
+let evens = nums.filter(f: -> x: x % 2 == 0)       # [2, 4]
+let sum = nums.reduce(init: 0, f: -> acc, x: acc + x)
+let found = nums.find(f: -> x: x > 2)              # Int? — collection may not contain one
+```
+
+`find`, `first`, `last`, `min`, and `max` return `T?`. `min`, `max`, and `sort` require the element type to include `Ord`; `unique` requires `Eq`. See [Traits](/oop/traits/) for the Iterable protocol behind these methods.
+
+## Type Safety
+
+All elements in a list must be the same type:
+
+```
+let valid = [1, 2, 3]              # List[Int] - OK
+let also_valid = ["a", "b", "c"]   # List[String] - OK
+# let invalid = [1, "two", 3]      # compile error: mixed types
+```
+
+The type checker enforces element consistency. No `Any[]` by default.

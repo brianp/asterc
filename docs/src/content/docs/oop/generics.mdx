@@ -1,0 +1,92 @@
+---
+title: Generics
+description: Type-parameterized classes and functions in Aster.
+---
+
+Generics let you write code that works with any type while maintaining full type safety.
+
+## Generic Classes
+
+Type definitions use bracket syntax `[T]`:
+
+```
+class Stack[T]
+  items: List[T]
+
+  def push(item: T) -> Void
+    items.push(item: item)
+
+  def pop() -> T
+    items.pop()
+```
+
+Usage — the type parameter is inferred from the constructor arguments:
+
+```
+let int_stack = Stack(items: [1])    # Stack[Int]
+int_stack.push(item: 2)
+let top = int_stack.pop()            # Int: 2
+
+let empty: List[String] = []
+let str_stack = Stack(items: empty)  # Stack[String]
+str_stack.push(item: "hello")
+```
+
+## Generic Functions
+
+Generic type parameters are introduced inline at their first occurrence in the parameter list. No bracket section before the params:
+
+```
+def first(items: List[T]) -> T
+  items[0]
+
+def convert(from: T, to: U) -> U
+```
+
+## Trait Constraints
+
+Constrain generics with `includes` where the type parameter appears in the parameter list:
+
+```
+def describe(item: T includes Printable) -> String
+  item.to_string()
+
+def max_value(a: T includes Ord, b: T) -> T
+  if a > b
+    return a
+  b
+```
+
+Inside the body, the constraint is what grants the capability: `a > b` compiles because `T includes Ord`. The constraint is also validated at every call site — passing a type that doesn't include the trait is a compile error.
+
+Constraints attach to a bare type parameter (`item: T includes Printable`), not inside a nested type like `List[T includes Printable]`.
+
+For inheritance constraints, use `extends`:
+
+```
+def clone(item: T extends Vehicle) -> T
+```
+
+Both can be combined:
+
+```
+def process(item: T extends Animal includes Trackable) -> T
+```
+
+## Type Inference
+
+The compiler infers generic type parameters when possible:
+
+```
+let nums = [1, 2, 3]
+let first_num = first(items: nums)    # compiler infers T = Int
+```
+
+## Common Generic Types
+
+| Type | Description |
+|------|-------------|
+| `List[T]` | Ordered collection |
+| `Map[K, V]` | Key-value mapping |
+| `T?` | Value that may be absent (nullable) |
+| `Task[T]` | Async computation handle |

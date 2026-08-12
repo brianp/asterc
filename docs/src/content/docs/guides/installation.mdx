@@ -1,0 +1,44 @@
+---
+title: Installation
+description: How to install the Aster compiler.
+---
+
+## Install
+
+### macOS
+
+```bash
+curl -fsSL https://aster.dev/install.sh | sh
+```
+
+### Linux
+
+```bash
+curl -fsSL https://aster.dev/install.sh | sh
+```
+
+### Windows
+
+```powershell
+irm https://aster.dev/install.ps1 | iex
+```
+
+### Verify
+
+```bash
+aster --version
+```
+
+## Running Aster Programs
+
+```bash
+# Run an Aster source file
+aster hello.aster
+
+# Type-check without running
+aster check hello.aster
+```
+
+## What's Next?
+
+<a href="/guides/hello-world/" style="display: inline-flex; align-items: center; gap: 0.35rem; font-weight: 600;">Write your first program &rarr;</a>

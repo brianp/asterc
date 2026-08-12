@@ -1,0 +1,23 @@
+---
+title: "RFC: Introspection"
+description: Runtime introspection of classes, error hierarchies, traits, and fields.
+sidebar:
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+
+**Status:** Draft
+
+Proposes first-class runtime introspection of classes and error hierarchies — ancestors, traits, fields, and methods. Inspired by Ruby's reflection model, with future direction toward metaprogramming and decorators.
+
+## Key Ideas
+
+- **Runtime class introspection**: query ancestors, included traits, fields, and methods.
+- **Error hierarchy traversal**: walk up the `extends` chain at runtime.
+- **Ruby-inspired model**: familiar API for developers coming from dynamic languages.
+- **Future direction**: metaprogramming and decorator support.
+
+<LinkCard title="Full RFC" href="https://github.com/example/asterc/blob/main/docs/design/introspection-rfc.md" description="Read the complete introspection RFC on GitHub." />

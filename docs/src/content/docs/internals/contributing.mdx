@@ -1,0 +1,235 @@
+---
+title: Contributing to the Compiler
+description: Testing patterns, core design decisions, and step-by-step recipes for adding keywords, expressions, protocols, and types.
+---
+
+This page covers the practical side of working on `asterc`: how the test suite is organized, the design patterns that show up everywhere in the codebase, and recipes for the most common kinds of changes.
+
+## Testing Patterns
+
+The test suite has two layers:
+
+1. **Crate unit tests** — each compiler crate carries its own `src/tests.rs`: `lexer/src/tests.rs`, `parser/src/tests.rs`, `typecheck/src/tests.rs`, `fir/src/tests.rs`, and `codegen/src/tests.rs`.
+2. **Integration tests** — a single test binary at `tests/integration/`, with one module per feature area (`eq_protocol.rs`, `named_args.rs`, `modules.rs`, `pattern_matching.rs`, `error_handling.rs`, and so on). `tests/integration/main.rs` declares the modules, and shared helpers live in `tests/integration/common/mod.rs`.
+
+### Running tests
+
+Build the `codegen` crate before running tests — it emits a static library that AOT-built test binaries link against:
+
+```bash
+cargo build -p codegen
+cargo test
+```
+
+This mirrors CI (`.github/workflows/ci.yml`) exactly. To run just the integration suite, or a single feature module:
+
+```bash
+cargo test --test integration
+cargo test --test integration eq_protocol
+```
+
+### Test helpers
+
+`tests/integration/common/mod.rs` provides helpers that run the full lex → parse → typecheck pipeline over a source string:
+
+```rust
+// Expect the program to typecheck successfully
+pub fn check_ok(src: &str)
+
+// Expect a typecheck error, return the error message
+pub fn check_err(src: &str) -> String
+
+// Return the full Diagnostic for detailed inspection
+pub fn check_err_diagnostic(src: &str) -> Diagnostic
+
+// Return ALL typecheck errors (not just the first)
+pub fn check_all_errors(src: &str) -> Vec<Diagnostic>
+
+// Expect no errors, return warnings (lints)
+pub fn check_warnings(src: &str) -> Vec<Diagnostic>
+
+// Expect a parse (or lex) error
+pub fn check_parse_err(src: &str) -> String
+pub fn check_parse_err_diagnostic(src: &str) -> Diagnostic
+pub fn check_lex_err_diagnostic(src: &str) -> Diagnostic
+
+// Parse with error recovery
+pub fn parse_with_recovery(src: &str) -> ParseResult
+
+// Test with virtual module files (for import tests)
+pub fn check_ok_with_files(src: &str, files: HashMap<String, String>)
+pub fn check_err_with_files(src: &str, files: HashMap<String, String>) -> String
+pub fn check_err_diagnostic_with_files(src: &str, files: HashMap<String, String>) -> Diagnostic
+
+// Same, but with the loader's jit / unstable flags enabled
+pub fn check_ok_with_files_jit(src: &str, files: HashMap<String, String>)
+pub fn check_ok_with_files_unstable(src: &str, files: HashMap<String, String>)
+pub fn check_err_with_files_unstable(src: &str, files: HashMap<String, String>) -> String
+
+// Compile an actual .aster file from disk (used by the examples/ suite)
+pub fn compile_file(path: &str)
+```
+
+Beyond the pipeline helpers, `common/mod.rs` also has **runtime helpers** that exercise the compiled CLI end to end:
+
+- `cli(args)` runs the `asterc` binary (via `CARGO_BIN_EXE_asterc`) with the given arguments.
+- `build_and_run(source)` AOT-compiles a source file with `asterc build` and executes the produced binary. Each call gets a unique `--build-dir` so the incremental cache never leaks objects between tests.
+- `temp_path` / `make_temp_dir` create collision-free temp files and directories.
+
+Feature modules combine these freely — `modules.rs`, for example, writes multi-file programs to a temp directory and runs them with `cli(&["run", ...])` to test cross-module compilation at runtime.
+
+### Testing with virtual modules
+
+For import tests, `check_ok_with_files` wires a `VirtualResolver` into the `ModuleLoader`, so modules resolve from an in-memory map instead of disk:
+
+```rust
+let mut files = HashMap::new();
+files.insert("models/user".to_string(), r#"
+pub class User
+    name: String
+"#.to_string());
+
+check_ok_with_files(r#"
+use models/user { User }
+let u = User(name: "Alice")
+"#, files);
+```
+
+### How tests are structured
+
+`check_ok` tests use **prelude mode** — the built-in protocols (Eq, Ord, Printable, …) are available without imports. `check_ok_with_files` tests use **module mode** — attaching a module loader removes those protocols from the environment, so they must be imported with `use std/...`.
+
+A typical pair of tests:
+
+```rust
+#[test]
+fn named_args_missing_name_error() {
+    // Positional args on a plain function call are a typecheck error
+    let err = check_err(r#"
+def greet(name: String) -> String
+    name
+let x = greet("Alice")
+"#);
+    assert!(err.contains("named argument") || err.contains("name: value"));
+}
+
+#[test]
+fn eq_auto_derive() {
+    check_ok(r#"
+class Point includes Eq
+    x: Int
+    y: Int
+let a = Point(x: 1, y: 2)
+let b = Point(x: 1, y: 2)
+let same = a == b
+"#);
+}
+```
+
+---
+
+## Key Patterns and Why They Exist
+
+### Functions are let bindings
+
+Every `def` is desugared at parse time (`parse_def_as_let` in `parser/src/class_trait.rs`) into a `Stmt::Let` whose value is an `Expr::Lambda`. Methods are `Let` bindings with qualified names like `"ClassName.methodName"`. This design means:
+
+- There is only one way to introduce a name into scope
+- Functions are first-class values
+- The same code handles function declarations and lambda expressions
+
+### Named arguments
+
+Function calls use named arguments: `f(x: 1, y: 2)`. Arguments are matched by name, not position, so `f(y: 2, x: 1)` is identical. The typechecker uses `param_names` on `Type::Function` to validate argument names, and suggests the closest parameter name (edit distance) when an argument name is misspelled.
+
+The parser accepts positional arguments — it synthesizes names `_0`, `_1`, … for them — and the *typechecker* decides what to do with them:
+
+- On a plain function call, positional arguments are rejected with a hint diagnostic (``add `name: ` before this``).
+- On a **constructor-style call** (an identifier starting with an uppercase letter), positional arguments are accepted and mapped to fields by index, so `Point(1, 2)` typechecks.
+
+### Constructor syntax
+
+Class constructors use the class name as a function with the fields as parameters:
+
+```
+class Point
+    x: Float
+    y: Float
+
+let p = Point(x: 1.0, y: 2.0)
+```
+
+For classes with inheritance, the constructor includes both parent and child fields — `register_class_constructor` in `typecheck/src/check_class.rs` walks the parent chain (with cycle detection) and injects inherited fields:
+
+```
+class NetworkError extends Error
+    status_code: Int
+
+# Constructor includes the inherited 'message' field:
+let err = NetworkError(message: "Not found", status_code: 404)
+```
+
+### Operator desugaring
+
+Comparison operators on custom types are protocol-checked and then dispatched to methods:
+
+- The **typechecker** verifies the operand type includes the required protocol: `Eq` for `==`/`!=` (`type_includes_eq`), `Ord` for `<`/`>`/`<=`/`>=` (`type_includes_ord`).
+- Writing `class Point includes Eq` without an explicit `eq` method **auto-derives** one; the FIR phase synthesizes field-wise `eq`/`cmp`/`to_string` bodies (`synthesize_eq`, `synthesize_cmp`, `synthesize_to_string` in `fir/src/lower/synthesize.rs`).
+- **FIR lowering** (`fir/src/lower/expr.rs`) dispatches `==`/`!=` on custom types to a call to `ClassName.eq(self, other)`, and `<`/`>`/`<=`/`>=` to `ClassName.cmp(self, other)`, comparing the returned `Ordering` tag (`Less = 0`, `Equal = 1`, `Greater = 2`).
+- For primitive types, operators lower directly to `BinOp::Eq`, `BinOp::Lt`, etc., which the codegen emits as native Cranelift comparison instructions (`icmp`/`fcmp`).
+
+### Error recovery with Type::Error
+
+When the typechecker encounters an error, it assigns `Type::Error` to the failed expression or binding — a `let` that fails to check still enters the environment with `Type::Error`. Downstream checks test for it with `Type::is_error()` and short-circuit by returning `Ok(Type::Error)` instead of emitting another diagnostic. The result: one error at the source, no cascade of follow-on errors from code that uses the failed value.
+
+### Prelude vs module mode
+
+Having two modes serves two needs:
+
+- **Tests** need to work without import boilerplate. Prelude mode gives them all protocols.
+- **Real code** should be explicit about dependencies. Module mode enforces `use` statements.
+
+The implementation lives in `TypeChecker::enable_module_loader` (called by `with_loader()`): attaching a loader removes `Eq`, `Ord`, `Printable`, `From`, `Into`, `Iterable`, `Iterator`, `Random`, and `FieldAccessible` from the environment, plus the `Ordering` enum. `Drop` and `Close` stay in the prelude — they are fundamental lifecycle traits. The removed protocols come back via std submodule imports, mapped in `builtin_std_submodule_exports()`: `std/cmp` (Eq, Ord, Ordering), `std/fmt` (Printable), `std/collections` (Iterable, Iterator), `std/convert` (From, Into), `std/random` (Random), and `std/unstable` (FieldAccessible).
+
+---
+
+## How to Add Things
+
+### Adding a new keyword
+
+1. **Lexer:** Add the keyword to `TokenKind` in `lexer/src/token.rs`, and add the match case to the keyword table in `lex_ident_or_keyword()` in `lexer/src/lib.rs`.
+2. **Parser:** Handle the new token in the appropriate parsing function. If it starts a statement, add a case in `parse_stmt()` in `parser/src/lib.rs`. If it appears in expressions, handle it in `parse_primary()` in `parser/src/expr.rs`.
+3. **AST:** Add the corresponding variant to `Stmt` or `Expr` in `ast/src/expr.rs`. Include a `Span` field.
+4. **Typechecker:** Handle the new AST variant in `check_stmt()` (`typecheck/src/typechecker.rs`) or `check_expr()` (`typecheck/src/check_expr.rs`).
+5. **Tests:** Add a feature module (or extend one) under `tests/integration/`, and register it in `tests/integration/main.rs`.
+
+### Adding a new expression type
+
+1. Add the variant to `Expr` in `ast/src/expr.rs`. Add its span case to `Expr::span()`.
+2. Parse it in `parser/src/expr.rs` (usually in `parse_primary()` or `parse_postfix()`).
+3. Handle it in `check_expr()` in `typecheck/src/check_expr.rs`.
+4. Test with `check_ok` and `check_err`.
+
+### Adding a new built-in protocol
+
+1. Define the trait in `register_builtins()` in `typecheck/src/typechecker.rs` (called from `TypeChecker::new()`), adding it to the `builtin_traits` map.
+2. Add it to the appropriate std submodule in `builtin_std_submodule_exports()`.
+3. Add auto-derive logic in `try_auto_derive_method()` in `typecheck/src/check_class.rs` if applicable.
+4. Add a `type_includes_X()` helper (thin wrapper over `type_includes_protocol`) if operators or method checks need it.
+5. Add it to the removal list in `enable_module_loader()` so module mode requires an explicit import.
+
+### Adding a new type
+
+1. Add the variant to `Type` in `ast/src/types.rs`.
+2. Handle it in `Type::from_ident()` if it is a named type.
+3. Handle it in `parse_type()` in `parser/src/type_parser.rs`.
+4. Handle it in every `match ty` in the typechecker — `unify_inner()` / `unify_type()` and `substitute_typevars()` in `typecheck/src/check_call.rs`, compatibility checks in `typecheck/src/typechecker.rs`, and so on.
+5. Serialization comes for free — `Type` uses `#[derive(Serialize, Deserialize)]`.
+
+### Common pitfalls
+
+- **Forgetting spans:** Every AST node needs a span. Use `start_span()` before parsing and `span_from(start)` after.
+- **Forgetting to handle `Type::Error`:** Any expression check should handle `Type::Error` gracefully (usually by returning `Ok(Type::Error)` to prevent cascading errors).
+- **Not adding to module mode:** If you add a new builtin protocol, remember to remove it from the environment in `enable_module_loader()` and add it to the std exports.
+- **Test both prelude and module mode:** Use `check_ok` for prelude and `check_ok_with_files` with `use std/...` for module mode.
+- **Forgetting the codegen staticlib:** If AOT tests fail with link errors, run `cargo build -p codegen` first.

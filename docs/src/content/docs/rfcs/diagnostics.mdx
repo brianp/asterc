@@ -1,0 +1,37 @@
+---
+title: "RFC: Diagnostics & TOONS"
+description: Structured diagnostics, source spans, error recovery, and the TOONS interchange format.
+sidebar:
+  badge:
+    text: Planned
+    variant: note
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+
+**Status:** Planned
+
+Foundational plan replacing plain string errors with structured `Diagnostic` objects, adding source spans (byte offsets), implementing error recovery, and supporting TOONS — a semantic interchange format for compiler-machine communication. Includes human-facing ariadne rendering and machine-facing TOONS artifact output.
+
+## Key Decisions
+
+- **Span-first architecture**: byte offsets (not line/col), merged spans for error context.
+- **Structured Diagnostics** with severity (Error/Warning/Hint), labels (span + message), and notes (suggestions).
+- **ariadne library** for best-in-class human-readable error rendering (Rust/Elm philosophy).
+- **Error recovery**: parser and typechecker continue past errors, accumulating diagnostics instead of stopping at the first failure.
+- **TOONS four layers**:
+  - Syntax: tokens, AST with stable NodeIds, source provenance
+  - Semantics: symbol table, resolved types, scope graph, trait satisfaction
+  - Diagnostics: structured errors with constraints, related nodes, scope context
+  - Repairs: candidate fixes with confidence scores, desugared forms
+- **Stable NodeIds** on every AST node for unambiguous compiler-to-agent references.
+- **DiagnosticTemplate IDs** (not prose) — LLM renders explanations for any audience level.
+- **Dual-channel output**: `human.txt` (ariadne) + `diagnostics.toons` (structured facts).
+- **Artifact directory**: `.aster/last-run/` contains JSON + TOONS for MCP consumption.
+- **CLI flags**: `--toons`, `--output-format json`, `--emit` (token/AST/types/symbols/all).
+
+## Dependency Role
+
+This plan is the **foundation** for most other tooling. The LSP, MCP server, REPL, codegen, and formatter all depend on structured diagnostics and spans.
+
+<LinkCard title="Full Plan" href="https://github.com/example/asterc/blob/main/docs/plans/diagnostics.md" description="Read the complete diagnostics plan." />

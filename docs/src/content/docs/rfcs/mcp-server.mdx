@@ -1,0 +1,54 @@
+---
+title: "RFC: MCP Server"
+description: Bridge between compiler output and AI agents via Model Context Protocol, using TOON wire format, written in Aster.
+sidebar:
+  badge:
+    text: Planned
+    variant: note
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+
+**Status:** Planned
+
+Bridge between the compiler's structured artifacts and AI agents. Runs as a separate stdio process, reads compiler output from `.aster/last-run/`, encodes it as [TOON (Token-Oriented Object Notation)](https://github.com/toon-format/spec) for token-efficient agent consumption, and exposes it via MCP resources and tools. Enables the three-actor ecosystem: human writes, compiler proves, LLM explains.
+
+## Key Decisions
+
+- **Core principle**: LLM is not the source of correctness — the compiler is. LLM is the adaptive explanation layer.
+- **[TOON](https://github.com/toon-format/spec) as wire format** — Token-Oriented Object Notation is a compact, lossless encoding of the JSON data model that reduces token usage by 30-60%. Not Aster-specific. The compiler produces artifacts; the MCP server encodes them as TOON for agent consumption.
+- **Primary goal: written in Aster** — the MCP server is the language's first major dogfood project. Aster's AI tooling layer, written in Aster, powering AI agents that write Aster.
+- **Three processes, clean boundaries**:
+  - `asterc` = one-shot compiler, produces structured artifacts
+  - `asterd` = incremental daemon (future), watches workspace
+  - `aster-mcp` = agent bridge, encodes artifacts as TOON, exposes via MCP
+- **MCP Resources** (8 read-only URIs): diagnostics, AST, AST nodes, types, symbols, repairs, envelope, source files.
+- **MCP Tools** (11 actions): compile, check, explain_error, get_node, get_type_at, get_scope, search_symbols, suggest_fix, apply_fix, format, format_check.
+- **Notifications**: `aster/buildResult` pings on compilation, `resources/list_changed` for resource updates.
+- **File watcher**: auto-compile on save for seamless dev loop.
+- **Rust fallback**: a Rust implementation exists as bootstrap and test oracle while Aster matures.
+
+## Prerequisites: Aster Language Readiness (Phase 0)
+
+Before the MCP server can be written in Aster, the language needs these capabilities through the full stack (parse → typecheck → FIR → codegen):
+
+| Capability | Implementation | Required For |
+|-----------|---------------|-------------|
+| **Stdio I/O** | Runtime builtins (`stdin_read_line`, `stdout_write`) | Core server loop |
+| **File I/O** | Runtime builtins (`file_read`, `file_write`, `file_exists`) | Read compiler artifacts |
+| **String ops** | Runtime builtins (`split`, `contains`, `starts_with`, `trim`, `slice`) | JSON handling, protocol |
+| **Map type** | Close FIR + codegen gap for `Expr::Map` | JSON objects, request routing |
+| **Error handling** | Close FIR + codegen gap (`throw`, `!`, `.or`, `.catch`) | Graceful failure handling |
+| **JSON parse/serialize** | Aster library (needs Map, String, Enum) | MCP protocol (JSON-RPC 2.0) |
+| **Process spawning** | Runtime builtin (`process_run`) | Invoke `asterc` subprocess |
+| **File polling** | Runtime builtin (`file_modified_time`) | File watcher (Phase 5) |
+
+**Critical path:** Map type → JSON library → MCP server.
+
+## Dependencies
+
+- Phase 0 language capabilities (see above) — hard prerequisite for the Aster implementation
+- Compiler artifact serialization (diagnostics, AST, types as JSON files in `.aster/last-run/`)
+- Rust fallback can proceed in parallel without Phase 0
+
+<LinkCard title="Full Plan" href="https://github.com/example/asterc/blob/main/plans/mcp-server.md" description="Read the complete MCP server plan with Phase 0 language readiness details." />

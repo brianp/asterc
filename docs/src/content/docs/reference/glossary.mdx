@@ -1,0 +1,104 @@
+---
+title: Glossary
+description: Definitions of compiler and runtime terms used throughout the Aster documentation.
+---
+
+Terms are grouped by compiler stage: frontend, type system, code generation, and the concurrency runtime.
+
+## Frontend
+
+**AST (Abstract Syntax Tree)** — A tree structure representing the grammatical structure of source code. Each node is a statement or expression.
+
+**Desugaring** — Transforming high-level syntax into simpler forms. `a == b` desugars to `a.eq(other: b)` for custom types.
+
+**Error recovery** — Continuing to process after an error to find more errors. The parser uses `synchronize()` to skip to the next statement. The typechecker uses `Type::Error` to prevent cascading.
+
+**Indent/Dedent** — Virtual tokens emitted by the lexer to represent changes in indentation level. They replace the `{` and `}` of brace-delimited languages.
+
+**Lexing (Tokenization)** — Breaking source text into a sequence of tokens (keywords, identifiers, operators, etc.).
+
+**Module loader** — The component that finds, compiles, and caches imported modules.
+
+**Named arguments** — Function call syntax where every argument is labeled: `f(name: value)`.
+
+**Operator desugaring** — Converting operators like `==` into method calls on protocols.
+
+**Parsing** — Converting a token sequence into an AST.
+
+**Recursive descent** — A parsing technique where each grammar rule is a function that calls other rule functions.
+
+**Span** — A byte range in the source code, used for error message source locations.
+
+**Token** — An atomic unit of source code: a keyword, identifier, number, operator, etc.
+
+## Type System
+
+**Auto-derive** — Automatic generation of trait method implementations based on a class's fields. If all fields include Eq, the compiler generates `eq()` automatically.
+
+**Binding** — An association between a name and a value/type. `let x = 42` creates a binding of `x` to type `Int`.
+
+**Caller-side async** — An async model where the function definition is normal (`def f()`), and the caller chooses whether to call it asynchronously (`async f()`).
+
+**Checked exceptions** — An error handling model where functions declare which error types they can throw (`throws NetworkError`), and callers must handle those errors.
+
+**Nullable** — A type that can be `nil`. Written as `T?` (e.g., `Int?`). Must be unwrapped before use.
+
+**Parametric trait** — A trait with type parameters, like `From[T]`. Can be included multiple times with different type arguments.
+
+**Prelude mode** — TypeChecker mode where all built-in protocols are available without imports.
+
+**Protocol** — A built-in trait that enables specific language features (Eq enables `==`, Ord enables `<`, etc.).
+
+**Type environment (TypeEnv)** — A data structure tracking what names are in scope and what types they have. Supports lexical scoping via parent chains.
+
+**Type unification** — The process of matching an expected type against an actual type, binding type variables to concrete types along the way.
+
+**Type variable (TypeVar)** — A placeholder for an unknown type in generic functions. `T` in `def identity(x: T) -> T`.
+
+**Virtual stdlib** — Built-in protocol definitions that behave like a standard library but are hard-coded in the compiler rather than existing as source files.
+
+## Code Generation
+
+**AOT (Ahead-Of-Time)** — Compilation mode that produces a native binary. Used by `asterc build`.
+
+**Cleanup scope stack** — A FIR lowerer data structure that tracks which locals need Drop/Close calls at each nesting level. Used to emit correct cleanup on break, continue, and return inside loops.
+
+**Cranelift** — A code generation backend library. Converts a function description into native machine code.
+
+**FIR (Flat Intermediate Representation)** — A simplified IR between the AST and machine code. Variables are numbered, types are simplified, and control flow is explicit.
+
+**FunctionId** — A numeric identifier for a function in the FIR module. Used to reference functions across the compilation pipeline.
+
+**JIT (Just-In-Time)** — Compilation mode that compiles to machine code in memory and executes immediately. Used by `asterc run`.
+
+**Lambda lifting** — The process of converting a nested function (closure) into a top-level function with an explicit environment parameter.
+
+**LocalId** — A numeric identifier for a local variable within a function in the FIR.
+
+**Runtime builtins** — Functions like `aster_say_str`, `aster_alloc`, etc. that are called by compiled code at runtime. Implemented in Rust; the JIT calls them in-process, and AOT binaries link against a runtime staticlib built from the same code.
+
+## Concurrency Runtime
+
+**Blocking pool** — A fixed set of OS threads (4 by default) that run synchronous operations (disk I/O) on behalf of green threads. The green thread yields while the pool thread does the work.
+
+**Channel** — A typed buffer for sending values between green threads. Supports blocking and non-blocking send/receive. Backed by `AsterChannel` in the runtime.
+
+**Context switch** — The assembly-level operation that saves one green thread's CPU registers and restores another's. On x86_64, this is 14 `movq` instructions + 1 `ret`.
+
+**Green thread** — A lightweight, user-space thread managed by the Aster runtime. Has its own 64KB stack and CPU context but shares OS threads with other green threads via cooperative scheduling.
+
+**Guard page** — A 4KB `PROT_NONE` memory region at the bottom of each green thread stack. Stack overflow touches it and gets a clean `SIGSEGV` instead of silent corruption.
+
+**I/O poller** — Platform-specific readiness notification (kqueue on macOS, epoll on Linux) used to suspend green threads on socket I/O without blocking OS threads.
+
+**M:N threading** — M green threads multiplexed across N OS worker threads. Aster uses N = CPU core count by default.
+
+**MachineContext** — A `#[repr(C)]` struct holding the callee-saved register snapshot for a green thread (56 bytes on x86_64, 168 bytes on aarch64).
+
+**Mutex[T]** — A green-thread-aware mutual exclusion lock. Contended acquires yield to the scheduler instead of blocking the OS thread.
+
+**Safepoint** — A compiler-inserted call to `aster_safepoint()` at function calls and loop back-edges. Checks for preemption (every 1024 ticks) and cancellation.
+
+**Scoped lock** — The `blocking m.lock(block: -> v : body)` syntax that guarantees unlock via the cleanup mechanism, even on early return or break.
+
+**Work stealing** — A scheduling strategy where idle OS worker threads steal tasks from busy workers' deques. Implemented with `crossbeam-deque`.

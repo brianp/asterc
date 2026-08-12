@@ -1,0 +1,248 @@
+---
+title: Compiler Overview
+description: How the Aster compiler is organized — the crate workspace, the compilation pipeline, and how source text becomes machine code.
+---
+
+This page is the map of the Aster compiler (`asterc`) for contributors. It covers the shape of the codebase, how the crates depend on each other, and the pipeline that turns source text into a running program. Later internals pages zoom into individual phases; this one shows how they fit together.
+
+## What a Compiler Does
+
+A compiler reads text written in a programming language and does something useful with it — checks it for errors, translates it to machine code, or both. `asterc` does all of these depending on which command you run: `check` validates programs, `run` JIT-compiles and executes them, and `build` produces a native executable.
+
+Every compiler works in **phases**. Each phase transforms the program from one representation to the next, like an assembly line:
+
+```
+Source text  ->  Tokens  ->  Abstract Syntax Tree  ->  Type-checked AST  ->  FIR  ->  Native code
+ (string)       (lexer)         (parser)                (type checker)      (lower)    (codegen)
+```
+
+Each representation is more structured than the previous one. Source text is just a flat string. Tokens are individual words and symbols. The AST is a tree that captures grammatical structure. After type checking, every expression has a proven type. After lowering to FIR (Flat Intermediate Representation) and code generation, the program can be executed.
+
+**Why phases?** Separation of concerns. Each phase handles one job and can be tested in isolation. A bug in how you read numbers will not affect how you check types, because they live in different crates.
+
+One thing worth keeping in mind: the front-end is ahead of the executable path. Most of the language surface parses and typechecks cleanly, but a construct can survive typechecking and still be rejected at lowering or codegen (the compiler reports this with a dedicated `NotCompilable` diagnostic). `check` is the broadest supported path; `run` and `build` share translation code and a single runtime library, so what executes under one generally executes under the other.
+
+## Commands
+
+| Command | Pipeline stages | Result |
+|---|---|---|
+| `asterc check <file>` | lex → parse → typecheck | diagnostics only |
+| `asterc run <file>` | full pipeline, JIT compiled in memory | program executes immediately |
+| `asterc build <file>` | full pipeline, AOT object file + link | native executable |
+| `asterc fmt [file]` | lex → parse → pretty-print | formatted source (`--check`, `--diff`, `--stdin` modes) |
+| `asterc clean` | — | removes build artifacts |
+
+Running `asterc <file.aster>` with no command defaults to `check`.
+
+## Project Structure
+
+The compiler is a Rust workspace with seven member crates, plus the root `asterc` binary package that wires them together. Each crate compiles independently.
+
+```
+asterc/
+  Cargo.toml           # Workspace root -- lists all member crates
+  src/
+    main.rs            # CLI entry point: check, run, build, fmt, clean
+    build_dir.rs       # Build directory layout (.aster/build)
+    manifest.rs        # Build manifest + SHA-256 hashing for incremental builds
+  ast/                 # Shared data structures (types, AST nodes, diagnostics)
+    src/
+      lib.rs           # Re-exports the public types
+      expr.rs          # Stmt and Expr enums (the AST nodes)
+      types.rs         # Type enum (the surface type system)
+      type_env.rs      # TypeEnv, ClassInfo, TraitInfo, EnumInfo, NamespaceInfo
+      type_table.rs    # Maps AST expression spans to resolved types
+      span.rs          # Span (byte offsets into source code)
+      diagnostic.rs    # Diagnostic, Label, Severity (error reporting)
+      templates/       # Structured diagnostic templates with error codes
+                       #   (lex_errors, parse_errors, type_errors,
+                       #    module_errors, warnings)
+      builtin_errors.rs # Layouts for built-in runtime error classes
+      symbol_index.rs  # Symbol kinds and indexing
+      context_snapshot.rs # Type context snapshots for evaluate() call sites
+  lexer/               # Tokenizer (text -> tokens)
+    src/
+      lib.rs           # The lex() function and helpers
+      token.rs         # Token and TokenKind types
+      tests.rs         # Lexer unit tests
+  parser/              # Parser (tokens -> AST)
+    src/
+      lib.rs           # Parser struct, statement parsing, block parsing
+      expr.rs          # Expression parsing, precedence climbing
+      class_trait.rs   # Class, trait, enum, and function definitions
+      type_parser.rs   # Type annotation parsing
+      tests.rs         # Parser unit tests
+  typecheck/           # Type checker (AST -> validated AST)
+    src/
+      typechecker.rs   # TypeChecker struct, statement checking, std library
+      check_expr.rs    # Expression checking, member access, match, async, lambdas
+      check_call.rs    # Function call checking, named args, generic unification
+      check_class.rs   # Class checking, trait validation, auto-derive, Iterable
+      check_error.rs   # Error propagation (!) and catch handling
+      module_loader.rs # Module resolution, caching, per-module FIR caches
+  fir/                 # Flat Intermediate Representation (AST -> FIR)
+    src/
+      lib.rs           # Re-exports
+      lower/           # Lowerer: AST to FIR translation (split into sub-modules)
+        mod.rs         # Lowerer struct, registration pass, orchestration
+        expr.rs        # Expression lowering (literals, binops, calls, fields)
+        stmt.rs        # Statement lowering (let, assign, if, while, return)
+        closure.rs     # Lambda lifting, capture analysis, env allocation
+        for_loop.rs    # For-loop desugaring (iterator protocol, range loops)
+        iterable.rs    # Iterable vocabulary methods (map, filter, reduce, ...)
+        match_lower.rs # Match expression desugaring to if/else chains
+        method.rs      # Method dispatch (builtin methods, user methods)
+        introspection.rs # Introspection lowering
+        synthesize.rs  # Helper constructors for FIR nodes
+      builtins.rs      # Builtin type registration
+      exprs.rs         # FirExpr enum (all expression types)
+      stmts.rs         # FirStmt enum (let, assign, if, while, return)
+      types.rs         # FirType, FunctionId, ClassId, LocalId
+      module.rs        # FirModule, FirFunction, FirClass
+      eval_context.rs  # Serialized context snapshots for evaluate()
+      validate.rs      # FIR validation pass
+  codegen/             # Code generation (FIR -> machine code via Cranelift)
+    build.rs           # Assembles the green-thread context-switch code
+    src/
+      lib.rs           # Re-exports
+      jit.rs           # CraneliftJIT: in-memory compilation and execution
+      aot.rs           # CraneliftAOT: object file generation
+      compile_shared.rs # Declaration/compilation logic shared by JIT and AOT
+      translate.rs     # FIR to Cranelift IR translation
+      config.rs        # BuildConfig, profiles, optimization levels
+      runtime/         # Runtime builtins, one module per area:
+                       #   alloc, gc, print, string, list, map, numeric,
+                       #   error, task, channel, mutex, io, fs, process,
+                       #   sys, crypto, introspection, runtime_eval
+      runtime_sigs.rs  # Single-source runtime function signature table
+      host_function_registry.rs # Host function pointers for nested JIT eval
+      eval_pipeline.rs # Runtime evaluate() compilation pipeline
+      asm_source.rs    # Embedded assembly source for AOT builds
+      types.rs         # FIR type to Cranelift type mapping
+      tests.rs         # Codegen test suite
+      green/           # Green thread runtime (M:N scheduler)
+        context.rs     # MachineContext struct (matches assembly layout)
+        thread.rs      # GreenThread, ThreadStatus, YieldReason
+        scheduler.rs   # Work-stealing scheduler, worker loop, safepoints
+        stack.rs       # mmap stack allocation + pooling
+        poller.rs      # I/O readiness poller (epoll on Linux, kqueue on macOS)
+        blocking.rs    # OS thread pool for offloading blocking work
+        asm/
+          x86_64.S     # Context switch assembly (Intel/AMD)
+          aarch64.S    # Context switch assembly (Apple Silicon/ARM)
+  aster-fmt/           # Source code formatter
+    src/
+      lib.rs           # format_source(), format_diff() entry points
+      doc.rs           # Document IR for the Wadler-Lindig pretty printer
+      rules.rs         # Formatting rules per statement/expression/type
+      trivia.rs        # Comment extraction and preservation
+      config.rs        # FormatConfig
+  aster-pkg/           # Dependency manager -- written in Aster itself
+    Seedfile           # Its own manifest
+    src/
+      main.aster
+      seedfile.aster   # Seedfile parsing
+      lock.aster       # Lockfile handling
+  tests/
+    integration/       # Integration tests organized by feature
+      common/          # Test helpers: check_ok, check_err, check_parse_err, ...
+  examples/            # Example .aster programs, basic to advanced
+```
+
+`aster-pkg` is worth calling out: it is not a Rust crate and not a workspace member. It is an Aster program, developed in-tree, that exercises the language the compiler builds.
+
+### Dependency Graph
+
+```
+                 ast
+                  ^
+      +-----+-----+------+-------+
+      |     |            |       |
+    lexer   |            |    aster-fmt
+      ^     |            |       ^
+      |     |            |       |
+    parser  |           fir      |
+      ^     |            ^       |
+      |     |            |       |
+      +-- typecheck -----+       |
+            ^            |       |
+            |            v       |
+            +-------- codegen    |
+                         ^       |
+                         |       |
+                     src/main ---+  (asterc binary)
+```
+
+- **`ast`** sits at the bottom — everyone depends on it. It holds the AST nodes, the type system, spans, and the diagnostic machinery, so every other crate can produce errors and talk about types in the same vocabulary.
+- **`lexer`** depends on `ast` for `Diagnostic`, `Span`, and the lex-error diagnostic templates.
+- **`parser`** depends on `ast` and `lexer`.
+- **`fir`** depends only on `ast` (plus serde for serializing evaluation contexts).
+- **`typecheck`** depends on `ast`, `lexer`, `parser` (the module loader lexes and parses imported files) and on `fir` — the module loader keeps a per-module FIR cache so imported modules can be lowered once and merged into the main program.
+- **`codegen`** depends on `fir`, the front-end crates, and Cranelift.
+- **`aster-fmt`** depends on `ast`, `lexer`, and `parser` — the formatter re-parses source and pretty-prints the AST.
+- The top-level binary in `src/main.rs` wires everything together.
+
+### Why a Workspace?
+
+Rust workspaces compile crates independently. If you edit a file in `typecheck/`, only `typecheck` and its dependents recompile. This is much faster than one monolithic project, and it enforces the phase boundaries: the lexer physically cannot reach into the type checker.
+
+## The Pipeline
+
+The full pipeline is:
+
+```
+Source → Tokens → AST → Typecheck → FIR → Machine Code
+```
+
+For `asterc check`, only the first four stages run. For `asterc run`, the full pipeline executes via JIT compilation. For `asterc build`, the full pipeline produces a native binary via AOT compilation. Both execution paths link the same runtime, including the green thread scheduler that backs `async` — see [Green Threads Internals](/concurrency/green-threads/).
+
+Simplified, the driver in `src/main.rs` does this:
+
+```rust
+// 1. Tokenize
+let tokens = lex(&source)?;
+
+// 2. Parse
+let mut parser = Parser::new(tokens);
+let module_ast = parser.parse_module(filename)?;
+
+// 3. Typecheck, with a module loader for resolving imports
+let mut checker = TypeChecker::with_loader(loader);
+let errors = checker.check_module_all(&module_ast);
+
+// 4. Lower AST → FIR
+let mut lowerer = fir::Lowerer::new(checker.env, checker.type_table);
+lowerer.lower_module(&module_ast)?;
+let fir_module = lowerer.finish();
+
+// 5. Compile and execute (JIT path, `asterc run`)
+let mut jit = codegen::CraneliftJIT::new_host();
+jit.compile_module(&fir_module)?;
+let exit_code = jit.call_i64(fir_module.entry.unwrap());
+```
+
+A few details around this skeleton matter in practice:
+
+- **Imported modules carry their own FIR.** Before lowering the main module, the driver drains the module loader's per-module FIR caches and merges them into the `Lowerer`, so functions and methods defined in imported files are available at codegen time for cross-module calls.
+- **FIR is validated.** In debug builds, a validation pass (`fir::validate`) checks FIR invariants after lowering and aborts on violations. This catches lowering bugs before they become confusing codegen crashes.
+- **The entry point is checked.** An executable program needs a `def main()` function; if `fir_module.entry` is empty, the driver reports a diagnostic instead of handing codegen a module with nothing to run.
+
+### Diagnostics
+
+Each step can fail with a `Diagnostic`. Diagnostics are built from structured templates in `ast/src/templates/` (organized as lex errors, parse errors, type errors, module errors, and warnings), each carrying an error code, labeled spans, and notes. The driver's `render_diagnostic` function uses the `ariadne` crate to display pretty error messages with source snippets and colored underlines pointing at the problem.
+
+**Error recovery:** the parser also supports `parse_module_recovering()`, which continues parsing after errors, and the type checker accumulates errors via `check_module_all()`. Together these give the user multiple errors at once rather than stopping at the first one.
+
+### The JIT Path (`asterc run`)
+
+`CraneliftJIT` translates each FIR function to Cranelift IR, compiles it to machine code in memory, and registers the runtime builtins (allocation, printing, strings, lists, maps, tasks, channels, and so on — one module per area under `codegen/src/runtime/`) so compiled code can call straight into them. `call_i64` then invokes the entry function, and its return value becomes the process exit code.
+
+### The AOT Path (`asterc build`)
+
+`CraneliftAOT` shares the FIR-to-Cranelift translation with the JIT (via `compile_shared.rs`) but emits an object file instead of in-memory code. The build then links that object against the runtime, which is compiled as a static library from the `codegen` crate itself (`crate-type = ["lib", "staticlib"]`). The static library contains the full Rust runtime — including the green thread scheduler and its context-switch assembly — so AOT binaries get the same async runtime as the JIT.
+
+Builds are incremental: artifacts live in `.aster/build`, and a manifest keyed by SHA-256 source hashes, build profile, and optimization level lets unchanged objects be reused. `asterc build` accepts `-o` for the output path, `--release`/`--opt` for optimization, `--build-dir` to relocate artifacts, `--verbose` to print steps, and `--jit` to embed the JIT so a built binary can run `evaluate()` at runtime.
+
+## Testing
+
+Each front-end crate carries its own unit tests (`lexer/src/tests.rs`, `parser/src/tests.rs`, and so on), and `codegen/src/tests.rs` holds a large suite that compiles and executes programs through the JIT. End-to-end tests live in `tests/integration/`, organized by feature (closures, channels, generics, error handling, pattern matching, ...) on top of shared helpers like `check_ok`, `check_err`, and `check_parse_err` in `tests/integration/common/`. The `examples/` directory holds progressively more advanced `.aster` programs that double as smoke tests.

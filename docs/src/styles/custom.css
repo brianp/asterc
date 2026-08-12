@@ -1,0 +1,281 @@
+/* Aster brand colors derived from the logo */
+:root {
+	--sl-color-accent-low: #1a0a35;
+	--sl-color-accent: #38166d;
+	--sl-color-accent-high: #c9b3e8;
+	--sl-color-white: #f7f7f7;
+	--sl-color-gray-1: #e8e0f0;
+	--sl-color-gray-2: #bfadd4;
+	--sl-color-gray-3: #8a70a8;
+	--sl-color-gray-4: #5e4580;
+	--sl-color-gray-5: #3d2960;
+	--sl-color-gray-6: #241545;
+	--sl-color-black: #110a24;
+	--sl-font-system: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+:root[data-theme='light'] {
+	--sl-color-accent-low: #ece4f7;
+	--sl-color-accent: #38166d;
+	--sl-color-accent-high: #1a0a35;
+	--sl-color-white: #110a24;
+	--sl-color-gray-1: #241545;
+	--sl-color-gray-2: #3d2960;
+	--sl-color-gray-3: #5e4580;
+	--sl-color-gray-4: #bfadd4;
+	--sl-color-gray-5: #e8e0f0;
+	--sl-color-gray-6: #f3eef9;
+	--sl-color-black: #f7f7f7;
+}
+
+/* Hide default Starlight hero title on splash page */
+[data-has-hero] .hero h1[data-page-title] {
+	display: none;
+}
+
+/* Hero section — two-column layout */
+.hero-section {
+	max-width: 72rem;
+	margin: 0 auto;
+	padding: 3rem 1.5rem 2rem;
+}
+
+.hero-content {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 3rem;
+	align-items: center;
+}
+
+.hero-badge {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.5rem;
+	background: var(--sl-color-gray-6);
+	border: 1px solid var(--sl-color-gray-5);
+	border-radius: 999px;
+	padding: 0.35rem 1rem 0.35rem 0.35rem;
+	margin-bottom: 1.25rem;
+	font-size: 0.85rem;
+	font-weight: 600;
+	color: var(--sl-color-gray-2);
+}
+
+.hero-logo {
+	width: 28px;
+	height: 28px;
+	border-radius: 50%;
+}
+
+.hero-heading {
+	font-size: 3.25rem;
+	font-weight: 800;
+	letter-spacing: -0.03em;
+	line-height: 1.1;
+	margin-bottom: 1rem;
+	background: linear-gradient(135deg, #38166d, #6b3fa0, #9b6fd0);
+	-webkit-background-clip: text;
+	-webkit-text-fill-color: transparent;
+	background-clip: text;
+}
+
+:root[data-theme='dark'] .hero-heading {
+	background: linear-gradient(135deg, #c9b3e8, #a07dd8, #7b52c0);
+	-webkit-background-clip: text;
+	background-clip: text;
+}
+
+.hero-tagline {
+	font-size: 1.2rem;
+	color: var(--sl-color-gray-2);
+	margin-bottom: 2rem;
+	line-height: 1.6;
+}
+
+.hero-actions {
+	display: flex;
+	gap: 0.75rem;
+	align-items: center;
+	flex-wrap: wrap;
+}
+
+.hero-cta {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.5rem;
+	background: linear-gradient(135deg, #38166d, #5a2d9e);
+	color: #f7f7f7 !important;
+	padding: 0.85rem 2rem;
+	border-radius: 999px;
+	font-size: 1rem;
+	font-weight: 600;
+	text-decoration: none !important;
+	transition: all 0.25s ease;
+	box-shadow: 0 4px 16px rgba(56, 22, 109, 0.35);
+}
+
+.hero-cta:hover {
+	transform: translateY(-2px);
+	box-shadow: 0 8px 28px rgba(56, 22, 109, 0.45);
+	background: linear-gradient(135deg, #4a1d8e, #6b3fb8);
+}
+
+.hero-cta svg {
+	width: 1.1em;
+	height: 1.1em;
+}
+
+.hero-cta-secondary {
+	display: inline-flex;
+	align-items: center;
+	color: var(--sl-color-gray-2) !important;
+	padding: 0.85rem 1.5rem;
+	border-radius: 999px;
+	font-size: 1rem;
+	font-weight: 600;
+	text-decoration: none !important;
+	border: 1px solid var(--sl-color-gray-5);
+	transition: all 0.25s ease;
+}
+
+.hero-cta-secondary:hover {
+	border-color: var(--sl-color-accent);
+	color: var(--sl-color-white) !important;
+}
+
+/* Hero code block */
+.hero-code {
+	min-width: 0;
+}
+
+[data-has-hero] .hero-code .sl-markdown-content pre,
+[data-has-hero] .hero-content pre {
+	margin: 0;
+	border-radius: 12px;
+	font-size: 0.85rem;
+	line-height: 1.7;
+	border: 1px solid var(--sl-color-gray-5);
+}
+
+/* Fallback: style the code block that follows .hero-content */
+[data-has-hero] .sl-markdown-content pre {
+	max-width: 36rem;
+	margin: 0 auto;
+	border-radius: 12px;
+	font-size: 0.85rem;
+	line-height: 1.7;
+}
+
+/* Subtle divider */
+.hero-divider {
+	width: 4rem;
+	height: 3px;
+	background: linear-gradient(90deg, transparent, var(--sl-color-accent), transparent);
+	margin: 3rem auto;
+	border: none;
+}
+
+/* Feature cards — fixed 3-column grid */
+.features {
+	display: grid;
+	grid-template-columns: repeat(3, 1fr);
+	gap: 1.25rem;
+	align-items: start;
+	max-width: 72rem;
+	margin: 2rem auto 3rem;
+	padding: 0 1.5rem;
+}
+
+.feature-card {
+	background: var(--sl-color-gray-6);
+	border: 1px solid var(--sl-color-gray-5);
+	border-radius: 12px;
+	padding: 1.5rem;
+	margin-top: 0;
+	transition: all 0.2s ease;
+}
+
+.feature-card:hover {
+	border-color: var(--sl-color-accent);
+	transform: translateY(-2px);
+	box-shadow: 0 8px 24px rgba(56, 22, 109, 0.12);
+}
+
+.feature-card h3 {
+	font-size: 1rem;
+	font-weight: 700;
+	margin-bottom: 0.4rem;
+	color: var(--sl-color-white);
+}
+
+.feature-card p,
+.feature-desc {
+	font-size: 0.85rem;
+	color: var(--sl-color-gray-2);
+	line-height: 1.55;
+	margin: 0;
+}
+
+.feature-icon {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 40px;
+	height: 40px;
+	border-radius: 10px;
+	background: var(--sl-color-gray-5);
+	margin-bottom: 0.75rem;
+	color: var(--sl-color-accent-high);
+}
+
+.feature-icon svg {
+	width: 20px;
+	height: 20px;
+}
+
+/* Override Starlight's main content margins for landing page */
+.sl-markdown-content .hero-section + * {
+	margin-top: 0;
+}
+
+.sl-markdown-content .features > :first-child,
+.sl-markdown-content .features .feature-card {
+	margin-top: 0;
+}
+
+.sl-markdown-content .feature-card h3,
+.sl-markdown-content .feature-card .feature-icon,
+.sl-markdown-content .feature-card .feature-desc {
+	margin-top: 0;
+}
+
+/* Responsive breakpoints */
+@media (max-width: 900px) {
+	.hero-content {
+		grid-template-columns: 1fr;
+		gap: 2rem;
+		text-align: center;
+	}
+
+	.hero-actions {
+		justify-content: center;
+	}
+
+	.hero-heading {
+		font-size: 2.5rem;
+	}
+
+	.features {
+		grid-template-columns: repeat(2, 1fr);
+	}
+}
+
+@media (max-width: 560px) {
+	.features {
+		grid-template-columns: 1fr;
+	}
+
+	.hero-heading {
+		font-size: 2rem;
+	}
+}

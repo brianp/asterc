@@ -1,0 +1,72 @@
+---
+title: Aster Programming Language
+description: A modern, strongly-typed language for web applications. Ruby-like syntax, Rust-level safety, AI-native tooling.
+template: splash
+hero:
+  tagline: ""
+  actions: []
+---
+
+<div class="hero-section">
+  <div class="hero-content">
+    <div class="hero-text">
+      <div class="hero-badge"><img src="/favicon.png" alt="Aster" class="hero-logo" /><span>Aster Language</span></div>
+      <h2 class="hero-heading">The language the web deserves</h2>
+      <div class="hero-tagline">Ruby's elegance. Rust's safety. Built for the AI era.<br />Strongly typed, beautifully expressive, full-stack.</div>
+      <div class="hero-actions">
+        <a href="/guides/introduction/" class="hero-cta"><span>Get Started</span><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M3 10a.75.75 0 01.75-.75h10.638L10.23 5.29a.75.75 0 111.04-1.08l5.5 5.25a.75.75 0 010 1.08l-5.5 5.25a.75.75 0 11-1.04-1.08l4.158-3.96H3.75A.75.75 0 013 10z" clip-rule="evenodd" /></svg></a>
+        <a href="/guides/hello-world/" class="hero-cta-secondary"><span>See Examples</span></a>
+      </div>
+    </div>
+    <div class="hero-code">
+
+```
+pub def greet(name: String) -> String
+  "Hello, " + name + "!"
+
+pub class User
+  name: String
+  email: String
+
+let user = User(name: "Aster", email: "hi@aster.dev")
+log(greet(user.name))
+```
+
+</div>
+  </div>
+</div>
+
+<hr class="hero-divider" />
+
+<div class="features">
+  <div class="feature-card">
+    <span class="feature-icon"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/><path d="M5 3v4"/><path d="M19 17v4"/><path d="M3 5h4"/><path d="M17 19h4"/></svg></span>
+    <h3>Ruby-hearts-Python Syntax</h3>
+    <div class="feature-desc">Indentation-based blocks, English-like keywords, snake_case everywhere. Code that reads like prose.</div>
+  </div>
+  <div class="feature-card">
+    <span class="feature-icon"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg></span>
+    <h3>Rust-Level Safety</h3>
+    <div class="feature-desc">Strong static typing, memory safety, data-race freedom. The compiler catches bugs so you don't ship them.</div>
+  </div>
+  <div class="feature-card">
+    <span class="feature-icon"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg></span>
+    <h3>No Viral Async</h3>
+    <div class="feature-desc">Async at the call site, not the definition. No colored functions. The caller decides the execution strategy.</div>
+  </div>
+  <div class="feature-card">
+    <span class="feature-icon"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg></span>
+    <h3>Full-Stack</h3>
+    <div class="feature-desc">One language for frontend and backend. Compiles to WASM for browsers and native binaries for servers.</div>
+  </div>
+  <div class="feature-card">
+    <span class="feature-icon"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg></span>
+    <h3>AI-Native</h3>
+    <div class="feature-desc">Designed for LLM-friendly tokenization. Canonical formatting, structured compiler output, low-entropy syntax.</div>
+  </div>
+  <div class="feature-card">
+    <span class="feature-icon"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg></span>
+    <h3>Batteries Included</h3>
+    <div class="feature-desc">HTTP, JSON, cryptography, logging, tracing in the standard library. Production-ready from day one.</div>
+  </div>
+</div>

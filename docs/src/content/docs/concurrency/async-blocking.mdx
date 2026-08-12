@@ -1,0 +1,84 @@
+---
+title: Async & Resolve
+description: Deep dive into Aster's async and resolve invocation modes.
+---
+
+## The `blocking` Firewall
+
+`blocking` resolves suspension at the point of use. The parent function stays sync, so nothing above it needs to know async work happened underneath:
+
+```
+def get_user(id: Int) -> User
+  blocking db.query(sql: "SELECT ...", id: id)
+
+get_user(id: 1)    # plain sync call — works fine, no propagation
+```
+
+This is the core mechanism that kills viral async. Most web app code is sequential, and `blocking f()` lets it stay that way without exposing `Task[T]`.
+
+## The `async` Spawner
+
+`async` spawns a task and returns a handle immediately:
+
+```
+let task = async fetch_user(id: 1)    # returns Task[User]
+# execution continues here while fetch runs concurrently
+```
+
+Use async when you genuinely want concurrency — fan-out, parallel work, background tasks.
+
+## Consuming Tasks
+
+Use `resolve` with `!` to consume a task handle. The `!` is required because a task can be canceled while you wait — `CancelledError` propagates implicitly, without a `throws` declaration:
+
+```
+let task = async fetch_user(id: 1)
+# ... do other work ...
+let user = resolve task!          # suspends until task completes
+```
+
+For multiple tasks:
+
+```
+let tasks = [async fetch_user(id: 1), async fetch_user(id: 2)]
+let users = resolve_all(tasks: tasks)!    # wait for all, returns List[User]
+let first = resolve_first(tasks: tasks)!  # wait for fastest, cancel rest
+```
+
+Task handles are single-consumer: resolving the same handle twice is a compile error.
+
+## Callbacks
+
+Library authors don't need effect polymorphism. Functions accept sync-typed callbacks. If a caller's callback does suspendable work internally, they wrap it with `blocking` to keep the sync signature:
+
+```
+# Library code — takes a sync callback
+pub def process(items: List[Item], handler: Fn(Item) -> Void)
+  for item in items
+    handler(_0: item)
+
+# Caller wraps suspendable work to match the sync signature
+def my_handler(item: Item) -> Void
+  blocking save_to_db(item: item)
+
+process(items: items, handler: my_handler)
+```
+
+## Concurrent Processing
+
+If a library wants to offer concurrent processing, that's a separate, intentional function:
+
+```
+pub def process_concurrent(items: List[Item], handler: Fn(Item) -> Void)
+  let tasks = items.map(f: -> item: async handler(_0: item))
+  resolve_all(tasks: tasks)!
+```
+
+## Comparison
+
+| Model | Fire-and-forget | Safety | Viral async |
+|-------|----------------|--------|-------------|
+| Go | Easy (goroutines) | Low (leaks common) | No |
+| Rust | Hard (clone + spawn) | High | Yes |
+| Dart/JS | Easy (drop Future) | Medium (lint warns) | Yes |
+| **Aster** | Explicit (`detached`) | **High** (compiler enforced) | **No** |

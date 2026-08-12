@@ -1,0 +1,176 @@
+---
+title: Error Handling
+description: Typed errors, propagation, and nullability in Aster.
+---
+
+## Error Hierarchy
+
+Aster has two built-in base types:
+
+- **`Exception`** — root of all throwable types. Do not extend directly.
+- **`Error`** — extends `Exception`. Application errors extend this.
+
+Built-in error types thrown by the runtime and standard library include `CancelledError` (task cancellation), `LockTimeoutError` (mutex timeout), `ChannelFullError` / `ChannelEmptyError` / `ChannelClosedError` (channels), `IOError` (file and network I/O), `ProcessError` (`std/process`), and `IntParseError` (`Int.from` / `to_int`). All extend `Error`, carry typed tags at runtime, and are catchable with standard `!.catch` flows.
+
+If `main` crashes from an unrecoverable fault, it surfaces as an `Exception`.
+
+## Error Types
+
+Errors are classes that extend `Error` using single inheritance:
+
+```
+class NetworkError extends Error
+  kind: String
+  url: String
+
+  def message() -> String
+    kind + ": " + url
+
+class TimeoutError extends NetworkError
+  timeout_ms: Int
+
+  def message() -> String
+    "Timeout after " + to_string(timeout_ms) + "ms: " + url
+```
+
+Error classes can also `includes` traits for cross-cutting concerns (e.g., `includes Serializable`), but the error hierarchy itself is always via `extends`.
+
+## Throwing Errors
+
+Functions that can fail declare `throws ErrorType` in their signature. The `throw` keyword raises an error:
+
+```
+def fetch(url: String) throws NetworkError -> String
+  throw TimeoutError(kind: "timeout", url: url, timeout_ms: 5000)
+```
+
+You must always throw a defined error class. `throw("message")` is not valid — Aster requires structured, matchable error types.
+
+## Call-Site Error Handling
+
+Calling a throws function without acknowledgment is a compile error. You have four options:
+
+### `!` — Propagate
+
+Pass the error to your caller. Your function must also declare `throws` with a compatible type:
+
+```
+def load(url: String) throws NetworkError -> Config
+  let raw = fetch(url)!
+  parse(raw)
+```
+
+### `!.or(default)` — Eager Fallback
+
+Provide a value of the original type. The default is always evaluated:
+
+```
+let count = parse_int(s)!.or(0)
+```
+
+### `!.or_else(-> expr)` — Lazy Recovery
+
+Run a function to produce a fallback. The function can itself throw:
+
+```
+let conn = connect(primary)!.or_else(-> connect(backup)!)
+```
+
+### `!.catch` — Match on Error Type
+
+Branch on the error type with full control flow access:
+
+```
+for url in urls
+  let data = fetch(url)!.catch
+    TimeoutError t -> continue
+    NotFoundError _ -> return []
+    _ -> ""
+
+  process(data)
+```
+
+Each arm must either return a value of the success type or diverge (`return`, `break`, `continue`, `throw`).
+
+## Catch Arm Ordering
+
+Arms are matched top to bottom, so put specific types before broad types — a broad arm listed first will also swallow errors of its subclasses:
+
+```
+# TimeoutError never reached: NetworkError matches it first
+let data = fetch(url)!.catch
+  NetworkError n -> log(n.message())
+  TimeoutError t -> retry(t.url)
+
+# specific before broad
+let data = fetch(url)!.catch
+  TimeoutError t -> retry(t.url)
+  NetworkError n -> log(n.message())
+```
+
+The compiler verifies that every typed arm names a known error class that is a subtype of the function's declared throws type, and that all arms produce the success type (or diverge).
+
+## Error Type Compatibility
+
+`!` propagation works when the thrown error `extends` the caller's declared throws type:
+
+```
+class AppError extends Error
+class NetworkError extends AppError
+class ParseError extends AppError
+
+def load(url: String) throws AppError -> Config
+  let raw = fetch(url)!       # NetworkError extends AppError — OK
+  parse(raw)!                  # ParseError extends AppError — OK
+```
+
+## Special Cases in Propagation
+
+Two situations relax the "caller must declare `throws`" rule:
+
+- **`main()`** may propagate any error with `!` without declaring `throws`. An unhandled error escaping `main` terminates the program with a message.
+- **`CancelledError`** is implicit. `resolve task!` can always throw `CancelledError` (any task can be canceled), but you never have to declare `throws CancelledError` just to resolve tasks.
+
+## Nullability
+
+`T?` is Aster's optional type — a value that might be absent. It is separate from error handling.
+
+```
+let bio: String? = nil
+let name: String? = "Alice"
+```
+
+### Resolving Nullable Values
+
+`T?` has exactly four operations. Every one forces resolution:
+
+| Operation | Result | Purpose |
+|-----------|--------|---------|
+| `.or(default)` | `T` | Eager fallback |
+| `.or_else(-> T)` | `T` | Lazy fallback |
+| `.or_throw(Error)` | `T` | Absence is an error |
+| `match` | branch | Pattern match on nil/value |
+
+```
+let bio = user.bio.or("No bio")
+let token = headers.get("Authorization").or_throw(AuthError(msg: "missing"))
+```
+
+No `.map()`, no optional chaining (`user?.name`), no `== nil`. You resolve it or you branch with match.
+
+### Absence vs Failure
+
+These are independent concepts:
+
+- `Map.get(key)` returns `V?` — the key might not be there. Not an error.
+- `db.connect(url)` `throws DbError` — something went wrong. An error.
+- `db.find_user(id)` could `throws DbError` and return `User?` — both.
+
+## Design Philosophy
+
+- `!` is for errors, `?` is for nullable types — clean separation
+- Error hierarchy uses `extends` (single inheritance, IS-A)
+- Errors are visible at every call site
+- No `try`/`catch` — one mechanism only
+- No stringly-typed errors — always structured, matchable types
+- The compiler enforces handling — you cannot ignore a throws call

@@ -1,0 +1,35 @@
+---
+title: Introduction
+description: What is Aster and why does it exist?
+---
+
+Aster is a new programming language designed for **web applications**, covering both frontend (browser, WASM) and backend (servers). It is **syntactically familiar to Ruby**, but **strongly typed** with a type system influenced by Dart and Rust.
+
+## Why Aster?
+
+Modern web development requires juggling multiple languages, type systems, and concurrency models. Aster unifies all of this into a single, coherent language:
+
+- **One language, full stack** — the same code compiles to WASM for browsers and native binaries for servers
+- **Safe by default** — strong static typing, memory safety, and data-race freedom without the ceremony
+- **No async/await tax** — async is a call-site decision, not a viral function color
+- **AI-first tooling** — the compiler produces structured, machine-readable output designed for LLM integration
+
+## Design Principles
+
+### Familiar Syntax
+Aster uses indentation-based blocks and English-like keywords. If you've written Ruby or Python, you'll feel at home:
+
+```
+def greet(name: String) -> String
+  "Hello, " + name
+```
+
+### The Compiler Does the Work
+No lifetime annotations cluttering your code. No manual memory management. No `async` markers propagating through your entire codebase. The compiler infers what it can and tells you clearly when it can't.
+
+### Whitelist Type System
+The type checker is a **whitelist** — if a rule exists, the operation is allowed. No rule means a compile error. No implicit coercions, no silent `nil` propagation, no `NaN`. The opposite of JavaScript.
+
+## What's Next?
+
+<a href="/guides/installation/" style="display: inline-flex; align-items: center; gap: 0.35rem; font-weight: 600;">Install Aster &rarr;</a>

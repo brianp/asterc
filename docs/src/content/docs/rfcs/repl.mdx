@@ -1,0 +1,36 @@
+---
+title: "RFC: REPL"
+description: Interactive interpreter with persistent state, JSON mode, and agent integration.
+sidebar:
+  badge:
+    text: Planned
+    variant: note
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+
+**Status:** Planned
+
+Interactive interpreter with persistent state across inputs, multiline editing, meta commands, syntax highlighting, and tab completion. Includes a JSON mode for MCP server to drive the REPL programmatically.
+
+## Key Decisions
+
+- **`CompilerSession`** persists TypeEnv, runtime environment, source map, and line counter across inputs.
+- **Multiline detection**: trailing `:` (block opener), trailing comma, unmatched brackets, operator suffix.
+- **Meta commands**: `:quit`, `:reset`, `:load`, `:type`, `:info`, `:env`, `:help`, `:clear`.
+- **Syntax highlighting** via rustyline `Highlighter` trait, reusing the lexer with ANSI colors.
+- **Tab completion** from TypeEnv: variables, functions, classes, keywords, members after `.`.
+- **Special variables**: `_` (last result), `_1`, `_2`, ... (result history).
+- **REPL-specific rules**: allow redefinition with different type (shadow), top-level expressions auto-print.
+- **JSON mode** (`--repl --output-format json`):
+  - NDJSON input/output for agent integration
+  - Actions: `eval`, `type`, `env`, `reset`, `ast`, `load`
+  - Session state serializable as JSON for agent context
+- **Typecheck-only REPL** possible before codegen (show inferred types instead of values).
+- **CLI**: `asterc` (no args = REPL), `asterc --repl`, `asterc -e "1 + 2"`.
+
+## Dependencies
+
+Requires the diagnostics plan (spans, structured errors) and codegen plan (runtime evaluation).
+
+<LinkCard title="Full Plan" href="https://github.com/example/asterc/blob/main/docs/plans/repl.md" description="Read the complete REPL plan." />

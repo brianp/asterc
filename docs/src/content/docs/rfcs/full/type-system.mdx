@@ -1,0 +1,367 @@
+---
+title: "Full RFC: Type System"
+description: The complete type system RFC for Aster covering inheritance, traits, generics, and the 3-arg rule.
+sidebar:
+  badge:
+    text: Decided
+    variant: success
+---
+
+## Implementation Status
+
+| Feature | Status |
+|---------|--------|
+| `extends` (single inheritance) | Implemented |
+| `includes` (trait composition) | Implemented |
+| Instance methods with implicit `self` | Implemented |
+| No class methods | Implemented |
+| Named arguments everywhere | Implemented |
+| Inline generic syntax for functions | Implemented |
+| Bracket syntax `[T]` for type definitions | Implemented |
+| Foreign types sealed | Implemented |
+| `let` (mutable binding) | Implemented |
+| Function overloading | Not implemented |
+| `const` (compile-time constant) | Not implemented |
+| `lazy_const` (runtime-initialized) | Not implemented |
+| 3-arg limit enforcement | Not implemented |
+| `super()` calls | Not implemented |
+| Default parameter values | Not implemented |
+
+---
+
+## 1. Design Principles
+
+- Classical OOP where it helps -- single inheritance, polymorphism
+- Trait composition for interfaces and shared behavior
+- Generics only when genuinely needed (containers, type preservation)
+- Syntax should read naturally -- minimize punctuation and ceremony
+- One way to do things -- constraints defined in one place, not many
+- LLM-friendly: unambiguous, low entropy, predictable patterns
+- Foreign types are sealed -- extend via `extends`, don't reopen
+
+---
+
+## 2. extends -- Single Inheritance
+
+`extends` creates a subtype of a concrete class. Single parent only.
+The child inherits all fields and methods. Can override methods.
+
+```
+class Vehicle
+  speed: Int
+
+  def drive() -> Void
+    log("moving at " + to_string(speed))
+
+class Car extends Vehicle
+  brand: String
+
+  def drive() -> Void
+    log(brand + " moving at " + to_string(speed))
+
+class Truck extends Vehicle
+  payload: Int
+```
+
+Rules:
+- Single parent only -- `class X extends A, B` is a compile error
+- Child inherits all fields and methods from the parent chain
+- Child can override methods
+- Child can add new fields and methods
+- A `Car` is accepted anywhere a `Vehicle` is expected (polymorphism)
+- The compiler only allows access to fields/methods of the declared type
+
+```
+def park(v: Vehicle) -> Void
+  v.drive()      # OK -- Vehicle has drive()
+  # v.brand      # COMPILE ERROR -- Vehicle doesn't have brand
+
+park(Car(speed: 60, brand: "Toyota"))   # OK -- Car extends Vehicle
+```
+
+---
+
+## 3. includes -- Trait Composition
+
+`includes` adds trait interfaces to a class. Multiple traits allowed.
+Traits define method signatures and optional default implementations.
+Traits can't have fields.
+
+```
+trait Serializable
+  def to_json() -> String
+
+trait Validatable
+  def validate() throws ValidationError -> Void
+
+class User extends BaseModel includes Serializable, Validatable
+  name: String
+  email: String
+
+  def to_json() -> String
+    "name: " + name
+
+  def validate() throws ValidationError -> Void
+    match email.contains("@")
+      false => throw ValidationError(field: "email")
+      true => log("valid")
+```
+
+Rules:
+- Multiple traits allowed
+- Traits can have abstract methods (no body) and default methods (with body)
+- Classes must implement all abstract methods from included traits
+- `extends` and `includes` can be combined on the same class
+
+---
+
+## 4. Methods, Functions, and Self
+
+### Instance methods
+
+Defined inside a class. `self` is implicit -- fields and other instance
+methods are accessed by name. `self` is available as an explicit keyword
+when needed for disambiguation or passing the instance.
+
+```
+class User
+  name: String
+  email: String
+
+  def display() -> String
+    name + " <" + email + ">"       # implicit self
+
+  def update(name: String) -> Void
+    self.name = name                 # explicit self to disambiguate
+
+  def register(registry: Registry) -> Void
+    registry.add(self)               # passing self to another function
+```
+
+### No class methods
+
+All `def` inside a class body is an instance method. No exceptions, no
+`static` keyword, no detection heuristics. No ambiguity.
+
+Factories, utilities, queries, and other class-associated functions live
+in namespace files.
+
+### Introspection is compiler intrinsics
+
+Class-level introspection (`.ancestors`, `.fields`, `.children`, etc.) is
+built-in syntax the compiler provides on every type -- not methods.
+
+```
+User.ancestors           # compiler intrinsic
+User.fields              # compiler intrinsic
+user.is_a(Serializable)  # instance intrinsic
+```
+
+---
+
+## 5. Function Arguments -- Named Args & The 3-Arg Rule
+
+All function calls and class construction use named arguments. Names are
+always required. This replaces the earlier positional-only design.
+
+### Named arguments everywhere
+
+```
+greet(name: "Alice")
+add(a: 1, b: 2)
+rgb(r: 255, g: 128, b: 0)
+User(name: "Alice", email: "a@b.com")
+```
+
+Arguments are matched by name, not position. Order at the call site
+does not matter:
+
+```
+rgb(b: 0, r: 255, g: 128)    # same as rgb(r: 255, g: 128, b: 0)
+```
+
+### 3-arg limit (configurable)
+
+Functions accept a maximum of 3 parameters. If a function needs 4+
+inputs, use a parameter struct.
+
+```
+# COMPILE ERROR: more than 3 parameters
+def create_user(name: String, email: String, role: String, active: Bool) -> User
+
+# Correct: use a parameter struct
+class CreateUserParams
+  name: String
+  email: String
+  role: String = "member"
+  active: Bool = true
+
+def create_user(params: CreateUserParams) -> User
+  User(name: params.name, email: params.email)
+
+create_user(params: CreateUserParams(
+  name: "Alice",
+  email: "alice@example.com",
+  role: "admin"
+))
+```
+
+### Rules
+
+- All arguments must be named at every call site -- no exceptions
+- Maximum 3 parameters per function/method definition -- compiler enforced
+- Constructors follow the same rule: classes with 4+ fields require
+  a parameter struct
+- Default values on function params work within the 3-arg limit
+- Argument order at call site is irrelevant -- compiler matches by name
+
+### Threshold is a compiler option
+
+The limit defaults to 3 but is configurable via compiler options. Teams
+that find 3 too tight can set it to 4 or 5.
+
+---
+
+## 6. Polymorphism -- Use Types Directly
+
+Most functions don't need generics. Accept a trait or class as the
+parameter type.
+
+```
+# Accept any Serializable -- no generic needed
+def save(item: Serializable) -> Void
+  let json = item.to_json()
+  db.write(json)
+
+# Accept any Vehicle -- subclasses work via polymorphism
+def park(v: Vehicle) -> Void
+  v.drive()
+```
+
+This covers ~99% of cases. Generics are for the rest.
+
+---
+
+## 7. Generics -- When You Need Them
+
+Generics are needed when:
+- The return type depends on the input type (type preservation)
+- Container types parameterize over their element type
+- A type variable appears in multiple positions and must be consistent
+
+### Syntax: inline declaration at first use
+
+Generic type parameters are introduced inline in the parameter list at
+their first occurrence. No bracket section before the params.
+
+```
+# T introduced with constraint in params, return just references T
+def clone(item: T extends Vehicle) -> T
+
+# Multiple generics -- each declared at first mention
+def convert(from: T extends Serializable, to: U extends Serializable) -> U
+
+# Unconstrained generic
+def identity(item: T) -> T
+
+# Mixed constraints
+def wrap(item: T, db: U includes Queryable) throws DbError -> T
+
+# Trait + inheritance constraint
+def process(item: T extends Animal includes Trackable) -> T
+```
+
+### Container types still use bracket syntax
+
+```
+class List[T]
+  def first() -> T?
+  def map(f: (T) -> U) -> List[U]
+  def filter(f: (T) -> Bool) -> List[T]
+
+class Map[K, V]
+  def get(key: K) -> V?
+  def set(key: K, value: V) -> Void
+```
+
+---
+
+## 8. Foreign Types Are Sealed
+
+You can't reopen, extend methods on, or modify types from other packages
+inline. You can:
+
+- `extends` a foreign class into a new class
+- `includes` foreign traits on your own classes
+- Write standalone functions that accept foreign types
+
+---
+
+## 9. Variable Bindings & Mutability
+
+### `let` -- mutable binding
+
+All `let` bindings are mutable. No `mut` keyword. Variables vary.
+
+```
+let x = 5
+x = 6              # fine
+```
+
+### `const` -- compile-time constant
+
+Known at compile time, inlined everywhere.
+
+```
+const MAX_RETRIES = 3
+const PI = 3.14159
+MAX_RETRIES = 4    # COMPILE ERROR -- const cannot be reassigned
+```
+
+### `lazy_const` -- runtime-initialized, frozen after first set
+
+Computed once at runtime (first access or startup), then immutable forever.
+
+```
+lazy_const DB_URL = env("DATABASE_URL")
+lazy_const CONFIG = load_config("app.toml")
+```
+
+### No `static`
+
+No `static` keyword. The use cases are covered:
+- Compile-time constants -> `const`
+- Runtime-initialized globals -> `lazy_const`
+- Global mutable state -> pass through arguments, or use `Mutex` explicitly
+
+---
+
+## 10. Summary of Decided Design
+
+1. `extends` -- single class inheritance, child IS the parent type
+2. `includes` -- multiple trait composition, class SATISFIES the trait
+3. Polymorphism via declared types -- use traits/classes as param types directly
+4. Generics -- inline declaration at first use, constraints in params only
+5. Bracket syntax `[T]` only for type definitions (List, Map, etc.)
+6. Foreign types sealed -- extend or wrap, don't reopen
+7. Introspection navigates the full extends/includes hierarchy at runtime
+8. Flat constructors -- all fields (own + inherited) as named params
+9. Method override -- same signature replaces, `super()` calls the original
+10. 3-arg max per function -- 4+ requires a parameter struct
+11. **Named arguments everywhere** -- required on all calls, order independent
+12. No class methods -- all `def` in a class is an instance method
+13. No `static` keyword
+14. Factories/utilities/queries live in namespace files, not on classes
+
+## 11. What Was Rejected
+
+- Sealed/final classes
+- `static` keyword
+- Class methods
+- Positional function arguments
+- Optional argument naming
+
+## 12. Open Questions
+
+- **Project scaffolding tool**: Aster needs an opinionated project generator.
+- **`use` syntax details**: Selective imports, aliasing, depth.

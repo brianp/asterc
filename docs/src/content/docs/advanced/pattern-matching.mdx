@@ -1,0 +1,129 @@
+---
+title: Pattern Matching
+description: The match expression for destructuring and branching.
+---
+
+## Match Expressions
+
+The `match` keyword provides exhaustive pattern matching. Arms use `=>` to separate the pattern from the value:
+
+```
+def describe(n: Int) -> String
+  match n
+    0 => "zero"
+    1 => "one"
+    _ => "many"
+```
+
+## Patterns
+
+### Literal Patterns
+
+```
+match status_code
+  200 => "OK"
+  404 => "Not Found"
+  500 => "Internal Server Error"
+  _ => "Unknown"
+```
+
+### Identifier Binding
+
+```
+match user.bio
+  nil => "No bio provided"
+  bio => "Bio: " + bio
+```
+
+### Wildcard
+
+The `_` pattern matches anything and is required for exhaustiveness:
+
+```
+match direction
+  "north" => move_up()
+  "south" => move_down()
+  _ => log("unknown direction")
+```
+
+### Enum Variant Patterns
+
+Match enum values with `EnumName.Variant` patterns:
+
+```
+enum Color
+  Red
+  Green
+  Blue
+
+let label = match color
+  Color.Red => "red"
+  Color.Green => "green"
+  Color.Blue => "blue"
+```
+
+Variants with fields destructure into bindings. Write `field: name` to bind under a different name, or just the field name to bind it directly:
+
+```
+enum Shape
+  Circle(radius: Float)
+  Rectangle(width: Float, height: Float)
+  Point
+
+let area = match shape
+  Shape.Circle(radius: r) => 3.14159 * r * r
+  Shape.Rectangle(width, height) => width * height
+  Shape.Point => 0.0
+```
+
+## Exhaustiveness Checking
+
+The compiler verifies that all cases are covered. Missing a case is a compile error:
+
+- **Enums** must cover every variant (the error lists the missing ones) or include a catch-all.
+- **Bool** must cover both `true` and `false`.
+- **Nullable types** must include a `nil` arm.
+- **Everything else** (Int, String, ...) needs a wildcard `_` or a binding pattern as catch-all.
+
+```
+# compile error: non-exhaustive match
+match color
+  Color.Red => stop()
+  Color.Green => go()
+  # missing variant: Color.Blue
+```
+
+## Match as Expression
+
+`match` is an expression — it returns a value:
+
+```
+let label = match score
+  100 => "perfect"
+  _ => "try again"
+```
+
+## Matching on Nullable Values
+
+`T?` values can be resolved with `match`:
+
+```
+let display = match user.bio
+  nil => "No bio provided"
+  bio => bio
+```
+
+The bound variable (`bio`) is typed as `T`, not `T?` — the match resolves the nullable.
+
+## Error Matching with `!.catch`
+
+`!.catch` uses arrow syntax (`->`) for error type arms:
+
+```
+let data = fetch(url)!.catch
+  TimeoutError t -> retry(t.url)
+  NotFoundError n -> ""
+  _ -> ""
+```
+
+See [Error Handling](/advanced/errors) for details.

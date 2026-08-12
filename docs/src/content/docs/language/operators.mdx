@@ -1,0 +1,100 @@
+---
+title: Operators
+description: Arithmetic, comparison, and logical operators in Aster.
+---
+
+## Operator Precedence
+
+Aster follows standard mathematical precedence (PEMDAS), from lowest to highest:
+
+| Precedence | Operators | Associativity |
+|-----------|-----------|---------------|
+| 1 (lowest) | `or` | Left |
+| 2 | `and` | Left |
+| 3 | `== !=` | Left |
+| 4 | `< > <= >=` | Left |
+| 5 | `+ -` | Left |
+| 6 | `* / %` | Left |
+| 7 | `**` (exponent) | **Right** |
+| 8 | Unary `- not` | Prefix |
+| 9 (highest) | Call `()`, Member `.` | Postfix |
+
+## Arithmetic
+
+```
+let sum = 10 + 3        # 13
+let diff = 10 - 3       # 7
+let product = 10 * 3    # 30
+let quotient = 10 / 3   # 3
+let remainder = 10 % 3  # 1
+let power = 2 ** 10     # 1024
+```
+
+Exponentiation is **right-associative**, matching math convention and Ruby/Python:
+
+```
+let x = 2 ** 3 ** 2     # 2 ** (3 ** 2) = 2 ** 9 = 512
+```
+
+## Comparison
+
+```
+let eq = 5 == 5      # true
+let neq = 5 != 3     # true
+let lt = 3 < 5       # true
+let gt = 5 > 3       # true
+let lte = 5 <= 5     # true
+let gte = 5 >= 3     # true
+```
+
+Comparisons always return `Bool`. Both operands must be the same type.
+
+## Logical
+
+Aster uses **English words** instead of symbolic operators:
+
+```
+let a = true and false    # false
+let b = true or false     # true
+let c = not true          # false
+```
+
+This is an intentional design choice for AI-friendliness — `and`, `or`, `not` are unambiguous, common English tokens that LLMs handle well.
+
+## Unary Operators
+
+```
+let neg = -42         # negation
+let inv = not true    # logical not
+```
+
+## Grouping
+
+Parentheses override precedence:
+
+```
+let x = (2 + 3) * 4    # 20, not 14
+```
+
+## Float Promotion
+
+When `Int` and `Float` are mixed in arithmetic, the result is `Float`:
+
+```
+let x = 42 + 3.14    # Float: 45.14
+let y = 10 / 3.0     # Float: 3.333...
+```
+
+## String Concatenation
+
+The `+` operator concatenates strings:
+
+```
+let full = "Hello" + " " + "World"    # "Hello World"
+```
+
+No other type implicitly converts to `String`. Use `to_string()` explicitly:
+
+```
+let msg = "count: " + to_string(42)
+```

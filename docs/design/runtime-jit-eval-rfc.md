@@ -1,0 +1,386 @@
+# RFC: Runtime JIT Evaluation
+
+Status: PROPOSED
+
+---
+
+## 1. Problem
+
+Aster is a compiled language. Once `asterc build` produces a binary, the compiler is gone. There is no interpreter or VM in memory at runtime. This means there is currently no way for a running Aster program to compile and execute new code.
+
+However, Aster already has a JIT compiler (Cranelift-based) used by `asterc run`. The machinery to parse, typecheck, lower, and execute Aster code at runtime already exists. It just isn't accessible from within a running program.
+
+This RFC proposes exposing runtime JIT compilation as a stdlib function, gated by whether the JIT is bundled into the compiled binary.
+
+---
+
+## 2. Motivation
+
+### 2.1 Seedfile evaluation
+
+The `aster` package manager evaluates Seedfiles by generating a wrapper program, writing it to a temp file, and shelling out to `asterc run`. This works but is architecturally awkward: temp file creation, subprocess management, stdout serialization, output parsing. With in-process evaluation, the Seedfile wrapper could be compiled and executed directly, and the resulting `Seedfile` object read in the same process.
+
+### 2.2 Plugin systems and scripting
+
+Applications that want to load and execute user-provided Aster code at runtime (config files, plugins, scripting hooks, templates) currently have no mechanism to do so without shelling out to `asterc`.
+
+### 2.3 Dynamic code generation
+
+Hot-patching, runtime code generation, and metaprogramming patterns that require compiling code on the fly.
+
+---
+
+## 3. Design
+
+### 3.1 The evaluation model: code injection with mutable bindings
+
+`evaluate()` compiles and executes a string of Aster source code at runtime using the JIT. It is not a standalone function that takes bindings. It is a **context-capturing evaluation point**: the compiler snapshots the calling scope's type metadata at compile time, and the JIT uses that snapshot to typecheck and compile the code string at runtime.
+
+```
+use std/runtime { evaluate }
+```
+
+### 3.2 How it works: context capture
+
+When the compiler encounters an `evaluate()` call, it treats it like a closure capture, but for type information instead of variable values. It snapshots:
+
+- The current class context (if inside a method, the class definition and `self` type)
+- The import tree visible at the call site
+- Variables in scope and their types
+
+This metadata is serialized and embedded in the binary alongside the call site. At runtime, when `evaluate()` executes, the JIT loads that snapshot and uses it to typecheck the code string against the same context the call site had at compile time.
+
+For runtime values (local variables, `self`), the compiler uses the same mechanism as closures: locals referenced by the evaluated code are heap-lifted into a closure environment, and the env pointer is passed to the JIT alongside the type snapshot. This is not new machinery. Closures already do this (see `fir/src/lower/closure.rs`). The `evaluate()` call site is treated as an implicit closure boundary.
+
+This is a compile-time decision. The compiler already has all this information. It just preserves it for the JIT to use later.
+
+### 3.3 Inside a class method
+
+When `evaluate()` is called inside a class method, `self` and the class context are part of the captured metadata. The evaluated code is compiled as a method body on that class.
+
+```
+pub class Seedfile includes DynamicReceiver
+  pub name: String
+  pub deps: List[Dependency]
+  # ... fields and methods ...
+
+  pub def execute(code: String) throws EvalError -> Void
+    evaluate(code: code)
+```
+
+Inside `execute()`, `self` is the Seedfile instance and `current_class` is Seedfile. The JIT compiles the code string with that same context. Bare calls like `package(...)` resolve to `self.package(...)` through DynamicReceiver, exactly as they would in any other method on the class.
+
+The caller:
+
+```
+let seed = Seedfile(name: "", deps: [], ...)
+let content = read_file(path: "Seedfile")!
+seed.execute(code: content)!
+
+say(message: "Package: {seed.name}")
+
+for dep in seed.deps
+  say(message: "  {dep.name} {dep.version}")
+```
+
+A DSL-mode Seedfile is clean data:
+
+```
+package(pkg_name: "my-app", version: "1.0.0")
+compiler(ver: "0.2.0")
+
+http(version: "1.2.0")
+task(task_name: "test", cmd: "aster test --release")
+```
+
+No imports needed. The class context provides everything. Bare calls resolve to `self.method()` through DynamicReceiver. This is the same pattern as Ruby's `instance_eval`: the object goes in, the DSL code populates it, the caller reads the result. The difference is that Aster's version is typechecked and compiled to native machine code.
+
+### 3.4 Inside a bare function
+
+When `evaluate()` is called outside a class, there is no `self` and no class context. The evaluated code is compiled as a bare block with the imports and variables from the enclosing scope.
+
+```
+use std/fs { read_file }
+
+def run_script(code: String) throws EvalError -> Void
+  let x = 42
+  evaluate(code: code)
+```
+
+The JIT compiles the code string with `std/fs` imported and `x: Int` in scope. The evaluated code can call `read_file` and reference `x`. It cannot call methods on a class because there is no class context.
+
+### 3.5 Why evaluation is Void
+
+There is no return type problem because there is no return value. The "output" of evaluation is whatever side effects occurred: mutations to `self` (in a class context), mutations to captured variables, I/O, etc.
+
+For the Seedfile case, the output is the populated Seedfile object. For a plugin system, the output is a populated plugin registry. For a script, the output might just be side effects (writing files, printing output).
+
+If a use case needs a computed value back, the pattern is: put a field on the class, have the evaluated code set it.
+
+### 3.6 Context metadata size
+
+The captured metadata per `evaluate()` call site is small: class definitions, method signatures, import trees, variable names and types. A few KB per call site. This is negligible compared to the 4-6 MB JIT overhead. Runtime evaluation has real performance and binary size implications. Embedding a compiler in your binary is the cost. A few KB of type metadata per eval site is not.
+
+### 3.7 Error handling
+
+The evaluated code is isolated. It doesn't know about the host's error types, stack frames, or catch sites. Errors cannot propagate structurally across the JIT boundary. Instead, the runtime traps all failures at the boundary and wraps them into an `EvalError`.
+
+```
+use std/runtime { evaluate, EvalError }
+
+let seed = Seedfile(...)
+seed.execute(code: content)!
+# throws EvalError on compilation failure or runtime panic
+```
+
+`EvalError` carries two fields:
+- `kind: String` -- one of `"syntax"`, `"type"`, `"lowering"`, or `"runtime"`
+- `message: String` -- the diagnostic or panic message
+
+No structured diagnostics cross the boundary. The host gets a kind tag and a human-readable message. It can match on kind to distinguish compile errors from runtime panics, or just print the message.
+
+Compile-time failures (syntax errors, type errors, FIR lowering failures) are caught before any code executes. Runtime failures (panics, division by zero, out of memory) are caught by a trap around the JIT function call. Both surface as `EvalError` to the host. The host process does not crash from evaluated code under normal conditions. Unrecoverable failures (OOM, process-level abort) can still take down the host, as they would in any shared-process model.
+
+---
+
+## 4. JIT Bundling
+
+### 4.1 The core tradeoff
+
+The JIT compiler (full compiler frontend + Cranelift) adds approximately 4-6 MB to a compiled binary. Not every program needs runtime evaluation. The JIT should be opt-in for compiled binaries.
+
+### 4.2 Internal JIT
+
+```
+asterc build src/main.aster --jit
+```
+
+The `--jit` flag bundles the JIT compiler into the output binary. The binary is self-contained: it can compile and execute new Aster code anywhere, with no external dependencies.
+
+This is the simpler model. The binary is larger but fully portable. No PATH issues, no version mismatches, no "is asterc installed?" checks.
+
+### 4.3 No JIT (default)
+
+```
+asterc build src/main.aster
+```
+
+Without `--jit`, calling the evaluation function at runtime is a compile error or a runtime panic. The binary contains no JIT machinery. This is the default for maximum binary size savings.
+
+If a source file imports `std/runtime`, the compiler should warn (or error) when building without `--jit`.
+
+### 4.5 Size budget
+
+The `--jit` flag bundles the full compiler frontend (lexer, parser, typechecker, FIR lowerer) and the Cranelift JIT backend into the output binary. The release `asterc` binary, which contains all of this, is 5.6 MB. After dead-stripping code not reachable from the evaluation entry point, the overhead is estimated at 4-6 MB.
+
+| Configuration | Approximate binary size overhead |
+|---|---|
+| No JIT (default) | 0 |
+| Internal JIT | +4-6 MB (full compiler frontend + Cranelift JIT) |
+
+For context: Go binaries start at ~2 MB (runtime + GC), Julia ships ~150 MB (LLVM). 4-6 MB for a self-compiling runtime is reasonable.
+
+---
+
+## 5. JIT and the Toolchain Architecture
+
+### 5.1 Two binaries
+
+The Aster ecosystem has two binaries:
+
+- `aster` -- The toolchain manager and package manager. Built with `--jit`. Contains the full compiler frontend and Cranelift JIT for Seedfile evaluation.
+- `asterc` -- The compiler. Contains the JIT (for `asterc run` and `asterc repl`), the AOT backend (for `asterc build`), the typechecker, formatter, etc.
+
+### 5.2 Where each binary uses runtime evaluation
+
+**`asterc`** already has the JIT for `asterc run`. The REPL (`asterc repl`) is just a loop around the same JIT pipeline. No new machinery needed.
+
+**`aster`** (the package manager) evaluates Seedfiles using its bundled JIT. It calls `seed.execute(code: content)` in-process, where `execute()` calls `evaluate()` from inside the Seedfile class context. No subprocess, no text parsing, no serialization. The `compiler(ver:)` directive in the Seedfile controls which `asterc` is used for building the project, not for parsing the Seedfile.
+
+**User binaries** built with `--jit` can call the evaluation function from their own code.
+
+---
+
+## 6. Seedfile Integration
+
+### 6.1 How it works
+
+The `aster` binary has the JIT compiled in. The Seedfile class has an `execute()` method that calls `evaluate()` from inside itself, where the class context is available:
+
+```
+pub class Seedfile includes DynamicReceiver
+  # ... fields and methods ...
+
+  pub def execute(code: String) throws EvalError -> Void
+    evaluate(code: code)
+```
+
+Seedfile evaluation is a single code path:
+
+1. `aster` reads the Seedfile as a string
+2. Creates a Seedfile object: `let seed = Seedfile(name: "", deps: [], ...)`
+3. Calls `seed.execute(code: content)!`
+4. Reads `seed.name`, `seed.deps`, `seed.compiler_version`, etc. directly
+5. Uses `seed.compiler_version` to locate the correct `asterc` for building the project
+
+There is no subprocess, no serialization protocol, no stdout parsing. The evaluation mode (DSL or code) is determined by scanning for `allow_eval()` at the top of the file (see Section 6.2).
+
+### 6.2 Two evaluation modes
+
+Before evaluating, `aster` scans the first line for `allow_eval()`. This is a fixed literal, never computed, always at the top. It determines which path to use.
+
+**DSL mode (default):** Only DSL calls (`package()`, `compiler()`, `task()`, dependency declarations), comments, and blank lines. No `use` statements, no conditionals, no variables, no `let`, no `if`, no `say()`, no arbitrary expressions. Pure data declaration. Evaluated via `Seedfile.execute()`, where the class context provides everything. Bare calls resolve through DynamicReceiver.
+
+```
+package(pkg_name: "my-app", version: "1.0.0")
+compiler(ver: "0.2.0")
+
+http(version: "1.2.0")
+sentry(version: "2.0.0", dev: "true")
+
+task(task_name: "test", cmd: "aster test --release")
+```
+
+**Code mode (`allow_eval()`):** The Seedfile is arbitrary Aster code. It can import modules, use conditionals, read environment variables, run commands. No restrictions. The user is opting in to "this Seedfile runs code."
+
+```
+allow_eval()
+use std/sys { env_get }
+
+package(pkg_name: "my-app", version: "1.0.0")
+compiler(ver: "0.2.0")
+
+let env = env_get(key: "ASTER_ENV")
+
+if env == "production"
+  sentry(version: "2.0.0")
+
+http(version: "1.2.0")
+task(task_name: "test", cmd: "aster test --release")
+```
+
+Code-mode Seedfiles are evaluated with an unrestricted path that permits imports. The code still runs as a method body on Seedfile (so bare DSL calls still work), but `use` statements at the top are processed first.
+
+### 6.3 Why two modes
+
+Security visibility. `grep -r "allow_eval()"` across a dependency tree instantly identifies which Seedfiles run code. A package registry can flag or refuse packages with code-mode Seedfiles. CI/CD pipelines can enforce DSL-only policies.
+
+DSL-mode Seedfiles are pure data. They declare dependencies and metadata. They cannot do anything else.
+
+Code-mode Seedfiles are programs. They can do anything. `allow_eval()` makes this explicit and auditable.
+
+### 6.4 The compiler version is for building, not parsing
+
+`compiler(ver: "0.2.0")` tells `aster` which `asterc` to use when compiling the project. It does not affect Seedfile evaluation. The Seedfile is always evaluated by the JIT bundled into the `aster` binary. These are two separate operations:
+
+- **Evaluate the Seedfile** -- uses the `aster` binary's bundled JIT (always)
+- **Build the project** -- uses whatever `asterc` version the Seedfile requested
+
+### 6.5 Seedfile language versioning
+
+The `aster` binary's JIT defines what Seedfile syntax is supported. To make version requirements explicit:
+
+```
+seedfile(version: 1)
+package(pkg_name: "my-app", version: "1.0.0")
+compiler(ver: "0.2.0")
+```
+
+If `aster` encounters a seedfile version it doesn't support:
+
+> Seedfile uses language version 2; this `aster` binary supports version 1. Run `aster self-update` to upgrade.
+
+The `Seedfile.lock` caches the evaluated result, so re-evaluation only happens when the Seedfile changes.
+
+### 6.6 Precedent
+
+This is the same model used by every package manager with a code-based manifest:
+
+- **Bundler** evaluates Gemfiles with the installed Ruby, not a Ruby version specified in the Gemfile
+- **Mix** evaluates mix.exs with the installed Elixir
+- **Gradle** evaluates build.gradle with the installed Gradle
+
+None of these systems dynamically switch the runtime based on the manifest. If the manifest uses newer syntax, you upgrade the tool.
+
+---
+
+## 7. Safety Model
+
+### 7.1 The call site scope is the sandbox
+
+The evaluated code goes through the full compiler pipeline. It is typechecked and compiled to native machine code, not interpreted. But the typechecker enforces type correctness, not capability restriction. The actual safety boundary depends on the evaluation mode.
+
+**Context-captured evaluation** (e.g., `Seedfile.execute()` in DSL mode): The evaluated code can only use what the call site's scope provides. If the `execute()` method doesn't import `std/process`, the evaluated code can't run commands. The call site scope is the sandbox.
+
+**Unrestricted evaluation** (e.g., code-mode Seedfiles with `allow_eval()`): The evaluated code can add its own `use` imports and access any module. There is no sandbox. The `allow_eval()` declaration is the opt-in. The user is saying "I trust this code."
+
+### 7.2 What the typechecker always enforces
+
+Regardless of evaluation mode:
+
+- Type mismatches are caught before execution
+- The code must be syntactically and semantically valid
+- Module visibility (`pub` vs private) is respected
+- The code is compiled, not interpreted. There is no `exec`-style string injection
+
+### 7.3 What unrestricted evaluation can do
+
+- Import any module
+- Perform I/O (filesystem, network, processes)
+- Allocate memory (GC-managed)
+- Run indefinitely (no timeout by default)
+
+### 7.4 Seedfile-specific safety
+
+For Seedfiles, the safety model is the two-mode split from Section 6.2:
+
+- **DSL mode**: pure data. No imports, no conditionals, no variables, no arbitrary expressions. Only DSL calls, comments, and blank lines. Safe by construction.
+- **Code mode**: unrestricted. `allow_eval()` makes this visible and auditable. `grep -r "allow_eval()"` identifies every code-mode Seedfile in a dependency tree.
+
+---
+
+## 8. What This Does NOT Include
+
+- **Incremental JIT compilation** -- Each `evaluate()` call is a full compile. Caching compiled code is future work.
+- **Hot code reloading** -- Replacing running functions with new versions. Separate feature.
+- **Evaluation in AOT-only binaries** -- If no JIT is present, runtime evaluation is not available. No interpreter fallback.
+
+---
+
+## 9. Implementation Path
+
+### Phase 1: Internal plumbing
+- Extract the JIT pipeline from `asterc run` into a reusable function in the codegen crate
+- Ensure the JIT can be invoked from within a running Cranelift-compiled program (JIT calling JIT)
+- Implement context capture: when the compiler encounters `evaluate()`, serialize the call site's type metadata (class context, imports, variable types) into the binary
+- Include compiled function pointers in the context capture so the JIT can emit direct calls to host-compiled methods
+
+### Phase 2: stdlib surface
+- Add `std/runtime` module with `evaluate(code: String)` function
+- Wire it to the internal JIT pipeline: load the embedded context metadata, run the code string through parse/typecheck/lower/JIT with that context
+- Add `--jit` flag to `asterc build` to bundle the JIT
+
+### Phase 3: Seedfile integration
+- Build `aster` with `--jit` so it can evaluate Seedfiles in-process
+- Add `Seedfile.execute()` method that calls `evaluate()` from inside the class context
+- Replace the current wrapper generation / subprocess / serialization pipeline with `seed.execute(code: content)`
+- Add `seedfile(version:)` declaration and version checking
+- Add `Seedfile.lock` caching of evaluated results
+
+---
+
+## 10. Resolved Questions
+
+1. **Can the JIT compile itself?** Yes. Cranelift is reentrant. Nested `evaluate()` calls (evaluated code calling `evaluate()`) should work. Test early to confirm GC and green-thread interaction during nested compilation.
+
+2. **Timeout/resource limits?** Not for v1. Evaluated code runs with the same privileges as the host. Add `timeout:` as a future extension for plugin/scripting use cases.
+
+3. **Can evaluated code add its own imports?** Depends on the mode. In context-captured evaluation (DSL mode), no. The call site scope is the entire world. In unrestricted evaluation (`allow_eval()`), yes. The `allow_eval()` declaration is the opt-in.
+
+4. **JIT-to-AOT symbol bridging?** Not a separate problem. The context capture embeds function pointers for methods on the bound class alongside the type metadata. The JIT emits calls to those addresses directly. No bridging layer needed.
+
+5. **Should external JIT exist?** No. Cut. The binding model requires in-process pointer mutation, which is incompatible with subprocess execution.
+
+6. **How should typed values be returned?** Evaluation is Void. The "output" is mutations to `self` and side effects. No return type machinery needed.
+
+7. **Should `--jit` be default?** No. 4-6 MB overhead is opt-in. Most programs don't need runtime evaluation.

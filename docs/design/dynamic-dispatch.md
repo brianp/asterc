@@ -1,0 +1,169 @@
+# Dynamic Dispatch & Unstable Features Implementation Plan
+
+## Context
+
+The introspection API (class_name, fields, methods, ancestors, children, is_a, responds_to) is complete. This plan covers the remaining features from the introspection RFC that were deferred: DynamicReceiver, FieldAccessible, and the std/unstable module.
+
+## What's Being Built
+
+Three features, each building on the previous:
+
+1. **DynamicReceiver trait + FunctionNotFound error** (sections 5, 7 of the RFC)
+2. **std/unstable module + --unstable flag** (section 7)
+3. **FieldAccessible trait** (section 6)
+
+## Feature 1: DynamicReceiver Trait
+
+### What It Does
+
+A class that `includes DynamicReceiver` can receive calls to methods not defined on the class. The compiler rewrites unknown method calls to `self.method_missing(fn_name, args)` instead of emitting a type error.
+
+### Compile-Time Validation
+
+The typechecker inspects the body of `method_missing` to decide how much it can check at compile time. This isn't a "mode" the user selects. It's the compiler reading the code and drawing conclusions:
+
+- If `method_missing` contains a match on fn_name with string literal arms, and the catch-all throws `FunctionNotFound`, the compiler knows the complete set of valid dynamic method names. It can reject calls to names not in the list, just like it rejects calls to undefined methods on regular classes.
+- If the catch-all doesn't throw (or there's no match at all), the compiler can't determine what's valid. It lets all calls through and trusts the runtime implementation.
+
+### FunctionNotFound Error
+
+```
+class FunctionNotFound extends Error
+    name: String
+```
+
+Built-in error type. Register alongside Exception/Error/CancelledError in the typechecker's `register_builtins`.
+
+### Implementation
+
+#### Typechecker
+
+1. **Register DynamicReceiver as a built-in trait** in `register_builtins`. It requires one method: `method_missing(fn_name: String, args: Map[String, T]) -> R` where T and R are whatever the user declares. The typechecker validates that the signature starts with a `String` parameter and the second parameter is a `Map`.
+
+2. **Register FunctionNotFound** as a built-in class extending Error with a `name: String` field.
+
+3. **Modify `check_member` / `check_call`** fallback: when a method call fails on a class that includes DynamicReceiver, instead of emitting an error:
+   - Extract the known dynamic method names from `method_missing` (if any):
+     - Walk the body looking for a `match` on the first parameter
+     - If found, collect the string literal arms
+     - Check whether the catch-all throws `FunctionNotFound`
+   - If the catch-all throws `FunctionNotFound` and the called name isn't in the collected arms, emit a compile error (closed set).
+   - Otherwise, allow the call.
+   - Rewrite the call to `self.method_missing(fn_name: "called_name", args: { ...packed args... })`.
+   - Validate that the call site args can be packed into the declared Map value type.
+
+4. **Known-names extraction** should be a separate function (`extract_dynamic_method_names`) that returns `Option<Vec<String>>` (Some = closed set, None = open). Cache the result per class to avoid re-inspecting on every call.
+
+#### FIR Lowering
+
+No special lowering needed. The typechecker rewrites `obj.unknown_method(args)` to `obj.method_missing("unknown_method", {args})`. By the time the lowerer sees it, it's a normal method call.
+
+One optimization: if the fn_name is a string literal known at compile time and `method_missing` has a match with that literal arm, the lowerer can bypass the match dispatch and jump directly to the arm body. This is optional and can be deferred.
+
+#### Codegen
+
+No changes. method_missing is a regular method call after rewriting.
+
+### Decisions Needed
+
+1. **Map literal syntax**: The rewrite packs call-site args into a Map. Does Aster have map literal syntax? If not, how are the args packed? Options:
+   - Require `Map[String, T]` literal syntax (may need parser work)
+   - Require a specific intermediary type instead of Map
+   - Use positional args and let the user unpack
+
+2. **Return type handling**: `method_missing` has a single return type, but different dynamic methods might want different return types. The RFC uses Void in examples. Should the return type be enforced at the call site? If method_missing returns Void, callers can't use the result. If it returns some T, all dynamic calls return T.
+
+3. **Self-call context**: Inside a DynamicReceiver class body, does `unknown_method()` (without explicit `self.`) also route through method_missing? It should, for DSL ergonomics (the Seedfile example relies on bare calls like `http(version: "1.2.0")`).
+
+4. **Nested DynamicReceiver**: Can a class that extends a DynamicReceiver class have its own method_missing? If so, which one wins? The child's should override.
+
+5. **Trait method interaction**: If a DynamicReceiver class also includes a trait, do trait methods take precedence over method_missing? They should (same as user-defined methods shadowing introspection).
+
+## Feature 2: std/unstable Module + --unstable Flag
+
+### What It Does
+
+A gating mechanism for experimental features. Importing from `std/unstable` requires `--unstable` on the command line.
+
+### Implementation
+
+#### Parser/Module Loader
+
+1. **Recognize `std/unstable` as a virtual module path**. When the module loader encounters `use std/unstable { ... }`, it resolves to the built-in unstable module rather than a filesystem path.
+
+2. **Gate on compiler flag**: Add `--unstable` flag to the CLI argument parser. Store it in a compiler config struct that's accessible during typechecking. When `std/unstable` is imported without `--unstable`, emit a compile error: "Importing from std/unstable requires the --unstable compiler flag."
+
+#### Typechecker
+
+1. **Register unstable traits lazily**: Only register traits from `std/unstable` when the module is imported. This keeps the default environment clean.
+
+2. **FieldAccessible trait** lives here (see Feature 3).
+
+#### CLI
+
+Add `--unstable` flag to `asterc run`, `asterc build`, and `asterc check`. Pass it through to the compiler pipeline.
+
+### Decisions Needed
+
+1. **Transitivity**: The RFC says --unstable is transitive across dependencies. With no package manager yet, this is academic. Defer the transitivity enforcement until the package system exists?
+
+2. **Seedfile integration**: The RFC mentions `unstable(enabled: true)` in the Seedfile. Since there's no Seedfile system yet, skip this for now and just use the CLI flag.
+
+## Feature 3: FieldAccessible Trait
+
+### What It Does
+
+An opt-in trait for dynamic field access by name. A class that includes `FieldAccessible` must define an inner enum `FieldValue` covering all its field types. The compiler auto-generates a `field_value(name: String) -> FieldValue?` method.
+
+### Implementation
+
+#### Typechecker
+
+1. **Register FieldAccessible** as a trait in the unstable module. Required method: `field_value(name: String) -> Self.FieldValue?` (the return type references the class's inner FieldValue enum).
+
+2. **Validate FieldValue enum coverage**: When a class includes FieldAccessible, check that:
+   - The class defines an inner enum called `FieldValue`
+   - Every field type in the class has a corresponding variant in FieldValue
+   - Each variant has exactly one field (the value)
+
+3. **Auto-generate field_value method**: Synthesize a match on the name string that returns the corresponding FieldValue variant for each field, or nil for unknown names.
+
+#### FIR Lowering
+
+The auto-generated `field_value` method is a regular match expression. It can be synthesized as AST before lowering (similar to how `to_string` and `eq` are synthesized for classes that include the corresponding traits). The lowerer handles it as a normal method.
+
+#### Codegen
+
+No changes. The synthesized method is a regular function with a string match.
+
+### Decisions Needed
+
+1. **Inner enum syntax**: Does Aster support inner enums (enums defined inside a class body)? If not, the FieldValue enum would need to be defined at the module level. This changes the ergonomics significantly.
+
+2. **Inherited fields**: If a class extends another and includes FieldAccessible, should the FieldValue enum cover inherited fields too? Probably yes, since `field_value("message")` on an AppError should work for the inherited `message` field.
+
+3. **field_value return type**: The RFC says `FieldValue?` (nullable). This means `field_value("nonexistent")` returns nil. The typechecker needs to understand that the return type is `Self.FieldValue?` and handle the nullable correctly.
+
+## Implementation Order
+
+1. **FunctionNotFound error type** (trivial, needed by DynamicReceiver)
+2. **DynamicReceiver trait** (most complex, core feature)
+3. **--unstable flag + std/unstable module** (gating infrastructure)
+4. **FieldAccessible trait** (depends on unstable module, inner enums)
+
+DynamicReceiver can be implemented as a stable feature first (it's marked stable in the RFC). FieldAccessible requires the unstable infrastructure, so it comes last.
+
+## Dependencies and Risks
+
+- **Map literal syntax**: DynamicReceiver's arg packing requires Map literals or an alternative. If Map literals don't exist in the parser yet, that's a prerequisite.
+- **Inner enums**: FieldAccessible requires inner enums (enums defined inside a class). If this isn't supported, the design needs adjustment.
+- **Match inspection**: Extracting known method names requires the typechecker to inspect match arms inside method_missing. This is static analysis of user code, which is unusual for a typechecker. It needs careful implementation to handle edge cases (what if the match is nested, what if the throw is conditional, etc.).
+
+## Files Likely Touched
+
+- `typecheck/src/typechecker.rs` (register_builtins for FunctionNotFound, DynamicReceiver, FieldAccessible)
+- `typecheck/src/check_expr.rs` or `typecheck/src/check_call.rs` (DynamicReceiver rewrite logic)
+- `src/main.rs` (--unstable CLI flag)
+- `typecheck/src/module_loader.rs` (std/unstable virtual module)
+- `fir/src/lower/synthesize.rs` (auto-generated field_value method)
+- `tests/integration/` (new test files for each feature)

@@ -1,0 +1,82 @@
+---
+title: Primitives & Types
+description: The built-in types in Aster.
+---
+
+Aster has a small, clear set of primitive types. Every value has a known type at compile time.
+
+## Primitive Types
+
+| Type | Description | Examples |
+|------|-------------|---------|
+| `Int` | 64-bit signed integer (auto-promotes to BigInt) | `42`, `-7`, `1_000_000` |
+| `Float` | IEEE 754 double precision | `3.14`, `-0.5`, `1.0e10` |
+| `String` | UTF-8 text | `"hello"`, `"Aster"` |
+| `Bool` | Boolean | `true`, `false` |
+| `Void` | No value (used for functions with no return) | — |
+
+## Integers
+
+Integers in Aster are 64-bit signed by default, with a design goal of auto-promoting to arbitrary precision (BigInt) when they overflow — like Ruby's integers:
+
+```
+let small = 42
+let big = 1_000_000
+let negative = -17
+```
+
+## Floats
+
+IEEE 754 double precision floating point:
+
+```
+let pi = 3.14159
+let temperature = -40.0
+```
+
+Arithmetic between `Int` and `Float` promotes to `Float`:
+
+```
+let result = 42 + 3.14    # Float: 45.14
+```
+
+## Strings
+
+Strings are UTF-8 encoded and support concatenation with `+`:
+
+```
+let greeting = "Hello"
+let name = "Aster"
+let message = greeting + ", " + name + "!"    # "Hello, Aster!"
+```
+
+String repetition (planned):
+```
+let laugh = "ha" * 3    # "hahaha"
+```
+
+## Booleans
+
+```
+let yes = true
+let no = false
+```
+
+Aster uses English keywords for logical operators:
+
+```
+let both = true and false     # false
+let either = true or false    # true
+let nope = not true           # false
+```
+
+## The Whitelist Principle
+
+Aster's type checker is a **whitelist**. If a rule exists for an operation, it's allowed. No rule means a compile error:
+
+- `Int + Int` = `Int` (rule exists)
+- `String + String` = `String` (rule exists)
+- `String + Int` = compile error (no rule)
+- `Bool + Bool` = compile error (no rule)
+
+No implicit coercions. No silent `nil`. No `NaN` surprises. The opposite of JavaScript.

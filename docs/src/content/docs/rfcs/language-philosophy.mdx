@@ -1,0 +1,25 @@
+---
+title: "RFC: Language Philosophy"
+description: AI-native design principles, single syntax per concept, and the three-actor model.
+sidebar:
+  badge:
+    text: Decided
+    variant: success
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+
+**Status:** Decided
+
+Establishes Aster's core design philosophy as an AI-native language. Single syntax per concept, canonical formatting, low representational entropy, whitelist semantics, and the three-actor model.
+
+## Key Decisions
+
+- **Single syntax per concept** — one way to express each idea, no equivalent alternatives.
+- **Canonical formatting** — opinionated formatter, no style debates.
+- **Low representational entropy** — optimized for LLM tokenization and comprehension.
+- **Whitelist type system** — if a rule exists, the operation is allowed. No rule means compile error.
+- **Three-actor model**: human writes → compiler proves → LLM explains.
+- **Slogan**: "Human-written, compiler-proven, machine-explained."
+
+<LinkCard title="Full RFC" href="https://github.com/example/asterc/blob/main/docs/design/language-philosophy.md" description="Read the complete language philosophy document on GitHub." />

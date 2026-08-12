@@ -1,0 +1,205 @@
+---
+title: The Virtual Standard Library
+description: How Aster's standard library exists as type information hard-coded in the typechecker, backed by runtime builtins in the codegen crate.
+---
+
+Aster's standard library does not exist as `.aster` source files. When you write `use std/fs { read_file }`, no file is read from disk — the typechecker synthesizes the module's exports from tables hard-coded in Rust. This page explains how that works, what the virtual stdlib contains today, and how the type-level half connects to the runtime half in the codegen crate.
+
+**Key files:** `typecheck/src/typechecker.rs` (`register_builtins`, `builtin_std_submodule_exports`, `resolve_use`), `typecheck/src/module_loader.rs` (`ModuleExports`), `ast/src/builtin_errors.rs` (runtime error class layout), `codegen/src/runtime/` (runtime implementations).
+
+## Why virtual?
+
+The compiler only needs *type information* to check code that uses the stdlib. The protocol traits (`Eq`, `Printable`, ...) have no executable body at all — they are just method signatures. The functions that do have behavior (`read_file`, `run`, `sha256`, ...) are implemented as runtime builtins in the codegen crate and linked into the compiled program; the typechecker only needs their signatures to check call sites.
+
+So instead of shipping `.aster` files and compiling them on every build, `TypeChecker` constructs a `ModuleExports` struct directly in Rust when it sees a `use std/...` import:
+
+```rust
+/// The public exports of a compiled module.
+pub struct ModuleExports {
+    pub variables: HashMap<String, Type>,
+    pub classes: HashMap<String, ClassInfo>,
+    pub traits: HashMap<String, TraitInfo>,
+    pub enums: HashMap<String, EnumInfo>,
+}
+```
+
+This is the same structure used for user modules, so std imports flow through the exact same `apply_imports()` logic — selective imports, `as` aliases, and wildcard imports all work identically for std and user modules.
+
+## Prelude mode vs module mode
+
+`TypeChecker` has two construction paths that differ in what is in scope by default:
+
+| Mode | Constructor | Protocols in scope? |
+|---|---|---|
+| Prelude | `TypeChecker::new()` | Yes — all builtin traits and `Ordering` are pre-installed |
+| Module | `TypeChecker::with_loader(loader)` | No — must be imported via `use std/...` |
+
+`register_builtins()` (called by `new()`) installs everything into the `TypeEnv`, then `enable_module_loader()` *removes* the traits that require explicit import:
+
+```rust
+// Remove protocol traits from env — require `use std/<submodule>` import
+for name in [
+    "Eq", "Ord", "Printable", "From", "Into",
+    "Iterable", "Iterator", "Random", "FieldAccessible",
+    // Drop and Close stay in prelude — they're fundamental lifecycle traits
+] {
+    self.env.remove_trait(name);
+}
+self.env.remove_enum("Ordering");
+```
+
+Note the exception: **`Drop` and `Close` are never removed.** They are considered fundamental lifecycle traits and remain available without imports even in module mode.
+
+The removed traits live on in `TypeRegistry::builtin_traits` and `builtin_enums` (both `Rc`-wrapped, read-only maps) — these are the source of truth that `use std/...` imports draw from.
+
+Prelude mode is what unit tests use, and it is also the base for `TypeChecker::from_snapshot()`, which sets up a checker for code strings compiled at runtime by `evaluate()`. Real compilation (the `asterc` binary's `frontend()` in `src/main.rs`) always uses `with_loader()`, i.e. module mode.
+
+## Std namespaces
+
+The virtual stdlib is organized into submodules. Trait/enum submodules are built by `builtin_exports_from()`, which copies entries out of the builtin maps; function submodules are built by `builtin_function_exports()`, which registers plain function-typed variables.
+
+| Path | Exports | Notes |
+|---|---|---|
+| `std/cmp` | `Eq`, `Ord` traits; `Ordering` enum | |
+| `std/fmt` | `Printable` trait | |
+| `std/collections` | `Iterable`, `Iterator` traits | |
+| `std/convert` | `From`, `Into` traits | |
+| `std/random` | `Random` trait | |
+| `std/unstable` | `FieldAccessible` trait | Requires `--unstable` or `ASTER_UNSTABLE=1` (error M005 otherwise) |
+| `std/sys` | `args`, `env`, `set_env`, `exit` | |
+| `std/fs` | `read_file`, `write_file`, `append_file`, `exists`, `is_dir`, `mkdir`, `remove`, `list_dir`, `copy`, `rename` | Mutating/reading functions `throws IOError`; `exists` and `is_dir` do not throw |
+| `std/process` | `run` | Returns `ProcessResult`, `throws ProcessError` |
+| `std/crypto` | `sha256` | `(data: String) -> String` |
+| `std/runtime` | `jit_run`, `evaluate`, `evaluate_unrestricted`; `EvalError` class | JIT-gated (see below) |
+
+Import examples:
+
+```
+use std/cmp { Eq, Ord }
+use std/fmt { Printable }
+use std/convert { From, Into }
+use std/fs { read_file, write_file }
+use std/process { run }
+```
+
+**Bare `use std` is not supported.** The whole-namespace shorthand was removed; `resolve_use()` rejects a one-segment `std` path with a hint that maps each requested name to its submodule (e.g. `Eq` → `use std/cmp { Eq }`).
+
+### Function signatures
+
+The function submodules carry full `Type::Function` signatures, including `throws` clauses, so error-handling rules apply to std calls exactly as they do to user functions. A sample of what the tables encode:
+
+```text
+std/sys:
+  args() -> List[String]
+  env(key: String) -> String?
+  set_env(key: String, value: String) -> Void
+  exit(code: Int) -> Void
+
+std/fs:
+  read_file(path: String) throws IOError -> String
+  write_file(path: String, content: String) throws IOError -> Void
+  exists(path: String) -> Bool
+  list_dir(path: String) throws IOError -> List[String]
+
+std/process:
+  run(cmd: String, args: List[String]) throws ProcessError -> ProcessResult
+```
+
+`ProcessResult` is a builtin class with fields `exit_code: Int`, `stdout: String`, `stderr: String`.
+
+### Feature gating
+
+Two submodules are gated behind compiler flags, enforced in `resolve_use()`:
+
+- **`std/unstable`** requires `--unstable` (or `ASTER_UNSTABLE=1`). Importing without it is error **M005**. The flag lives on the `ModuleLoader` and propagates to child typecheckers so imported modules can use it too.
+- **`std/runtime`** requires `--jit` for the JIT-backed functions. Selectively importing `evaluate`, `evaluate_unrestricted`, or `jit_run` without `--jit` is error **M006**; a wildcard import of `std/runtime` without `--jit` produces warning **W006** instead. `std/runtime` is also the one submodule that exports a class: `EvalError`, so callers can name it in typed `catch` arms.
+
+## How resolution works
+
+`resolve_use()` checks whether the import path starts with `std`. For a two-segment path it calls `builtin_std_submodule_exports(submodule)`; if that returns `Some(exports)`, the exports are applied with the shared `apply_imports()` machinery under the module key `std/<submodule>`. An *unknown* std submodule falls through to the ordinary module loader (so a user could, in principle, have a local `std/` directory). If there is no module loader at all (prelude mode), non-std `use` statements are silently ignored.
+
+```rust
+fn builtin_std_submodule_exports(&self, submodule: &str)
+    -> Option<crate::module_loader::ModuleExports> {
+    match submodule {
+        "cmp" => Some(self.builtin_exports_from(&["Eq", "Ord"], &["Ordering"])),
+        "fmt" => Some(self.builtin_exports_from(&["Printable"], &[])),
+        "collections" => Some(self.builtin_exports_from(&["Iterable", "Iterator"], &[])),
+        "convert" => Some(self.builtin_exports_from(&["From", "Into"], &[])),
+        // ... random, unstable, sys, fs, process, crypto, runtime ...
+        _ => None,
+    }
+}
+```
+
+## The builtin protocol traits
+
+`register_builtins()` defines each protocol as a `TraitInfo` with a method map and a required-method list:
+
+| Trait | Methods | Required | Generic |
+|---|---|---|---|
+| `Eq` | `eq(other: Self) -> Bool` | `eq` | — |
+| `Ord` | `cmp(other: Self) -> Ordering` | `cmp` | — |
+| `Printable` | `to_string() -> String`, `debug() -> String` | `to_string` only | — |
+| `From` | `from(value: T) -> Self` | `from` | `T` |
+| `Into` | `into() -> T` | `into` | `T` |
+| `Iterator` | `next() -> T?` | `next` | `T` |
+| `Iterable` | `each(f: Fn(T) -> Void) -> Void` | `each` | `T` |
+| `Random` | `random() -> Self` | `random` | — |
+| `Drop` | `drop() -> Void` | `drop` | — |
+| `Close` | `close() throws Error -> Void` | `close` | — |
+| `DynamicReceiver` | `method_missing(...)` | `method_missing` | — |
+| `FieldAccessible` | `field_value(name: String)` | `field_value` | — |
+
+`Ordering` is a builtin enum with variants `Less`, `Equal`, `Greater` (and itself includes `Eq`).
+
+Two of these are special: the `TraitInfo` signatures for `DynamicReceiver` and `FieldAccessible` are placeholders. Their real contracts are validated *structurally* in `check_class.rs` (e.g. `method_missing`'s first parameter must be `String` and its second a `Map[String, T]`), because the concrete types are class-specific.
+
+## Always-in-scope builtins
+
+Beyond the importable namespaces, `register_builtins()` installs a set of globals that every program sees, in both modes:
+
+- **Functions:** `log`, `say` (registered with `String` signatures for typo suggestions; actually checked as polymorphic builtins in `check_call_inner`), `random() -> Int`, and `to_int(text: String) throws IntParseError -> Int` — the free-function spelling of string-to-int conversion.
+- **The error class hierarchy:** `Exception` (root, with a `message: String` field) → `Error` (application base) → the builtin error classes: `CancelledError`, `LockTimeoutError`, `ChannelFullError`, `ChannelEmptyError`, `ChannelClosedError`, `IOError`, `FunctionNotFound` (thrown by `method_missing` closed sets, carries `name`), `EvalError` (carries `kind` and `message`), `ProcessError` (carries `command`), and `IntParseError`. Each is registered both as a class and as a constructor function.
+- **`Int` as a class:** the primitive `Int` is registered as a class that `includes From`, with a static `from(text: String) throws IntParseError -> Int` method. The name `Int` is also bound as a value so `Int.from("42")` resolves.
+- **I/O namespaces:** `File`, `TcpListener`, `TcpStream` are registered as value bindings whose static members are resolved specially in `check_expr.rs` (`check_file_static_member`, `check_tcp_listener_static_member`).
+- **`Range`:** the class behind `..` and `..=`, with fields `start`, `end`, `inclusive`, an `each` method, and `random()`; it `includes Iterable` parametrically over `Int`.
+- **Introspection classes:** `Type` (a class/type as a runtime value, with `to_string()`), `FieldInfo`, `ParamInfo`, `MethodInfo`.
+
+## Trait metadata travels with classes
+
+When a module exports a class that includes a trait, the class's `ClassInfo` carries the trait names in its `includes` list (and parametric arguments in `parametric_includes`), plus the full method signatures in its `methods` map. `inject_export()` copies the whole `ClassInfo` into the importing environment.
+
+This means the importing module does not need to import the trait itself. If module A exports `class Point includes Eq` and module B imports `Point`, then `p1 == p2` typechecks in module B even without `use std/cmp { Eq }`: the `==` check calls `type_includes_eq()`, which reads the class's `includes` list via `type_includes_protocol()` in `check_class.rs`:
+
+```rust
+Type::Custom(name, _) => {
+    let traits_to_check: &[&str] = match protocol {
+        "Eq" => &["Eq", "Ord"],   // Ord implies Eq
+        _ => &[protocol],
+    };
+    // checked against ClassInfo.includes or EnumInfo.includes
+    ...
+}
+```
+
+Primitives satisfy protocols by a static mapping (`Int`/`Float`/`String`/`Bool` satisfy `Printable`, `Eq`, and `Ord`; `Nil` satisfies `Printable` and `Eq`), `List` and `Set` recurse on their element type, and `Ord` implies `Eq`.
+
+## The runtime half
+
+The typechecker only supplies signatures; the behavior lives in the codegen crate under `codegen/src/runtime/` (e.g. `runtime/fs.rs` implements the `std/fs` functions), with FFI signatures declared in `runtime_sigs.rs`.
+
+The two halves meet at error handling. A builtin whose virtual signature says `throws IOError` must throw something a typed `catch (IOError e)` arm can dispatch on. To make that work without user-visible class definitions, the builtin error classes are pre-registered in the FIR lowerer with fixed *sentinel ClassIds* near `u32::MAX`, defined in `ast/src/builtin_errors.rs`:
+
+```rust
+pub const IO_ERROR_CLASS_ID: u32 = u32::MAX - 4;
+pub const PROCESS_ERROR_CLASS_ID: u32 = u32::MAX - 5;
+pub const INT_PARSE_ERROR_CLASS_ID: u32 = u32::MAX - 6;
+pub const CHANNEL_FULL_ERROR_CLASS_ID: u32 = u32::MAX - 7;
+pub const CHANNEL_EMPTY_ERROR_CLASS_ID: u32 = u32::MAX - 8;
+pub const CHANNEL_CLOSED_ERROR_CLASS_ID: u32 = u32::MAX - 9;
+pub const LOCK_TIMEOUT_ERROR_CLASS_ID: u32 = u32::MAX - 10;
+pub const CANCELLED_ERROR_CLASS_ID: u32 = u32::MAX - 11;
+```
+
+Any ClassId at or above `SENTINEL_CLASS_ID_FLOOR` (`u32::MAX - 64`) is compiler-reserved and never remapped during cross-module merge. On failure, a runtime builtin allocates a real error object of the declared type, fills in the underlying message (and extra fields like `ProcessError.command`), and sets it as the current typed error — so typed catch arms on fs, process, int-parse, channel, mutex, and task builtins dispatch correctly, and `e.message` carries the actual OS-level failure text. The shared object layout (`message` at offset 0, etc.) is also defined in `builtin_errors.rs` so the AOT and JIT backends agree.

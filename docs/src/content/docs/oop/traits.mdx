@@ -1,0 +1,204 @@
+---
+title: Traits
+description: Shared behavior through traits in Aster.
+---
+
+Traits define shared behavior that classes can include. They're similar to Ruby mixins or Rust traits.
+
+## Defining a Trait
+
+```
+pub trait Printable
+  def to_string() -> String        # required - implementors must define this
+
+  def print()                       # default implementation
+    log(to_string())
+```
+
+Traits can have **required methods** (no body) and **default implementations** (with a body).
+
+## Including Traits
+
+Classes include traits in their definition line:
+
+```
+pub class User includes Printable
+  name: String
+  email: String
+
+  def to_string() -> String
+    name + " <" + email + ">"
+```
+
+The `User` class must implement `to_string()` (required by `Printable`), but gets `print()` for free from the default implementation.
+
+## Multiple Traits
+
+Include multiple traits with commas:
+
+```
+pub class User includes Printable, Serializable
+  name: String
+  email: String
+```
+
+For long trait lists, use trailing comma line continuation:
+
+```
+pub class User includes Printable, Serializable,
+                        Validatable, Cacheable
+  name: String
+  email: String
+```
+
+**Trailing comma suppresses newline** — this rule applies everywhere in Aster (includes, parameters, lists).
+
+## Conflict Resolution
+
+If two included traits define the same method, only the **conflicting methods** get namespaced. Non-conflicting methods stay flat:
+
+```
+trait Logger
+  def log_entry() -> String
+
+trait Auditor
+  def log_entry() -> String
+
+class Service includes Logger, Auditor
+  # Must disambiguate:
+  # service.logger.log_entry()
+  # service.auditor.log_entry()
+```
+
+This avoids the "diamond problem" while keeping the common case simple.
+
+## Trait Example: Serializable
+
+```
+pub trait Serializable
+  def to_json() -> String
+
+pub class Product includes Serializable
+  name: String
+  price: Float
+
+  def to_json() -> String
+    "{\"name\": \"" + name + "\", \"price\": " + to_string(price) + "}"
+```
+
+## Built-in Protocol Traits
+
+The compiler ships a set of protocol traits that unlock language features when included. In a single-file program they are preloaded; in a multi-module project they are imported from `std`:
+
+| Trait | Import | Required method | Enables |
+|-------|--------|-----------------|---------|
+| `Eq` | `use std/cmp { Eq }` | `eq(other: Self) -> Bool` | `==` and `!=` on your type |
+| `Ord` | `use std/cmp { Ord }` | `cmp(other: Self) -> Ordering` | `<`, `>`, `<=`, `>=` |
+| `Printable` | `use std/fmt { Printable }` | `to_string() -> String` | string conversion, printing |
+| `From[T]` | `use std/convert { From }` | `from(value: T) -> Self` | `Type.from(...)` conversion |
+| `Into[T]` | `use std/convert { Into }` | `into() -> T` | `.into()` conversion |
+| `Iterable` | `use std/collections { Iterable }` | `each(f: Fn(T) -> Void) -> Void` | the whole iteration vocabulary |
+| `Iterator` | `use std/collections { Iterator }` | `next() -> T?` | pull-based iteration |
+| `Drop` | (always in scope) | `drop() -> Void` | sync cleanup on scope exit |
+| `Close` | (always in scope) | `close() throws Error -> Void` | async-capable cleanup |
+| `Random` | `use std/random { Random }` | `random() -> Self` | random value generation |
+
+### Eq and Ord
+
+`Eq` desugars `a == b` into `a.eq(other: b)`. `Ord`'s `cmp` returns the built-in `Ordering` enum (`Less`, `Equal`, `Greater`). Including `Ord` automatically includes `Eq` as well.
+
+Using `==` on a type that doesn't include `Eq` (or `<` without `Ord`) is a compile error with a hint to add the include.
+
+### Auto-Derive
+
+For `Eq`, `Ord`, and `Printable`, you usually don't write the method at all. If every field of the class includes the trait itself, the compiler derives the implementation:
+
+```
+use std/cmp { Eq }
+use std/fmt { Printable }
+
+class User includes Eq, Printable
+  name: String
+  age: Int
+  # eq() and to_string() are generated from the fields
+
+let same = User(name: "A", age: 1) == User(name: "A", age: 1)   # true
+```
+
+If a field's type does *not* include the trait, auto-derive fails with an error naming the offending field — define the method manually or fix the field type.
+
+`Printable` has a second, optional method `debug() -> String`. If you don't define it, it defaults to `to_string()`.
+
+### From and Into
+
+`From[T]` and `Into[T]` are **parametric traits** — they take a type argument, and a class can include the same trait several times with different arguments:
+
+```
+use std/convert { From }
+
+class Celsius includes From[Float], From[Fahrenheit]
+  value: Float
+
+  def from(value: Float) -> Self
+    Celsius(value: value)
+
+  def from(value: Fahrenheit) -> Self
+    Celsius(value: (value.degrees - 32.0) * 5.0 / 9.0)
+```
+
+Conversions are invoked statically through the type name:
+
+```
+let c = Celsius.from(value: 100.0)        # picks the From[Float] overload
+```
+
+The matching `from()` overload is chosen by argument type. `Into[T]` works from the other direction — `value.into()` — and when a class includes several conversions, the expected type at the call site (a `let` annotation or parameter type) disambiguates:
+
+```
+let f: Float = c.into()
+```
+
+If the compiler can't disambiguate, it errors and asks for a type annotation.
+
+**From implies Into.** If `Celsius includes From[Fahrenheit]`, then a `Fahrenheit` value gets `.into()` for free — you never need to write the reverse direction:
+
+```
+let f = Fahrenheit(degrees: 100.0)
+let c: Celsius = f.into()    # works via Celsius's From[Fahrenheit]
+```
+
+The primitive types participate too: `Int.from(text: "42")!` parses a string (throws `IntParseError` on bad input), with `to_int(text: "42")!` as the free-function spelling.
+
+### Overloaded Methods
+
+Multiple inclusions of a parametric trait are the one place Aster allows method overloading. The duplicate `from()` (or `into()`) definitions are tracked as an overload set, and each call site resolves to exactly one — by argument type for `from()`, by expected return type for `into()`. Ambiguity is a compile error, never a silent guess.
+
+### Iterable
+
+Define one method — `each` — and receive the full iteration vocabulary:
+
+```
+use std/collections { Iterable }
+
+class NumberRange includes Iterable
+  start: Int
+  end_val: Int
+
+  def each(f: Fn(Int) -> Void) -> Void
+    let i = start
+    while i < end_val
+      f(_0: i)
+      i = i + 1
+
+let r = NumberRange(start: 0, end_val: 10)
+let squares = r.map(f: -> x: x * x)
+let has_big = r.any(f: -> x: x > 5)
+```
+
+Including `Iterable` injects 14 methods: `map`, `filter`, `reduce`, `find`, `any`, `all`, `count`, `first`, `last`, `to_list`, `min`, `max`, `sort`, and `unique`. Notes:
+
+- Write `includes Iterable` bare — the element type is inferred from your `each()` signature, not passed as a type argument.
+- `min`, `max`, and `sort` require the element type to include `Ord`; `unique` requires `Eq`. This is checked where you call them, not where you define the class.
+- `find`, `first`, `last`, `min`, and `max` return `T?` (the collection may be empty).
+- If you define your own `map()` (or any vocabulary method), the injected version steps aside.
+- `List[T]` and `Set[T]` have the entire vocabulary built in.

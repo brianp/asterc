@@ -1,0 +1,163 @@
+---
+title: "Full RFC: Introspection & Metaprogramming"
+description: The complete introspection and metaprogramming RFC for Aster.
+sidebar:
+  badge:
+    text: Draft
+    variant: caution
+---
+
+## 1. Design Principles
+
+- Introspection is built in from the start
+- Every class knows its ancestry, traits, fields, and methods at runtime
+- The type hierarchy built with `includes` should be walkable in code
+- Inspired by Ruby's introspection ergonomics (not Java's verbose reflection)
+- Metaprogramming is a goal, but the scope is TBD
+
+---
+
+## 2. What Ruby Gets Right
+
+Ruby's introspection is immediate and ergonomic:
+
+```ruby
+String.ancestors        # [String, Comparable, Object, Kernel, BasicObject]
+String.instance_methods # [:length, :upcase, :downcase, ...]
+"hello".class           # String
+"hello".is_a?(Comparable) # true
+"hello".respond_to?(:upcase) # true
+String.subclasses       # [...]
+```
+
+Key properties:
+- Available on every object without imports or special setup
+- Returns usable collections, not opaque descriptors
+- Works at runtime -- no compile-time-only restriction
+- Navigates up (ancestors), down (subclasses), and sideways (included traits)
+
+---
+
+## 3. What Dart Lacks (and why it matters)
+
+Dart removed most runtime reflection (`dart:mirrors` deprecated). You can't
+ask an object what methods it has, what its parent class is, or whether it
+satisfies a trait. This forces:
+
+- Code generation for serialization (json_serializable, freezed)
+- Manual type registration for dependency injection
+- No dynamic dispatch patterns
+
+Aster shouldn't repeat this. Introspection enables patterns that are
+impossible without it -- ORMs, serializers, plugin systems, testing frameworks.
+
+---
+
+## 4. Proposed Introspection API
+
+Every class in Aster has built-in introspection methods. These are available
+on the class itself (static) and on instances.
+
+### On instances
+
+```
+let user = User(name: "Alice", email: "alice@example.com")
+
+user.class_name          # "User"
+user.is_a(Error)         # false
+user.is_a(User)          # true
+user.responds_to("name") # true
+user.fields              # [("name", String), ("email", String)]
+user.field_value("name") # "Alice" -- returns T? (nil if field doesn't exist)
+```
+
+### On classes (static introspection)
+
+```
+User.ancestors           # [User, Error, ...] -- includes chain, ordered
+User.includes_traits     # [Serializable, Error] -- direct includes
+User.fields              # [("name", String), ("email", String)]
+User.methods             # [("message", (self) -> String), ...]
+User.children            # classes that include User -- known at runtime
+```
+
+### Navigating the error hierarchy (concrete use case)
+
+```
+class AppError extends Error
+class NetworkError extends AppError
+class TimeoutError extends NetworkError
+class ParseError extends AppError
+
+AppError.children        # [NetworkError, ParseError]
+NetworkError.children    # [TimeoutError]
+TimeoutError.ancestors   # [TimeoutError, NetworkError, AppError, Error]
+
+# Useful for building error registries, loggers, etc.
+for err_class in AppError.children
+  log("Known error type: " + err_class.class_name)
+```
+
+### Type checking
+
+```
+let err = TimeoutError(kind: "timeout", url: "/api", timeout_ms: 5000)
+
+err.is_a(TimeoutError)    # true
+err.is_a(NetworkError)    # true  -- includes chain
+err.is_a(AppError)        # true  -- transitive
+err.is_a(ParseError)      # false -- different branch
+```
+
+---
+
+## 5. Interaction with Error Handling
+
+Introspection makes the error hierarchy useful beyond catch blocks:
+
+```
+# Error logging middleware that walks the hierarchy
+def log_error(err: Error) -> Void
+  let chain = err.class_name + " -> " + err.ancestors.map(a -> a.class_name).join(" -> ")
+  log("Error chain: " + chain)
+  log("Message: " + err.message())
+
+# Error registry for API response mapping
+let error_status_map = Map.new()
+for err_class in AppError.children
+  error_status_map.set(err_class.class_name, status_for(err_class))
+```
+
+---
+
+## 6. Metaprogramming (future direction)
+
+Ruby-style metaprogramming goes beyond introspection -- it's modifying
+classes at runtime, defining methods dynamically, method_missing, etc.
+
+### What we know we want
+
+- Read-only introspection (sections above) -- definitely
+- Annotations/decorators on fields and methods -- likely
+- Some form of dynamic dispatch or hooks -- probably
+
+### What needs more design
+
+- **Dynamic method definition**: Ruby's `define_method` is powerful but
+  conflicts with static typing. How does Aster reconcile?
+- **Method missing**: Catch-all for undefined method calls. Conflicts with
+  compile-time type checking. Maybe only in specific contexts?
+- **Macros vs runtime metaprogramming**: Compile-time code generation (Rust
+  macros, Elixir macros) vs runtime modification (Ruby). Or both?
+- **Annotations**: `@serializable`, `@route("/users")` -- how do they work?
+  Compile-time metadata? Runtime-accessible? Both?
+
+### Open questions
+
+- How much metaprogramming is compatible with static typing?
+- Should there be an "unsafe meta" context like Rust's `unsafe` for dynamic
+  features that bypass the type checker?
+- Can introspection data be used at compile time (e.g., auto-generating
+  serialization code)?
+- Performance implications of full runtime introspection -- is class metadata
+  always available or opt-in?

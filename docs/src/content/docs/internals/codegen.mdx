@@ -1,0 +1,277 @@
+---
+title: Code Generation
+description: How Aster compiles FIR to native machine code with Cranelift, in both JIT and AOT modes, and the Rust runtime that compiled code calls into.
+---
+
+This page covers the final phase of the compiler: turning FIR (Aster's flat intermediate representation) into native machine code. The backend lives in the `codegen` crate and is built on **Cranelift**.
+
+**Key files:**
+
+| File | Role |
+|---|---|
+| `codegen/src/jit.rs` | `CraneliftJIT` — compile to memory and execute (`asterc run`) |
+| `codegen/src/aot.rs` | `CraneliftAOT` — compile to an object file (`asterc build`) |
+| `codegen/src/compile_shared.rs` | `CompileState` — declaration/compilation pipeline shared by both backends |
+| `codegen/src/translate.rs` | FIR → Cranelift IR translation |
+| `codegen/src/types.rs` | FIR type → Cranelift type mapping |
+| `codegen/src/runtime_sigs.rs` | Single-source table of every runtime function signature |
+| `codegen/src/runtime/` | The runtime itself, one Rust module per domain (`gc.rs`, `list.rs`, `task.rs`, ...) |
+| `codegen/src/eval_pipeline.rs` | `jit_compile_and_run` — the runtime `evaluate()` / JIT-from-JIT pipeline |
+| `codegen/src/config.rs` | `BuildConfig` — profile, optimization level, JIT support flag |
+
+## What Cranelift Is
+
+Cranelift is a code generation library (like LLVM, but simpler and much faster to compile with). It takes functions described in its own IR and produces native machine code for the host architecture. Aster uses Cranelift (version 0.129) in two modes:
+
+- **JIT (Just-In-Time):** `cranelift-jit` compiles to executable memory and the entry point is called directly. Used by `asterc run`.
+- **AOT (Ahead-Of-Time):** `cranelift-object` compiles to a relocatable object file, which is linked against the runtime static library to produce a native binary. Used by `asterc build`.
+
+Both modes run the exact same translation code. The only backend-specific parts are how functions are declared (linkage, PIC) and what happens after compilation (finalize-and-call vs. emit-and-link).
+
+## The Shared Pipeline
+
+`CompileState<M: Module>` in `compile_shared.rs` is generic over the Cranelift module type — `JITModule` for the JIT, `ObjectModule` for AOT. Both backends drive the same sequence:
+
+1. **`build_function_param_types`** — record each function's parameter types for later use (async packet packing, closure calls).
+2. **Declare user functions** — one Cranelift signature per FIR function. The JIT declares everything with `Linkage::Local`; AOT exports the entry function as `aster_main` and keeps the rest local.
+3. **`declare_runtime_functions`** — declare every runtime builtin as an imported function, straight from the `RUNTIME_SIGS` table.
+4. **`declare_async_entry_shims`** — for every function `f`, declare a companion `f__async_entry(packet: i64) -> i64` used by the green thread runtime (see below).
+5. **Compile each function** — FIR → Cranelift IR → machine code, including GC shadow-stack frame setup.
+6. **Compile each async entry shim.**
+
+String literals are collected per function and registered as read-only data sections (`str_<funcname>_<n>`). At runtime, a `FirExpr::StringLit` loads the data address and calls `aster_string_new(ptr, len)` to produce a heap string.
+
+### Async entry shims
+
+Green threads need a uniform entry signature: one `i64` argument in, one `i64` result out. The shim unpacks a heap-allocated argument packet (8 bytes per argument, `F64` bitcast to `I64`, `Bool` zero-extended) and calls the real function, then packs the result back. When codegen lowers `async f(args)`:
+
+1. `aster_alloc` allocates the packet and each argument is stored into it.
+2. The address of `f__async_entry` is taken with `func_addr`.
+3. `aster_task_spawn(entry, packet, scope)` is called; the returned task handle is the `Task[T]` value.
+
+`blocking f(args)` follows the same packet scheme through `aster_task_block_on(entry, packet)`, which spawns and immediately consumes the result.
+
+## Type Mapping
+
+`types.rs` maps each FIR type to a Cranelift type:
+
+| FIR type | Cranelift type | Notes |
+|---|---|---|
+| `I64` | `i64` | |
+| `F64` | `f64` | |
+| `Bool` | `i8` | |
+| `Ptr` | `i64` | all heap pointers are 64-bit integers |
+| `Void`, `Never` | `i64` | represented as `i64` 0 for simplicity |
+| `Struct(_)`, `FnPtr(_)` | `i64` | heap pointer / function pointer |
+
+Every function returns exactly one value; `Void` functions return `i64` 0.
+
+## Translation
+
+`translate.rs` converts FIR to Cranelift IR:
+
+- **`declare_params`** maps function parameters to Cranelift variables. Parameters occupy `LocalId(0)`, `LocalId(1)`, and so on.
+- **`translate_body`** walks each `FirStmt` and emits instructions, tracking block termination so unreachable code after `return`/`break`/`continue` is skipped.
+- **`translate_expr`** recursively translates `FirExpr` nodes into Cranelift `Value`s.
+
+A few translation decisions are worth knowing about:
+
+**Checked integer arithmetic.** `+`, `-`, and `*` on integers do not emit raw `iadd`/`isub`/`imul`. They call the runtime helpers `aster_int_add`, `aster_int_sub`, and `aster_int_mul`, which check for overflow.
+
+**Guarded division.** Integer `/` and `%` are wrapped in inline branch logic that checks for division by zero and the `i64::MIN / -1` overflow case — both would raise SIGFPE at the hardware level with no recovery path. The trap cases produce 0 instead.
+
+**Short-circuit `and`/`or`.** Lowered as control flow with a block parameter carrying the `i8` result, so the right-hand side is only evaluated when needed.
+
+**String comparisons.** `==` and `!=` on pointers call `aster_string_eq`; `<`, `>`, `<=`, `>=` call `aster_string_compare` and compare the result against 0.
+
+**Nullable values.** `T?` is lowered through `TagWrap` / `TagUnwrap` / `TagCheck`. For pointer types the nullable value *is* the pointer — null means nil. Value types (`Int`, `Float`, `Bool`) are boxed into an 8-byte heap allocation when wrapped; `TagCheck` is a null test either way.
+
+**Closures.** `ClosureCreate` allocates a 16-byte object via `aster_closure_alloc`: `[func_ptr: i64][env_ptr: i64]`. `ClosureCall` loads both slots and emits `call_indirect` with the environment pointer prepended as the first argument.
+
+**Class construction.** `Construct` calls `aster_class_alloc_typed(size, ptr_field_count)` — fields are flat 8-byte slots, and the FIR lowerer sorts pointer-typed fields to the front of the layout so the GC can trace them precisely (see below). Field access is a plain load/store at `offset`.
+
+**Safepoints.** The FIR lowerer inserts `FirExpr::Safepoint` at call sites and loop back-edges; codegen translates each one to a call to `aster_safepoint()`, which drives cooperative preemption and cancellation for green threads. See [Green Threads Internals](/concurrency/green-threads/).
+
+**Runtime calls.** `FirExpr::RuntimeCall` dispatches by name. `say`/`log` picks the right print function from the argument's type (`aster_say_int`, `aster_say_float`, `aster_say_bool`, `aster_say_str`); everything else looks the name up in the declared runtime imports, coercing argument types to the declared signature (the list/map runtime is type-erased over `i64`, so `f64` values are bitcast and `i8` values extended at the call boundary).
+
+## Runtime Builtins
+
+The functions compiled code calls at runtime are ordinary Rust `extern "C"` functions in `codegen/src/runtime/`, one module per domain. **There is exactly one implementation of the runtime**, and both backends share it:
+
+- For **JIT** mode, `register_runtime_builtins` registers each function pointer as a named symbol with the `JITBuilder`.
+- For **AOT** mode, the `codegen` crate is also built as a **static library** (`crate-type = ["lib", "staticlib"]` → `libcodegen.a`) with all runtime functions exported under `#[unsafe(no_mangle)]`. The linker resolves the same symbols the JIT registers in memory.
+
+The `runtime_functions!` macro in `runtime_sigs.rs` declares every runtime function once and expands to both the Cranelift import table (`RUNTIME_SIGS`) and the JIT symbol table (`runtime_builtin_symbols`). A signature declared there is automatically available to both backends, which removes the classic failure mode of a helper existing for `run` but missing at `build` link time.
+
+The families, with representative functions:
+
+| Family | Functions |
+|---|---|
+| Allocation | `aster_alloc`, `aster_class_alloc`, `aster_class_alloc_typed`, `aster_closure_alloc` |
+| Printing | `aster_say_str`, `aster_say_int`, `aster_say_float`, `aster_say_bool` |
+| Strings | `aster_string_new`, `aster_string_concat`, `aster_string_len`, `aster_string_slice`, `aster_string_split`, `aster_string_eq`, `aster_string_compare`, ... |
+| Lists | `aster_list_new`, `aster_list_get/set/push/len`, `aster_list_insert/remove/pop/contains/random` |
+| Maps | `aster_map_new`, `aster_map_get/set/has_key` |
+| Conversions | `aster_int_to_string`, `aster_float_to_string`, `aster_bool_to_string`, `aster_list_to_string`, `aster_string_to_int` |
+| Numerics | `aster_int_add/sub/mul` (checked), `aster_pow_int`, `aster_pow_float`, `aster_int_abs/clamp/min/max`, `aster_float_round/floor/ceil`, `aster_random_int/float/bool`, `aster_range_new/check` |
+| Errors | `aster_error_set`, `aster_error_set_typed`, `aster_error_check`, `aster_error_get_tag`, `aster_error_get_value`, `aster_panic` |
+| Tasks | `aster_task_spawn`, `aster_task_block_on`, `aster_task_resolve_i64/f64/i8`, `aster_task_resolve_all_i64`, `aster_task_resolve_first_i64`, `aster_task_cancel`, `aster_task_wait_cancel`, `aster_task_is_ready`, `aster_task_from_i64/f64/i8` |
+| Scopes / scheduling | `aster_async_scope_enter/exit`, `aster_safepoint` |
+| GC | `aster_gc_push_roots`, `aster_gc_pop_roots`, `aster_gc_collect` |
+| Sync / channels | `aster_mutex_new/lock/unlock/get_value`, `aster_channel_new/send/receive/close` (+ `try_`/`wait_` variants) |
+| I/O suspension | `aster_io_wait_read`, `aster_io_wait_write`, `aster_blocking_submit` |
+| Stdlib modules | `aster_fs_*`, `aster_sys_*`, `aster_process_run`, `aster_crypto_sha256`, `aster_file_read/write/append` |
+| Introspection | `aster_introspect_class_name/fields/methods/ancestors/children/is_a/responds_to` |
+| Runtime eval | `aster_runtime_jit_eval`, `aster_runtime_eval_with_ctx` |
+
+### Typed error propagation
+
+Error propagation uses a per-thread flag plus a typed tag and payload (all saved/restored per green thread):
+
+```rust
+#[unsafe(no_mangle)]
+pub extern "C" fn aster_error_set_typed(type_tag: i64, value: i64) {
+    ERROR_FLAG.set(true);
+    ERROR_TYPE_TAG.set(type_tag);
+    ERROR_VALUE.set(value);
+}
+```
+
+A throwing operation sets the flag; the caller emits `aster_error_check()` after the call (which reads *and clears* the flag) and branches into error-handling code. A typed `catch` reads `aster_error_get_tag()` to dispatch on the error class and `aster_error_get_value()` to get the error object pointer.
+
+Runtime builtins participate in this too: helpers like `set_message_error(class_id, message)` construct a real error object (a class instance whose first field is a heap string message) and set it as the current typed error, using the sentinel `ClassId`s from `ast::builtin_errors`. Because AOT and JIT link the same Rust helper, the error representation is identical across backends, and a typed `catch` can dispatch on errors thrown from inside the runtime just like user-thrown ones.
+
+`aster_panic` is the terminal path: it prints `aster: uncaught error` and aborts.
+
+## Memory Layout
+
+- **Strings:** `[len: i64][data: u8...]` — length-prefixed byte arrays on the heap. The pointer points at the length; data starts at offset 8.
+- **Lists:** a list value is a **handle** — a GC object holding a single pointer to a separate data block laid out as `[len: i64][cap: i64][elem: i64...]`. When a push outgrows capacity, a new block is allocated (doubling) and the handle is updated in place, so every alias observes the reallocation. Elements are type-erased `i64` slots (floats bitcast, bools extended).
+- **Maps:** same handle scheme; the data block is `[len: i64][cap: i64][key, value, key, value, ...]` — a linear-scan associative array with 16-byte entries. Keys are heap strings compared by content.
+- **Classes:** flat structs, 8 bytes per field, allocated with `aster_class_alloc_typed`. Pointer-typed fields are sorted to the front of the layout by the FIR lowerer, and the count of leading pointer fields is stored in the object's GC header.
+- **Closures:** `[func_ptr: i64][env_ptr: i64]`.
+- **Nullable values:** null pointer = nil; value types are boxed into an 8-byte cell when wrapped.
+
+## JIT Compilation Flow
+
+`asterc run` drives this path (`src/main.rs`):
+
+```rust
+let mut jit = codegen::CraneliftJIT::new_host();
+jit.compile_module(&fir_module)?;         // declare → compile → finalize
+let exit_code = jit.call_i64(entry);      // transmute the entry pointer to fn() -> i64 and call
+std::process::exit(exit_code.clamp(0, 255) as i32);
+```
+
+`compile_module` declares all functions, runs the shared pipeline, calls `finalize_definitions()` to resolve cross-references, then records the finalized machine-code pointer for every function. The JIT sets Cranelift's `is_pic` to `false` (code runs in place) and takes its `opt_level` from `BuildConfig` — `none` for debug, `speed` for release.
+
+### The host function registry and runtime eval
+
+`new_host()` marks this JIT as the top-level one: after finalization, every compiled function's name and address are stored in a process-global registry (`host_function_registry.rs`). This exists to support Aster's `evaluate()`: when JIT-compiled code evaluates more Aster source at runtime, `aster_runtime_eval_with_ctx` calls back into `eval_pipeline::jit_compile_and_run`, which spins up a **nested** JIT. The nested JIT declares the host's functions as imports (`declare_extra_functions`) and resolves their addresses from the registry, so evaluated code can call functions defined in the host program. Codegen passes each `evaluate()` call site a serialized context snapshot (JSON, embedded as a string data section) plus an optional environment pointer for captured locals. Nesting depth is capped at 16 to prevent runaway recursion, and eval errors surface through the typed error flag.
+
+## AOT Compilation Flow
+
+`asterc build` runs three steps:
+
+```rust
+let mut aot = codegen::CraneliftAOT::with_config(&config);
+aot.compile_module(&fir_module)?;         // entry exported as "aster_main"
+aot.emit_object_to_file(&obj_path)?;      // relocatable object file
+```
+
+The AOT backend sets `is_pic` to `true` and, after compiling user functions, **emits a C-style `main` wrapper directly into the object file**:
+
+```rust
+/// Generated by emit_main_wrapper():
+/// int main(int argc, char **argv) { return (int)aster_main(); }
+```
+
+so the object is self-contained apart from the runtime symbols. The final step links with the system C compiler:
+
+```text
+cc program.o libcodegen.a -pthread -lm -o program
+```
+
+(plus `-dead_strip` and the Security/CoreFoundation/SystemConfiguration frameworks on macOS, or `-Wl,--gc-sections` on Linux). `libcodegen.a` is the codegen crate itself built as a staticlib — it contains every `aster_*` runtime function, the green thread scheduler, and the platform context-switch assembly (`green/asm/x86_64.S` / `aarch64.S`, assembled by `build.rs` via the `cc` crate). `find_runtime_staticlib()` locates it next to the compiler binary or in the cargo target directory.
+
+Builds are cached: a manifest keyed on the source hash, profile, and opt level skips recompiling unchanged objects.
+
+## Garbage Collection
+
+**File:** `codegen/src/runtime/gc.rs`
+
+Aster uses a non-moving mark-and-sweep collector with a shadow stack for root tracking. Strings, lists, maps, class instances, closures, and task result cells all go through the GC allocator. The heap, allocation counters, and shadow stack are all thread-local to the OS thread (each scheduler worker has its own heap and collects independently).
+
+### Object headers
+
+Every GC-managed object has a 24-byte header prepended to its payload:
+
+```text
+offset  0     1     2..5    6          8           16
+        [mark][type][magic][ptr_count][size: u32]  [next: *mut u8]
+```
+
+- **mark** — 0 (white, unmarked) or 1 (black, reachable). Reset to 0 after each collection.
+- **type** — object type code, which determines how the mark phase traces children (table below).
+- **magic** — four bytes `[0xA5, 0x7E, 0xC3, 0x91]` identifying valid GC objects during conservative pointer detection.
+- **ptr_count** — for `OBJ_CLASS` objects, the number of leading fields that are GC-traceable pointers. Written by `aster_class_alloc_typed`; the conservative fallback `aster_class_alloc` (used by enum constructors) sets it to *all* slots.
+- **size** — payload size in bytes (`u32`, validated at allocation time).
+- **next** — pointer to the next object in the per-thread heap linked list, which the sweep phase walks.
+
+User code sees a pointer to the payload (header + 24). GC code subtracts 24 to get back to the header.
+
+| Type code | Meaning | Tracing |
+|---|---|---|
+| `OBJ_OPAQUE` | strings, raw data | no children |
+| `OBJ_LIST_HANDLE` | list handle, pointer elements | marks the data block, traces each element |
+| `OBJ_LIST_HANDLE_NOPTR` | list handle, value elements | marks the data block only |
+| `OBJ_MAP_HANDLE` | map handle | marks the block, traces keys and values |
+| `OBJ_CLASS` | class instance | traces the first `ptr_count` fields |
+| `OBJ_CLOSURE` | closure | traces the env pointer (slot 1), skips the function pointer |
+| `OBJ_DATA_BLOCK` | list/map backing storage | owned by its handle, no independent tracing |
+| `OBJ_TASK` | terminal task cell | traces the payload if the task is Ready or Failed |
+
+### Allocation and triggering collection
+
+`gc_alloc_inner(payload_size, obj_ty)` is the single entry point:
+
+1. Add the allocation (payload + header) to a thread-local `BYTES_ALLOCATED` counter.
+2. If the counter crosses `GC_NEXT_THRESHOLD` (initially 256 KB) and collection isn't suspended, run `gc_collect_inner()`.
+3. Allocate with `aster_alloc` (8-byte aligned), write the header, link the object into the heap list, and record the payload address range for pointer validation.
+
+After each collection the next threshold is set to `max(256 KB, 2 × survived_bytes)`, so collection frequency scales with the live set: a program with a steady-state 10 MB heap collects roughly once per 20 MB of *new* allocation, while small programs keep the low threshold.
+
+Runtime helpers that build multi-object graphs while holding intermediate pointers only in Rust locals (which are invisible to the shadow stack) wrap the sequence in `pause_gc(...)`, a nestable suspend scope that keeps allocating and counting but never collects until the scope closes.
+
+### The shadow stack
+
+Native code can't safely scan the machine stack for roots — an integer that happens to look like an address would be indistinguishable from a pointer. Instead, codegen maintains an explicit *shadow stack* of root frames. For every function, `compile_shared.rs`:
+
+1. Counts the GC-rooted parameters and `let` bindings (anything whose FIR type `needs_gc_root()`).
+2. Reserves a stack slot of `(2 + roots) × 8` bytes for the frame.
+3. Emits `aster_gc_push_roots(frame, count)` at entry, stores each rooted parameter into its slot, and pre-assigns slot offsets for body bindings.
+4. Emits `aster_gc_pop_roots()` before every return.
+
+Each frame lives on the machine stack with this layout:
+
+```text
+[prev: *mut u8][count: i64][root_0: i64][root_1: i64]...[root_N: i64]
+```
+
+`translate.rs` keeps the slots current: every `let` of a rooted value and every reassignment of a rooted local also stores the pointer into its frame slot. Frames are capped at 1024 roots as a defensive bound.
+
+### Mark phase
+
+`gc_collect_inner()` walks the shadow stack from top frame to bottom, calling `gc_mark` on every non-null root. `gc_mark` uses an iterative worklist (a `Vec` of pointers, not recursion) so deep object graphs — a long linked list, say — can't overflow the collector's own stack. For each popped pointer it skips already-marked objects (cycle-safe), sets the mark, and pushes children according to the type code table above.
+
+Untyped slots (list elements, map keys/values, class fields) are validated by `is_gc_payload()` before being traced. A value passes only if it is positive, 8-byte aligned, **falls inside the recorded heap address range**, and has the 4-byte magic in its would-be header. The range check means the magic bytes are never read from arbitrary addresses, and the combination makes spurious retention from an integer masquerading as a pointer effectively impossible.
+
+Class tracing is *precise*, not conservative: because the FIR lowerer sorts pointer fields to the front and codegen passes the count to `aster_class_alloc_typed`, the marker only examines the first `ptr_count` slots and skips integer fields entirely.
+
+### Sweep phase
+
+The sweep walks the whole heap linked list. Unmarked objects are unlinked and freed (`aster_dealloc` with the exact header + payload size); marked objects have their mark reset for the next cycle and their bytes counted toward `survived_bytes` for the adaptive threshold.
+
+### Green thread integration
+
+Each green thread carries its own `shadow_stack_top` and error flag. When a scheduler worker switches to a green thread it installs that thread's shadow stack into the worker's thread-local state; when the thread yields, the current top is saved back. The GC therefore always sees exactly the roots of whatever green thread is running on the collecting OS thread, and per-green-thread error state never leaks across tasks. See [Green Threads Internals](/concurrency/green-threads/) for the scheduler side of this handshake.

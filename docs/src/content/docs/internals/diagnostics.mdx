@@ -1,0 +1,243 @@
+---
+title: Diagnostics
+description: How the Aster compiler structures, codes, and renders its error messages, from typed diagnostic templates to ariadne terminal output.
+---
+
+Every error and warning the compiler emits flows through a single `Diagnostic` type defined in the `ast` crate. Each diagnostic is backed by a *typed template* — a small struct that owns the error code and message formatting for one kind of error — so codes and messages are defined in exactly one place and every construction site is type-checked.
+
+**Key files:** `ast/src/diagnostic.rs`, `ast/src/span.rs`, `ast/src/templates/` (one module per phase), `src/main.rs` (`render_diagnostic`), `typecheck/src/typechecker.rs` (`suggest_similar_name`, `levenshtein`).
+
+## The Diagnostic struct
+
+```rust
+pub enum Severity {
+    Error,
+    Warning,
+}
+
+pub struct Label {
+    pub span: Span,
+    pub message: String,
+}
+
+pub struct Diagnostic {
+    pub severity: Severity,
+    pub message: String,                       // rendered main message
+    pub labels: Vec<Label>,                    // source locations with messages
+    pub notes: Vec<String>,                    // additional context
+    pub template: Option<Box<DiagnosticTemplate>>,  // typed source of code + message
+}
+```
+
+There is no free-form `code` string field. The error code comes from the template:
+
+```rust
+pub fn code(&self) -> Option<&str> {
+    self.template.as_ref().map(|t| t.code())
+}
+```
+
+Diagnostics are built from a template, then decorated with labels and notes:
+
+```rust
+Diagnostic::from_template(DiagnosticTemplate::UndefinedVariable(
+    UndefinedVariable { name: name.clone() },
+))
+.with_label(*span, "not found in this scope")
+.with_note(format!("did you mean '{}'?", suggestion))
+```
+
+`from_template()` derives the severity and renders the message from the template. The raw `Diagnostic::error(msg)` / `Diagnostic::warning(msg)` constructors still exist for template-less diagnostics, but essentially all compiler errors go through templates.
+
+`Diagnostic` implements `Display` and `std::error::Error`, and everything (including `Span` and the templates) derives serde `Serialize`/`Deserialize`, so diagnostics can cross process boundaries (e.g. for tooling) intact.
+
+## Spans
+
+A `Span` is a pair of byte offsets into the source (`ast/src/span.rs`):
+
+```rust
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+```
+
+It supports `merge()` (union of two spans — used for things like labeling `left.span().merge(right.span())` on a binary operation) and `dummy()` (a zero-width `0..0` sentinel for synthetic/test nodes, detectable with `is_dummy()`).
+
+## The template system
+
+Templates live in `ast/src/templates/`, split by compiler phase:
+
+```text
+ast/src/templates/
+├── mod.rs            # define_diagnostic! macro + DiagnosticTemplate enum
+├── lex_errors/       # L001–L012
+├── parse_errors/     # P001–P003
+├── type_errors/      # E001–E032
+├── module_errors/    # M001–M006
+└── warnings/         # W001–W006
+```
+
+Each template is declared with the `define_diagnostic!` macro, which generates a struct with `code()` and `render()` methods. Two forms exist — unit (static message) and struct (fields interpolated into the message):
+
+```rust
+define_diagnostic!(LogicalOpError, "E020", "'and'/'or' operands must be Bool");
+
+define_diagnostic!(
+    TypeMismatch { expected: Type, actual: Type },
+    "E001",
+    |self| format!(
+        "Type annotation mismatch: expected {}, got {}",
+        self.expected, self.actual
+    )
+);
+```
+
+All templates are collected into one `DiagnosticTemplate` enum (via a second macro), which dispatches `code()` and `render()` to the inner struct. Severity is also decided centrally: `DiagnosticTemplate::severity()` returns `Warning` for the warning templates (`UnusedDefaultParam`, `UseAfterMove`, `ShadowedVariable`, `RedundantTypeAnnotation`, `RedundantMainReturn`, `JitNotEnabled`) and `Error` for everything else.
+
+The payoff of this design: construction sites can't invent codes or drift from the canonical message text, message formatting is testable in isolation, and the diagnostic carries structured data (e.g. the actual `Type` values in a `TypeMismatch`) rather than only a pre-rendered string.
+
+## Error code reference
+
+### Lexer (L001–L012)
+
+| Code | Template | Message |
+|---|---|---|
+| L001 | `InterpolationError` | Unexpected character in string interpolation |
+| L002 | `UnterminatedString` | Unterminated string or escape sequence |
+| L003 | `TabIndentation` | Tab character found (use spaces for indentation) |
+| L004 | `InvalidEscape` | Invalid escape sequence `\x` |
+| L005 | `StringTooLong` | String exceeds maximum length |
+| L006 | `BadFloatLiteral` | Bad float literal at line N |
+| L007 | `IntegerOverflow` | Integer literal overflows i64 range |
+| L008 | `MissingNewline` | File must end with newline |
+| L009 | `InputTooLarge` | Input exceeds the maximum byte size |
+| L010 | `InconsistentIndentation` | Indentation does not match any previous indentation level |
+| L011 | `UnexpectedCharacter` | Unexpected character |
+| L012 | `BadIntegerLiteral` | Invalid integer literal |
+
+### Parser (P001–P003)
+
+| Code | Template | Message |
+|---|---|---|
+| P001 | `UnexpectedToken` | Expected X, found Y |
+| P002 | `ExpectedIndentedBlock` | Expected indented block after colon |
+| P003 | `NestingTooDeep` | Maximum nesting depth exceeded |
+
+### Type checker (E001–E032)
+
+| Code | Template | Meaning |
+|---|---|---|
+| E001 | `TypeMismatch` | Type annotation mismatch: expected X, got Y |
+| E002 | `UndefinedVariable` | Unknown identifier (with "did you mean?" note) |
+| E003 | `BinaryOpError` | Operator used in invalid context or with incompatible types |
+| E004 | `ReturnTypeMismatch` | Return type mismatch in a function |
+| E005 | `ArgumentTypeMismatch` | Argument has the wrong type for a parameter |
+| E006 | `ArgumentCountMismatch` | Wrong number of arguments |
+| E007 | `MissingIterable` | Class lacks the required `each()` method |
+| E008 | `InvalidAssignment` | Invalid assignment target |
+| E009 | `UndeclaredAssignment` | Assignment to undeclared variable (with "did you mean?" note) |
+| E010 | `UnknownField` | Unknown field on a type |
+| E011 | `MatchError` | Match errors (e.g. non-exhaustive match) |
+| E012 | `TaskAlreadyConsumed` | Task is already consumed |
+| E013 | `ErrorPropagation` | Error-handling violation (throws without handler, incompatible error types) |
+| E014 | `TraitError` | Class/trait errors (unknown trait, duplicate method, missing required method) |
+| E015 | `ConditionTypeError` | Condition must be Bool |
+| E016 | `IndexTypeError` | Index must be Int |
+| E017 | `InconsistentListType` | List elements have inconsistent types |
+| E018 | `UnaryOpError` | Cannot apply unary operator (expected Bool) |
+| E019 | `ComparisonError` | Equality/ordering violations (type lacks Eq/Ord, uncomparable types) |
+| E020 | `LogicalOpError` | `and`/`or` operands must be Bool |
+| E021 | `ConstraintError` | Constraint violation (message-carrying) |
+| E022 | — | *Unassigned* |
+| E023 | `PrintableError` | Expression must be Printable |
+| E024 | `TypeConstraintError` | Generic type constraint violation |
+| E025 | `CollectionConstraintError` | Collection element constraint violation |
+| E026 | `ConstReassignment` | `const` binding cannot be reassigned |
+| E027 | `TaskNotResolved` | Task created but never resolved |
+| E028 | `NotCompilable` | Construct not supported by the compilation backend |
+| E029 | `ControlFlowError` | `break`/`continue` outside a loop |
+| E030 | `SuspensionError` | Suspension rule violation |
+| E031 | `VisibilityError` | Private member accessed from outside the module |
+| E032 | `DynamicMethodConflict` | `method_missing` dynamic method conflicts with an existing method |
+
+Several type-error templates (`MatchError`, `ErrorPropagation`, `TraitError`, `ComparisonError`, `ConstraintError`, `TypeConstraintError`, `CollectionConstraintError`, `NotCompilable`, `SuspensionError`) carry a free-form `message: String` because they cover a family of related failures; the code is still fixed per family.
+
+### Modules (M001–M006)
+
+| Code | Template | Meaning |
+|---|---|---|
+| M001 | `ModuleNotFound` | Module not found |
+| M002 | `SymbolNotExported` | Symbol not exported by module |
+| M003 | `CircularImport` | Circular import detected |
+| M004 | `InvalidImportAlias` | Cannot combine selective import and `as` alias |
+| M005 | `UnstableRequired` | `std/unstable` requires `--unstable` or `ASTER_UNSTABLE=1` |
+| M006 | `JitRequired` | `evaluate()`/`jit_run()` require the `--jit` flag with `asterc build` |
+
+### Warnings (W001–W006)
+
+| Code | Template | Meaning |
+|---|---|---|
+| W001 | `UnusedDefaultParam` | Variable has default parameter |
+| W002 | `UseAfterMove` | Variable used after crossing a copy/move (thread) boundary |
+| W003 | `ShadowedVariable` | Variable shadows a previous binding |
+| W004 | `RedundantTypeAnnotation` | Type annotation can be inferred |
+| W005 | `RedundantMainReturn` | `main()` implicitly returns exit code 0; drop `-> Int` and the trailing `0` |
+| W006 | `JitNotEnabled` | `std/runtime` imported without `--jit`; JIT functions will fail to compile |
+
+Warnings accumulate in `TypeChecker`'s `reg.diagnostics` during checking and are drained and rendered by the driver even when compilation succeeds; errors are returned from `check_module_all` and abort the build.
+
+## Rendering
+
+The `asterc` binary renders diagnostics with the `ariadne` crate — colored underlines, line numbers, and source context. `render_diagnostic()` in `src/main.rs` is a direct mapping from the `Diagnostic` struct:
+
+```rust
+fn render_diagnostic(source: &str, filename: &str, diag: &Diagnostic) {
+    let kind = match diag.severity {
+        Severity::Error => ReportKind::Error,
+        Severity::Warning => ReportKind::Warning,
+    };
+    let offset = diag.labels.first().map(|l| l.span.start).unwrap_or(0);
+    let mut report = Report::build(kind, filename, offset);
+
+    if let Some(code) = diag.code() {
+        report = report.with_code(code);
+    }
+    report = report.with_message(&diag.message);
+
+    for (i, label) in diag.labels.iter().enumerate() {
+        let color = if i == 0 { Color::Red } else { Color::Blue };
+        report = report.with_label(
+            Label::new((filename, label.span.start..label.span.end))
+                .with_message(&label.message)
+                .with_color(color),
+        );
+    }
+    for note in &diag.notes {
+        report = report.with_note(note);
+    }
+    let _ = report.finish().eprint((filename, Source::from(source)));
+}
+```
+
+Conventions worth noting: the report anchors on the first label's span; the first label is rendered red (primary) and any further labels blue (secondary); notes become ariadne footnotes. After rendering all errors, the driver prints a summary line ("N errors emitted") and exits non-zero.
+
+## "Did you mean?" suggestions
+
+When an identifier lookup fails — an unknown identifier in an expression or call position (**E002**) or an assignment to an undeclared variable (**E009**) — the typechecker attaches a suggestion note. `suggest_similar_name()` scans every variable name in scope and computes the Levenshtein edit distance:
+
+```rust
+pub(crate) fn suggest_similar_name(&self, name: &str) -> Option<String> {
+    let mut best: Option<(usize, &str)> = None;
+    for known in self.env.all_var_names() {
+        let dist = Self::levenshtein(name, known);
+        let dominated = best.as_ref().is_none_or(|(d, _)| dist < *d);
+        if dist <= 2 && dist < name.len() && dominated {
+            best = Some((dist, known));
+        }
+    }
+    best.map(|(_, s)| s.to_string())
+}
+```
+
+A candidate qualifies only if it is within edit distance 2 *and* the distance is smaller than the length of the unknown name (so a one-letter typo can't match an unrelated one-letter binding); the closest candidate wins. `levenshtein()` is the standard two-row dynamic-programming implementation over bytes. Because `log` and `say` are registered in the environment (even though their calls are checked as polymorphic builtins elsewhere), typos like `lgo` get useful suggestions too.

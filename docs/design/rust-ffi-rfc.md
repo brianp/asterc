@@ -1,0 +1,402 @@
+# RFC-0001: Rust Native FFI via StableMIR
+
+**Status:** Draft
+**Created:** 2026-03-27
+
+## What this is
+
+Aster should be able to call Rust crate functions directly. No C ABI wrappers, no manual bridging code, no flattening everything to pointers and praying.
+
+```
+use rust "serde_json"
+
+let obj = serde_json.from_str('{"name": "aster"}')
+```
+
+The compiler figures out the types, generates all the marshalling, and links everything together. You write Aster. You point at a Rust crate. It works.
+
+## Why this matters
+
+Aster's runtime is already Rust. The compiler is Rust. The whole toolchain is Rust. When someone hits the edge of what the Aster stdlib provides (and they will, because every language hits that wall), the natural answer should be "grab the Rust crate."
+
+There are 150k+ crates on crates.io. That's HTTP clients, crypto libraries, database drivers, serialization, compression, date/time handling. All of it becomes Aster's extended stdlib if we get this right.
+
+The alternative is making people write C ABI wrappers by hand. That means `#[no_mangle] extern "C"` functions, raw pointers everywhere, manual memory management at the boundary. At that point you're not writing Rust anymore, you're writing C with extra steps. Nobody wants that.
+
+## The hard part
+
+Rust doesn't have a stable ABI. Function symbols get mangled. Type layouts aren't specified. Generics get monomorphized at compile time. You can't just point at a `.rlib` file and start calling functions.
+
+I looked at three approaches.
+
+### Parsing .rmeta directly
+
+Rust's `.rmeta` files contain everything you'd want: types, function signatures, trait impls, even MIR. The problem is that nobody has ever successfully parsed these outside of rustc itself. Not rust-analyzer, not rustdoc, nobody.
+
+The format is an unstable binary encoding that changes every six weeks (sometimes between nightlies). Types are stored as interned IDs that only make sense inside the compiler's own type context. The compiler literally checks its exact version string and refuses to load metadata from any other build.
+
+Building on this means reimplementing big chunks of the Rust compiler and maintaining that across every release. I don't think that's viable as a primary strategy.
+
+### Waiting for crABI
+
+RFC #3470 proposes `extern "crabi"` for stable cross-language calling conventions. There's an experimental feature gate. If this lands, it would be great. But the timeline is unclear, it only covers types that crate authors explicitly opt into, and we'd be blocked waiting for upstream.
+
+Worth adopting later if it ships. Not worth waiting for.
+
+### StableMIR JSON (what we're doing)
+
+The Rust project has been building `project-stable-mir`, a stable API over compiler internals. Runtime Verification built `stable-mir-json` on top of it, which serializes the whole thing to JSON. Serde support was upstreamed via PR #126963.
+
+The idea is simple:
+
+1. Compile the Rust crate with `cargo build` (normal Rust compilation)
+2. Run a rustc driver to dump the type info as JSON
+3. Parse that JSON to learn function signatures, struct layouts, enum variants
+4. Auto-generate Rust shim functions that handle all the type marshalling
+5. Compile the shims, link everything into the final binary
+
+Aster never touches `.rmeta`. It reads JSON. If the JSON format changes, we update one extraction tool. The Aster compiler itself doesn't care.
+
+## How it works
+
+### The pipeline
+
+```
+                    Aster Source
+                         |
+                    [aster build]
+                         |
+            +------------+------------+
+            |                         |
+    Parse `use rust`           Normal compilation
+    directives                 (lex/parse/check/lower)
+            |                         |
+    [cargo build] the            [Cranelift AOT]
+    referenced crate             generates .o
+            |                         |
+    [stable-mir-json]                 |
+    rustc driver emits                |
+    type info as JSON                 |
+            |                         |
+    Parse JSON, generate              |
+    monomorphized Rust shim           |
+    crate with marshalling            |
+            |                         |
+    [cargo build] shim crate          |
+    produces libshim.a                |
+            |                         |
+            +------------+------------+
+                         |
+                    [cc linker]
+                    links .o + libcodegen.a + libshim.a
+                         |
+                    Final binary
+```
+
+### Type extraction
+
+When the compiler hits `use rust "crate_name"`, it:
+
+1. Creates (or updates) a Cargo workspace at `.aster/rust_deps/`
+2. Adds the crate as a dependency
+3. Runs `cargo build` to get `.rlib` artifacts
+4. Runs `stable-mir-json` to extract the public API surface
+
+The JSON output looks something like this (based on StableMIR's serde representation):
+
+```json
+{
+  "functions": [
+    {
+      "name": "from_str",
+      "path": "serde_json::from_str",
+      "params": [
+        {"name": "s", "ty": {"kind": "Ref", "inner": "str", "mutability": "Not"}}
+      ],
+      "return_ty": {"kind": "Adt", "name": "Result", "args": ["Value", "Error"]},
+      "generics": [{"name": "T", "bounds": ["DeserializeOwned"]}],
+      "safety": "Safe",
+      "abi": "Rust"
+    }
+  ],
+  "structs": [...],
+  "enums": [...]
+}
+```
+
+### Type mapping
+
+Not every Rust type has an Aster equivalent. The ones that do:
+
+| Rust Type | Aster Type | Boundary Cost | Notes |
+|-----------|------------|---------------|-------|
+| `i64` | `Int` | Zero | Direct register pass |
+| `f64` | `Float` | Zero | Direct register pass |
+| `bool` | `Bool` | Zero | Direct register pass |
+| `()` | `Void` | Zero | No value |
+| `String` | `String` | Copy | Aster GC heap to/from Rust allocator |
+| `&str` | `String` | Copy | Read-only, no Rust allocation needed |
+| `Vec<T>` | `List[T]` | O(n) copy | Element-wise marshalling |
+| `HashMap<K,V>` | `Map[K,V]` | O(n) copy | Entry-wise marshalling |
+| `HashSet<T>` | `Set[T]` | O(n) copy | Element-wise marshalling |
+| `Option<T>` | `T?` | Unwrap | Natural nullable mapping |
+| `Result<T,E>` | `T throws E` | Unwrap | Maps to Aster error handling |
+| `Box<T>` | `T` | Unwrap | Transparent indirection |
+
+The ones that don't (and never will):
+
+| Rust Type | Why |
+|-----------|-----|
+| `&'a T` (non-str) | Lifetime semantics don't exist in Aster |
+| `&mut T` | Mutable borrows conflict with GC semantics |
+| `dyn Trait` | Vtable layout is unstable |
+| `*const T` / `*mut T` | Raw pointers are unsafe by definition |
+| `async fn` | Rust futures are incompatible with Aster tasks |
+| Private types | Can't construct or destructure them |
+
+When the compiler can't import a function, it tells you exactly why:
+
+```
+error[E100]: cannot import Rust function `foo::process`
+  --> main.aster:3:1
+  |
+3 | use rust "foo"
+  | ^^^^^^^^^^^^^^
+  |
+  = note: parameter `items` has type `&[&str]` which contains a
+          borrowed reference that cannot cross the FFI boundary
+  = note: Aster copies data at the FFI boundary; Rust borrows have
+          no equivalent
+```
+
+### Shim generation
+
+For each importable function, the compiler writes a Rust wrapper that handles all the type conversion. Here's what one looks like:
+
+```rust
+// auto-generated: .aster/rust_deps/shims/src/lib.rs
+
+extern "C" {
+    fn aster_string_new(ptr: *const u8, len: usize) -> *mut u8;
+    fn aster_string_data(handle: *const u8) -> *const u8;
+    fn aster_string_len(handle: *const u8) -> usize;
+    fn aster_error_set(tag: i64, value: i64);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __aster_serde_json__from_str(s_handle: i64) -> i64 {
+    let result = std::panic::catch_unwind(|| {
+        // Aster String -> Rust &str
+        let s_handle = s_handle as *const u8;
+        let ptr = unsafe { aster_string_data(s_handle) };
+        let len = unsafe { aster_string_len(s_handle) };
+        let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
+        let rust_str = std::str::from_utf8(slice).unwrap_or("");
+
+        // Call the real function
+        match serde_json::from_str::<serde_json::Value>(rust_str) {
+            Ok(val) => {
+                let json = val.to_string();
+                unsafe { aster_string_new(json.as_ptr(), json.len()) as i64 }
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                let aster_msg = unsafe {
+                    aster_string_new(msg.as_ptr(), msg.len())
+                };
+                unsafe { aster_error_set(1, aster_msg as i64) };
+                0
+            }
+        }
+    });
+
+    match result {
+        Ok(v) => v,
+        Err(_) => {
+            let msg = "Rust panic in serde_json::from_str";
+            let aster_msg = unsafe {
+                aster_string_new(msg.as_ptr(), msg.len())
+            };
+            unsafe { aster_error_set(1, aster_msg as i64) };
+            0
+        }
+    }
+}
+```
+
+Every shim follows the same pattern:
+1. `catch_unwind` to trap Rust panics
+2. Convert Aster values to Rust types (copy at boundary)
+3. Call the actual Rust function
+4. Convert the return value back to Aster's representation
+5. Turn `Result::Err` and panics into `aster_error_set` calls
+
+### Monomorphization
+
+Rust generics need concrete types. Aster's type checker already resolves these. When you write:
+
+```
+let data: Map[String, Int] = serde_json.from_str(json_text)
+```
+
+The type checker figures out that `from_str`'s generic `T` is `Map[String, Int]`, which maps to `HashMap<String, i64>` in Rust. The shim generator writes a monomorphized wrapper for exactly that type.
+
+If the same function gets called with different types, you get multiple shims. If inference can't figure out the type, you get a compile error telling you to add an annotation.
+
+### Codegen
+
+The shim functions slot into Cranelift the same way the existing runtime functions do. `Linkage::Import`, a signature, and the linker resolves it. The infrastructure is already there, it just gets a few more entries.
+
+The linker command picks up one more library:
+
+```
+cc <object.o> libcodegen.a libaster_rust_shims.a -pthread -lm -o binary
+```
+
+### Caching
+
+Rust compilation is slow. So we cache everything:
+
+| Artifact | Cache Key | Invalidated By |
+|----------|-----------|----------------|
+| Cargo build output | Cargo.lock hash | Dependency version change |
+| StableMIR JSON | Crate version + rustc version | Crate or rustc update |
+| Generated shim source | Hash of JSON + call sites | New monomorphizations |
+| Compiled shim `.a` | Hash of shim source | Shim source changes |
+
+All of it lives in `.aster/rust_deps/`. If you're just editing Aster code and not adding new Rust calls, zero Rust compilation happens.
+
+## Syntax
+
+### Importing a crate
+
+```
+use rust "crate_name"
+use rust "crate_name" version "1.2.3"
+use rust "crate_name" path "../my-local-crate"
+use rust "crate_name" features ["derive", "std"]
+```
+
+### Calling functions
+
+```
+use rust "serde_json"
+
+let value = serde_json.from_str('{"key": 42}')
+let text = serde_json.to_string(value)
+```
+
+### Selective imports
+
+```
+use rust "serde_json" (from_str, to_string)
+
+let value = from_str('{"key": 42}')
+```
+
+### Rust structs become Aster classes
+
+```
+use rust "chrono"
+
+let now: chrono.NaiveDate = chrono.NaiveDate.from_ymd(2026, 3, 27)
+say(now.year())
+```
+
+### Rust enums become Aster enums
+
+```
+use rust "serde_json"
+
+let val: serde_json.Value = serde_json.from_str(text)
+match val
+  serde_json.Value.String(s)
+    say("got string: {s}")
+  serde_json.Value.Number(n)
+    say("got number")
+  _
+    say("other")
+```
+
+### Generics need type annotations when inference isn't enough
+
+```
+use rust "serde_json"
+
+let data: Map[String, Int] = serde_json.from_str(json_text)
+```
+
+## What could go wrong
+
+### StableMIR isn't fully stable yet
+
+It was targeting crates.io publication in 2025 H1. The API might still change. `stable-mir-json` is maintained by Runtime Verification, not the Rust team directly.
+
+We isolate the dependency behind a JSON boundary. The Aster compiler only reads JSON. If `stable-mir-json` breaks, we update one extraction tool. Worst case, we fork and pin it.
+
+### Monomorphization explosion
+
+A generic function called with 10 different Aster types means 10 shim functions. This mirrors what rustc does internally. Incremental compilation means only new monomorphizations trigger recompilation. In practice, most programs use a small number of concrete types per generic function.
+
+### Rust compilation adds build time
+
+`cargo build` in the critical path means seconds to minutes of extra time. But the caching strategy means this only happens when dependencies change. The normal edit-compile-run loop for Aster code alone hits zero Rust compilation.
+
+### Memory safety at the boundary
+
+Aster's GC and Rust's ownership model don't play nice. If the GC runs during a Rust call, it could move objects out from under Rust.
+
+We copy everything at the boundary. Aster strings become Rust `String`s (Rust's allocator). Rust return values become Aster heap objects (GC allocator). No shared pointers cross the boundary. This costs a copy but it's safe. Zero-copy `&str` passing can come later once we add GC pinning.
+
+### Panics
+
+A Rust panic would normally unwind through the stack, but Aster's stack doesn't have Rust unwinding tables. Every shim wraps calls in `std::panic::catch_unwind`. Panics become Aster errors.
+
+### Not all crates will work
+
+Plenty of Rust crates have APIs full of lifetimes, trait objects, closures, and async. Those won't map to Aster. That's fine. The target is the large subset of crates with "simple" public APIs: functions taking and returning owned types, structs with public fields, enums. That covers most utility crates (serde, regex, chrono, uuid, sha2, base64, url). The compiler gives clear diagnostics when something can't be imported.
+
+## Roadmap
+
+### Milestone 1: StableMIR extraction pipeline
+
+A standalone tool (`aster-rustmeta`) that takes a crate name, creates a Cargo workspace, builds it, runs `stable-mir-json`, and outputs Aster-oriented JSON with mapped types and importability verdicts. Testable on its own, no Aster compiler changes needed.
+
+### Milestone 2: Shim generator
+
+Reads the JSON from Milestone 1, accepts a list of (function, concrete types) pairs, and generates a complete Rust shim crate. Compiles it to a static library. Also testable independently with handwritten JSON.
+
+### Milestone 3: Language integration
+
+Wire it into the compiler. `use rust` in the parser, type checker resolves against JSON metadata, FIR emits FFI call nodes, Cranelift declares the shim imports, build pipeline orchestrates everything. This is where `use rust "regex"` works end to end.
+
+### Milestone 4: Structs and enums
+
+Import Rust structs as Aster classes (constructors, field access, methods). Import Rust enums as Aster enums (variant constructors, pattern matching).
+
+### Milestone 5: Polish
+
+Autocomplete for imported Rust APIs in the LSP. `aster add rust <crate>` CLI command. Better diagnostics for unmappable types. Documentation generation for imported APIs. JIT mode support with dynamic shim loading.
+
+## Future possibilities
+
+**crABI adoption.** If `extern "crabi"` stabilizes, we detect those functions in the StableMIR output and generate direct Cranelift calls instead of shims. The existing pipeline handles the transition without breaking anything.
+
+**Zero-copy string passing.** For `&str` parameters, we pin the Aster GC object during the call and pass a pointer directly. Eliminates the copy for string-heavy APIs. Needs GC pinning support.
+
+**Bidirectional FFI.** Let Rust code call back into Aster. Export Aster functions as `extern "C"` symbols. Enables callback-style APIs (passing an Aster closure to a Rust iterator).
+
+**Direct .rmeta parsing as a hedge.** If StableMIR proves too fragile, we can fall back to parsing `.rmeta` directly, pinned to a specific rustc version. The JSON boundary means only the extraction tool changes.
+
+## References
+
+- [project-stable-mir](https://github.com/rust-lang/project-stable-mir)
+- [stable-mir-json](https://github.com/runtimeverification/stable-mir-json)
+- [Enhancing StableMIR with Serde Serialisation (PR #126963)](https://runtimeverification.com/blog/enhancing-stable-mir-with-serde-serialisation)
+- [crABI RFC #3470](https://github.com/rust-lang/rfcs/pull/3470)
+- [Rust Compiler Dev Guide: Libraries and Metadata](https://rustc-dev-guide.rust-lang.org/backend/libs-and-metadata.html)
+- [StableMIR 2025 H1 Goals](https://rust-lang.github.io/rust-project-goals/2025h1/stable-mir.html)
+- [stabby: stable Rust ABI library](https://github.com/ZettaScaleLabs/stabby)
+- ["We Need Type Information, Not Stable ABI"](https://blaz.is/blog/post/we-dont-need-a-stable-abi/)
+- [StableMIR Design Document](https://hackmd.io/@celinaval/Skgj_k1Ti)
+- [Kani: Migrating to StableMIR](https://model-checking.github.io/kani/stable-mir.html)

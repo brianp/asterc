@@ -1,0 +1,100 @@
+---
+title: Structured Concurrency
+description: Task lifetimes, scoped tasks, and detached execution.
+---
+
+## The Problem
+
+If `async f()` spawns a task and the current function ends before the task completes, the task becomes orphaned. Orphaned tasks leak resources and cause subtle bugs.
+
+## Scoped Tasks
+
+By default, async tasks are **scoped** to the function that spawned them. Every function body is an implicit task scope: tasks spawned inside it must complete or be canceled before the function exits:
+
+```
+def load_users() -> Void
+  let t1 = async fetch_user(id: 1)
+  let t2 = async fetch_user(id: 2)
+  let u1 = resolve t1!
+  let u2 = resolve t2!
+  process(a: u1, b: u2)
+# function exits: all tasks guaranteed complete
+```
+
+There is no separate scope syntax to write — the function boundary *is* the scope.
+
+## Fire-and-Forget
+
+Fire-and-forget requires explicit `detached`:
+
+```
+detached async cleanup_old_sessions()
+```
+
+This is an intentional opt-out of structured concurrency. If the detached function throws, the error is logged and the program continues.
+
+## Must-Consume Rule
+
+Dropping a task without consuming or detaching it is a **compile error** (E027):
+
+```
+let t = async fetch_user(id: 1)
+# ... never use t ...
+# COMPILE ERROR: task 't' is never consumed
+```
+
+Returning a task from a function counts as consuming it — responsibility passes to the caller. Task handles are also **single-consumer**: resolving the same handle twice is a compile error.
+
+## Task Consumption Rules
+
+| Action | Effect |
+|--------|--------|
+| `resolve task!` | Task consumed, value returned |
+| `resolve_all(tasks: tasks)!` | All tasks consumed, list returned |
+| `resolve_first(tasks: tasks)!` | First consumed, rest canceled |
+| `detached async f()` | Explicitly fire-and-forget |
+| Return the task | Consumed — caller takes over |
+| Drop without consuming | Compile error |
+
+## Real-World Example
+
+A web handler that fetches data concurrently:
+
+```
+pub def handle_dashboard(user_id: Int) -> Response
+  let profile_task = async fetch_profile(user_id: user_id)
+  let posts_task = async fetch_recent_posts(user_id: user_id)
+  let notifications_task = async fetch_notifications(user_id: user_id)
+
+  let profile = resolve profile_task!
+  let posts = resolve posts_task!
+  let notifications = resolve notifications_task!
+
+  render_dashboard(profile: profile, posts: posts, notifications: notifications)
+```
+
+All three fetches run concurrently, but structured concurrency guarantees they all complete before the function returns. No leaked tasks, no orphaned connections.
+
+## Scope Exit Cleanup
+
+When execution leaves a function for any reason — normal completion, error propagation, return, throw — all unresolved tasks are canceled. This is non-negotiable.
+
+```
+def load() -> Void
+  let t1 = async fetch_user(id: 1)
+  let t2 = async fetch_user(id: 2)
+
+  let u1 = resolve t1!    # if this throws, the error propagates out —
+  let u2 = resolve t2!    # — and t2 is CANCELED by scope exit cleanup
+```
+
+## Cancellation
+
+Cancellation is cooperative. When a green thread is canceled:
+
+1. A cancellation flag is set
+2. At the next yield point (function call, loop back-edge, I/O), the flag is checked
+3. Cleanup runs (`Drop` for sync cleanup, `Close` for async-capable cleanup)
+4. The green thread exits
+
+Resources get deterministic cleanup in reverse order. Cleanup errors are logged, never propagated.

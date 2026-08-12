@@ -1,0 +1,27 @@
+---
+title: "RFC: Formatter"
+description: Opinionated code formatter with Wadler-Lindig Doc IR and trivia-aware output.
+sidebar:
+  badge:
+    text: Planned
+    variant: note
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+
+**Status:** Planned
+
+Opinionated code formatter for Aster's indent-based syntax. Uses the Wadler-Lindig pretty-printing algorithm with a `Doc` IR to canonicalize source. Preserves comments via trivia attachment to tokens. Single true style — no debates.
+
+## Key Decisions
+
+- **Opinionated, not configurable** beyond line width (88), indent size (4), quote style.
+- **Trivia-aware lexer**: comments and whitespace attached as leading/trailing trivia on tokens.
+- **Wadler-Lindig Doc IR**: Document = Text/Line/Indent/Group/HardLine nodes; printer greedily fits lines.
+- **Idempotency guarantee**: `format(format(x)) == format(x)`.
+- **Magic trailing comma**: trailing comma in collections forces vertical layout (Black/Ruff convention).
+- **AST preservation**: formatter never changes semantic meaning (verified by AST equality check).
+- **JSON diff output** for agents: structured diffs with line numbers and spans.
+- **CLI**: `asterc fmt`, `asterc fmt --check`, `asterc fmt --diff`, `asterc fmt --stdin`.
+
+<LinkCard title="Full Plan" href="https://github.com/example/asterc/blob/main/docs/plans/formatter.md" description="Read the complete formatter plan." />

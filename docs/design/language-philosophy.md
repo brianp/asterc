@@ -1,0 +1,230 @@
+# RFC: Aster Language Philosophy -- AI-Native Design
+
+Status: DECIDED -- core philosophy established, guides all design decisions.
+
+---
+
+## 1. Core Thesis
+
+Aster is designed for a world where AI agents are active participants
+in the development process. It's not just a programming language --
+it's a language + compiler protocol + diagnostic system built
+for machine comprehension without sacrificing a good human-facing surface.
+
+The goal: **Aster should be the language where AI help is consistently
+correct.**
+
+If developers notice:
+
+```
+JavaScript + AI -> sometimes wrong
+Rust + AI      -> often wrong
+Aster + AI     -> always right
+```
+
+Adoption happens naturally. Not through marketing. Through reliability.
+
+---
+
+## 2. Design Principles
+
+### Single syntax
+
+One declaration form. One function syntax. One way to express generics.
+One error handling model. One control flow style. One module system.
+
+Not because humans can't handle variety, but because every extra
+equivalent surface form increases:
+
+- Parser ambiguity
+- Training entropy
+- Transformation complexity
+- Example fragmentation
+- LLM uncertainty
+
+The LLM should never need to ask: "Is this style equivalent to that
+style?" or "Does this parse like Ruby or Python here?"
+
+### Canonical formatting
+
+Every valid Aster program has exactly one canonical printed form.
+The formatter is opinionated and not configurable beyond line width
+and indent size.
+
+Both humans and models converge on the same representation.
+No style debates. No "is this a syntax error or just unusual style?"
+
+### Low representational entropy
+
+Not fewer features. Less representational entropy.
+
+- One declaration form
+- One block form
+- One call form
+- One member access form
+- One error handling form (`throws`/`!`/`!.catch`)
+- One pattern matching form
+- One module import form
+- One generic constraint form
+
+Each construct is regular, predictable, and has no hidden modes.
+
+### Whitelist semantics
+
+The type checker is a whitelist -- if a rule exists, it's allowed.
+If no rule exists, it's a compile error. No implicit coercions,
+no silent nil propagation, no NaN, no undefined. The opposite of
+JavaScript.
+
+### Explicit over implicit
+
+- No implicit type coercions
+- No implicit nullability (T? is always explicit)
+- Error paths are visible at call sites (`!`)
+- Async is a call-site decision, not a function color
+
+---
+
+## 3. Why This Matters for AI
+
+LLMs are worse at understanding "code as text" than people
+assume. They do much better when:
+
+- The syntax is regular
+- Formatting is canonical
+- Constructs are few and orthogonal
+- There is little aliasing (one way to express each concept)
+- The parser and compiler can emit structured semantic information
+- Errors are attached to exact nodes and constraints, not line strings
+
+With these properties, an LLM has much less reconstruction work.
+It no longer needs to guess:
+
+- "Is this style equivalent to that style?"
+- "Does this parse like Ruby, JS, or Python here?"
+- "Is this a syntax error or just unusual style?"
+- "What exactly was the compiler trying to say?"
+
+---
+
+## 4. The Three-Actor Ecosystem
+
+```
+Human writes code
+    |
+Compiler determines truth
+    |
+LLM translates truth into understanding
+```
+
+Most languages today were designed for: `human -> compiler`
+
+Aster is designed for: `human -> compiler -> machine explanation -> human`
+
+The key insight: **don't train the model to infer truth. Give it truth,
+and train it to explain and repair.**
+
+The less guessing, the less training data you need.
+
+---
+
+## 5. Structured Diagnostics Over Prose
+
+Diagnostics shouldn't be prose-first. They should be structured data
+that the LLM interprets. (See `toons-rfc.md` for full specification.)
+
+Instead of:
+
+```
+cannot borrow x as mutable because it is also borrowed as immutable
+```
+
+Emit:
+
+```
+diagnostic_id, severity, primary_node, related_nodes,
+violated_constraint, inferred_types, candidate_repairs, confidence
+```
+
+Then the LLM can tell the user:
+- What failed
+- Why
+- What the compiler knows for certain
+- What it suspects
+- What changes are likely to fix it
+
+Same truth, any audience.
+
+---
+
+## 6. Competing on AI Correctness
+
+Aster doesn't need to compete on:
+- Ecosystem size (TypeScript wins)
+- Raw performance (Rust wins)
+- Simplicity (Go wins)
+
+Aster competes on: **time from broken code to correct code.**
+
+The key metric: AI first-pass compile success rate.
+
+If Aster hits higher AI correctness than TypeScript/Rust/Python,
+developers will move to it -- because their AI tools work better here.
+
+### The benchmark that matters
+
+Same 100 tasks. Same model. Same prompt quality. Measure:
+
+- Compiles first try (%)
+- Fixes in one pass (%)
+- Total repair loops to green build
+- Final correctness after AI fix
+
+Across: Aster vs TypeScript vs Rust vs Go vs Python.
+
+If Aster wins this benchmark, adoption follows.
+
+---
+
+## 7. Design Decisions That Follow
+
+This philosophy drives specific design decisions:
+
+| Decision | Rationale |
+|----------|-----------|
+| One syntax form per concept | Reduces LLM ambiguity |
+| Opinionated formatter | Canonical representation = less variance |
+| Whitelist type checker | No hidden rules = predictable errors |
+| TOONS diagnostic format | Structured truth for machines |
+| Node IDs on AST | Precise references for repair candidates |
+| Message templates not prose | Audience-adaptive explanations |
+| Candidate fixes with confidence | Compiler suggests, LLM picks |
+| `.aster/` artifact directory | Persistent truth for MCP consumption |
+| MCP server bridge | Standard agent protocol |
+
+---
+
+## 8. What This Is Not
+
+- **Not "everything must be explicit"** to the point of exhaustion.
+  Aster should still be pleasant to read and write.
+- **Not machine-perfect but human-hostile.** Easy to parse, easy to
+  pretty-print, easy to serialize, easy to diagnose -- and still
+  pleasant to read and write.
+- **Not anti-human.** Humans are the primary audience for source code.
+  Machines are the primary audience for compiler output.
+
+---
+
+## 9. Summary
+
+Aster is a language where:
+
+- Humans write clean, low-entropy source
+- The compiler proves everything and emits structured truth
+- AI agents read truth and explain/repair with high reliability
+- Every valid program has one canonical form
+- Diagnostics are structured data, not prose
+- The compiler suggests fixes; the LLM picks the best one
+
+**"Human-written, compiler-proven, machine-explained."**

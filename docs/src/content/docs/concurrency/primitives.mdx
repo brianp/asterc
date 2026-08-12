@@ -1,0 +1,200 @@
+---
+title: Mutex, Channels & I/O
+description: Green-thread-aware synchronization, message passing, file I/O, and guaranteed resource cleanup in Aster.
+---
+
+Green threads alone don't do much — you need ways for them to share data safely, pass messages between each other, and talk to the outside world without pinning an OS worker thread. This page covers the primitives built on top of the scheduler: `Mutex[T]`, `Channel[T]`, file I/O, and the `Drop`/`Close` cleanup system.
+
+## Why Green-Thread-Aware Primitives
+
+A regular OS-level mutex blocks the OS thread when contended. In a green thread runtime, that's a disaster: if four OS workers are running a thousand green threads and one worker blocks on a lock, a quarter of your execution capacity stalls.
+
+Aster's primitives are built differently. When a green thread can't make progress — the mutex is held, the channel buffer is full — it **yields to the scheduler** instead of blocking the OS thread. The worker picks up another green thread and keeps going. When the condition clears, the waiting green thread is re-enqueued and resumes where it left off.
+
+This is the same design Go uses for goroutines. The difference from async/await in Rust or JavaScript is that the suspension is invisible: an Aster function that calls `blocking m.acquire()` reads like synchronous code, and the runtime handles the cooperative scheduling behind the scenes.
+
+## Mutex[T]
+
+A `Mutex[T]` wraps a single value and ensures only one green thread can access it at a time:
+
+```
+let m = Mutex(value: 42)
+let v = blocking m.acquire()
+# v is 42, the mutex is locked
+m.release(value: v + 1)
+# the mutex now holds 43, and it's unlocked
+```
+
+- **`acquire()`** is suspendable, so it requires `blocking` (or `async`) at the call site. If the mutex is free, it locks and returns the value immediately — no scheduling involved. If it's already held, the current green thread is pushed onto the mutex's wait queue and yields to the scheduler. The OS worker is never blocked.
+- **`release(value:)`** stores the updated value. If green threads are waiting, one of them is woken and handed the lock directly; otherwise the mutex unlocks.
+
+### Scoped Locking
+
+Manual acquire/release has the usual failure mode: forget to release and everything waiting deadlocks. The scoped form passes a lambda that receives the locked value:
+
+```
+blocking m.lock(block: -> v : say(message: v))
+```
+
+The compiler doesn't generate a closure call here. The FIR lowerer **inlines** the lambda body between an acquire and a guaranteed release:
+
+```
+# What the lowerer actually emits:
+let __mx = m
+let v = aster_mutex_lock(__mx)
+say(message: v)                    # inlined lambda body
+aster_mutex_unlock(__mx, v)        # guaranteed release
+```
+
+The lambda parameter is passed by value and the inline lambda syntax `-> v : expr` only allows a single expression — no assignments, no early returns. The mutex always unlocks with the **original** value. If you need read-write access to the locked value, use the manual `acquire`/`release` API.
+
+## Channel[T]
+
+Channels move data between green threads. Where mutexes protect shared state, channels transfer values — one green thread sends, another receives:
+
+```
+let ch: Channel[Int] = Channel(capacity: 10)
+ch.send(value: 42)
+let v = blocking ch.wait_receive()
+# v is 42
+```
+
+`Channel()` without a capacity defaults to a 64-slot buffer. Under the hood, the channel is a bounded ring buffer with two wait queues — one for green threads that tried to send into a full buffer, one for green threads that tried to receive from an empty one. As an optimization, a send to an empty buffer with a waiting receiver hands the value to that receiver directly.
+
+Each operation comes in three flavors that reflect different ways of handling backpressure:
+
+| Flavor | Send | Receive | Behavior |
+|--------|------|---------|----------|
+| Fire-and-forget | `send(value:)` | `receive()` | Never suspends. `send` silently drops the value if the buffer is full; `receive` returns `nil` (its return type is `T?`) if the buffer is empty. |
+| Blocking | `wait_send(value:)` | `wait_receive()` | Suspends the green thread until space/data is available. Requires `blocking` at the call site. |
+| Throwing | `try_send(value:)` | `try_receive()` | Returns immediately, throwing a typed `ChannelFullError` / `ChannelEmptyError` if the operation can't complete. |
+
+The throwing flavor integrates with checked exceptions like any other `throws` function:
+
+```
+def main() throws ChannelFullError -> Int
+  let ch: Channel[Int] = Channel(capacity: 1)
+  ch.try_send(value: 42)!
+  0
+```
+
+**`close()`** marks the channel closed and wakes *all* waiters — senders and receivers both — with errors. This prevents green threads from hanging on a channel that nobody will ever service.
+
+## MultiSend[T] and MultiReceive[T]
+
+Regular `Channel[T]` gives both ends to the same handle — any code with a reference can both send and receive. `MultiSend[T]` and `MultiReceive[T]` split the channel into typed endpoints, enforced by the type system:
+
+```
+let tx: MultiSend[Int] = MultiSend(capacity: 10)
+let tx2: MultiSend[Int] = tx.clone_sender()
+
+# Two producers, sending on independent handles
+tx.send(value: 1)
+tx2.send(value: 2)
+
+# This won't compile:
+# tx.receive()    # error: no method 'receive' on MultiSend[Int]
+```
+
+A `MultiSend` can call `send`, `wait_send`, `try_send`, `close`, and `clone_sender`. A `MultiReceive` is the mirror image: `receive`, `wait_receive`, `try_receive`, `close`, and `clone_receiver`. Calling a receive method on a sender (or vice versa) is a compile error.
+
+The design follows Go's directional channel types (`chan<-` vs `<-chan`), but enforced at the type level rather than as a syntactic annotation.
+
+**Current limitation:** both types use the same channel runtime, and `clone_sender()`/`clone_receiver()` currently return the same handle without reference counting. Auto-close when the last sender or receiver goes away is not implemented yet.
+
+## I/O Without Blocking OS Threads
+
+A green thread that blocks on a raw `read(2)` system call pins its OS worker until the kernel returns. The runtime has two mechanisms to avoid this:
+
+### The I/O Poller
+
+The poller wraps the kernel's readiness notification system — **kqueue** on macOS, **epoll** on Linux. You register a file descriptor and an interest (readable or writable), and the kernel reports readiness without blocking:
+
+```rust
+pub(crate) trait Poller: Send {
+    fn register(&mut self, fd: RawFd, interest: Interest, token: Token);
+    fn deregister(&mut self, fd: RawFd);
+    fn poll(&mut self, events: &mut Vec<Event>, timeout: Option<Duration>) -> usize;
+}
+```
+
+The `Token` maps directly back to the green thread, and registrations are one-shot. Idle workers poll for I/O events as part of the scheduler loop — when an fd becomes ready, the corresponding green thread is pushed back into the injector queue and resumes on the next available worker.
+
+The suspension hooks (`aster_io_wait_read`, `aster_io_wait_write`) are internal plumbing today: they are wired into the scheduler and tested, but not yet exposed through a user-facing socket API.
+
+### The Blocking Pool
+
+Disk I/O can't use the poller — the kernel considers local files always "ready" even when the actual read will stall on the disk. Instead, the runtime keeps a pool of four dedicated OS threads (separate from the workers) that run blocking operations on behalf of green threads.
+
+A green thread submits a closure to the pool and yields. A pool thread runs the work, stores the result, marks the green thread runnable again, and notifies the scheduler. This is the same design Tokio uses for `spawn_blocking`. The pool size is fixed rather than elastic because disk latency is bounded — unlike network I/O, a disk read won't hang indefinitely.
+
+## File I/O
+
+`File.read`, `File.write`, and `File.append` are the built-in file operations. All three throw `IOError`:
+
+```
+def main() throws IOError -> Int
+  File.write(path: "greeting.txt", content: "hello world")!
+  let text = File.read(path: "greeting.txt")!
+  say(message: text)
+  0
+```
+
+The `!` propagates the `IOError` to the caller, and the `throws IOError` in the signature is required by checked exceptions. `File.read` refuses files larger than 256 MB.
+
+The `std/fs` module exposes a wider set of filesystem operations as free functions:
+
+```
+use std/fs { read_file, write_file, exists, list_dir }
+
+def main() throws IOError -> Int
+  write_file(path: "notes.txt", content: "hello")!
+  let text = read_file(path: "notes.txt")!
+  0
+```
+
+Available functions: `read_file`, `write_file`, `append_file`, `exists`, `is_dir`, `mkdir`, `remove`, `list_dir`, `copy`, and `rename`.
+
+**Current limitation:** file operations run synchronously on the calling thread. The blocking pool exists and is tested, but the file runtime doesn't route through it yet — for programs with many concurrent tasks doing heavy file I/O, that integration is the next step.
+
+## Guaranteed Cleanup: Drop and Close
+
+Mutexes, channels, and file handles all create resources that need cleanup. Aster handles this the way Rust handles it with `Drop`: classes can include the `Drop` and `Close` traits, and the compiler guarantees their cleanup methods run when instances go out of scope.
+
+```
+class Handle includes Drop
+  fd: Int
+
+  def drop()
+    say(message: fd)
+
+def work()
+  let a = Handle(fd: 1)
+  let b = Handle(fd: 2)
+  # at function end: b.drop() then a.drop() — reverse declaration order
+```
+
+`Drop` declares `def drop()` for synchronous cleanup; `Close` declares `def close() throws Error` for cleanup that can fail. When a local has both, **Close runs before Drop**, and locals are always cleaned in reverse declaration order — last created, first cleaned.
+
+### Every Exit Point
+
+The compiler tracks `Drop`/`Close` locals and emits cleanup calls at every point where they go out of scope:
+
+- **Explicit `return`** — cleanup runs before the return.
+- **Implicit return** — when the last expression becomes the return value, cleanup runs just before it.
+- **Void function end** — cleanup at the bottom of the body.
+- **Error propagation (`!`)** — if the error branch fires, cleanup runs before the error propagates.
+
+### Loop Scopes
+
+Locals created inside a loop body are cleaned at the end of **each iteration**, not just at function end — otherwise every iteration but the last would leak:
+
+```
+while count < 3
+  let h = Handle(fd: count)   # dropped at the end of every iteration
+  count = count + 1
+```
+
+`break` and `continue` also clean up the loop body's locals before jumping. The lowerer uses a scope-boundary stack to make sure nothing is cleaned twice: once a local has been cleaned inside the loop, it's removed from the function-level cleanup list.
+
+This is the same mechanism that backs [scope exit cleanup](/concurrency/structured/#scope-exit-cleanup) in structured concurrency: cancellation and scope exit trigger the same `Close`-then-`Drop` sequence in reverse declaration order.

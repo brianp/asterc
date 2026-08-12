@@ -1,0 +1,291 @@
+---
+title: Type Checker
+description: How the Aster type checker verifies programs — environments, inference, unification, traits, and diagnostics.
+---
+
+This page is a walkthrough of the third compiler phase: type checking (semantic analysis). The type checker lives in the `typecheck` crate:
+
+| File | Responsibility |
+|---|---|
+| `typecheck/src/typechecker.rs` | The `TypeChecker` struct, builtin registration, statement checking, scoping, `use` resolution |
+| `typecheck/src/check_expr.rs` | Expression checking: literals, operators, member access, lambdas, match, collections |
+| `typecheck/src/check_call.rs` | Call checking, named-argument matching, type unification, generic constraints |
+| `typecheck/src/check_class.rs` | Class and trait validation, protocol conformance, Iterable vocabulary injection |
+| `typecheck/src/check_error.rs` | `!` propagation, `!.or()` / `!.or_else()` / `!.catch`, `throw`, task consumption tracking |
+| `typecheck/src/module_loader.rs` | Loading and caching modules for `use` imports |
+
+The crate is `#![deny(unsafe_code)]` and exports a single public type, `TypeChecker`.
+
+The type checker walks the AST and verifies that every operation makes sense. Adding two integers? Fine. Adding an integer and a string? Error. Calling a function with the wrong argument names? Error. Using `==` on a class that does not include `Eq`? Error. Along the way it also *produces* two artifacts consumed by later phases: a `TypeTable` (span → resolved type, used by the FIR lowerer) and a `SymbolIndex` (span → symbol info, used for hover and go-to-definition).
+
+---
+
+## The TypeChecker Struct
+
+The checker's state is split into three groups plus the output tables:
+
+```rust
+pub struct TypeChecker {
+    pub env: TypeEnv,             // variable/class/trait/enum/namespace bindings
+    pub sc: ScopeContext,         // per-scope context (saved/restored on scope entry)
+    pub reg: TypeRegistry,        // cross-scope registry (diagnostics, builtins, ...)
+    pub type_table: TypeTable,    // span -> resolved type, consumed by the FIR lowerer
+    pub symbol_index: SymbolIndex,// span -> symbol info, consumed by the LSP server
+    pub module_loader: Option<Rc<RefCell<ModuleLoader>>>,
+}
+```
+
+`ScopeContext` carries everything that changes when entering a function or block:
+
+```rust
+pub struct ScopeContext {
+    pub loop_depth: usize,                  // 0 = not in a loop
+    pub expected_return_type: Option<Type>, // declared return type of current function
+    pub current_function: Option<String>,   // for error messages
+    pub throws_type: Option<Type>,          // declared `throws` type of current function
+    pub is_main: bool,                      // main() implicitly allows error propagation
+    expected_type: Option<Type>,            // context type (e.g. for resolving .into())
+    const_names: HashSet<String>,           // const bindings — cannot be reassigned
+    consumed_tasks: HashSet<String>,        // single-consumer tracking for Task[T]
+    task_bindings: HashMap<String, Span>,   // `let t = async f()` bindings in scope
+    last_call_suspendable: bool,            // set by check_call_inner
+    boundary_crossed: HashMap<String, Span>,// vars passed to `async f()` (W002 warnings)
+    current_class: Option<String>,          // for DynamicReceiver bare-call routing
+}
+```
+
+`TypeRegistry` holds state that survives across scopes: accumulated `diagnostics`, the builtin trait/enum maps (`Rc`-shared, read-only after init), `default_params` (function name → params with defaults), `nil_promotions` (`List[Nil]` → `List[T]` promotions from `.push()` that must remain visible after a block exits), and `imported_classes` (used to enforce `pub` visibility on cross-module field/method access).
+
+### Construction modes
+
+- `TypeChecker::new()` — **Prelude mode.** All built-in protocol traits and enums are pre-installed in the environment. Used by tests. `use` statements are ignored (no module loader).
+- `TypeChecker::with_loader(loader)` — **Module mode.** Attaches a `ModuleLoader` and *removes* the protocol traits `Eq`, `Ord`, `Printable`, `From`, `Into`, `Iterable`, `Iterator`, `Random`, `FieldAccessible` and the `Ordering` enum from the environment. Code must import them (`use std/cmp { Eq }` etc.). `Drop` and `Close` stay in the prelude — they are fundamental lifecycle traits. This is how the real compiler works.
+- `TypeChecker::from_snapshot(snapshot)` — Builds a checker pre-populated from a `ContextSnapshot`. When a runtime `evaluate()` call compiles a code string, this reconstructs the class context, local variables, functions, and enums that were in scope at the call site.
+
+### What the prelude registers
+
+`register_builtins()` installs:
+
+**Functions.** `log(message: String)` and `say(message: String)` (both actually type-checked as polymorphic builtins — see below), `random() -> Int`, and `to_int(text: String) throws IntParseError -> Int` — the free-function spelling of string-to-int conversion, registered with a full `Type::Function` so the `throws` clause survives.
+
+**The error hierarchy.** `Exception` (root, carries `message: String`) → `Error` → the built-in error classes. Every runtime builtin that can fail throws a typed error from this table:
+
+| Class | Extends | Thrown by |
+|---|---|---|
+| `CancelledError` | `Error` | async task cancellation |
+| `IOError` | `Error` | `std/fs` functions |
+| `ProcessError` | `Error` | `std/process` `run()` (carries `command`) |
+| `IntParseError` | `Error` | `Int.from()` / `to_int()` |
+| `LockTimeoutError` | `Error` | `Mutex` operations |
+| `ChannelFullError`, `ChannelEmptyError`, `ChannelClosedError` | `Error` | channel operations |
+| `FunctionNotFound` | `Error` | `method_missing` closed-set dispatch (carries `name`) |
+| `EvalError` | `Error` | `std/runtime` `evaluate()` (carries `kind`, `message`) |
+
+**Types-as-classes.** `Int` is registered as a class that includes `From` with a `from(text: String) throws IntParseError -> Int` method, enabling `Int.from(text: "42")!`. `Range` is a builtin class including `Iterable` (with `Iterable[Int]` in its `parametric_includes`), backing the `..` and `..=` syntax. `ProcessResult` (`exit_code`, `stdout`, `stderr`) is the return type of `std/process` `run()`.
+
+**Introspection classes.** `Type` (a class/type as a runtime value, comparable and stringifiable), `FieldInfo`, `ParamInfo`, and `MethodInfo` back the introspection API (`.class_name`, `.fields`, `.is_a()`, `.responds_to()`, …).
+
+**I/O namespaces.** `File`, `TcpListener`, and `TcpStream` are registered as bare custom types so static-method access like `File.read(...)` resolves.
+
+**Protocol traits.** `Eq`, `Ord`, `Printable`, `From[T]`, `Into[T]`, `Iterator[T]`, `Iterable[T]`, `Random`, `Drop`, `Close`, `DynamicReceiver`, and `FieldAccessible`, plus the `Ordering` enum (`Less` / `Equal` / `Greater`). These live in the `Rc`-shared builtin maps; in prelude mode they are also copied into the environment.
+
+### std submodules
+
+`use std/<submodule>` resolves against builtin exports without touching the module loader. `use std` bare is rejected with a suggestion of the right submodule:
+
+| Submodule | Exports |
+|---|---|
+| `std/cmp` | `Eq`, `Ord`, `Ordering` |
+| `std/fmt` | `Printable` |
+| `std/collections` | `Iterable`, `Iterator` |
+| `std/convert` | `From`, `Into` |
+| `std/random` | `Random` |
+| `std/sys` | `args`, `env`, `set_env`, `exit` |
+| `std/fs` | `read_file`, `write_file`, `append_file`, `exists`, `is_dir`, `mkdir`, `remove`, `list_dir`, `copy`, `rename` (fallible ones `throws IOError`) |
+| `std/process` | `run` (`throws ProcessError`) |
+| `std/crypto` | `sha256` |
+| `std/runtime` | `jit_run`, `evaluate`, `evaluate_unrestricted` (`throws EvalError`), plus the `EvalError` class |
+| `std/unstable` | `FieldAccessible` |
+
+Two gates apply: `std/unstable` requires the `--unstable` flag (or `ASTER_UNSTABLE=1`), and the JIT functions in `std/runtime` require `--jit` (selective import without it is error `M006`; a wildcard import only warns, `W006`).
+
+Imports come in three forms, applied by `apply_imports()`: selective (`use foo { Bar, baz }` — error `M002` if a name is not exported), namespace (`use foo as ns`), and wildcard (`use foo` — all pub items). Selective + alias together is rejected (`M004`).
+
+---
+
+## Checking a Module
+
+`check_module_all()` runs multiple passes over the top-level statements:
+
+1. **Signature pre-registration.** Every top-level `let name = <lambda>` gets its function type registered *before* any body is checked, so recursive and mutually recursive calls resolve. Explicit generic params are honored; otherwise unknown type names in parameter positions are auto-detected and converted from `Custom` to `TypeVar` in the signature.
+2. **Suspendability inference.** `infer_suspendable_functions()` iterates to a fixpoint marking any function whose body contains `async`/`blocking`/`detached` calls, `resolve`, or a call to an already-suspendable function as `suspendable: true` in its `Type::Function`. This is what later forces call sites to be explicit about crossing a suspension boundary.
+3. **Inferred-return fixpoint.** Functions whose return type is still `Type::Inferred` are re-checked in a fixpoint loop until their return types stabilize — this handles function A calling function B where both have inferred returns. Intermediate diagnostics from this loop are discarded; the final pass re-checks everything.
+4. **Final pass.** Every statement is checked. If a `let` binding fails, the name is bound to `Type::Error` so later uses do not cascade into secondary errors.
+
+`check_module()` is a thin wrapper that returns the first error and stashes warnings; `check_module_all()` returns all errors.
+
+---
+
+## Statement Checking
+
+`check_stmt()` dispatches on the statement variant.
+
+**Let bindings** (`check_let_stmt`). Check the value; if there is an annotation, verify compatibility. Special cases, in order:
+
+- If the value is a lambda, `current_function` is set to the binding name and the annotation becomes the expected type for parameter inference.
+- An empty list literal (`List[Nil]`) takes on an annotated `List[T]`; an empty map literal takes on an annotated `Map[K, V]`.
+- Nullable auto-wrap: `T` or `Nil` may be assigned to `T?`.
+- `Nil` cannot be assigned to any non-nullable annotation.
+- A redundant annotation on an obviously typed value (literal, homogeneous list of literals, constructor call) produces warning `W004`.
+- Shadowing a binding from a parent scope produces warning `W003`.
+
+The binding is stored with its definition span (`set_var_with_span`) and recorded in the `symbol_index`. Parameters with default values are registered in `default_params`; `Task[T]` bindings are tracked in `task_bindings` for must-consume enforcement. `Set[T]` and `Map[K, V]` annotations are validated for hashable element/key types (primitives, or custom types that include `Eq`; containers are not hashable).
+
+**Const** (`Stmt::Const`). The value must be a compile-time constant expression (literals, unary/binary ops over constants, list literals, string interpolation over constants). The name goes into `const_names`; reassigning it later is error `E026`.
+
+**If / While / For.** Conditions must be `Bool` (`E015`). Bodies are checked in child scopes; loop bodies bump `loop_depth`. For loops extract the element type from the iterable: `List[T]` and `Set[T]` directly, or a custom class that includes `Iterable` (element type read from its `each()` signature) or `Iterator` (from `parametric_includes` or the `next()` return type). Anything else is error `E007`.
+
+**Assignment.** Targets can be identifiers, member access, or index access; anything else is `E008`. Identifier targets must exist (`E009`, with a Levenshtein suggestion), must not be `const`, and the value must match — with nullable auto-wrap and subtype compatibility (`Dog` assignable to `Animal`) allowed. Member targets are checked against the class's field types; index targets against `List` element or `Map` key/value types. Reassigning a variable clears its boundary-crossed status.
+
+**Break / Continue.** Must be inside a loop (`loop_depth > 0`), otherwise error `E029`.
+
+**Trait.** Method types are collected (stored under unqualified names); methods with empty bodies become `required_methods`. **Enum.** Variant names and per-variant fields are collected into `EnumInfo`; `includes` entries are validated against known traits including parametric arity. **Class.** Delegated to `check_class_stmt` in `check_class.rs`. **Use.** Delegated to `resolve_use()`.
+
+---
+
+## Expression Checking
+
+`check_expr()` dispatches on the expression variant.
+
+**Literals.** `Int` → `Type::Int`, `Float` → `Type::Float`, `Str` → `Type::String`, `Bool` → `Type::Bool`, `nil` → `Type::Nil`.
+
+**Identifiers.** Looked up via `env.get_var()`. Unknown names are error `E002` with a "did you mean" suggestion computed by Levenshtein distance (max distance 2) over all names in scope. Every resolved identifier is recorded in the `symbol_index` with its definition span. Two extra behaviors: a use of a variable that previously crossed an async boundary emits warning `W002` (mutation only affects the local copy), and `List[Nil]` variables promoted by a `.push()` in a nested scope read back their promoted type from `nil_promotions`.
+
+**Binary operators** (`check_binary`):
+
+| Operators | Rule |
+|---|---|
+| `+ - * / % **` | `Int op Int -> Int`, `Float op Float -> Float`, mixed `Int`/`Float` -> `Float`. `String + String -> String`. Anything else is `E003`. |
+| `==` `!=` | Function types are never comparable. Same-type comparison requires custom types to include `Eq` (except `Type` values, which compare by identity) — error `E019` otherwise. `List`/`Set`/`Map`/`Task`/`Nullable` have no runtime equality and are rejected. Mixed `Int`/`Float` is allowed. |
+| `<` `>` `<=` `>=` | Numeric pairs (including mixed `Int`/`Float`) and `String`/`String` are allowed. Custom types of the same class require `Ord` (`E019`). |
+| `and` `or` | Both operands must be `Bool` (`E020`). |
+
+**Unary operators.** `-` requires `Int` or `Float`; `not` requires `Bool` (a nullable operand gets a targeted "this is T?, not Bool" message).
+
+**List literals.** Empty lists resolve to the expected type from context if one is set (annotation, return type, argument position), otherwise `List[Nil]` — a wildcard that unifies with any `List[T]`. Non-empty lists must be homogeneous (`E017`).
+
+**Map literals.** `Expr::Map` entries must have consistent key and value types; the result is `Type::Map(K, V)`. Empty map literals are a placeholder that takes its type from an annotation.
+
+**Ranges.** `start..end` and `start..=end` require `Int` bounds and have type `Range` (the builtin `Iterable` class).
+
+**Indexing.** `List[T]` indexing requires an `Int` index and yields `T`. `Map[K, V]` indexing requires a `K` index and yields `V?` — map lookups are nullable.
+
+**String interpolation.** Each interpolated expression must be a primitive, `String`, `Nil`, or a custom type that includes `Printable` (`E023`).
+
+**Async, blocking, detached, resolve.** `check_async_call` bypasses the throws check (error handling moves to `resolve task!`) and marks identifier arguments as boundary-crossed. `resolve` requires a `Task[T]` operand and enforces single consumption (`E012` on double-consume).
+
+**Error handling.** `expr!` (`check_propagate`) requires the callee to declare `throws`; the caller must itself declare a compatible `throws` — unless it is `main()` (implicit propagation) or the error is `CancelledError` (implicit for task resolution). `!.or(default)` and `!.or_else(handler)` require the fallback to match the success type. `!.catch` arms may be typed (`IOError e => ...`) — each named error type must exist and be a subtype of the declared thrown type — or wildcard; all arms and the success path must agree on a type (arms of type `Never` are exempt). `throw` requires an enclosing `throws` declaration, checks the thrown value against it via the extends chain, and has type `Never`.
+
+### Member access
+
+`check_member` resolves `object.field` through an ordered sequence, falling back to introspection members (`class_name`, `fields`, …) if normal resolution fails:
+
+1. **Namespace access** — `ns.ExportedName` for `use foo as ns` imports; accessing a class or enum through a namespace injects it into the environment so downstream constructor calls and variant access work.
+2. **Builtin static members** — `File`, `TcpListener`, `TcpStream`.
+3. **Enum variant access** — `Color.Red` has type `Color`.
+4. **Builtin type members** — nullable (`or` / `or_else` / `or_throw` only), `Task[T]`, `Mutex[T]`, `Channel[T]`, `MultiSend[T]` / `MultiReceive[T]`, TCP instances, `String`, `Int`, `Float`, `List[T]`, `Set[T]`, and `Type` values.
+5. **Class hierarchy walk** — fields first, then methods, walking the `extends` chain. Generic classes substitute their type arguments into member types. For imported classes, non-`pub` members are rejected with visibility error `E031`.
+6. **Overloaded methods** — from multiple parametric trait inclusions (e.g. two `Into[X]` impls), resolved against the expected type from context.
+7. **From/Into auto-reverse** — `.into()` on a source type resolves if some target class includes `From[Source]`, even when the source has no `Into` impl.
+
+### Collection methods
+
+`List[T]` and `Set[T]` share a common vocabulary, checked structurally rather than through class lookup:
+
+| Method | Type | Notes |
+|---|---|---|
+| `len()` | `-> Int` | also available as free function `len(x)` |
+| `each(f)` | `(Fn(T) -> Void) -> Void` | the Iterable protocol method |
+| `push(item)` | `(T) -> Void` | Set: silent no-op on duplicate. Pushing into a `List[Nil]` promotes the variable to `List[T]` |
+| `pop()` | `-> T` | |
+| `contains(item)` / `contains(f)` | `(T) -> Bool` / `(Fn(T) -> Bool) -> Bool` | predicate overload selected when the argument is named `f` |
+| `remove_first(f)` | `(Fn(T) -> Bool) -> T?` | |
+| `map(f)` | `(Fn(T) -> U) -> List[U]` | |
+| `filter(f)` | `(Fn(T) -> Bool) -> List[T]` | |
+| `reduce(init, f)` | `(U, Fn(U, T) -> U) -> U` | |
+| `find(f)` / `any(f)` / `all(f)` | predicate → `T?` / `Bool` / `Bool` | |
+| `count()` / `first()` / `last()` / `to_list()` | `-> Int` / `T?` / `T?` / `List[T]` | |
+| `min()` / `max()` / `sort()` | `-> T?` / `T?` / `List[T]` | require `T includes Ord`, checked at the call site |
+| `unique()` | `-> List[T]` | requires `T includes Eq` |
+
+List-only extras: `insert(at, item)`, `remove(at) -> T`, `random() -> T`. Set-only: `remove(item)`. The vocabulary methods (`map` through `unique`) come from `iterable_vocabulary_methods()` in `check_class.rs` and are also injected into any user class that includes `Iterable`, with the same `Ord`/`Eq` constraints enforced.
+
+### Match expressions
+
+`check_match_expr` checks each pattern against the scrutinee type, then unifies arm result types:
+
+- Identifier patterns bind the scrutinee into a child scope. For a nullable scrutinee, the binding is unwrapped to `T` only if a `nil` literal arm exists; otherwise it stays `T?` (the catch-all could still match nil).
+- Enum variant patterns may destructure fields — `Circle(r)` binds `r` to the variant's field type, validated against `EnumInfo::variant_fields`.
+- Arms of type `Never` (e.g. `throw`) or `Error` are skipped during unification; remaining arms must agree, with subtype compatibility allowed in either direction.
+
+Exhaustiveness (`E011`): a wildcard `_` or identifier pattern makes any match exhaustive. Without one, `Bool` matches must cover both `true` and `false`; an enum match must cover every variant; a nullable scrutinee additionally requires a `nil` arm; everything else requires a catch-all.
+
+---
+
+## Call Checking
+
+`check_call()` runs a series of interceptions before the generic path:
+
+1. **Introspection calls** — `x.is_a(type: T)` and `x.responds_to(name: "...")`.
+2. **Nullable methods** — `x.or(default)`, `x.or_else(f)` unwrap `T?` to `T`; `x.or_throw(err)` unwraps and requires an enclosing `throws` declaration compatible with the error argument.
+3. **`contains` predicate overload** and **`push` promotion** for `List[Nil]` (the promotion is recorded in `nil_promotions` so it survives scope exit).
+4. **DynamicReceiver fallback** — a method call that does not resolve on a class including `DynamicReceiver` routes through its `method_missing`, validating argument types against the declared `Map` value type; with a closed known-name set, unknown names are rejected at compile time. The same routing applies to *bare* calls to unknown names inside a DynamicReceiver class body.
+
+`check_call_inner()` then handles the polymorphic builtins whose signatures depend on the argument type — `len()` (String/List/Set), `to_string()` (primitives), `log`/`say`, `random()`, `Set[T]()`, `Mutex(...)`, `Channel(...)` / `MultiSend` / `MultiReceive`, and `resolve_all` / `resolve_first` — plus the `Type.from(...)` intrinsic: when the receiver class includes `From`, all `from()` overloads are collected and matched against the argument types, so a class can include `From[A]` and `From[B]` simultaneously. A throwing `from` (like `Int.from`, which throws `IntParseError`) requires error handling at the call site. `to_int(...)` with a single positional argument is normalized to the `text:` parameter and dispatched through the normal path so its `throws IntParseError` signature drives error handling.
+
+Everything else goes through `check_user_function_call()`:
+
+1. **Resolve the callee type.** Must be a `Type::Function`.
+2. **Suspendability check** — a plain call to a suspendable function is error `E030`; the call site must use `async` / `blocking` / `detached` to make the suspension boundary explicit.
+3. **Throws check** — calling a `throws` function without `!`, `!.or()`, `!.or_else()`, or `!.catch` is error `E013`.
+4. **Positional-argument policy.** The parser synthesizes names `_0`, `_1`, … for positional arguments. Constructor calls (capitalized callee) accept them, mapped to parameters by index. Ordinary function calls reject them with a hint ("add \`x: \` before this") — regular calls use named arguments.
+5. **Arity check**, allowing missing arguments whose parameters have registered defaults. The error message lists missing and unknown names explicitly.
+6. **Match arguments by name, order-independent.** Unknown argument names get an edit-distance suggestion. Each argument type is unified against the parameter type; lambda arguments with `Inferred` parameter types are checked against the (binding-substituted) expected parameter type so their types flow in from context.
+7. **Constraint validation** — after all bindings are established, `check_typevar_constraints()` verifies `extends` and `includes` constraints on every bound type variable, including parametric trait arguments (`T includes Into[Fahrenheit]`), producing `E024` on failure.
+8. **Return type substitution** — type variables in the return type are replaced by their bindings.
+
+### Type unification
+
+`unify_inner()` is the heart of generic checking. It takes an expected type, an actual type, a mutable bindings map, an optional environment (for subtype checks), and an *invariance* flag:
+
+- `TypeVar(T)` vs anything: if `T` is bound, the actual must equal the binding; otherwise bind it. Unification is **symmetric** — a `TypeVar` on the actual side binds the same way. An **occurs check** prevents infinite types (`T` can never be bound to `List[T]`).
+- `List`, `Set`, `Map`, and `Task` unify their element types **invariantly** — `List[Dog]` does not unify with `List[Animal]`. The empty list `List[Nil]` unifies with any `List[T]`.
+- `Custom(name, args)` vs `Custom(name, args)`: names must match — except in covariant positions, where a subtype (via the `extends` chain) is accepted. Type arguments unify pairwise.
+- `Function` vs `Function`: parameter types pairwise, then return types. Parameter *names* are ignored — function types are structural.
+- Everything else: plain equality.
+
+Subtyping itself is nominal: `is_subtype_of()` walks the `extends` chain with cycle detection. `Type::Error` — the error-recovery sentinel — short-circuits almost every check: once a subexpression fails, everything containing it silently produces `Type::Error` instead of cascading diagnostics.
+
+---
+
+## Scoping
+
+`TypeEnv` implements lexical scoping via a parent chain, but scope creation is zero-copy (see [The AST](/internals/ast/) for the environment internals). The checker uses two mechanisms:
+
+```rust
+/// Run `f` in a child scope: env enter/exit plus save/restore of ScopeContext.
+pub(crate) fn with_child_scope<F, R>(&mut self, f: F) -> R { ... }
+
+/// Create a child TypeChecker that *moves* the env into a child scope.
+/// The caller MUST call restore_from_child() to move it back and merge
+/// diagnostics, type_table, and symbol_index entries.
+pub(crate) fn child_checker(&mut self) -> TypeChecker { ... }
+```
+
+`with_child_scope` is used for if/elif/else branches, loop bodies, and similar blocks; `child_checker` + `restore_from_child` is used where a separate checker value is convenient (match arm bindings, catch arms, lambda bodies). Either way, variables declared in a child scope do not leak into the parent — with one deliberate exception: `nil_promotions` persist, so a `.push()` inside an `if` still fixes the element type of an outer empty list.
+
+---
+
+## Diagnostics
+
+Every diagnostic is built from a `DiagnosticTemplate` (defined in the `ast` crate), which carries a stable code and renders a message. Type errors are `E001`–`E032` (`E001` type mismatch, `E002` unknown identifier, `E011` match errors, `E013` error-propagation misuse, `E019` comparison errors, `E029` `break`/`continue` outside a loop, `E030` suspension errors, `E031` visibility, `E032` dynamic method conflicts, …). Module errors are `M001`–`M006`, and the checker's warnings include `W002` (use after async copy), `W003` (shadowing), `W004` (redundant annotation), and `W006` (`std/runtime` without `--jit`). Diagnostics accumulate in `reg.diagnostics`; labeled spans point back at the source via the `Span` on every AST node.

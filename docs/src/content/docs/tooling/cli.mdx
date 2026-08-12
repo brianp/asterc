@@ -1,0 +1,147 @@
+---
+title: The asterc CLI
+description: Check, run, build, format, and clean Aster programs with the asterc command-line tool.
+---
+
+`asterc` is the Aster compiler's command-line interface. It has five subcommands:
+
+| Command | What it does |
+|---------|--------------|
+| `asterc check <file>` | Type-check a source file without generating code |
+| `asterc run <file>` | Compile and execute in-process via JIT |
+| `asterc build <file>` | Compile ahead-of-time to a native executable |
+| `asterc fmt [files...]` | Format source files |
+| `asterc clean` | Remove build artifacts |
+
+If you pass a file with no command, `asterc` defaults to `check`:
+
+```bash
+asterc hello.aster    # same as: asterc check hello.aster
+```
+
+## asterc check
+
+Runs the front-end only: lex, parse, typecheck. Errors and warnings are reported with source-annotated diagnostics; no code is generated.
+
+```bash
+asterc check hello.aster
+```
+
+On success it prints `Type checking passed for hello.aster`. On failure it prints each diagnostic and exits with code 1.
+
+## asterc run
+
+The full pipeline: lex, parse, typecheck, lower to FIR (the compiler's intermediate representation), JIT-compile with Cranelift, and execute in-process.
+
+```bash
+asterc run hello.aster
+```
+
+The process exit code is the return value of `main()`, clamped to the 0–255 range. A program needs a `def main()` entry point to run — `asterc` will tell you if one is missing.
+
+## asterc build
+
+Compiles ahead-of-time to a standalone native executable:
+
+```bash
+asterc build hello.aster -o hello
+./hello
+```
+
+The build has two steps:
+
+1. Compile the Aster source to an object file with Cranelift.
+2. Link that object file against the pre-built Aster runtime static library (`libcodegen.a`, which contains all runtime builtins and the green thread scheduler), using the system C compiler as the linker driver.
+
+The resulting binary is a standalone executable.
+
+### Build options
+
+```bash
+asterc build <file.aster> [options]
+```
+
+| Flag | Effect |
+|------|--------|
+| `-o <path>`, `--output <path>` | Output binary path |
+| `--release`, `-r` | Use the release profile (optimized) |
+| `--opt <none\|speed\|size>` | Override the optimization level |
+| `--build-dir <path>` | Override the build directory |
+| `--verbose`, `-v` | Print compilation steps |
+| `--jit` | Include the JIT in the binary for runtime `evaluate()` |
+
+### The build directory and caching
+
+Build artifacts live under `.aster/build/<profile>/` at the project root, with `obj/`, `gen/`, and `bin/` subdirectories. The project root is found by walking up from the source file looking for an `.aster/` directory first, then a `.git/` directory, falling back to the source file's own directory.
+
+Without `-o`, the binary lands in `.aster/build/<profile>/bin/<name>`.
+
+Builds are cached: a `manifest.json` in the build directory records a SHA-256 hash of each source file, and an unchanged source skips recompilation (you'll see `(cached)` with `--verbose`). Debug and release profiles use separate directories, so switching profiles never poisons the cache.
+
+### Environment variables
+
+| Variable | Effect |
+|----------|--------|
+| `CC` | C compiler used as the linker driver (default: `cc`) |
+| `ASTER_BUILD_DIR` | Same as `--build-dir` |
+| `ASTER_UNSTABLE=1` | Same as `--unstable` |
+
+## asterc fmt
+
+Formats `.aster` files in place. With no files, it formats every `.aster` file in the current directory.
+
+```bash
+asterc fmt                        # format all .aster files in cwd
+asterc fmt src.aster lib.aster    # format specific files
+asterc fmt --check                # exit 1 if anything needs formatting
+asterc fmt --diff                 # show what would change, don't write
+cat src.aster | asterc fmt --stdin    # read stdin, write stdout
+asterc fmt --check --output-format json    # machine-readable results
+```
+
+See the [Formatter](/tooling/formatter/) page for what the formatter actually does to your code.
+
+## asterc clean
+
+Removes build artifacts:
+
+```bash
+asterc clean          # removes .aster/build
+asterc clean --all    # removes the entire .aster directory
+```
+
+`clean` resolves the project root from the current directory using the same walk-up logic as `build`.
+
+## Global flags
+
+These work across commands:
+
+| Flag | Effect |
+|------|--------|
+| `--unstable` | Allow importing from `std/unstable` (or set `ASTER_UNSTABLE=1`) |
+| `--jit` | Enable JIT-dependent features — allows importing `evaluate` and `jit_run` from `std/runtime`, and for `build`, embeds the JIT in the output binary |
+
+## Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | Errors in your source (lex, parse, type errors; missing `main()`; formatting drift with `fmt --check`/`--diff`) |
+| 2 | Back-end failures (lowering, codegen, linker) |
+
+For `asterc run`, the exit code is your program's `main()` return value (clamped to 0–255).
+
+## check, run, and build are different bars
+
+- If a program passes `check`, the front-end understands it.
+- If it passes `run`, lowering, codegen, and the JIT runtime all agree on what it means.
+- If it passes `build`, all of that holds plus AOT runtime parity and system linker compatibility.
+
+A file can pass `check` and still be rejected by `run` or `build` — the compiler says so explicitly when a language feature typechecks but isn't executable yet:
+
+```text
+error: execution support for <feature> is not executable yet
+note: this file can still pass `asterc check` while `run` and `build` reject it
+```
+
+This matters when debugging: a lowering error is a different class of problem than a type error, and an AOT linker failure is a different class than a JIT crash.

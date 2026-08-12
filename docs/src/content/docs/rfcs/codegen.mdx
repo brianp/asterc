@@ -1,0 +1,30 @@
+---
+title: "RFC: Code Generation"
+description: Cranelift JIT backend, HIR lowering, runtime, and AOT compilation.
+sidebar:
+  badge:
+    text: Planned
+    variant: note
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+
+**Status:** Planned
+
+Adds a native code backend using Cranelift. Transforms the typed AST through an intermediate HIR, monomorphizes generics, computes class layouts, then translates to Cranelift IR for JIT execution. Future AOT path emits `.o` files for production binaries.
+
+## Key Decisions
+
+- **Cranelift** chosen over tree-walk interpreter, bytecode VM, or LLVM — 10x faster compilation than LLVM, runtime within 2x.
+- **Two-phase architecture**: HIR lowering (desugar, resolve generics, compute layouts) then CLIF translation.
+- **Simple bump allocator** for memory; GC deferred to future.
+- **Tagged pointer scheme**: immediates for Int/Float/Bool, heap pointers for String/List/Class instances.
+- **Incremental milestones**: integers, control flow, strings, functions, classes, lists, generics, async.
+- **Agent-readable IR dumps**: `--emit hir`, `--emit clif`, `--emit layout` with JSON support.
+- **AOT future**: swap `cranelift-jit` for `cranelift-object` to emit object files for production compilation.
+
+## Dependencies
+
+Requires the diagnostics plan (spans for error reporting).
+
+<LinkCard title="Full Plan" href="https://github.com/example/asterc/blob/main/docs/plans/codegen.md" description="Read the complete code generation plan." />

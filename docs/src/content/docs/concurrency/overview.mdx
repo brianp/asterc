@@ -1,0 +1,71 @@
+---
+title: Concurrency Overview
+description: Aster's unique approach to async programming.
+---
+
+Aster's concurrency model solves one of the biggest pain points in modern programming: **viral async**.
+
+## The Problem
+
+In most languages (Rust, JavaScript, C#), `async` is declared at function definition time. One async function forces every caller up the stack to also be async. This "function coloring" problem splits codebases into sync and async worlds.
+
+## Aster's Solution: Call-Site Async
+
+In Aster, **the caller decides** whether a function runs synchronously, asynchronously, or resolved. Functions are just functions — async is an execution strategy, not part of the type signature.
+
+```
+# Three ways to call the same function:
+u  = fetch_user(id: 1)            # sync: runs on current green thread
+t  = async fetch_user(id: 1)      # async: spawns green thread, returns Task[User]
+u2 = blocking fetch_user(id: 1)   # blocking: suspends, returns User
+u3 = resolve t!                   # resolve: consumes Task[User]
+```
+
+**No `await` keyword.** No viral async. No runtime to manage.
+
+## Invocation Modes
+
+| Mode | Syntax | Returns | Behavior |
+|------|--------|---------|----------|
+| Sync | `f()` | `T` | Runs on current green thread, sequentially. |
+| Blocking | `blocking f()` | `T` | Calls suspendable work and waits without exposing a task handle. |
+| Async | `async f()` | `Task[T]` | Spawns a green thread, continues immediately. |
+| Resolve | `resolve task!` | `T` | Consumes a task handle and waits for its result. |
+| Detached | `detached async f()` | nothing | Fire-and-forget, no handle. |
+
+`resolve` always takes `!`: a task can be canceled while you wait, so resolving can throw `CancelledError`. You don't need to declare `throws CancelledError` for this — it propagates implicitly. `blocking` is only valid on a callee that can actually suspend; using it on a plain function is a compile error.
+
+## No Viral Async
+
+Libraries expose functions normally. Callers choose execution mode per call site:
+
+```
+def fetch_user(id: Int) -> User
+  db.query("SELECT * FROM users WHERE id = ?", id)
+```
+
+- If `db.query` is sync, `fetch_user` is sync
+- If `db.query` could suspend, the caller wraps with `blocking` or `async`
+
+## Compiler Enforcement
+
+If a function could suspend and you call it plain sync, the compiler errors:
+
+```
+error: 'fetch_user' may suspend
+help: call with 'blocking fetch_user(...)' or 'async fetch_user(...)'
+```
+
+No duplication: you never write `async` at both definition and call site.
+
+## Green Threads
+
+Under the hood, Aster uses **M:N green threads** with a work-stealing scheduler. M lightweight green threads (64KB stack each) are multiplexed across N OS worker threads (one per CPU core). The runtime is invisible — it starts before `main()`, manages OS threads automatically, and the developer never configures it.
+
+Key properties:
+- **Context switching via hand-written assembly** — saves/restores only callee-saved registers (7 on x86_64, 21 on aarch64). No system calls.
+- **Cooperative preemption** — the compiler inserts safepoints at every function call and loop back-edge. After 1024 safepoints, a green thread yields to let others run.
+- **Stack pooling** — stacks are `mmap`'d with guard pages and recycled via a freelist.
+- **Work-stealing** — idle workers steal tasks from busy workers' deques for automatic load balancing.
+
+See [Green Threads Internals](/concurrency/green-threads/) for a full walkthrough of how the assembly context switching, scheduler, and stack allocation work.

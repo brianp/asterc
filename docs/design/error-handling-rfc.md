@@ -1,0 +1,505 @@
+# RFC: Error Handling & Nullability in Aster
+
+Status: DECIDED — All major questions resolved. Async + throws composition
+deferred to async design doc.
+
+---
+
+## 1. Design Principles
+
+- Errors are visible at the call site — you can see where things can fail
+- No stringly-typed errors — error types are strong, matchable, exhaustive
+- No Go-style `if err != nil` boilerplate after every call
+- No Rust-style unwrap ceremony for simple cases
+- Force good decisions rather than allow lazy ones
+- One way to do things — no redundant mechanisms
+- Nullable values exist for real-world needs (DB, APIs) but shouldn't leak into application logic
+- `!` is for errors, `?` is for nullability — clean separation, no overlap
+- Error hierarchy uses `extends` (single inheritance), not `includes`
+
+---
+
+## 2. Error Hierarchy
+
+### Exception and Error — the standard base types
+
+Aster provides two built-in base types for the error hierarchy:
+
+```
+# Built-in — the root of all throwable types
+# Do not extend directly in application code
+class Exception
+  def message() -> String
+  def stacktrace() -> List[String]
+
+# Built-in — the base for application errors
+# Extend this in your code
+class Error extends Exception
+```
+
+`Exception` is the root. It's what surfaces if `main` crashes due to an
+unrecoverable fault. Application code should never extend `Exception`
+directly — extend `Error` instead.
+
+This mirrors Ruby's hierarchy: `Exception` exists but you work with
+`StandardError` (here called `Error`).
+
+### Built-in error types
+
+The standard library provides these error types:
+
+```
+class Exception                    # root — do not extend
+  class Error extends Exception    # app base — extend this
+  class CancelledError extends Error   # thrown when a task is canceled
+  class LockTimeoutError extends Error # thrown when Mutex.lock() times out
+  class ChannelFullError extends Error
+  class ChannelEmptyError extends Error
+  class ChannelClosedError extends Error
+```
+
+All are catchable with standard `!.catch` flows.
+
+### Domain errors extend Error
+
+Error types use `extends` for single inheritance. This creates a clear
+IS-A hierarchy that the compiler can walk for type compatibility.
+
+```
+class NetworkError extends Error
+  kind: String
+  url: String
+
+  def message() -> String
+    kind + ": " + url
+
+class TimeoutError extends NetworkError
+  timeout_ms: Int
+
+  def message() -> String
+    "Timeout after " + to_string(timeout_ms) + "ms: " + url
+
+class NotFoundError extends NetworkError
+  status: Int
+
+  def message() -> String
+    "Not found (" + to_string(status) + "): " + url
+```
+
+Error classes can still `includes` traits for cross-cutting concerns
+(e.g., `includes Serializable`), but the error hierarchy itself is
+always via `extends`.
+
+### Why `extends`, not `includes`
+
+- Error hierarchies are IS-A relationships — a `TimeoutError` IS a
+  `NetworkError`. That's what `extends` means.
+- Single inheritance gives a clear, linear chain for the compiler to
+  walk during `!` propagation checks.
+- `includes` is for trait composition — shared behavior across unrelated
+  types. Error types are related by definition.
+
+### The `throw` keyword
+
+`throw` raises an error. It accepts any class that extends (directly or
+transitively) the function's declared `throws` type:
+
+```
+def fetch(url: String) throws NetworkError -> String
+  throw TimeoutError(kind: "timeout", url: url, timeout_ms: 5000)
+  # TimeoutError extends NetworkError — valid
+```
+
+No anonymous errors. You can't `throw("message")`. You always throw
+a defined error class. This forces structured, matchable error types and
+kills stringly-typed error culture.
+
+### `throws` syntax
+
+Keyword style, no parens. Appears between parameter list and return arrow:
+
+```
+def fetch(url: String) throws NetworkError -> String
+```
+
+---
+
+## 3. Call-Site Error Handling
+
+When calling a function that throws, the caller must acknowledge it with
+`!` or `!.catch` / `!.or()` / `!.or_else()`. Calling a throws function
+without acknowledgment is a compile error.
+
+```
+# ! — propagate: my caller deals with it
+let data = fetch(url)!
+
+# !.or(default) — substitute a value (eager)
+let data = fetch(url)!.or("")
+
+# !.or_else(-> expr) — lazy recovery, can throw
+let data = fetch(url)!.or_else(-> fetch(backup_url)!)
+
+# !.catch — match on error type
+let data = fetch(url)!.catch
+  TimeoutError t -> retry(t.url)
+  NotFoundError n -> ""
+  _ -> ""
+```
+
+### The `!` operator
+
+- Propagates the error to the enclosing function
+- Enclosing function must also be `throws` (with a compatible error type)
+- Reads as "pass it up"
+- Each `!` propagation appends the current file/line to the error's
+  stacktrace (see section 5)
+
+### `!.or(default)` — eager fallback
+
+Provides a value of the original type. Eager evaluation — the default
+expression is always evaluated. Use for simple, cheap defaults:
+
+```
+let count = parse_int(s)!.or(0)
+```
+
+### `!.or_else(-> expr)` — lazy recovery
+
+Runs a function to produce a fallback. The function can itself throw,
+perform side effects, or do complex recovery logic:
+
+```
+let conn = connect(primary)!.or_else(-> connect(backup)!)
+```
+
+### `!.catch` — match expression
+
+`!.catch` is a match expression, not a lambda. It lives in the enclosing
+scope, which means arms have full access to control flow: `return`,
+`break`, `continue`, and `throw` all work as expected.
+
+```
+for url in urls
+  let data = fetch(url)!.catch
+    TimeoutError t -> continue        # skip this iteration
+    NotFoundError _ -> return []      # return from enclosing function
+    _ -> ""                           # produce a value
+
+  process(data)
+```
+
+Each arm must either:
+- Return a value of type `T` (the success type), or
+- Diverge (`return`, `break`, `continue`, `throw`)
+
+Arms are order-dependent and match on error types using the extends
+hierarchy. The compiler enforces specificity ordering — placing a broad
+type before a narrow subtype is a **compile error** (unreachable arm):
+
+```
+# COMPILE ERROR: NetworkError shadows TimeoutError
+let data = fetch(url)!.catch
+  NetworkError n -> log(n.message())
+  TimeoutError t -> retry(t.url)      # unreachable — rejected
+
+# OK: specific before broad
+let data = fetch(url)!.catch
+  TimeoutError t -> retry(t.url)
+  NetworkError n -> log(n.message())
+```
+
+---
+
+## 4. Error Type Compatibility & Propagation
+
+### Compatibility via extends hierarchy
+
+`!` propagation works when the thrown error's class `extends` (directly or
+transitively) the caller's declared throws type. The compiler walks the
+extends chain to verify compatibility.
+
+```
+class AppError extends Error
+class NetworkError extends AppError
+class ParseError extends AppError
+
+def fetch(url: String) throws NetworkError -> String
+def parse(raw: String) throws ParseError -> Config
+
+# Both propagate because both extend AppError
+def load(url: String) throws AppError -> Config
+  let raw = fetch(url)!       # NetworkError extends AppError — OK
+  parse(raw)!                  # ParseError extends AppError — OK
+```
+
+No union types. No implicit widening. The developer creates a common ancestor
+when needed, using the same `extends` system used everywhere else in Aster.
+
+### Linter: discourage `throws Error` and `throws Exception`
+
+`throws Error` is the broadest practical catch-all — it accepts any
+application error but provides no type information to callers. The linter
+warns on both `throws Error` declarations and bare `Error` catch arms.
+
+`throws Exception` should almost never appear — it's a stronger code smell.
+
+These are linter warnings, not compiler errors — valid in rare cases but
+should be intentional.
+
+---
+
+## 5. Stacktrace
+
+Errors carry a stacktrace built incrementally during propagation. This is
+zero-cost on the happy path.
+
+### Mechanism
+
+1. `throw` creates the error value and records the origin location
+   (file, line)
+2. Each `!` that propagates the error appends the current file/line to
+   the error's trace
+3. The trace is a list of locations built as the error travels up the
+   call chain
+4. `.stacktrace()` is available on any error via `Exception` —
+   it reads the trace that was built during propagation
+
+### Cost model
+
+- **Happy path**: zero cost. No trace is created, no allocations.
+- **Error path**: one list append per `!` hop. Proportional to
+  propagation depth.
+- **`.stacktrace()` call**: reads already-built data. No reconstruction
+  needed.
+
+Since `!` is syntactic sugar for "if error, return it," the stack is not
+unwinding — it's normal returns. The trace must be built incrementally
+because frames are gone after returning.
+
+---
+
+## 6. Nullability
+
+### `T?` with minimal surface area
+
+`T?` is Aster's optional type. Semantically equivalent to Rust's
+`Option<T>` or Elm's `Maybe T`, expressed with postfix `?` syntax.
+
+```
+String?    # equivalent to Option[String] / Maybe String
+Int?       # equivalent to Option[Int] / Maybe Int
+```
+
+### Core rules
+
+1. **`T?` is a distinct type from `T`.** A `String?` is not a `String`.
+   You can't call String methods on a `String?`. You have to resolve it first.
+
+2. **`T?` can appear anywhere** — class fields, function params, return
+   types, local variables, generic positions (`List[String?]` is valid).
+
+3. **`T?` has exactly four operations.** Nothing else.
+
+   | Operation | Signature | Purpose |
+   |-----------|-----------|---------|
+   | `.or(default)` | `T? -> T` | Eager fallback value |
+   | `.or_else(-> T)` | `T? -> T` | Lazy fallback (can throw) |
+   | `.or_throw(Error)` | `T? -> T` | Absence is an error |
+   | `match` | pattern match | Branch on nil / value |
+
+   No `.map()`, no `.flatMap()`, no `.filter()`, no chaining combinators,
+   no equality checks, no `.is_nil()`. Every operation forces resolution
+   out of `T?`.
+
+4. **`nil` is the only way to produce a `T?` without a value.**
+   `nil` is a literal of type `Nil`. `Nil` is a distinct type that
+   satisfies any `T?`. You can't assign `nil` to a non-nullable type.
+   `T` auto-wraps to `T?` when assigned to a nullable binding.
+
+   ```
+   let x: String? = nil         # ok — Nil satisfies String?
+   let y: String = nil           # COMPILE ERROR — Nil is not String
+   let z: String? = "hello"      # ok — String auto-wraps to String?
+   ```
+
+   In `match` expressions, the non-nil arm narrows `T?` to `T`:
+
+   ```
+   match user.bio               # bio is String?
+     nil => "No bio"            # nil arm — bio is absent
+     b => b.length              # b is String, not String? — narrowed
+   ```
+
+5. **No nested nullability.** `String??` is a compile error. A value is
+   either present or absent. There is no "maybe maybe."
+
+6. **No methods from `T` available on `T?`.** If you have `user.bio` as
+   `String?`, you can't write `user.bio.length` — resolve it first:
+
+   ```
+   let bio = user.bio.or("")
+   log(to_string(bio.length))   # works — bio is String
+   ```
+
+7. **No optional chaining.** `user?.name` doesn't exist. You resolve the
+   nullable value, then access fields on the resolved value. This keeps
+   nullable types from spreading through chains of access.
+
+8. **No equality with nil.** `x == nil` isn't valid. `T?` doesn't support
+   equality. Resolve with `.or()`, `.or_else()`, `.or_throw()`, or `match`.
+
+### `.or_throw()` — bridging nullable to error handling
+
+When absence is an error in context, `.or_throw()` converts a `T?` into
+either `T` or a thrown error:
+
+```
+def get_bio(user: User) throws MissingFieldError -> String
+  let bio = user.bio.or_throw(MissingFieldError(field: "bio"))
+  bio  # this is String, not String?
+```
+
+This bridges nullable into error handling. The value stops being `T?`
+and either resolves or enters `throws` land.
+
+### Absence vs failure: two separate concepts
+
+`T?` (absence) and `throws` (failure) are independent:
+
+- `Map.get(key)` returns `V?` — the key might not be there. Not an error.
+- `db.connect(url)` `throws DbError` — something went wrong. An error.
+- `db.find_user(id)` could `throws DbError` AND return `User?` — the DB
+  call might fail (error), or it might succeed but find no user (absence).
+
+```
+def find_user(id: Int) throws DbError -> User?
+
+# Caller handles both independently:
+let user = find_user(42)!
+let name = user.or(default_user()).name
+```
+
+### Linter guidance (Elm-inspired)
+
+The Aster linter warns when nullable types are overused:
+
+- **"Consider restructuring — N nullable fields in class X."**
+  If a class has more than ~2-3 nullable fields, the types might be
+  modeled wrong.
+
+- **"Nullable parameter — consider overloading or defaults."**
+  `def greet(name: String?)` might be better as
+  `def greet(name: String = "friend")`.
+
+- **"Nullable return — consider throws or defaults."**
+  A function returning `T?` might be better expressed as `throws NotFound`
+  if absence is exceptional.
+
+These are linter hints, not compiler errors.
+
+### Concrete scenarios
+
+**Postgres `bio TEXT NULL`:**
+```
+class UserRow
+  id: Int
+  email: String
+  bio: String?           # nullable column -> nullable field
+
+let user_row = db.query_one("SELECT * FROM users WHERE id = $1", id)!
+let bio_display = user_row.bio.or("No bio provided")
+```
+
+**API optional `first_name`:**
+```
+class CreateUserRequest
+  email: String
+  first_name: String?    # not sent -> nil
+
+def handle_create(req: CreateUserRequest) -> User
+  User(
+    email: req.email,
+    name: req.first_name.or("Anonymous")
+  )
+```
+
+**`Map.get(key)`:**
+```
+let headers: Map[String, String] = get_headers()
+let auth = headers.get("Authorization")          # returns String?
+let token = auth.or_throw(AuthError(msg: "missing auth header"))
+```
+
+---
+
+## 7. Async + Error Interaction
+
+Resolved in the async RFC (`docs/design/async-rfc.md`).
+
+Summary:
+- `resolve task` on a throwing task requires `!`/`!.catch`/`!.or()`
+- `resolve f()` where `f` throws works with normal error handling
+- `resolve_all` throws if any task threw
+- `resolve_first` throws if the winning task threw
+- `detached async` on throwing functions logs errors, continues
+- Task carries throwing context from the function signature
+
+---
+
+## 8. Entry Point
+
+`main()` can't declare `throws`. There's no caller to propagate to.
+
+This doesn't require special rules. The compiler already enforces that every
+`throws` call is handled with `!`, `!.catch`, `!.or()`, or `!.or_else()`.
+Since `main()` has no `throws` declaration, you can't use bare `!` inside
+it — the compiler forces you to handle every error locally. If an
+unrecoverable fault occurs at runtime, the program crashes with an
+`Exception`.
+
+Top-level scripts follow the same rule: the top level is always an error
+boundary.
+
+---
+
+## 9. Summary of Decided Design
+
+1. **`Exception`** — built-in root of all throwable types, do not extend directly
+2. **`Error extends Exception`** — built-in base for application errors, extend this
+3. **Error hierarchy uses `extends`** — single inheritance, IS-A relationships
+4. **Error classes can `includes` traits** — for cross-cutting concerns, not hierarchy
+5. **`throws ErrorType`** on function signatures — strong typed errors, no parens
+6. **`throw ErrorValue`** to raise errors — no string shortcuts, must be a defined class
+7. **`!`** for error propagation — appends to stacktrace, requires compatible `throws` on caller
+8. **`!.or(default)`** for eager fallback on errors
+9. **`!.or_else(-> expr)`** for lazy recovery on errors
+10. **`!.catch`** for pattern matching on error types — match expression, full control flow
+11. **Catch arms are order-dependent** — compiler error on shadowed (unreachable) arms
+12. **Errors carry stacktrace** — built incrementally through `!`, zero cost on happy path
+13. **No `try`/`catch`** — one error handling mechanism only
+14. **`T?`** as nullable type — postfix syntax, Option/Maybe semantics
+15. **`T?` API is exactly four operations**: `.or()`, `.or_else()`, `.or_throw()`, `match`
+16. **No optional chaining** (`user?.name`), no equality with nil, no nested `T??`
+17. **No methods from `T` on `T?`** — must resolve first
+18. **Absence (`T?`) and failure (`throws`) are separate concepts**
+19. **`.or_throw(Error)`** bridges nullable into error handling
+20. **Linter warns** on `throws Error`/`throws Exception`, nullable overuse
+21. **`main()` cannot throw** — top level is always an error boundary
+22. **Async + throws composition** — deferred to async design doc
+
+## 10. What Was Rejected
+
+- `fail` keyword (replaced by `throw`)
+- `fail("message")` / anonymous string errors
+- `try`/`catch` blocks (redundant with `!.catch`)
+- `?` for error handling (`?` is exclusively for nullable types)
+- Bare `?` on throws calls
+- `includes` for error hierarchy (errors use `extends`)
+- `.map()`, `.flatMap()`, `.filter()` on `T?`
+- Optional chaining (`user?.name`)
+- `x == nil` equality checks
+- `throws(ErrorType)` with parens
+- Union throws types
+- `model` vs `class` distinction for nullability
+- Nested nullability (`T??`)

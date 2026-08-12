@@ -1,0 +1,387 @@
+# RFC: Compilation Model — Build Directory, Optimization Levels, and Artifact Management
+
+Status: PROPOSED
+
+---
+
+## 1. Problem
+
+The Aster compiler currently has a minimal build pipeline:
+
+- `asterc run` compiles entirely in memory via JIT — no disk I/O
+- `asterc build` writes `.o` and `_runtime.c` next to the `-o` target, links via `cc`, then deletes both intermediates immediately
+
+This means:
+- No build directory — intermediates land wherever `-o` points
+- No optimization levels — Cranelift always runs at `speed`
+- No artifact caching — every build recompiles everything from scratch
+- No debug/release distinction — no debug info, no profile concept
+- The C runtime is regenerated and recompiled on every build
+- `asterc run` compiles everything in memory even for large programs
+
+---
+
+## 2. Design Principles
+
+From the language philosophy:
+
+- **One way to do things** — `debug` and `release`, not 6 optimization levels. Simple model, like Go.
+- **Low entropy** — sensible defaults, minimal flags. `asterc build` just works.
+- **Convention over configuration** — standard build directory, no build files needed.
+- **Fast by default** — JIT for development (`run`), AOT for production (`build`). Debug builds should compile fast; release builds should run fast.
+
+---
+
+## 3. Build Directory
+
+### 3.1 Location
+
+The build directory is `.aster/build/` at the project root (the directory containing the source file, or the working directory).
+
+```
+project/
+  src/
+    main.aster
+  .aster/
+    build/
+      debug/
+        obj/          # compiled .o files
+        gen/          # generated files (runtime.c, runtime.o)
+        bin/          # final executables
+      release/
+        obj/
+        gen/
+        bin/
+```
+
+**Why `.aster/`:** Hidden directory follows convention (`.git/`, `.build/`, `zig-cache/`). Nested under `.aster/` because this directory may also hold other Aster tooling state in the future (LSP cache, REPL history, TOONS artifacts).
+
+### 3.2 Override
+
+```
+asterc build src/main.aster --build-dir /tmp/aster-build
+```
+
+The `ASTER_BUILD_DIR` environment variable also works:
+```
+ASTER_BUILD_DIR=/tmp/aster-build asterc build src/main.aster
+```
+
+### 3.3 Clean
+
+```
+asterc clean              # delete .aster/build/
+asterc clean --all        # delete entire .aster/
+```
+
+### 3.4 Project root detection
+
+Walk up from the source file looking for:
+1. A directory already containing `.aster/`
+2. A directory containing `.git/`
+3. Fall back to the source file's parent directory
+
+This keeps single-file programs simple while supporting project layouts.
+
+---
+
+## 4. Profiles: Debug and Release
+
+Two profiles. No custom profiles. Keep it simple.
+
+### 4.1 Debug (default for `build`)
+
+```
+asterc build src/main.aster           # debug by default
+```
+
+- Cranelift `opt_level`: `none` — fastest compilation
+- Debug info: enabled (DWARF, when Cranelift supports it)
+- Runtime checks: bounds checking, overflow detection (future)
+- Output: `.aster/build/debug/bin/<name>`
+
+### 4.2 Release
+
+```
+asterc build src/main.aster --release
+```
+
+- Cranelift `opt_level`: `speed` — best runtime performance
+- Debug info: off by default, `--release --debug-info` to enable
+- Runtime checks: minimal (no bounds check overhead)
+- Output: `.aster/build/release/bin/<name>`
+
+### 4.3 `asterc run` behavior
+
+`run` always uses JIT with `speed` optimization — it's a development command, and Cranelift's `speed` setting is already fast to compile. No profile concept for `run`.
+
+### 4.4 Optimization level override
+
+For advanced users:
+
+```
+asterc build src/main.aster --opt none       # no optimization
+asterc build src/main.aster --opt speed      # balanced (default for release)
+asterc build src/main.aster --opt size       # optimize for binary size
+```
+
+Maps directly to Cranelift's `opt_level` settings: `none`, `speed`, `speed_and_size`.
+
+---
+
+## 5. Output Path
+
+### 5.1 Default output
+
+Without `-o`, the binary goes into the build directory:
+
+```
+asterc build src/main.aster
+# → .aster/build/debug/bin/main
+
+asterc build src/main.aster --release
+# → .aster/build/release/bin/main
+```
+
+The binary name is derived from the source filename (strip `.aster`).
+
+### 5.2 Explicit output
+
+```
+asterc build src/main.aster -o ./my-app
+```
+
+With `-o`, the final binary is placed at the specified path. Intermediates still go to `.aster/build/`.
+
+### 5.3 Intermediates always in build dir
+
+Regardless of `-o`, object files, generated runtime, and other intermediates live under `.aster/build/<profile>/`. The `-o` flag only controls where the final linked binary ends up.
+
+---
+
+## 6. Build Artifacts and Caching
+
+### 6.1 What gets cached
+
+```
+.aster/build/debug/
+  obj/
+    main.o              # compiled object for main.aster
+    utils.o             # compiled object for utils.aster (when modules exist)
+  gen/
+    runtime.c           # generated C runtime source
+    runtime.o           # compiled C runtime object
+  bin/
+    main                # linked executable
+  manifest.json         # build metadata
+```
+
+### 6.2 Manifest
+
+`manifest.json` tracks what was built and when:
+
+```json
+{
+  "compiler_version": "0.1.0",
+  "profile": "debug",
+  "opt_level": "none",
+  "target": "aarch64-apple-darwin",
+  "files": {
+    "main.aster": {
+      "source_hash": "sha256:abc123...",
+      "object": "obj/main.o",
+      "compiled_at": "2026-03-12T10:30:00Z"
+    }
+  },
+  "runtime_hash": "sha256:def456...",
+  "linker": "cc"
+}
+```
+
+### 6.3 Incremental rebuild logic
+
+On `asterc build`:
+
+1. Read `manifest.json` (if exists)
+2. For each source file:
+   - Hash the source content
+   - If hash matches manifest AND compiler version matches AND opt_level matches → skip recompilation, reuse `.o`
+   - Otherwise → recompile to `.o`
+3. For the C runtime:
+   - Hash the embedded runtime template
+   - If hash matches manifest → skip `runtime.o` recompilation
+   - Otherwise → regenerate `runtime.c`, compile to `runtime.o`
+4. If any `.o` changed OR manifest missing → relink
+5. Update `manifest.json`
+
+This is file-level granularity. Good enough for now. Module-level incremental compilation is future work.
+
+### 6.4 Cache invalidation
+
+The manifest is the single source of truth. If any of these change, the corresponding artifact is stale:
+- Source file content (hash mismatch)
+- Compiler version (full rebuild)
+- Profile/opt_level (separate directories, so no conflict)
+- Target triple (future: separate directories per target)
+
+---
+
+## 7. Runtime Compilation
+
+### 7.1 Current state
+
+The C runtime is written to a temp file, compiled and linked in one `cc` invocation, then deleted. Every build recompiles the runtime.
+
+### 7.2 New behavior
+
+1. On first build, write `runtime.c` to `.aster/build/<profile>/gen/runtime.c`
+2. Compile it to `runtime.o` via `cc -c runtime.c -o runtime.o`
+   - Debug: `cc -c -g runtime.c -o runtime.o`
+   - Release: `cc -c -O2 runtime.c -o runtime.o`
+3. Cache `runtime.o` — only recompile if the runtime template changes (tracked by hash in manifest)
+4. Link step: `cc obj/main.o gen/runtime.o -o bin/main`
+
+This means the runtime is compiled once and reused across builds until the compiler is upgraded.
+
+---
+
+## 8. CLI Changes
+
+### 8.1 Updated commands
+
+```
+asterc check <file>                    # typecheck only (unchanged)
+asterc run <file>                      # JIT compile and execute (unchanged behavior)
+asterc build <file>                    # compile to native binary (debug profile)
+asterc build <file> --release          # compile to native binary (release profile)
+asterc build <file> -o <path>          # explicit output path
+asterc build <file> --opt <level>      # override optimization level
+asterc build <file> --build-dir <dir>  # override build directory
+asterc clean                           # remove build artifacts
+asterc clean --all                     # remove all .aster/ state
+```
+
+### 8.2 Flags
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--release` | `-r` | off | Use release profile |
+| `--output` | `-o` | build dir | Output binary path |
+| `--opt` | | `none`/`speed` | Cranelift optimization level |
+| `--build-dir` | | `.aster/build/` | Override build directory |
+| `--verbose` | `-v` | off | Print compilation steps |
+
+### 8.3 Verbose output
+
+```
+$ asterc build src/main.aster --release -v
+[1/4] Compiling main.aster → obj/main.o
+[2/4] Runtime obj/runtime.o (cached)
+[3/4] Linking bin/main
+[4/4] Done: .aster/build/release/bin/main (34K)
+```
+
+---
+
+## 9. `asterc run` — Disk vs Memory
+
+### 9.1 Current behavior
+
+`run` compiles entirely in memory via JIT. This is fast and correct.
+
+### 9.2 Decision: Keep in-memory for `run`
+
+JIT compilation is the right model for `run`:
+- No disk I/O overhead
+- No cleanup needed
+- Cranelift JIT is designed for this use case
+- The program runs immediately after compilation
+
+`build` is the command that produces disk artifacts. `run` stays in-memory.
+
+---
+
+## 10. What This Does NOT Include
+
+- **Multi-file / module-level incremental compilation** — requires module dependency graph, which is future work
+- **Global build cache** (Go-style GOCACHE) — project-local caching first
+- **Cross-compilation** — requires target triple plumbing through the entire pipeline
+- **LTO (link-time optimization)** — Cranelift doesn't support it yet
+- **Build files / project manifests** (Cargo.toml equivalent) — single-file compilation for now
+- **Parallel compilation** — compile multiple source files concurrently (future)
+- **Custom profiles** — only debug and release
+
+---
+
+## 11. Implementation Notes
+
+### 11.1 Build directory creation
+
+Create directories lazily on first write, not eagerly. This avoids empty `.aster/build/` directories for `check` and `run` commands.
+
+### 11.2 CraneliftAOT changes
+
+`CraneliftAOT::new()` currently hardcodes `opt_level = "speed"`. Change to accept a config:
+
+```rust
+pub struct BuildConfig {
+    pub opt_level: OptLevel,
+    pub debug_info: bool,
+    pub profile: Profile,
+}
+
+pub enum OptLevel { None, Speed, SpeedAndSize }
+pub enum Profile { Debug, Release }
+
+impl CraneliftAOT {
+    pub fn with_config(config: &BuildConfig) -> Self { ... }
+}
+```
+
+### 11.3 Source hashing
+
+Use SHA-256 for source file hashing. The `sha2` crate is lightweight and correct. Don't hash the file path — only the content matters.
+
+### 11.4 File locking
+
+For concurrent builds (unlikely now, but good practice): use a lockfile at `.aster/build/.lock`. Advisory locking via `fs2` or similar.
+
+---
+
+## 12. Examples
+
+### Single file, defaults
+```
+$ asterc build hello.aster
+Compiled to .aster/build/debug/bin/hello (34K)
+
+$ .aster/build/debug/bin/hello
+Hello, world!
+```
+
+### Release build with explicit output
+```
+$ asterc build hello.aster --release -o ./hello
+Compiled to ./hello (32K)
+```
+
+### Incremental rebuild
+```
+$ asterc build hello.aster
+[1/3] Compiling hello.aster → obj/hello.o
+[2/3] Runtime gen/runtime.o (cached)
+[3/3] Linking bin/hello
+Compiled to .aster/build/debug/bin/hello (34K)
+
+$ asterc build hello.aster       # no changes
+[1/3] hello.aster (cached)
+[2/3] Runtime gen/runtime.o (cached)
+[3/3] bin/hello (cached)
+Nothing to do — up to date.
+```
+
+### Clean
+```
+$ asterc clean
+Removed .aster/build/ (2 files, 68K)
+```

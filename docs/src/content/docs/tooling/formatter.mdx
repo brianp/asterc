@@ -1,0 +1,142 @@
+---
+title: Formatter
+description: The asterc fmt code formatter — style rules, comment preservation, and how the pretty-printer works.
+---
+
+`asterc fmt` rewrites Aster source with a consistent style. It parses your code into an AST and pretty-prints it back, so the output is the same no matter how the input was formatted — and formatting already-formatted code changes nothing (it's idempotent).
+
+Because the formatter parses your code, it only formats files that lex and parse successfully. Syntactically invalid code is reported as an error and left untouched.
+
+## Usage
+
+```bash
+asterc fmt                     # format every .aster file in the current directory
+asterc fmt main.aster lib.aster
+asterc fmt --check             # report drift, exit 1 if anything needs formatting
+asterc fmt --diff              # print a unified diff instead of writing
+cat main.aster | asterc fmt --stdin      # format stdin to stdout
+asterc fmt --check --output-format json  # machine-readable output for tooling
+```
+
+`--check` is built for CI, `--stdin` for editor format-on-save, and `--output-format json` (combined with `--check` or `--diff`) emits per-file results with line-level diffs for tools.
+
+Files are only rewritten when their formatted output actually differs.
+
+## Style
+
+The formatter uses fixed defaults: a line width of 88 columns and 2-space indentation.
+
+### Line breaking
+
+Constructs that fit on one line stay on one line; constructs that don't are broken vertically with indentation:
+
+```text
+let short = [1, 2, 3]
+
+let long = [
+  "a much longer element",
+  "another long element",
+  "and one more that pushes past the line width",
+]
+```
+
+### Magic trailing comma
+
+A trailing comma after the last element of a list or function call forces vertical layout even when the content would fit on one line:
+
+```text
+let items = [1, 2, 3,]
+```
+
+formats as:
+
+```text
+let items = [
+  1,
+  2,
+  3,
+]
+```
+
+Without the trailing comma, `[1, 2, 3]` stays flat. The trailing comma is your signal that you want the vertical form, and the formatter preserves it.
+
+### Import grouping and sorting
+
+`use` statements are merged, sorted, and grouped into three sections separated by blank lines:
+
+1. Standard library (`use std/...`)
+2. Third-party (everything else)
+3. Relative imports (`use ./...`)
+
+Within each group, imports are sorted alphabetically by path. Imports from the same module are merged, and the names inside braces are sorted:
+
+```text
+use std/cmp { Eq }
+use std/cmp { Ord }
+```
+
+becomes:
+
+```text
+use std/cmp { Eq, Ord }
+```
+
+Aliased imports and bare module imports (no `{ ... }` list) are not merged, but they are still sorted into the right group.
+
+### Comment preservation
+
+Comments survive formatting. The formatter extracts every `#` comment from the source before formatting, then reattaches each one to the statement that follows it — including comments inside nested bodies such as function, class, and loop bodies. A comment after the last statement of a block stays with that block.
+
+### Blank line normalization
+
+The formatter manages blank lines inside bodies:
+
+- Block constructs (`if`, `while`, `for`, `class`, `trait`, `enum`, and function definitions) get a blank line on either side.
+- Consecutive `let` bindings stay together; a blank line is inserted when the statement kind changes.
+- The final return value of a multi-statement function body is separated from the rest by a blank line.
+
+### Implicit returns
+
+A trailing `return expr` in a function body is rewritten to just `expr`, matching Aster's implicit-return style.
+
+### main() cleanups
+
+`main()` gets special treatment because its signature has implicit behavior:
+
+- A `throws` clause on `main` is removed — `main()` implicitly throws.
+- When `main` is declared `-> Int` and ends in `0` (or `return 0`), the return type and the trailing `0` are both dropped — the implicit exit code is already 0.
+
+## How it works
+
+The formatter is its own crate, `aster-fmt`, and reuses the compiler's lexer and parser.
+
+### The Wadler-Lindig algorithm
+
+It never manipulates strings directly. Formatting builds an intermediate representation called a `Doc`, then a printer renders the `Doc` to text. This two-phase design is the Wadler-Lindig pretty-printing algorithm, and it exists to solve one hard problem: deciding where to break lines.
+
+```rust
+enum Doc {
+    Text(String),           // literal text, no line breaks
+    Line { flat: String },  // soft break: "flat" text if it fits, newline if not
+    Concat(Vec<Doc>),       // sequence of documents
+    Indent(Box<Doc>),       // increase indentation for the inner doc
+    Group(Box<Doc>),        // try to fit on one line, break if it doesn't
+    HardLine,               // always a newline, never flattened
+    BlankLine,              // blank line separator, no trailing whitespace
+    Nil,                    // empty
+}
+```
+
+`Group` is the key. When the printer hits a `Group`, it measures whether the whole group — with soft breaks rendered as their flat text — fits in the remaining width. If it fits, the group stays on one line. If not, every `Line` inside renders as a newline plus indentation. The printer is stack-based, processing `(indent, mode, doc)` commands, and the fits check is a forward scan in flat mode — no backtracking.
+
+### Trailing comma detection
+
+Before parsing, the formatter scans the token stream for a comma followed (skipping newline and dedent tokens) by a closing `]` or `)`, and records those closing-bracket positions. During `Doc` construction, a list or call whose closing bracket is flagged skips the `Group` entirely and emits its elements vertically with a trailing comma.
+
+### Comment attachment
+
+Comments aren't in the AST, so the trivia module extracts them from the source with their line numbers. Statements' spans are mapped to line ranges, and each comment attaches to the next statement that starts after it. The same assignment runs recursively for nested block bodies, so a comment inside a function body attaches to the right statement inside that body rather than floating to the top level.
+
+### Interaction with the lexer
+
+The lexer tracks bracket depth and suppresses INDENT/DEDENT tokens inside brackets, so multi-line collections don't interact with Aster's indentation-based block structure. The formatter controls all indentation through the `Doc` IR's `Indent` node, never through the token stream.

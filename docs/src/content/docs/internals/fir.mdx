@@ -1,0 +1,372 @@
+---
+title: FIR Lowering
+description: How the Aster compiler lowers the typechecked AST into the Flat Intermediate Representation that codegen consumes.
+---
+
+This page walks through Phase 4 of the compiler pipeline: lowering the typechecked AST into **FIR** (Flat Intermediate Representation). FIR is the last stop before machine code — everything the codegen backend sees is a `FirModule`.
+
+The code lives in the `fir` crate:
+
+- `fir/src/types.rs` — `FirType`, `FunctionId`, `ClassId`, `LocalId`
+- `fir/src/exprs.rs` — `FirExpr`, `BinOp`, `UnaryOp`
+- `fir/src/stmts.rs` — `FirStmt`, `FirPlace`
+- `fir/src/module.rs` — `FirModule`, `FirFunction`, `FirClass`
+- `fir/src/lower/` — the `Lowerer` (`mod.rs`, `expr.rs`, `stmt.rs`, `closure.rs`, `for_loop.rs`, `iterable.rs`, `match_lower.rs`, `method.rs`, `synthesize.rs`, `introspection.rs`)
+- `fir/src/builtins.rs` — builtin class/method name constants used in lowering dispatch
+- `fir/src/validate.rs` — structural validation of a built `FirModule`
+- `fir/src/eval_context.rs` — serialized context snapshots for `evaluate()` call sites
+
+## What FIR Is
+
+The AST is rich and tree-shaped: nested expressions, named variables, classes with methods, pattern matching. FIR flattens all of that into a small set of explicit operations:
+
+- Named variables become numbered `LocalId` values.
+- AST types are simplified to `FirType` — machine-level categories rather than language-level types.
+- Classes become heap-allocated structs with precomputed byte offsets for every field.
+- Methods become regular functions with an explicit `self` first parameter, registered under qualified names like `Point.to_string`.
+- Match expressions are desugared into if/else chains over temporaries.
+- Enums become heap-allocated tagged unions: `[tag: i64][field0][field1]...`.
+- Lambdas are lifted to top-level functions with an `__env: Ptr` first parameter.
+- Language conveniences (string interpolation, iterable vocabulary methods like `map`/`filter`/`reduce`, auto-derived `to_string`/`eq`/`cmp`) are expanded into plain FIR loops and calls.
+
+Anything the lowerer cannot handle produces a `LowerError` — either `UnsupportedFeature` (with a description of what isn't lowerable) or `UnboundVariable`, both carrying a source span for diagnostics.
+
+## Core Data Structures
+
+### IDs and Types
+
+Three newtype IDs replace names throughout FIR:
+
+```rust
+pub struct FunctionId(pub u32);
+pub struct ClassId(pub u32);
+pub struct LocalId(pub u32);
+```
+
+`FirType` is the full type vocabulary of FIR:
+
+```rust
+pub enum FirType {
+    I64,
+    F64,
+    Bool,
+    /// Pointer to heap object (String, List, Class instance).
+    Ptr,
+    Void,
+    Never,
+    /// Tagged union for nullable T?, Result<T, E>.
+    TaggedUnion { tag_bits: u8, variants: Vec<FirType> },
+    Struct(ClassId),
+    FnPtr(FunctionId),
+}
+```
+
+`lower_type` maps AST types to FIR types:
+
+| AST type | FirType |
+|---|---|
+| `Int`, `TypeVar` (erased generics) | `I64` |
+| `Float` | `F64` |
+| `Bool` | `Bool` |
+| `Nil`, `Void` | `Void` |
+| `Never` | `Never` |
+| `T?` (nullable) | `TaggedUnion { tag_bits: 1, variants: [T, Void] }` |
+| `String`, `List`, `Set`, `Map`, `Custom` (class), `Function`, `Task` | `Ptr` |
+
+Generic type parameters are erased to `I64` (everything is a 64-bit slot). At call sites to generic functions, `apply_generic_erasure_casts` inserts `Bitcast` nodes so `F64`/`Bool` arguments pass through the erased `I64` signature with the correct bit patterns, and casts the return value back to the concrete type.
+
+`FirType::needs_gc_root()` reports whether a type can hold a GC-managed heap pointer (`Ptr`, `Struct`, or a `TaggedUnion` containing one) and therefore needs a shadow-stack root slot.
+
+### Module, Function, Class
+
+```rust
+pub struct FirModule {
+    pub functions: Vec<FirFunction>,
+    pub classes: Vec<FirClass>,
+    pub entry: Option<FunctionId>,
+    /// Serialized context snapshots for `evaluate()` call sites.
+    pub eval_contexts: Vec<EvalContext>,
+}
+
+pub struct FirFunction {
+    pub id: FunctionId,
+    pub name: String,
+    pub params: Vec<(String, FirType)>,
+    pub ret_type: FirType,
+    pub body: Vec<FirStmt>,
+    pub is_entry: bool,
+    pub suspendable: bool,
+}
+
+pub struct FirClass {
+    pub id: ClassId,
+    pub name: String,
+    /// (field_name, type, byte_offset)
+    pub fields: Vec<(String, FirType, usize)>,
+    pub methods: Vec<FunctionId>,
+    /// (method_name, implementing_function_id)
+    pub vtable: Vec<(String, FunctionId)>,
+    pub size: usize,
+    pub alignment: usize,
+    pub parent: Option<ClassId>,
+}
+```
+
+Functions live in a `Vec` indexed by `FunctionId`, so lookup is O(1). `FirModule::add_function` inserts at the declared ID position and grows the vector with placeholders if needed — this allows out-of-order insertion, e.g. a lambda lifted from inside a function that hasn't been added yet. `mark()` / `functions_since()` snapshot the function count so the REPL can compile only definitions added since the last snapshot.
+
+Note that method dispatch during lowering is resolved by *name*: the `Lowerer` keeps a `HashMap<String, FunctionId>` mapping qualified names (`"Greeter.greet"`) to IDs, and call sites are lowered to direct `Call`s. Class lowering currently emits `FirClass` values with empty `methods`/`vtable` lists.
+
+### Expressions
+
+`FirExpr` is the complete expression vocabulary. Grouped by purpose:
+
+| Group | Variants |
+|---|---|
+| Literals | `IntLit`, `FloatLit`, `BoolLit`, `StringLit`, `NilLit` |
+| Variables | `LocalVar(LocalId, FirType)` |
+| Operators | `BinaryOp { left, op, right, result_ty }`, `UnaryOp { op, operand, result_ty }` |
+| Calls | `Call { func, args, ret_ty }`, `RuntimeCall { name, args, ret_ty }` |
+| Concurrency | `Spawn`, `BlockOn`, `ResolveTask`, `CancelTask`, `WaitCancel`, `Safepoint` |
+| Heap objects | `FieldGet { object, offset, ty }`, `FieldSet`, `Construct { class, fields, ty, ptr_field_count }` |
+| Lists | `ListNew`, `ListGet`, `ListSet` |
+| Tagged unions | `TagWrap { tag, value, ty }`, `TagUnwrap { value, expected_tag, ty }`, `TagCheck { value, tag }` |
+| Closures | `ClosureCreate { func, env, ret_ty }`, `ClosureCall { closure, args, ret_ty }`, `EnvLoad { env, offset, ty }`, `GlobalFunc(FunctionId)` |
+| Conversions | `IntToFloat`, `Bitcast { value, to }` |
+| Runtime eval | `EvalCall { code, context_idx, env, ret_ty }` |
+
+`Call` targets a `FunctionId` resolved at lowering time. `RuntimeCall` targets a runtime builtin by symbol name — `aster_class_alloc`, `aster_string_concat`, `aster_map_get`, `aster_channel_new`, and so on. `Construct` carries `ptr_field_count`: the number of pointer-typed fields stored at the front of the object, so the GC can trace exactly those slots without conservative scanning.
+
+### Statements and Places
+
+```rust
+pub enum FirStmt {
+    Let { name: LocalId, ty: FirType, value: FirExpr },
+    Assign { target: FirPlace, value: FirExpr },
+    Return(FirExpr),
+    If { cond: FirExpr, then_body: Vec<FirStmt>, else_body: Vec<FirStmt> },
+    While { cond: FirExpr, body: Vec<FirStmt>, increment: Vec<FirStmt> },
+    Break,
+    Continue,
+    Expr(FirExpr),
+    Block(Vec<FirStmt>),
+    NoOp,
+}
+
+pub enum FirPlace {
+    Local(LocalId),
+    Field { object: Box<FirExpr>, offset: usize },
+    Index { list: Box<FirExpr>, index: Box<FirExpr> },
+    MapIndex { map: Box<FirExpr>, key: Box<FirExpr> },
+}
+```
+
+Two details worth noting:
+
+- `While.increment` holds statements that run after the body **and on `continue`**, before the condition is re-checked. For-loop lowering uses it to hold the loop variable increment so that `continue` doesn't skip it.
+- `NoOp` is a placeholder for statements with no runtime effect (e.g. a nested class or enum definition inside a function body); codegen skips it entirely.
+
+## The Lowering Pipeline
+
+The `Lowerer` is constructed with the typechecker's outputs — a `TypeEnv` (bindings, class/trait/enum info) and a `TypeTable` (span → resolved type). Its state is split into three groups:
+
+- **`ScopeState`** — per-function state: name → `LocalId` maps, `LocalId` → `FirType`, tracked AST types for class resolution, closure info, the next local counter, cleanup tracking for `Drop`/`Close`, and the async scope stack. Saved and restored with `save_scope`/`restore_scope` when entering nested function or lambda scopes.
+- **`ModuleState`** — module-wide accumulators: the `FirModule` being built, name → `FunctionId`/`ClassId` maps, per-class field layouts, enum variant metadata, default parameter values, and the next ID counters.
+- **`TopLevelState`** — top-level `let` bindings, deferred top-level statements/expressions, and the globals map.
+
+Construction also pre-registers layouts for built-in classes at sentinel `ClassId`s (high values that never collide with user classes): the introspection classes `FieldInfo`, `ParamInfo`, and `MethodInfo`; `EvalError`; and the runtime error classes `IOError`, `IntParseError`, `ChannelFullError`, `ChannelEmptyError`, `ChannelClosedError`, `LockTimeoutError`, `CancelledError`, and `ProcessError` (which carries `command` in addition to the inherited `message`). Registering these layouts up front is what lets `e.message` in a typed catch arm resolve to the byte offset the runtime actually writes.
+
+### `lower_module`
+
+`Lowerer::lower_module()` proceeds in stages:
+
+1. **Registration pass.** Scan all top-level statements and pre-assign IDs so forward references work (function A can call function B defined later):
+   - `let name = lambda` → allocate a `FunctionId`, record default parameter values.
+   - `class Name` → allocate a `ClassId`.
+   - Trait declarations → allocate `FunctionId`s for default method implementations (methods with non-empty bodies).
+   - `enum Name` → record variant metadata `(name, tag, fields)` with tags assigned sequentially from 0, and allocate a `FunctionId` for each variant's constructor function.
+
+2. **Conditional builtin injection.** If the module imports `std/process`, the `ProcessResult` class layout is injected (`exit_code: I64` at offset 0, `stdout: Ptr` at 8, `stderr: Ptr` at 16 — matching the runtime's construction order). If any class includes `Ord`, the built-in `Ordering` enum is injected: three constructor functions (`Ordering.Less`/`Equal`/`Greater`, tags 0/1/2) so `synthesize_cmp` has something to reference.
+
+3. **Lowering pass.** Each top-level statement is lowered. Functions, classes, enums, and traits are lowered directly. Top-level `let`/`const` bindings are lowered and recorded in `top_level_lets`. Bare top-level expressions and top-level control flow (`for`/`if`/`while`/assignments) are deferred.
+
+4. **Entry synthesis.** If deferred top-level statements or expressions exist and no `main` was defined, `synthesize_entry_function` builds a `__top_main` entry function that declares the globals, then runs the deferred control flow and expressions in order. When a user `main` exists, it becomes the entry (`is_entry: true`, `FirModule::entry`).
+
+### Globals
+
+There are no module-level globals in FIR. A top-level `let` outside any function is recorded as `(name, FirType, FirExpr)` in `top_level_lets`, and every function lowered afterward gets a **prelude**: fresh `LocalId`s are allocated for each top-level binding and `Let` statements re-evaluating their values are prepended to the function body (right after the async scope setup). The same happens for deferred top-level control-flow statements. The synthesized `__top_main` also starts with this prelude.
+
+### Function Lowering
+
+`lower_function` does the following for every function (and method):
+
+1. Parameters are allocated as `LocalId(0..N)` in order — codegen relies on this layout.
+2. An extra local is allocated for the function's **implicit task scope**. Every function body begins with `let scope = aster_async_scope_enter()` and ends with `aster_async_scope_exit(scope)`, so tasks spawned inside the function are cancelled when it exits by any path (return, throw, or fall-through). This is the structured-concurrency guarantee at the FIR level.
+3. The globals prelude (above) is inserted.
+4. The body is lowered. A trailing expression statement in a non-`Void` function is converted into an implicit `Return`.
+5. Cleanup calls are emitted for locals whose class includes `Close` or `Drop` — in reverse declaration order, `close` before `drop`. Loops track their own cleanup scope so `break`/`continue` clean up loop-local resources.
+6. `main` with no return annotation is given return type `Int` and an implicit `return 0` (the process exit code) if the body has no explicit return.
+
+`register_function` fills in `suspendable` from the typechecker's function type (whether the function can suspend on green-thread operations) and sets `FirModule::entry` when the function is named `main`.
+
+### The `pending_stmts` Mechanism
+
+FIR expressions cannot contain statements, but many AST expressions need statement-level scaffolding: a match expression needs temporaries and an if-chain, `map[key]` on pointer values needs a `Let` capturing the nullable result, iterable methods like `filter` expand into whole loops. The lowerer handles this with `pending_stmts`: expression lowering pushes any required statements there, and `lower_body` drains them into the output *before* the statement whose expression produced them. `lower_if` is careful to save and restore `pending_stmts` around branch bodies so a condition's scaffolding does not leak into the wrong block.
+
+### Safepoints
+
+The lowerer inserts `FirExpr::Safepoint` — the cooperative-scheduling hook checked by the green thread runtime — at every call expression site and at loop back-edges (`while` and `for` bodies end with a safepoint before re-checking the condition).
+
+## Classes
+
+`lower_class` computes the field layout:
+
+1. Inherited fields are collected by walking the `extends` chain (outermost ancestor first), then the class's own fields are appended.
+2. The combined list is stably partitioned: **GC-traceable fields first** (those where `needs_gc_root()` is true), then value fields. Relative order within each group is preserved.
+3. Byte offsets are assigned in the new order, 8 bytes per field. `size` is the total; `alignment` is 8.
+
+The pointer-first ordering exists so `Construct`'s `ptr_field_count` can tell the GC exactly how many leading slots are pointers. Constructor calls (`ClassName(field: value, ...)`) lower to `FirExpr::Construct`, with named arguments matched against the layout order.
+
+Methods are lowered as ordinary functions with `self: ClassName` prepended as the first parameter, under the parser-qualified name (`Point.to_string`). Inside a method body, a bare identifier that isn't a local resolves as `self.field` via the class layout.
+
+After lowering explicit methods, the lowerer synthesizes derived implementations for classes that include certain traits but don't provide their own:
+
+| Trait included | Synthesized method | Behavior |
+|---|---|---|
+| `Printable` | `ClassName.to_string` | `"ClassName(field1, field2, ...)"` via `aster_*_to_string` and `aster_string_concat` |
+| `Eq` | `ClassName.eq` | Pairwise field comparison joined with `and` |
+| `Ord` | `ClassName.cmp` | Field-by-field comparison returning `Ordering.Less`/`Equal`/`Greater` |
+
+Finally, default methods from included traits are installed: if a trait provides a default body (registered as `TraitName.method`) and the class doesn't override it, the trait's function is copied under the class-qualified name with a fresh `FunctionId`.
+
+## Enums
+
+Aster enums are heap-allocated tagged unions:
+
+```text
+[tag: i64][field0: i64][field1: i64]...
+```
+
+The tag lives at offset 0; fields start at offset 8. All variants of an enum share one allocation size — `8 + max_fields * 8` — so any variant fits.
+
+Each variant gets a **constructor function** named `Enum.Variant` whose parameters are the variant's fields. Its body is mechanical:
+
+```text
+let __ptr = aster_class_alloc(alloc_size)
+__ptr[0] = tag                 // FirPlace::Field at offset 0
+__ptr[8 + i*8] = field_i       // one store per field
+return __ptr
+```
+
+Tags are assigned sequentially from 0 in declaration order during the registration pass and recorded in the `enum_variants` map as `(variant_name, tag, fields)` — match lowering reads them from there. Enum methods are lowered like class methods, with `self` prepended.
+
+## Closures
+
+When the lowerer encounters a lambda (`lower_lambda` in `closure.rs`):
+
+1. **Capture analysis.** `find_captures` walks the lambda body and collects references to variables that exist in the enclosing scope and are not lambda parameters. The list is sorted and deduplicated, which fixes the env layout: capture *i* lives at byte offset `i * 8`.
+
+2. **Lifting.** A new top-level `FirFunction` named `__lambda_N` is created with `__env: Ptr` as the first parameter, followed by the original parameters. The body begins with one `EnvLoad` per capture, copying each captured value from the env struct into a fresh local. Like any function, the lifted body gets its own implicit task scope.
+
+3. **Env allocation.** If there are captures, the definition site emits (via `pending_stmts`) `aster_class_alloc(num_captures * 8)` and one store per captured variable into the env struct. With no captures, the env is `nil`.
+
+4. **The closure value.** `lower_lambda` returns a `FirExpr::ClosureCreate { func, env, .. }` — a first-class closure pairing the lifted `FunctionId` with the env pointer (heap layout `[func_id][env_ptr]`). This is what gets stored when a lambda is passed as a value.
+
+Calls dispatch one of two ways:
+
+- **Static.** When a lambda is bound with `let f = ...`, the binding records `(FunctionId, env_local, captures)` in `closure_info`. A later call `f(...)` that resolves through `closure_info` lowers to a direct `Call` with the env (or `nil`) prepended as the first argument — no indirection.
+- **Dynamic.** Calling a function-typed value that isn't statically known (a parameter, a field) lowers to `FirExpr::ClosureCall`, an indirect call through the closure struct.
+
+## Match Lowering
+
+`lower_match` desugars a match expression into statements plus a resulting local. It allocates two temporaries — one for the scrutinee, one for the result — and emits:
+
+```text
+let __match_scrut_N = <scrutinee>
+let __match_result_M = <default>    // 0 / 0.0 / false / nil by result type
+<if-chain built from the arms>
+```
+
+The value of the whole match expression is `LocalVar(__match_result_M)`. The result type is inferred from the first arm body that is a plain literal, falling back to the scrutinee's type.
+
+`build_match_chain` recurses over the arms, one level of `If` per testable arm:
+
+- **Literal patterns** compare with `==`:
+
+  ```text
+  match x
+    1 -> "one"
+    2 -> "two"
+    _ -> "other"
+  ```
+
+  becomes
+
+  ```text
+  let __match_scrut_0 = x
+  let __match_result_1 = nil
+
+  if __match_scrut_0 == 1
+    __match_result_1 = "one"
+  else
+    if __match_scrut_0 == 2
+      __match_result_1 = "two"
+    else
+      __match_result_1 = "other"
+  ```
+
+- **Wildcard and identifier patterns** always match, so they terminate the chain: they lower to a plain `Block` (no condition) containing the binding (for identifiers) and the result assignment. An identifier pattern binds the scrutinee by copying it into a fresh local before lowering the arm body. One special case: if the scrutinee is nullable (a `TaggedUnion`) and a `nil` literal arm appeared *earlier* in the arm list, the identifier arm only sees the non-nil case, so the binding unwraps the inner value with `TagUnwrap` first.
+
+- **Enum variant patterns** load the tag from the scrutinee pointer at offset 0 with `FieldGet` and compare it against the variant's tag number from `enum_variants`:
+
+  ```text
+  match color
+    Color.Red -> "red"
+    Color.Blue -> "blue"
+  ```
+
+  becomes (conceptually)
+
+  ```text
+  if FieldGet(__match_scrut, offset: 0) == 0     // Red has tag 0
+    __match_result = "red"
+  else
+    if FieldGet(__match_scrut, offset: 0) == 1   // Blue has tag 1
+      __match_result = "blue"
+    else
+      aster_panic()
+  ```
+
+  Variant patterns can destructure fields: each requested binding becomes a `Let` loading `FieldGet` at offset `8 + field_index * 8` before the arm body is lowered.
+
+If the chain runs out of arms without a wildcard, the final else emits a `RuntimeCall` to `aster_panic`. This is defense in depth: the typechecker enforces exhaustiveness, but if control somehow reaches an unmatched case at runtime, the program traps instead of silently producing the default value.
+
+## Imported Modules: `FirCache` and Merging
+
+Imported modules are lowered once and cached as a `FirCache`: the compiled `FirFunction`s and `FirClass`es plus all the name maps (function names, class names, field layouts, enum variants, default parameters, eval contexts).
+
+`merge_imported` folds a cache into the main module. Because IDs are dense indices, every `FunctionId` and `ClassId` inside the cached bodies must be **remapped**:
+
+- If a function or class with the same name already exists in the main module, the cached ID maps to the existing ID and the duplicate is skipped (deduplication).
+- New items get sequential IDs starting at the current module array length.
+- Sentinel class IDs (built-in error classes and introspection classes) pass through unchanged.
+- `EvalCall::context_idx` values are shifted by the eval-context offset.
+
+`remap_stmts_with` then rewrites every `Call`, `Spawn`, `BlockOn`, `Construct`, `ClosureCreate`, `GlobalFunc`, and `EvalCall` in the merged bodies through the remap tables.
+
+## Validation
+
+`validate(module: &FirModule) -> Vec<FirError>` runs structural checks on the finished module before codegen:
+
+- No placeholder function (empty name) has a non-empty body.
+- Every `Call`/`Spawn`/`BlockOn`/`ClosureCreate`/`GlobalFunc` references an in-range `FunctionId`; every `Construct` an in-range `ClassId`; the entry function ID is valid.
+- Every `LocalVar` refers to a `LocalId` that is declared in that function (as a parameter or a `Let`).
+
+## Runtime Evaluation Support
+
+FIR carries the machinery for `evaluate(code: expr)` — runtime compilation of Aster source:
+
+- Each `evaluate()` call site lowers to `FirExpr::EvalCall`, whose `context_idx` points into `FirModule::eval_contexts`. Each `EvalContext` is a JSON-serialized `ContextSnapshot` capturing what the lowerer knew at that call site: local variable types, the current class and its fields/methods (including `DynamicReceiver` metadata), visible function signatures, method defaults, and enum definitions.
+- If locals are in scope, the call site also builds a heap env struct of their values (`EvalCall::env`).
+- On the JIT side, `set_eval_env` configures a fresh `Lowerer` so the evaluated code's entry function takes `__eval_env: Ptr` as its first parameter and begins with `EnvLoad`s for each captured variable, and pre-registers the host class layout so field access on `self` resolves to the same offsets the host uses.
+
+The REPL uses a lighter path: `lower_repl_expr` wraps a bare expression in a throwaway `__repl_expr_N` function marked as entry, and `FirModule::mark`/`functions_since` let the REPL hand codegen only the functions added since the previous input.

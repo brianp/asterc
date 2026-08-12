@@ -1,0 +1,25 @@
+---
+title: "RFC: Type System"
+description: Single inheritance, trait composition, generics, and function overloading.
+sidebar:
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+
+**Status:** Draft
+
+Covers the type system design including single inheritance via `extends`, trait composition via `includes`, function overloading, generics with inline declaration, and the 3-argument limit convention.
+
+## Key Ideas
+
+- **Single inheritance** with `extends` for IS-A relationships.
+- **Trait composition** with `includes` for HAS-A/CAN-DO behavior.
+- **Generics** with inline type parameter declaration at first occurrence in parameter lists.
+- **Trait constraints**: `T includes Printable`, `T extends Vehicle`, or both combined.
+- **Function overloading** support.
+- **3-argument limit** per function — 4+ requires a parameter struct.
+
+<LinkCard title="Full RFC" href="https://github.com/example/asterc/blob/main/docs/design/type-system-rfc.md" description="Read the complete type system RFC on GitHub." />

@@ -1,0 +1,414 @@
+---
+title: Parser
+description: How Aster's recursive descent parser turns tokens into an AST, including precedence climbing, error recovery, and the def-as-let desugaring.
+---
+
+This page walks through the second phase of the compiler: parsing. The parser lives in the `parser` crate and transforms the flat token stream produced by the lexer into an Abstract Syntax Tree (AST) — the tree structure that every later phase (typechecking, FIR lowering, codegen) operates on.
+
+**Files:**
+
+| File | Responsibility |
+|---|---|
+| `parser/src/lib.rs` | `Parser` struct, core helpers, statements, blocks, error recovery |
+| `parser/src/expr.rs` | Expressions: precedence climbing, postfix chains, literals, lambdas, match |
+| `parser/src/class_trait.rs` | Classes, traits, enums, and `def` (which desugars to `let`) |
+| `parser/src/type_parser.rs` | Type annotations: generics, nullables, function types |
+
+---
+
+## The Parser Struct
+
+```rust
+pub struct Parser {
+    tokens: Vec<Token>,
+    pos: usize,                            // current position in token stream
+    pub(crate) type_params: HashMap<String, usize>,  // active type parameter names
+    pub(crate) depth: usize,               // nesting depth for recursion limit
+}
+```
+
+`type_params` tracks generic type parameter names currently in scope. When parsing `class Box[T]`, the parser pushes `T` into this map so that type annotations like `T` inside the class body resolve to `Type::TypeVar` rather than an unknown custom type. The `usize` value is a reference count, maintained by `push_type_params` / `pop_type_params` in `class_trait.rs`, so nested scopes that redeclare the same name behave correctly.
+
+Two hard limits protect the parser from pathological input:
+
+```rust
+const MAX_NESTING_DEPTH: usize = 50;      // blocks + expressions (error P003)
+const MAX_COLLECTION_SIZE: usize = 10_000; // list/map literals, argument lists
+```
+
+The depth counter is incremented in `parse_block`, `parse_expr`, and `parse_unary`; exceeding 50 produces diagnostic **P003** ("Maximum nesting depth exceeded"). Argument lists and list/map literals with more than 10,000 entries are rejected outright.
+
+## Core Helpers
+
+All parsing is built from a handful of primitives:
+
+```rust
+fn peek(&self) -> &Token                 // Look at current token without consuming
+fn peek_kind(&self) -> &TokenKind        // Kind of the current token
+fn peek_second_kind(&self) -> Option<&TokenKind>  // One-token lookahead
+fn at(&self, kind: &TokenKind) -> bool   // Check if current token matches
+fn advance(&mut self) -> Token           // Consume and return current token
+fn expect(&mut self, kind: TokenKind) -> Result<(), Diagnostic>  // Consume or error
+fn expect_ident(&mut self, context: &str) -> Result<(String, Span), Diagnostic>
+fn consume_newlines(&mut self)           // Skip Newline tokens
+fn start_span(&self) -> usize            // Byte offset of current token (span start)
+fn span_from(&self, start: usize) -> Span // Span from start to last consumed token
+```
+
+`peek` never panics past the end of input — it returns a static `EOF` token instead. Every AST node records a `Span` built from `start_span()` / `span_from()`, which is how diagnostics point at exact source ranges later.
+
+## Recursive Descent
+
+The parser uses **recursive descent**: each grammar rule is a function that calls other rule functions. The overall structure:
+
+```text
+parse_module()
+  -> parse_stmt()          -- dispatches on the first token
+      -> parse_let() / parse_const()
+      -> parse_if() / parse_while() / parse_for()
+      -> parse_class() / parse_trait() / parse_enum()
+      -> parse_def_as_let()
+      -> parse_use() / parse_pub()
+      -> parse_expr()
+          -> parse_binop(0)      -- table-driven precedence climbing
+              -> parse_exponent()    -- right-associative **
+                  -> parse_unary()       -- prefix - and not
+                      -> parse_postfix()     -- .member, (args), [index], !
+                          -> parse_primary()     -- literals, idents, match, ...
+```
+
+`parse_expr` itself sits above the binary-operator table: after `parse_binop(0)` returns, it checks for the range operators `..` and `..=`, which therefore bind loosest of all (`1 .. n + 1` parses the way you'd hope).
+
+There are two public entry points. `parse_module` is fail-fast — it returns on the first error, and is what the compiler pipeline (`src/main.rs`, the typechecker's module loader, the eval pipeline, and `aster-fmt`) uses. `parse_module_recovering` collects multiple errors; see [Error Recovery](#error-recovery).
+
+---
+
+## Statement Parsing (lib.rs)
+
+`parse_stmt()` looks at the current token to decide which kind of statement to parse:
+
+| First token | Statement | Example |
+|---|---|---|
+| `let` | Variable binding | `let x: Int = 42` |
+| `const` | Constant binding | `const MAX: Int = 100` |
+| `def` | Function definition | `def add(x: Int, y: Int) -> Int` |
+| `class` | Class definition | `class Point` |
+| `trait` | Trait definition | `trait Eq` |
+| `enum` | Enum definition | `enum Color` |
+| `if` | Conditional (with `elif`/`else`) | `if x > 0` |
+| `while` | While loop | `while running` |
+| `for` | For loop | `for item in list` |
+| `return` | Return (expression required) | `return x + 1` |
+| `break` | Loop break | `break` |
+| `continue` | Loop continue | `continue` |
+| `use` | Import | `use std/cmp { Eq }` |
+| `pub` | Visibility modifier | `pub def helper()` |
+| `async` | Async call expression | `async f(x: 1)` |
+| anything else | Expression statement | `f(x: 1)` or `obj.method()` |
+
+Tokens like `throw`, `match`, `resolve`, `detached`, and `blocking` all *start expressions*, so they fall through to the expression-statement arm. After parsing an expression statement, the parser checks for `=` to build a `Stmt::Assignment` — this is how `x = 42`, `obj.field = value`, and `list[0] = v` are handled, since the left-hand side is an arbitrary postfix expression.
+
+**Important design choice: `async def` is an error.** If the parser sees `async` followed by `def`, it reports a clear error ("remove 'async' keyword"): functions are declared with plain `def`, and `async` is applied at the *call site* instead.
+
+`parse_pub` accepts `def`, `class`, `trait`, `enum`, `const`, `let`, or `use` after `pub` and forwards an `is_public: true` flag; anything else is a P001 error.
+
+`parse_use` handles the full import grammar: slash-separated paths, optional selective imports, and an optional alias.
+
+```text
+use std/http
+use std/cmp { Eq, Ord }
+use std/http as h
+```
+
+## Block Parsing
+
+`parse_block()` handles indented blocks:
+
+```rust
+pub(crate) fn parse_block(&mut self) -> Result<Vec<Stmt>, Diagnostic> {
+    self.depth += 1;
+    // ... MAX_NESTING_DEPTH check (error P003) ...
+    let result = self.parse_block_inner();
+    self.depth -= 1;
+    result
+}
+
+fn parse_block_inner(&mut self) -> Result<Vec<Stmt>, Diagnostic> {
+    self.consume_newlines();
+    self.expect(TokenKind::Indent)?;
+    let mut body = Vec::new();
+    while !self.at(&TokenKind::Dedent) && !self.at(&TokenKind::EOF) {
+        body.push(self.parse_stmt()?);
+        self.consume_newlines();
+    }
+    self.expect(TokenKind::Dedent)?;
+    Ok(body)
+}
+```
+
+The lexer has already converted indentation into synthetic `Indent`/`Dedent` tokens, so block structure is just token matching here. `parse_block` is used for `if`/`elif`/`else` branches, `while` and `for` bodies, and function bodies. Class, trait, and enum bodies — plus `match` arms and `!.catch` arms — consume `Indent`/`Dedent` with their own loops, because their contents aren't statement lists (they're fields, variants, or `pattern => expr` arms).
+
+---
+
+## Expression Parsing (expr.rs)
+
+### Table-driven precedence climbing
+
+Instead of writing one function per precedence level, a single `parse_binop()` walks a table:
+
+```rust
+const BINOP_TABLE: &[&[(TokenKind, BinOp)]] = &[
+    &[(TokenKind::Or, BinOp::Or)],                 // level 0: lowest
+    &[(TokenKind::And, BinOp::And)],               // level 1
+    &[(TokenKind::EqualEqual, BinOp::Eq),          // level 2: equality
+      (TokenKind::BangEqual, BinOp::Neq)],
+    &[(TokenKind::Less, BinOp::Lt),                // level 3: comparison
+      (TokenKind::Greater, BinOp::Gt),
+      (TokenKind::LessEqual, BinOp::Lte),
+      (TokenKind::GreaterEqual, BinOp::Gte)],
+    &[(TokenKind::Plus, BinOp::Add),               // level 4: additive
+      (TokenKind::Minus, BinOp::Sub)],
+    &[(TokenKind::Star, BinOp::Mul),               // level 5: multiplicative
+      (TokenKind::Slash, BinOp::Div),
+      (TokenKind::Percent, BinOp::Mod)],
+];
+```
+
+The recursion creates left-to-right associativity through a specific trick. `parse_binop(level)` first calls `parse_binop(level + 1)` to get the left operand — that call parses only higher-precedence operators. Then it loops: if the current token matches an operator at `level`, it consumes it and calls `parse_binop(level + 1)` again for the right operand, wrapping the accumulated `left` in a new `BinaryOp` node on each iteration.
+
+So `1 + 2 + 3` at level 4 (additive) works like this: parse `1` via level 5 (multiplicative, finds nothing), see `+` at level 4, parse `2` via level 5, build `(1 + 2)`. Loop: see another `+` at level 4, parse `3` via level 5, build `((1 + 2) + 3)`. Left-associative.
+
+Two operators live outside the table:
+
+- **Range** (`..` and `..=`) is handled in `parse_expr` *after* the table returns, making it the lowest-precedence operator of all. It builds `Expr::Range` with an `inclusive` flag.
+- **Exponentiation** (`**`) needs right-to-left associativity — `2 ** 3 ** 4` must be `2 ** (3 ** 4)`. The table's loop always builds left-to-right, so `**` gets its own function, `parse_exponent()`, which calls `parse_unary()` for the base and *recursively calls itself* for the exponent. That self-recursion means the right side can contain more `**` operators, producing right-associative nesting. Sitting below the table also makes `**` bind tighter than `*`.
+
+`parse_unary` handles the prefix operators `-` (negation) and `not`, recursing so `--x` and `not not b` nest correctly.
+
+### Postfix chains
+
+`parse_postfix()` loops, consuming `.member`, `(args)`, `[index]`, and `!` and wrapping the accumulated expression in the appropriate AST node:
+
+```text
+object.method(name: arg).field[0]!
+```
+
+Member access accepts a couple of keyword tokens (`or`, `catch`) as field names, since those are legal method names in the standard library but are lexed as keywords.
+
+**The `!` (bang) operator is special.** After consuming `!`, the parser peeks past a following `.` to decide between error *propagation* and error *recovery*:
+
+| Syntax | AST node | Meaning |
+|---|---|---|
+| `expr!` | `Expr::Propagate` | Rethrow the error to the caller |
+| `expr!.or(default)` | `Expr::ErrorOr` | Fall back to a default value |
+| `expr!.or_else(-> handler)` | `Expr::ErrorOrElse` | Fall back to a computed value |
+| `expr!.catch` + indented arms | `Expr::ErrorCatch` | Dispatch on the error type |
+
+A `catch` block is an indented list of arms, each `ErrorType var -> expr` or a `_ -> expr` wildcard (note `->` here, versus `=>` in `match` arms):
+
+```text
+let data = fetch(url: u)!.catch
+    NetworkError e -> ""
+    _ -> "unknown"
+```
+
+There is also a bang-free variant, `parse_postfix_no_bang`, used for the operand of `resolve`: it stops before `!` so that `resolve task!` parses as `Propagate(Resolve(task))` — resolve the task first, then propagate its error — rather than the other way around.
+
+### Arguments
+
+Call arguments are parsed by `parse_args_inner()`. A named argument is detected with two-token lookahead (`Ident` followed by `:`); anything else is treated as **positional** and given a synthesized name (`_0`, `_1`, ...):
+
+```text
+Point(x: 1.0, y: 2.0)     # named
+Point(1.0, 2.0)           # positional -- synthesized names _0, _1
+```
+
+The parser accepts both forms. Enforcement is split with the typechecker: positional arguments are valid for constructors, while for regular calls the typechecker rejects them with a hint about the real parameter name. What the parser *does* reject is a duplicate argument name (`f(x: 1, x: 2)`) and argument lists over 10,000 entries. Trailing commas and newlines inside the parentheses are allowed.
+
+### Primary expressions
+
+`parse_primary()` handles the atoms:
+
+- Literals: `42`, `3.14`, `"hello"`, `true`, `false`, `nil`
+- String interpolation: `"hello {name}!"` — the lexer emits `StringStart` / `StringMid` / `StringEnd` tokens with expression tokens between them, and `parse_string_interpolation` alternates literal parts and parsed expressions into `Expr::StringInterpolation`
+- Identifiers and parenthesized expressions
+- List literals `[1, 2, 3]` and map literals `{"a": 1, "b": 2}` (both allow trailing commas and internal newlines, both capped at 10,000 entries)
+- `match` expressions
+- `resolve expr`
+- `async f(...)`, `blocking f(...)`, and `detached async f(...)` — each requires its operand to be a *call* (`parse_keyword_call` rejects `async x`), and `detached` must be followed by `async`
+- `throw expr`
+- Inline lambdas starting with `->`
+
+### Match expressions
+
+`parse_match_expr` parses a scrutinee followed by an indented list of `pattern => expr` arms. `parse_match_pattern` supports:
+
+- Literal patterns: integers, floats (including negative literals via a leading `-`), strings, `true`/`false`, `nil`
+- Wildcard `_`
+- Identifier binding patterns
+- Enum variant patterns `Enum.Variant`, optionally destructuring fields either positionally (`Shape.Circle(radius)`) or with explicit renames (`Shape.Circle(radius: r)`)
+
+```text
+match shape
+    Shape.Circle(radius) => 3.14 * radius * radius
+    Shape.Rectangle(width: w, height: h) => w * h
+    _ => 0.0
+```
+
+### Inline lambdas
+
+Lambdas start with `->` and have three forms, all with inferred parameter and return types:
+
+```text
+-> x: x + 1        # one parameter
+-> a, b: a + b     # multiple parameters
+-> : 42            # zero parameters
+```
+
+After the `->`, a `:` means a zero-parameter lambda; otherwise the parser reads a comma-separated identifier list up to the `:`, then a single body expression. (The bare `-> handler` inside `!.or_else(...)` is not parsed by this function — the `or_else` parser consumes the `->` itself and reads the handler as a plain expression.)
+
+---
+
+## Classes, Traits, and Enums (class_trait.rs)
+
+### Classes
+
+```text
+class Point
+    x: Float
+    y: Float
+    def distance(other: Point) -> Float
+        ...
+```
+
+Optional features, in order after the class name: `class Stack[T]` (generic parameters), `extends Error` (single inheritance), `includes Eq, From[Int]` (trait inclusions, each with optional type arguments via `parse_trait_ref_list`). Class bodies contain fields (`name: Type`), `pub` fields, methods (`def` / `pub def`), and even nested `class` declarations.
+
+Generic parameters are pushed into `type_params` *after* the body's `Indent` is consumed — deliberately, so a parse error at the `Indent` can't leak type parameters into an outer scope — and popped when the body ends. Traits do the same for `trait From[T]`.
+
+### Functions: def is sugar for let
+
+`parse_def_as_let` parses a `def` into a `Stmt::Let` whose value is an `Expr::Lambda`:
+
+```text
+def add(x: Int, y: Int) -> Int
+    return x + y
+```
+
+becomes:
+
+```rust
+Stmt::Let {
+    name: "add",
+    value: Expr::Lambda { params: [("x", Int), ("y", Int)], ret_type: Int, body: [...], .. },
+    ...
+}
+```
+
+Inside a class, trait, or enum named `Point`, a method `def distance(...)` gets the qualified binding name `"Point.distance"` — that qualified name is how later phases distinguish methods from free functions. If a `def` has no return arrow, the return type is `Type::Inferred`; if it has no indented body, the body is empty, which is how abstract trait method signatures are represented.
+
+The full `def` grammar handled here:
+
+```text
+def fetch(url: String, retries: Int = 3) throws NetworkError -> String
+```
+
+- **Parameters** are `name: Type` pairs. Optional **default values** (`= expr`) are allowed, but once one parameter has a default, all following parameters must too.
+- **`throws`** takes a type and comes *before* the return arrow.
+- **Generic type parameters use inline syntax.** Bracket syntax `[T]` on functions is rejected with an explicit error — type parameters are instead written directly in parameter positions and detected by the typechecker:
+
+```text
+def identity(x: T) -> T
+    return x
+```
+
+The parser does *not* add `T` to `type_params` here; the typechecker treats unknown type names in parameter position as type variables.
+
+- **Generic constraints** are parsed inline after a parameter's type:
+
+```text
+def max(a: T extends Comparable includes Ord, b: T) -> T
+```
+
+These produce `TypeConstraint::Extends("Comparable")` and `TypeConstraint::Includes("Ord", [...])`, stored on the `Expr::Lambda`. An `includes` constraint may carry type arguments (`includes From[Float]`), and the constrained type must be a bare type parameter — constraining `List[T]` is an error.
+
+### Traits
+
+Trait bodies contain only method definitions (`def` / `pub def`), which may omit their bodies to declare abstract methods:
+
+```text
+trait Eq
+    def eq(other: Self) -> Bool
+```
+
+### Enums
+
+Enums parse variants with optional fields, plus optional methods and trait inclusions:
+
+```text
+enum Shape includes Eq
+    Circle(radius: Float)
+    Rectangle(width: Float, height: Float)
+    Point
+```
+
+---
+
+## Type Parsing (type_parser.rs)
+
+`parse_type()` handles all type annotations:
+
+| Category | Examples |
+|---|---|
+| Primitives | `Int`, `Float`, `Bool`, `String`, `Nil`, `Void`, `Never` |
+| Containers | `List[Int]`, `Set[String]`, `Map[String, Int]`, `Task[String]` |
+| Custom types | `Point`, `Stack[Int]`, `Pair[A, B]` |
+| Function types | `Fn(Int, Int) -> Bool` |
+| Nullable types | `Int?`, `Point?` |
+| Type variables | any name currently in `type_params` |
+
+A few deliberate ergonomics live here:
+
+- **Lowercase primitives are caught early.** Writing `int`, `string`, `list`, etc. produces a targeted error ("use 'Int' instead") rather than an unknown-type failure downstream.
+- **Function types must use the `Fn(...) -> R` spelling.** A bare parenthesized form like `(Int) -> Bool` is rejected with an error pointing at the `Fn` syntax. Detection uses `looks_like_bare_fn_type`, a non-consuming lookahead that scans for a balanced `)` followed by `->` — it only rejects when the arrow is actually there.
+- **Nullability doesn't nest.** The `maybe_nullable()` helper checks for a trailing `?` and wraps the type in `Type::Nullable`; a second `?` (`T??`) is a compile error, as is wrapping an already-nullable type.
+
+Names found in `type_params` (with a positive refcount) become `Type::TypeVar`. Anything else with bracket arguments becomes `Type::Custom(name, args)`; bare names go through `Type::from_ident`, which maps the seven primitive names and falls back to `Type::Custom`.
+
+---
+
+## Error Recovery
+
+The parser has two modes. `parse_module` stops at the first error. `parse_module_recovering` returns an `ast::ParseResult { module, diagnostics }` — when a statement fails to parse, the diagnostic is collected and `synchronize()` skips tokens until it finds a statement boundary:
+
+```rust
+fn synchronize(&mut self) {
+    loop {
+        match &self.peek().kind {
+            TokenKind::EOF => break,
+            TokenKind::Newline => {
+                self.advance();
+                // A statement-starting keyword (def, let, const, class, trait,
+                // enum, if, while, for, return, pub, use, break, continue),
+                // Dedent, or EOF after a newline is a safe restart point.
+                ...
+            }
+            TokenKind::Dedent => break,
+            _ => { self.advance(); }
+        }
+    }
+}
+```
+
+This lets one pass over a file report several independent errors instead of stopping at the first. The batch compiler pipeline itself uses the fail-fast `parse_module`; the recovering mode is exercised by the multi-error integration tests.
+
+## Diagnostics
+
+Parse errors use three diagnostic templates from the `ast` crate (`ast/src/templates/parse_errors`):
+
+| Code | Template | Meaning |
+|---|---|---|
+| P001 | `UnexpectedToken` | "Expected X, found Y" — the workhorse for all grammar errors |
+| P002 | `ExpectedIndentedBlock` | Expected indented block after colon |
+| P003 | `NestingTooDeep` | Maximum nesting depth (50) exceeded |
+
+Most parser errors are P001 with a specific `expected` string and a source label attached via `with_label(span, ...)`, which is why messages like "Expected 'async' after 'detached'" or "use 'Int' instead" can point at the exact offending token.

@@ -1,0 +1,93 @@
+---
+title: Classes
+description: Defining and using classes in Aster.
+---
+
+## Defining a Class
+
+```
+class User
+  name: String
+  email: String
+```
+
+Fields are listed with their types, one per line, indented under the class definition.
+
+## Creating Instances
+
+```
+let user = User(name: "Brian", email: "brian@example.com")
+```
+
+## Accessing Fields
+
+```
+log(user.name)     # "Brian"
+log(user.email)    # "brian@example.com"
+```
+
+## Methods
+
+Define methods inside the class body:
+
+```
+class Circle
+  radius: Float
+
+  def area() -> Float
+    3.14159 * radius ** 2
+
+  def circumference() -> Float
+    2.0 * 3.14159 * radius
+```
+
+Call methods with dot notation:
+
+```
+let c = Circle(radius: 5.0)
+log(to_string(c.area()))            # 78.53975
+log(to_string(c.circumference()))   # 31.4159
+```
+
+## Visibility
+
+Classes and their members are **private by default**. Use `pub` to export:
+
+```
+pub class Config
+  debug: Bool
+
+pub class Server
+  host: String
+  port: Int
+
+  pub def address() -> String
+    host + ":" + to_string(port)
+```
+
+## Example: A Web Application Model
+
+```
+pub class UserProfile
+  id: Int
+  name: String
+  email: String
+  active: Bool
+
+  pub def display_name() -> String
+    if active
+      name
+    else
+      name + " (inactive)"
+
+pub class Team
+  name: String
+  members: List[UserProfile]
+
+  pub def active_count() -> Int
+    let count = 0
+    for member in members
+      if member.active
+        count = count + 1
+    count
+```
