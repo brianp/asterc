@@ -34,6 +34,12 @@ pub enum FirStmt {
     /// Placeholder for statements that produce no runtime value (e.g. nested
     /// type definitions). Codegen should skip these entirely.
     NoOp,
+    /// Source-line marker (1-based) for stack-trace symbolization. Emitted by
+    /// the lowerer before each source statement; codegen sets the current
+    /// Cranelift srcloc from it so every instruction that follows carries the
+    /// originating statement's line, giving per-statement (not per-function)
+    /// line granularity in captured traces. Produces no runtime code.
+    SrcLine(u32),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

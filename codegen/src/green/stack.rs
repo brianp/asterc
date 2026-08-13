@@ -6,6 +6,7 @@ const DEFAULT_GUARD_SIZE: usize = 4096; // 4 KB guard page
 pub(crate) struct GreenStack {
     base: *mut u8,
     total: usize, // guard + usable
+    guard: usize, // guard page size at the bottom (low end)
 }
 
 unsafe impl Send for GreenStack {}
@@ -30,12 +31,21 @@ impl GreenStack {
         // Guard page at the bottom — stack overflow hits PROT_NONE → SIGSEGV
         let rc = unsafe { libc::mprotect(base as *mut _, guard, libc::PROT_NONE) };
         assert!(rc == 0, "mprotect failed for guard page");
-        Self { base, total }
+        Self { base, total, guard }
     }
 
     /// Top of the usable stack region (stack grows down).
     pub(crate) fn top(&self) -> *mut u8 {
         unsafe { self.base.add(self.total) }
+    }
+
+    /// Native-stack bounds `(lo, hi)` of the usable region (excluding the guard
+    /// page at the low end), for a frame-pointer walk from a throw on this
+    /// green thread.
+    pub(crate) fn bounds(&self) -> (usize, usize) {
+        let lo = self.base as usize + self.guard;
+        let hi = self.base as usize + self.total;
+        (lo, hi)
     }
 }
 

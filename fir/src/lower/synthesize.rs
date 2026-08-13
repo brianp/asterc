@@ -6,6 +6,8 @@ impl Lowerer {
     pub(crate) fn synthesize_entry_function(&mut self) -> Result<(), LowerError> {
         let snapshot = self.save_scope();
         self.scope.current_return_type = Some(Type::Void);
+        // Synthesized top-level entry is also the uncaught boundary.
+        self.scope.is_entry_fn = true;
 
         // Inject globals
         let mut body: Vec<FirStmt> = Vec::new();
@@ -52,6 +54,8 @@ impl Lowerer {
             body,
             is_entry: true,
             suspendable: false,
+            file: String::new(),
+            def_line: 0,
         };
         self.ms.module.add_function(func);
         self.ms.module.entry = Some(id);
@@ -151,6 +155,8 @@ impl Lowerer {
             body: vec![FirStmt::Return(result_expr)],
             is_entry: false,
             suspendable: false,
+            file: String::new(),
+            def_line: 0,
         };
         self.ms.module.add_function(func);
         Ok(())
@@ -220,6 +226,8 @@ impl Lowerer {
             body: vec![FirStmt::Return(body_expr)],
             is_entry: false,
             suspendable: false,
+            file: String::new(),
+            def_line: 0,
         };
         self.ms.module.add_function(func);
         Ok(())
@@ -316,6 +324,8 @@ impl Lowerer {
             body,
             is_entry: false,
             suspendable: false,
+            file: String::new(),
+            def_line: 0,
         };
         self.ms.module.add_function(func);
         Ok(())
@@ -392,6 +402,8 @@ impl Lowerer {
                 body,
                 is_entry: false,
                 suspendable: false,
+                file: String::new(),
+                def_line: 0,
             });
         }
 

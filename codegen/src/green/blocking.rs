@@ -41,6 +41,9 @@ impl BlockingPool {
 }
 
 fn blocking_worker(pool: Arc<BlockingPool>) {
+    // Record this blocking-pool OS thread's stack bounds so an error thrown
+    // while running blocking work walks within bounds.
+    crate::runtime::stacktrace::record_os_thread_bounds();
     loop {
         let job = {
             let mut queue = pool.sender.lock().unwrap();
@@ -52,8 +55,32 @@ fn blocking_worker(pool: Arc<BlockingPool>) {
             }
         };
 
-        // Execute the blocking work
+        // Execute the blocking work. If it throws, the error flag/tag/value are
+        // set on THIS blocking-pool OS thread's TLS and the trace is captured in
+        // the global (pointer-keyed) trace map at the throw site.
         let result = (job.work)();
+
+        // Snapshot the error state this worker's TLS holds after the work, then
+        // clear it so the next job on this worker starts clean.
+        let failed = crate::runtime::error_flag_get();
+        let error_tag = crate::runtime::error_tag_get();
+        let error_value = crate::runtime::error_value_get();
+        crate::runtime::error_flag_set(false);
+        crate::runtime::error_tag_set(0);
+        crate::runtime::error_value_set(0);
+
+        // Hand the thrown error's tag/value across the thread boundary on the
+        // suspended green thread's struct (exclusive access: it is parked, not
+        // running on any worker). The switch-in that resumes it restores these
+        // into the resuming worker's TLS, so the `!` after the blocking call
+        // propagates the typed error and `e.trace()` resolves. Writes are
+        // published to the resuming worker by the state mutex + injector push
+        // below.
+        unsafe {
+            job.task.set_error_flag(failed);
+            job.task.set_error_tag(error_tag);
+            job.task.set_error_value(error_value);
+        }
 
         // Resume the green thread with the result.
         // The thread yielded via blocking_submit and expects to continue
@@ -62,7 +89,7 @@ fn blocking_worker(pool: Arc<BlockingPool>) {
         {
             let mut st = job.task.state.lock().unwrap();
             st.result = result;
-            st.failed = false;
+            st.failed = failed;
             st.status = super::thread::ThreadStatus::Runnable;
         }
         let sc = super::scheduler::sched();

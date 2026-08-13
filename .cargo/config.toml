@@ -1,0 +1,8 @@
+# Force frame pointers on for every crate in the workspace, including the
+# `codegen` staticlib that becomes the AOT runtime. Captured stack traces walk
+# the native frame-pointer chain at throw time, so both Aster-generated frames
+# (Cranelift `preserve_frame_pointers`) and runtime (Rust) frames must keep a
+# frame pointer. Without this the runtime frames omit rbp setup and a walk
+# would desync.
+[build]
+rustflags = ["-C", "force-frame-pointers=yes"]

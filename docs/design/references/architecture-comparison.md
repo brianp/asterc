@@ -231,7 +231,7 @@
 
 **Ruby approach:** Exception model with raise/rescue. Catch tables map PC ranges to handlers. Stack unwinding on raise. Expensive: creates exception object, captures backtrace. `throw` instruction handles non-local exits (break/next/return in blocks).
 
-**Asterc current state:** Hybrid model: **tagged unions for nullable/result types + per-thread error flag for thrown errors.** Nullable types (`T?`) use `TagWrap`/`TagUnwrap`/`TagCheck` (tag=0 for Some, tag=1 for None). Thrown errors set a per-thread `ERROR_FLAG`/`ERROR_TYPE_TAG`/`ERROR_VALUE`. Propagation (`!` operator), recovery (`.or()`, `.or_else()`, `.catch {}`), and throw are all first-class syntax.
+**Asterc current state:** Hybrid model: **tagged unions for nullable/result types + per-thread error flag for thrown errors.** Nullable types (`T?`) use `TagWrap`/`TagUnwrap`/`TagCheck` (tag=0 for Some, tag=1 for None). Thrown errors set a per-thread `ERROR_FLAG`/`ERROR_TYPE_TAG`/`ERROR_VALUE`. Propagation (`!` operator), recovery (`.or()`, `.or_else()`, `.catch {}`), and throw are all first-class syntax. Every thrown error also captures a stack trace once at `throw` via a native frame-pointer walk, surfaced as `error.trace() -> List[Frame]`.
 
 **Alignment with best practice:**
 - Tagged unions for nullable types are the right representation (matches Rust's Option layout)
@@ -242,13 +242,11 @@
 **Gaps and risks:**
 - **Per-thread error flag is a hidden side channel.** Unlike Rust's Result which is a value that must be handled, the error flag can be silently ignored. If a function sets the error flag and the caller doesn't check, the error propagates invisibly
 - **Single error slot:** Only one error can be active at a time. If error handling code itself throws, the original error is lost
-- **No stack trace on error:** The error flag stores only a type tag and value pointer. No backtrace is captured, making debugging harder than Ruby's exceptions
 - **Error flag checked manually:** After each throwing call, the lowerer emits `aster_error_check()`. If this is ever missed (bug in the lowerer), errors silently corrupt execution
 - **Tagged union boxing for value types:** `Int?` requires heap allocation of an 8-byte box to distinguish null from zero. Rust avoids this with niche optimization (Option<NonZeroI64> uses 0 for None)
 
 **Recommendations:**
-- **Now:** Add stack trace capture on throw (at least function names + line numbers). This is critical for debugging
-- **Soon:** Consider making the error flag check automatic at the codegen level rather than relying on the lowerer to emit it. A post-lowering validation pass could verify all throwing calls are followed by error checks
+- **Now:** Consider making the error flag check automatic at the codegen level rather than relying on the lowerer to emit it. A post-lowering validation pass could verify all throwing calls are followed by error checks
 - **Later:** Consider niche optimization for specific types (e.g., `String?` could use null pointer for None, which it already does for Ptr types)
 
 ---
@@ -458,17 +456,15 @@
 
 12. **No string interning** (Category 15): Identical string literals create separate heap allocations.
 
-13. **No stack trace on error throw** (Category 9): Errors carry only type tag and value, no backtrace for debugging.
-
-14. **No lazy iterator composition** (Category 14): All iterable operations eagerly materialize results.
+13. **No lazy iterator composition** (Category 14): All iterable operations eagerly materialize results.
 
 ### 5. Design Debt
 
-15. **Single IR with no optimization opportunity** (Category 1): FIR serves as both analysis target and codegen input. Adding optimization passes later will require either modifying FIR in-place or introducing a new IR stage.
+14. **Single IR with no optimization opportunity** (Category 1): FIR serves as both analysis target and codegen input. Adding optimization passes later will require either modifying FIR in-place or introducing a new IR stage.
 
-16. **24-byte object header** (Category 13): Could be reduced to 16 bytes with better field packing, saving 8 bytes per heap object.
+15. **24-byte object header** (Category 13): Could be reduced to 16 bytes with better field packing, saving 8 bytes per heap object.
 
-17. **Fixed 64KB green thread stacks** (Category 6): Wastes memory for simple tasks, insufficient for deeply recursive ones. Growable stacks would be more flexible.
+16. **Fixed 64KB green thread stacks** (Category 6): Wastes memory for simple tasks, insufficient for deeply recursive ones. Growable stacks would be more flexible.
 
 ---
 

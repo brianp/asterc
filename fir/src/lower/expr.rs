@@ -1120,19 +1120,9 @@ impl Lowerer {
             args: vec![],
             ret_ty: FirType::Bool,
         };
-        // Save pending_stmts so cleanup emission doesn't steal earlier stmts.
-        let saved = std::mem::take(&mut self.pending_stmts);
-        self.emit_cleanup_calls();
-        if let Some(scope_id) = self.scope.function_scope_id {
-            self.emit_scope_exit(scope_id);
-        }
-        let mut error_body = std::mem::take(&mut self.pending_stmts);
-        self.pending_stmts = saved;
-        error_body.push(FirStmt::Expr(FirExpr::RuntimeCall {
-            name: "aster_panic".to_string(),
-            args: vec![],
-            ret_ty: FirType::Void,
-        }));
+        // On error: propagate by early return (or render + abort at the entry
+        // boundary). `aster_error_check` above cleared the flag, so re-arm it.
+        let error_body = self.error_exit_stmts(true);
         self.pending_stmts.push(FirStmt::If {
             cond: check,
             then_body: error_body,
@@ -1264,6 +1254,55 @@ impl Lowerer {
         Ok(FirExpr::LocalVar(result_id, result_ty))
     }
 
+    /// Build the statements that exit the current function on the error path:
+    /// run pending cleanup + the function scope exit, then either render the
+    /// error and abort (at the entry boundary) or propagate to the caller by an
+    /// ordinary early return. `rearm` re-sets the error flag first, needed on the
+    /// `!` path where `aster_error_check` already cleared it (a bare `throw`
+    /// leaves the flag set, so it passes `false`).
+    fn error_exit_stmts(&mut self, rearm: bool) -> Vec<FirStmt> {
+        let saved = std::mem::take(&mut self.pending_stmts);
+        self.emit_cleanup_calls();
+        if let Some(scope_id) = self.scope.function_scope_id {
+            self.emit_scope_exit(scope_id);
+        }
+        let mut body = std::mem::replace(&mut self.pending_stmts, saved);
+        if self.scope.is_entry_fn {
+            body.push(FirStmt::Expr(FirExpr::RuntimeCall {
+                name: "aster_panic".to_string(),
+                args: vec![],
+                ret_ty: FirType::Void,
+            }));
+        } else {
+            if rearm {
+                body.push(FirStmt::Expr(FirExpr::RuntimeCall {
+                    name: "aster_error_set".to_string(),
+                    args: vec![],
+                    ret_ty: FirType::Void,
+                }));
+            }
+            let ret_ty = self
+                .scope
+                .current_return_type
+                .as_ref()
+                .map(|t| self.lower_type(t))
+                .unwrap_or(FirType::I64);
+            body.push(FirStmt::Return(default_fir_value(&ret_ty)));
+        }
+        body
+    }
+
+    /// Lower a catch-arm body, capturing any statements it emits (a `throw`,
+    /// propagation, or method call produces pending statements) so they stay
+    /// scoped inside the arm's then-block rather than leaking to the enclosing
+    /// scope where the arm's bound variable is not defined.
+    fn lower_arm_body(&mut self, body: &Expr) -> Result<(FirExpr, Vec<FirStmt>), LowerError> {
+        let saved = std::mem::take(&mut self.pending_stmts);
+        let val = self.lower_expr(body)?;
+        let arm_stmts = std::mem::replace(&mut self.pending_stmts, saved);
+        Ok((val, arm_stmts))
+    }
+
     /// Generate a nested if/else chain dispatching on error type tag for catch arms.
     fn lower_catch_arms_dispatch(
         &mut self,
@@ -1289,15 +1328,16 @@ impl Lowerer {
 
         // If there are no typed arms, just use the wildcard (or default 0)
         if typed_arms.is_empty() {
-            let fallback = if let Some(body) = wildcard_body {
-                self.lower_expr(body)?
+            let (fallback, mut arm_stmts) = if let Some(body) = wildcard_body {
+                self.lower_arm_body(body)?
             } else {
-                FirExpr::IntLit(0)
+                (FirExpr::IntLit(0), Vec::new())
             };
-            return Ok(vec![FirStmt::Assign {
+            arm_stmts.push(FirStmt::Assign {
                 target: FirPlace::Local(result_id),
                 value: fallback,
-            }]);
+            });
+            return Ok(arm_stmts);
         }
 
         // Get the error tag into a local
@@ -1346,11 +1386,12 @@ impl Lowerer {
 
         // Build the innermost else (wildcard fallback or re-raise)
         let wildcard_fallback = if let Some(body) = wildcard_body {
-            let val = self.lower_expr(body)?;
-            vec![FirStmt::Assign {
+            let (val, mut arm_stmts) = self.lower_arm_body(body)?;
+            arm_stmts.push(FirStmt::Assign {
                 target: FirPlace::Local(result_id),
                 value: val,
-            }]
+            });
+            arm_stmts
         } else {
             // No wildcard: no arm matched, re-set the error flag so it propagates
             vec![FirStmt::Expr(FirExpr::RuntimeCall {
@@ -1376,7 +1417,7 @@ impl Lowerer {
                 ast::Type::Custom(error_type.to_string(), vec![]),
             );
 
-            let body_val = self.lower_expr(body)?;
+            let (body_val, arm_stmts) = self.lower_arm_body(body)?;
 
             // Restore previous bindings
             if let Some(old) = old_binding {
@@ -1393,17 +1434,18 @@ impl Lowerer {
             // Build the condition: tag == t1 || tag == t2 || ...
             let cond = self.build_tag_match_cond(tag_id, &matching_tags);
 
-            let then_body = vec![
-                FirStmt::Let {
-                    name: var_id,
-                    ty: FirType::Ptr,
-                    value: FirExpr::LocalVar(err_val_id, FirType::Ptr),
-                },
-                FirStmt::Assign {
-                    target: FirPlace::Local(result_id),
-                    value: body_val,
-                },
-            ];
+            // Bind the arm variable, run the arm's captured statements (in scope
+            // of that binding), then produce the arm value.
+            let mut then_body = vec![FirStmt::Let {
+                name: var_id,
+                ty: FirType::Ptr,
+                value: FirExpr::LocalVar(err_val_id, FirType::Ptr),
+            }];
+            then_body.extend(arm_stmts);
+            then_body.push(FirStmt::Assign {
+                target: FirPlace::Local(result_id),
+                value: body_val,
+            });
 
             let if_stmt = FirStmt::If {
                 cond,
@@ -1483,6 +1525,13 @@ impl Lowerer {
             args: vec![FirExpr::IntLit(type_tag), fir_inner],
             ret_ty: FirType::Void,
         }));
+        // `throw` diverges: it terminates the current function, exactly like the
+        // `!` propagation path, rather than falling through to any following
+        // statements. `aster_error_set_typed` already set the flag, so no rearm.
+        let exit = self.error_exit_stmts(false);
+        self.pending_stmts.extend(exit);
+        // Value in expression position is never reached (the exit returns first);
+        // provide a well-typed dummy so callers that consume it still typecheck.
         let dummy = match self
             .scope
             .current_return_type
@@ -1681,5 +1730,19 @@ impl Lowerer {
                 .map(|(_, _, arg)| self.lower_expr(arg))
                 .collect(),
         }
+    }
+}
+
+/// Default FIR value expression for a given FIR type. Used to synthesize the
+/// early-return value on the `!` propagation path (the return value is unused
+/// by the caller, which checks the error flag instead).
+pub(crate) fn default_fir_value(ty: &FirType) -> FirExpr {
+    match ty {
+        FirType::F64 => FirExpr::FloatLit(0.0),
+        FirType::Bool => FirExpr::BoolLit(false),
+        FirType::Ptr | FirType::Struct(_) | FirType::TaggedUnion { .. } | FirType::FnPtr(_) => {
+            FirExpr::NilLit
+        }
+        _ => FirExpr::IntLit(0),
     }
 }

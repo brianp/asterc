@@ -41,6 +41,12 @@ pub(crate) struct GreenThread {
     pub(crate) context: UnsafeCell<MachineContext>,
     pub(crate) stack: UnsafeCell<Option<GreenStack>>,
     pub(crate) error_flag: UnsafeCell<bool>,
+    /// Saved typed-error tag / object pointer for this green thread, mirroring
+    /// `error_flag`. Saved on switch-out and restored on switch-in so a typed
+    /// error thrown here (or handed back by the blocking pool) survives across
+    /// context switches and a cross-thread `resolve`, carrying its trace.
+    pub(crate) error_tag: UnsafeCell<i64>,
+    pub(crate) error_value: UnsafeCell<i64>,
     pub(crate) shadow_stack_top: UnsafeCell<*mut u8>,
     pub(crate) state: Mutex<TaskState>,
     pub(crate) cv: Condvar,
@@ -79,6 +85,34 @@ impl GreenThread {
 
     /// # Safety
     /// Caller must have exclusive access.
+    pub(crate) unsafe fn set_error_tag(&self, val: i64) {
+        unsafe {
+            *self.error_tag.get() = val;
+        }
+    }
+
+    /// # Safety
+    /// Caller must have exclusive access.
+    pub(crate) unsafe fn get_error_tag(&self) -> i64 {
+        unsafe { *self.error_tag.get() }
+    }
+
+    /// # Safety
+    /// Caller must have exclusive access.
+    pub(crate) unsafe fn set_error_value(&self, val: i64) {
+        unsafe {
+            *self.error_value.get() = val;
+        }
+    }
+
+    /// # Safety
+    /// Caller must have exclusive access.
+    pub(crate) unsafe fn get_error_value(&self) -> i64 {
+        unsafe { *self.error_value.get() }
+    }
+
+    /// # Safety
+    /// Caller must have exclusive access.
     pub(crate) unsafe fn set_shadow_stack(&self, val: *mut u8) {
         unsafe {
             *self.shadow_stack_top.get() = val;
@@ -95,6 +129,15 @@ impl GreenThread {
     /// Caller must have exclusive access.
     pub(crate) unsafe fn take_stack(&self) -> Option<GreenStack> {
         unsafe { (*self.stack.get()).take() }
+    }
+
+    /// Native-stack bounds `(lo, hi)` of this green thread's mmap'd stack, if it
+    /// still owns one. Used to bound a frame-pointer walk from a throw here.
+    ///
+    /// # Safety
+    /// Caller must have exclusive access.
+    pub(crate) unsafe fn stack_bounds(&self) -> Option<(usize, usize)> {
+        unsafe { (*self.stack.get()).as_ref().map(|s| s.bounds()) }
     }
 }
 

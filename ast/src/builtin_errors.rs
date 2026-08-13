@@ -22,6 +22,7 @@
 //! - ChannelClosedError: u32::MAX - 9
 //! - LockTimeoutError:   u32::MAX - 10
 //! - CancelledError:     u32::MAX - 11
+//! - Frame:              u32::MAX - 12  (not an error; a stack-trace frame)
 
 /// Shared floor for every compiler-reserved sentinel ClassId.
 ///
@@ -62,3 +63,31 @@ pub const PROCESS_ERROR_SIZE: usize = 16;
 
 /// Number of leading GC-traceable pointer fields for `ProcessError`.
 pub const PROCESS_ERROR_PTR_COUNT: i64 = 2;
+
+// ---------------------------------------------------------------------------
+// Frame — a single stack-trace frame produced by `error.trace()`.
+//
+// Not an error class, but a compiler-generated built-in class registered the
+// same way (fixed sentinel ClassId + fixed layout shared by the runtime that
+// constructs it and the lowerer that resolves `frame.function` / `frame.file`
+// / `frame.line`). Pointer fields come first so the GC traces them.
+// ---------------------------------------------------------------------------
+
+/// Sentinel ClassId for the `Frame` built-in class.
+pub const FRAME_CLASS_ID: u32 = u32::MAX - 12;
+
+/// `Frame.function: String` — offset 0 (pointer).
+pub const FRAME_FUNCTION_OFFSET: usize = 0;
+
+/// `Frame.file: String` — offset 8 (pointer).
+pub const FRAME_FILE_OFFSET: usize = 8;
+
+/// `Frame.line: Int` — offset 16 (value).
+pub const FRAME_LINE_OFFSET: usize = 16;
+
+/// A `Frame` occupies two pointer fields (`function`, `file`) followed by one
+/// integer field (`line`): 24 bytes total.
+pub const FRAME_SIZE: usize = 24;
+
+/// Number of leading GC-traceable pointer fields for a `Frame`.
+pub const FRAME_PTR_COUNT: i64 = 2;

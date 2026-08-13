@@ -1,7 +1,31 @@
 # Plan: Stack Traces
 
-status: pending
-issue: https://github.com/brianp/asterc/issues/15
+status: landed
+issue: https://github.com/brianp/asterc/issues/15 (resolved in-repo; close the
+GitHub issue out-of-band)
+
+Landed: frame pointers forced on in both backends + staticlib; stack bounds
+recorded for main / blocking pool / green threads; capture-once frame-pointer
+walk at `throw`; the `Frame` builtin class and `error.trace() -> List[Frame]`;
+`[runtime]` collapse of unresolved frames; JIT address-range registration and
+AOT self-contained symbol data section resolving a PC to `function` + `file:line`
+with AOT/JIT parity; `throw` and `!` now terminate/propagate by return with the
+entry point rendering uncaught message + trace; per-statement line granularity
+(FIR statement spans threaded to Cranelift srclocs, PC -> statement line); and a
+typed error *value* thrown on a green thread or blocking-pool worker carries its
+value/tag/trace across a cross-thread task `resolve`. The frame-trimming and
+assertion-pairing logic for test failures ships wired into a minimal harness
+core in `codegen/src/runtime/stacktrace.rs`: `run_test` runs one `test_*` case
+and, on a thrown failure, `report_test_failure` resolves the captured trace,
+takes the failing test's call-site as the injected assertion span
+(`#[track_caller]`-style), trims the harness frames below the `test_*`
+definition (`trim_below_test_frame`), and pairs the two
+(`pair_failure_with_assertion`) into a `TestFailure`. This runs end-to-end
+against a real JIT-compiled failing `test_*` program
+(`test_harness_trims_below_test_frame_and_pairs_assertion_site`). The FULL
+`asterc test` harness — file/`test_*` discovery, the `std/test` assertion
+library and `AssertionError` type, the seeded runner, and the formatter seam —
+builds on this core and remains issue #2.
 
 Errors carry a captured stack trace. Native frame-pointer walk, symbolized
 through compiler-emitted tables, captured once at throw. Zero steady-state

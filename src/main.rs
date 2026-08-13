@@ -175,6 +175,9 @@ fn frontend_and_lower(source: &str, filename: &str, unstable: bool, jit: bool) -
 
     // Lower AST → FIR
     let mut lowerer = fir::Lowerer::new(checker.env, checker.type_table);
+    // Thread the source so lowered functions carry their file/line for
+    // stack-trace symbolization.
+    lowerer.set_source(filename, source);
 
     for cache in &imported_fir_caches {
         lowerer.merge_imported(cache);
@@ -226,6 +229,10 @@ fn cmd_run(filename: &str, unstable: bool) {
         eprintln!("JIT compilation error: {}", e);
         std::process::exit(2);
     }
+
+    // Record the main thread's native stack bounds before running, so a throw
+    // reaching the top level walks its captured trace within bounds.
+    codegen::runtime::aster_runtime_init();
 
     let exit_code = jit.call_i64(entry);
     std::process::exit(exit_code.clamp(0, 255) as i32);

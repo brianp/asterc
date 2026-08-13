@@ -20,8 +20,9 @@ Defines error and nullability handling for Aster. Single-inheritance error hiera
 - **Error hierarchy**: `Exception` (root) → `Error` (app base). Error types use `extends` for single inheritance.
 - **`throw` keyword** for raising errors. No string shortcuts — always structured, matchable types.
 - **`throws ErrorType`** on function signatures (no parens).
-- **`!` propagates** errors to the caller. Stacktrace is built incrementally through each `!`.
+- **`!` propagates** errors to the caller — an ordinary early return that adds nothing to the trace.
 - **Recovery**: `!.or(default)` for eager fallback, `!.or_else(-> expr)` for lazy recovery, `!.catch` for match-style branching on error type.
+- **Captured stack trace**: every thrown error carries a trace taken once at `throw` by a native frame-pointer walk. `error.trace() -> List[Frame]` returns it, worst frame first. Zero cost on the happy path.
 - **`T?` nullable types** with `.or()`, `.or_else()`, `.or_throw(Error)`, and `match`. No optional chaining, no `== nil`, no `.map()`.
 - **Clean separation**: `!` is exclusively for errors, `?` is exclusively for nullability.
 - **No `try`/`catch`** — dropped as redundant. One mechanism only.

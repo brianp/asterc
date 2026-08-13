@@ -31,6 +31,20 @@ fn jit_compile(fir: &FirModule) -> CraneliftJIT {
     jit
 }
 
+/// Lower a program with source threading so lowered functions carry their
+/// `file`/`def_line` for stack-trace symbolization assertions.
+fn compile_with_source(src: &str, filename: &str) -> FirModule {
+    let tokens = lexer::lex(src).expect("lex ok");
+    let mut parser = parser::Parser::new(tokens);
+    let module = parser.parse_module("test").expect("parse ok");
+    let mut tc = typecheck::TypeChecker::new();
+    tc.check_module(&module).expect("typecheck ok");
+    let mut lowerer = Lowerer::new(tc.env, tc.type_table);
+    lowerer.set_source(filename, src);
+    lowerer.lower_module(&module).expect("lower ok");
+    lowerer.finish()
+}
+
 #[test]
 fn jit_runtime_symbols_cover_runtime_signatures() {
     let registered: std::collections::HashSet<_> = runtime_builtin_symbols()
@@ -4679,4 +4693,459 @@ def main() -> Int
     let jit = jit_compile(&fir);
     let result = jit.call_i64(fir.entry.unwrap());
     assert_eq!(result, -7);
+}
+
+// ---------------------------------------------------------------------------
+// Captured stack traces — error.trace() surface (JIT end-to-end)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn trace_on_caught_error_returns_nonempty_frame_list() {
+    // Throw through a nested call, catch, and materialize the trace. With JIT
+    // symbolization landed, the throwing function and its caller resolve to real
+    // frames, so the list has more than the single collapsed [runtime] marker.
+    let src = "\
+class AppError extends Error
+  code: Int
+
+def deep() throws AppError -> Int
+  throw AppError(message: \"boom\", code: 1)
+
+def main() -> Int
+  deep()!.catch
+    AppError e -> e.trace().len()
+    _ -> 0-1
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert!(
+        result >= 2,
+        "trace() must contain the resolved Aster frames plus collapsed runtime frames, got {result}"
+    );
+}
+
+#[test]
+fn trace_resolves_real_aster_function_names_jit() {
+    // The keystone: a captured PC must resolve to the correct Aster function
+    // name via the JIT-registered address-range table. Throwing through `deep`,
+    // called from `main`, both names must appear as real frames (not collapsed
+    // into [runtime]).
+    let src = "\
+class AppError extends Error
+  code: Int
+
+def deep() throws AppError -> Int
+  throw AppError(message: \"boom\", code: 1)
+
+def main() -> Int
+  deep()!.catch
+    AppError e -> e.trace().len()
+    _ -> 0-1
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let _ = jit.call_i64(fir.entry.unwrap());
+    let frames = crate::runtime::stacktrace::current_trace_resolved();
+    let names: Vec<&str> = frames.iter().map(|(f, _, _)| f.as_str()).collect();
+    assert!(
+        names.contains(&"deep"),
+        "the throwing function must resolve to a real frame; resolved = {names:?}"
+    );
+    assert!(
+        names.contains(&"main"),
+        "the calling function must resolve to a real frame; resolved = {names:?}"
+    );
+}
+
+#[test]
+fn trace_nested_throw_resolves_a_frame_per_aster_call_jit() {
+    // Throw through three nested Aster calls; every call on the path must appear
+    // as a real, correctly-named frame (crit 13). This also exercises the fixed
+    // two-level `!` propagation through an intermediate function.
+    let src = "\
+class AppError extends Error
+  code: Int
+
+def deep() throws AppError -> Int
+  throw AppError(message: \"boom\", code: 1)
+
+def middle() throws AppError -> Int
+  deep()!
+
+def main() -> Int
+  middle()!.catch
+    AppError e -> e.trace().len()
+    _ -> 0-1
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let _ = jit.call_i64(fir.entry.unwrap());
+    let frames = crate::runtime::stacktrace::current_trace_resolved();
+    let names: Vec<&str> = frames.iter().map(|(f, _, _)| f.as_str()).collect();
+    for expected in ["deep", "middle", "main"] {
+        assert!(
+            names.contains(&expected),
+            "nested-throw trace must include `{expected}`; resolved = {names:?}"
+        );
+    }
+}
+
+#[test]
+fn trace_line_accuracy_top_resolved_frame_is_throw_site() {
+    // The deepest (worst-first) resolved frame reports the source file and the
+    // line of the throw site (crit 19). `deep`'s body is a single `throw` on
+    // line 5, so the top resolved frame must report prog.aster:5.
+    let src = "\
+class AppError extends Error
+  code: Int
+
+def deep() throws AppError -> Int
+  throw AppError(message: \"boom\", code: 1)
+
+def main() -> Int
+  deep()!.catch
+    AppError e -> e.trace().len()
+    _ -> 0-1
+";
+    let fir = compile_with_source(src, "prog.aster");
+    let jit = jit_compile(&fir);
+    let _ = jit.call_i64(fir.entry.unwrap());
+    let frames = crate::runtime::stacktrace::current_trace_resolved();
+    let (function, file, line) = frames.first().expect("at least one resolved frame");
+    assert_eq!(
+        function, "deep",
+        "worst-first: the throwing function is first"
+    );
+    assert_eq!(file, "prog.aster", "frame reports the source file");
+    assert_eq!(line, &5, "frame reports the throw-site line");
+}
+
+#[test]
+fn trace_line_accuracy_throw_below_def_line_reports_statement_line() {
+    // The distinguishing case for per-statement (not per-function) line
+    // accuracy: `deep` has three statements before the throw, so the throw sits
+    // on line 8 while the function's first body statement (the def-line
+    // approximation) is line 5. A per-function fallback would report 5; only
+    // real srcloc threading reports the throw statement's line, 8.
+    let src = "\
+class AppError extends Error
+  code: Int
+
+def deep() throws AppError -> Int
+  let a = 1
+  let b = 2
+  let c = 3
+  throw AppError(message: \"boom\", code: a + b + c)
+
+def main() -> Int
+  deep()!.catch
+    AppError e -> e.trace().len()
+    _ -> 0-1
+";
+    let fir = compile_with_source(src, "prog.aster");
+    let jit = jit_compile(&fir);
+    let _ = jit.call_i64(fir.entry.unwrap());
+    let frames = crate::runtime::stacktrace::current_trace_resolved();
+    let (function, file, line) = frames.first().expect("at least one resolved frame");
+    assert_eq!(
+        function, "deep",
+        "worst-first: the throwing function is first"
+    );
+    assert_eq!(file, "prog.aster");
+    assert_eq!(
+        line, &8,
+        "per-statement srcloc must report the throw line (8), not the function's first-statement line (5)"
+    );
+}
+
+#[test]
+fn trace_rethrow_same_error_preserves_original_trace() {
+    // A catch arm that rethrows the SAME error value must keep the trace
+    // captured at the original throw: the deepest resolved frame stays `deep`,
+    // not the rethrow site (crit 15).
+    let src = "\
+class AppError extends Error
+  code: Int
+
+def deep() throws AppError -> Int
+  throw AppError(message: \"boom\", code: 1)
+
+def rethrower() throws AppError -> Int
+  deep()!.catch
+    AppError e -> throw e
+
+def main() -> Int
+  rethrower()!.catch
+    AppError e -> e.trace().len()
+    _ -> 0-1
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let _ = jit.call_i64(fir.entry.unwrap());
+    let frames = crate::runtime::stacktrace::current_trace_resolved();
+    let names: Vec<&str> = frames.iter().map(|(f, _, _)| f.as_str()).collect();
+    assert_eq!(
+        names.first(),
+        Some(&"deep"),
+        "rethrow must preserve the original throw site as the deepest frame; got {names:?}"
+    );
+}
+
+#[test]
+fn trace_new_throw_in_catch_captures_fresh_trace() {
+    // Constructing and throwing a NEW error inside a catch arm captures a fresh
+    // trace rooted at the new throw site; the original throwing function must no
+    // longer appear (crit 16).
+    let src = "\
+class AppError extends Error
+  code: Int
+
+def deep() throws AppError -> Int
+  throw AppError(message: \"boom\", code: 1)
+
+def freshthrow() throws AppError -> Int
+  deep()!.catch
+    AppError e -> throw AppError(message: \"new\", code: 2)
+
+def main() -> Int
+  freshthrow()!.catch
+    AppError e -> e.trace().len()
+    _ -> 0-1
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let _ = jit.call_i64(fir.entry.unwrap());
+    let frames = crate::runtime::stacktrace::current_trace_resolved();
+    let names: Vec<&str> = frames.iter().map(|(f, _, _)| f.as_str()).collect();
+    assert_eq!(
+        names.first(),
+        Some(&"freshthrow"),
+        "a fresh throw must root the trace at the new site; got {names:?}"
+    );
+    assert!(
+        !names.contains(&"deep"),
+        "the original throw site must not appear in the fresh trace; got {names:?}"
+    );
+}
+
+#[test]
+fn trace_from_green_thread_is_bounded_and_symbolized() {
+    // A throw on a green thread walks that thread's mmap'd stack (bounds swapped
+    // in by the scheduler), stays within bounds, and symbolizes to real frames
+    // (crit 17). The trace is materialized on the green thread and its length
+    // returned through `resolve`.
+    let src = "\
+class AppError extends Error
+  code: Int
+
+def deep() throws AppError -> Int
+  throw AppError(message: \"green-boom\", code: 7)
+
+def worker() -> Int
+  deep()!.catch
+    AppError e -> e.trace().len()
+    _ -> 0-1
+
+def main() -> Int
+  let t: Task[Int] = async worker()
+  resolve t!
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let count = jit.call_i64(fir.entry.unwrap());
+    assert!(
+        count >= 2 && count <= 256,
+        "green-thread throw must yield a bounded, non-collapsed trace, got {count}"
+    );
+}
+
+#[test]
+fn trace_worker_error_survives_cross_thread_resolve_jit() {
+    // crit 17: a typed error thrown on a worker (blocking-pool) thread, NOT
+    // caught there, must carry its tag + value + captured trace back across the
+    // cross-thread `resolve` so the main-thread catch dispatches on AppError and
+    // `e.trace()` yields bounded, correctly-symbolized frames. The prior gap was
+    // that only the error flag propagated through consume_thread_result.
+    let src = "\
+class AppError extends Error
+  code: Int
+
+def deep() throws AppError -> Int
+  throw AppError(message: \"pool-boom\", code: 9)
+
+def worker() throws AppError -> Int
+  deep()!
+
+def main() -> Int
+  let t: Task[Int] = async worker()
+  resolve t!.catch
+    AppError e -> e.trace().len()
+    _ -> 0-1
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let count = jit.call_i64(fir.entry.unwrap());
+    assert!(
+        count >= 2 && count <= 256,
+        "cross-thread resolve of a worker-thrown error must carry a bounded, symbolized trace, got {count}"
+    );
+}
+
+#[test]
+fn trace_deep_recursion_is_bounded_and_symbolized() {
+    // A throw at the bottom of a deep recursive call chain yields a trace that
+    // is bounded (<= MAX_TRACE_FRAMES) and whose recursive frames symbolize to
+    // the known function name (crit 18).
+    let src = "\
+class AppError extends Error
+  code: Int
+
+def recurse(n: Int) throws AppError -> Int
+  if n <= 0
+    throw AppError(message: \"bottom\", code: 1)
+  recurse(n: n - 1)!
+
+def main() -> Int
+  recurse(n: 40)!.catch
+    AppError e -> e.trace().len()
+    _ -> 0-1
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let total = jit.call_i64(fir.entry.unwrap());
+    assert!(
+        total >= 1 && total <= 256,
+        "frame count must be bounded, got {total}"
+    );
+    let frames = crate::runtime::stacktrace::current_trace_resolved();
+    let recurse_frames = frames.iter().filter(|(f, _, _)| f == "recurse").count();
+    assert!(
+        recurse_frames >= 10,
+        "deep recursion must produce many resolved `recurse` frames, got {recurse_frames}"
+    );
+}
+
+#[test]
+fn test_harness_trims_below_test_frame_and_pairs_assertion_site() {
+    // crit 12, end-to-end: a failing `test_*` Aster program run through the
+    // minimal harness core. `check` is an assertion helper that throws; the
+    // failing `test_math` calls it; `__harness_run` invokes the test the way a
+    // runner would. The reported failure must (a) carry the assertion call-site
+    // — the line in `test_math` where the assertion was invoked, injected
+    // `#[track_caller]`-style via the trace — and (b) trim every frame below the
+    // `test_*` definition, dropping `__harness_run`.
+    let src = "\
+class AssertionError extends Error
+  code: Int
+
+def check(failed: Bool) throws AssertionError -> Void
+  if failed
+    throw AssertionError(message: \"assertion failed\", code: 0)
+
+def test_math() throws AssertionError -> Void
+  check(failed: 1 + 1 != 3)!
+
+def __harness_run() throws AssertionError -> Void
+  test_math()!
+";
+    let fir = compile_with_source(src, "spec_test.aster");
+    let jit = jit_compile(&fir);
+    let run_id = fir
+        .functions
+        .iter()
+        .find(|f| f.name == "__harness_run")
+        .unwrap()
+        .id;
+    let ptr = jit.get_function_ptr(run_id).unwrap();
+    let run: extern "C" fn() = unsafe { std::mem::transmute(ptr) };
+
+    let failure = crate::runtime::stacktrace::run_test("test_math", || run())
+        .expect("a failing test_* must report a harness failure");
+
+    assert_eq!(failure.test_name, "test_math");
+    // (a) Injected assertion call-site: the `check(...)!` call in `test_math`.
+    assert_eq!(
+        failure.site.assertion_file, "spec_test.aster",
+        "assertion call-site names the test source file"
+    );
+    assert_eq!(
+        failure.site.assertion_line, 9,
+        "assertion call-site is the line in test_math that invoked the assertion"
+    );
+    // (b) Trace trimmed at the test_* boundary, worst frame first.
+    let names: Vec<&str> = failure
+        .site
+        .frames
+        .iter()
+        .map(|(f, _, _)| f.as_str())
+        .collect();
+    assert_eq!(
+        names.first(),
+        Some(&"check"),
+        "worst frame is the assertion helper's throw site; resolved = {names:?}"
+    );
+    assert_eq!(
+        names.last(),
+        Some(&"test_math"),
+        "trace is trimmed to the failing test_* definition; resolved = {names:?}"
+    );
+    assert!(
+        !names.contains(&"__harness_run"),
+        "frames below the test_* definition are trimmed; resolved = {names:?}"
+    );
+    // The throw-site line differs from the paired call-site line, so pairing is
+    // carrying real, distinct information (not just echoing the trim boundary).
+    let (_, _, throw_line) = failure.site.frames.first().unwrap();
+    assert_eq!(*throw_line, 6, "check throws on line 6");
+}
+
+#[test]
+fn test_harness_passes_a_clean_test_with_no_failure() {
+    // A `test_*` that returns cleanly is a PASS: the harness reports no failure.
+    let src = "\
+class AssertionError extends Error
+  code: Int
+
+def check(failed: Bool) throws AssertionError -> Void
+  if failed
+    throw AssertionError(message: \"assertion failed\", code: 0)
+
+def test_math() throws AssertionError -> Void
+  check(failed: 1 + 1 != 2)!
+";
+    let fir = compile_with_source(src, "spec_test.aster");
+    let jit = jit_compile(&fir);
+    let run_id = fir
+        .functions
+        .iter()
+        .find(|f| f.name == "test_math")
+        .unwrap()
+        .id;
+    let ptr = jit.get_function_ptr(run_id).unwrap();
+    let run: extern "C" fn() = unsafe { std::mem::transmute(ptr) };
+    let outcome = crate::runtime::stacktrace::run_test("test_math", || run());
+    assert!(
+        outcome.is_none(),
+        "a clean test_* run is a pass, not a failure"
+    );
+}
+
+#[test]
+fn trace_is_empty_for_freshly_constructed_uncaught_error_value() {
+    // Constructing an error without throwing it captures no trace; trace()
+    // must not leak another error's frames. Here the constructed error is
+    // never thrown, so its trace() is empty.
+    let src = "\
+class AppError extends Error
+  code: Int
+
+def main() -> Int
+  let e = AppError(message: \"nope\", code: 0)
+  e.trace().len()
+";
+    let fir = compile_and_run(src);
+    let jit = jit_compile(&fir);
+    let result = jit.call_i64(fir.entry.unwrap());
+    assert_eq!(result, 0, "an unthrown error carries no trace");
 }

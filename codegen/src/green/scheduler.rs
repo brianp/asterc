@@ -97,6 +97,12 @@ unsafe extern "C" {
 fn worker_loop(_id: usize, local: Worker<ThreadPtr>) {
     IS_WORKER.set(true);
 
+    // Record this worker OS thread's own stack bounds so a throw from scheduler
+    // code (not inside a green thread) still walks safely. While a green thread
+    // runs we swap in its mmap'd bounds and restore these afterwards.
+    crate::runtime::stacktrace::record_os_thread_bounds();
+    let worker_bounds = crate::runtime::stacktrace::stack_bounds();
+
     let mut scheduler_ctx = MachineContext::new();
     WORKER_SCHEDULER_CTX.set(&raw mut scheduler_ctx);
 
@@ -162,10 +168,20 @@ fn worker_loop(_id: usize, local: Worker<ThreadPtr>) {
         WORKER_YIELD_REASON.set(None);
         PREEMPT_TICKS.set(0);
 
-        // Restore per-green-thread TLS state
+        // Restore per-green-thread TLS state. The error tag/value ride along
+        // with the flag so a typed error thrown on this green thread (or handed
+        // back by the blocking pool) keeps its tag/value/trace across switches.
         unsafe {
             crate::runtime::error_flag_set(thread.get_error_flag());
+            crate::runtime::error_tag_set(thread.get_error_tag());
+            crate::runtime::error_value_set(thread.get_error_value());
             crate::runtime::shadow_stack_set(thread.get_shadow_stack());
+        }
+
+        // Bound a frame-pointer walk (from a throw inside this green thread) to
+        // its mmap'd stack. Green threads know their exact bounds.
+        if let Some((lo, hi)) = unsafe { thread.stack_bounds() } {
+            crate::runtime::stacktrace::set_stack_bounds(lo, hi);
         }
 
         // Context switch to green thread
@@ -173,12 +189,17 @@ fn worker_loop(_id: usize, local: Worker<ThreadPtr>) {
             aster_context_switch(&raw mut scheduler_ctx, thread.context_mut());
         }
 
+        // Back on the worker OS stack — restore its bounds.
+        crate::runtime::stacktrace::set_stack_bounds(worker_bounds.0, worker_bounds.1);
+
         // Green thread yielded back — save per-green-thread TLS state
         thread
             .running_on_worker
             .store(false, std::sync::atomic::Ordering::Relaxed);
         unsafe {
             thread.set_error_flag(crate::runtime::error_flag_get());
+            thread.set_error_tag(crate::runtime::error_tag_get());
+            thread.set_error_value(crate::runtime::error_value_get());
             thread.set_shadow_stack(crate::runtime::shadow_stack_get());
         }
         WORKER_CURRENT_THREAD.set(std::ptr::null());
@@ -346,6 +367,8 @@ pub(crate) fn spawn_green_thread(entry: usize, args: usize) -> *const GreenThrea
         context: std::cell::UnsafeCell::new(super::context::MachineContext::new()),
         stack: std::cell::UnsafeCell::new(Some(stack)),
         error_flag: std::cell::UnsafeCell::new(false),
+        error_tag: std::cell::UnsafeCell::new(0),
+        error_value: std::cell::UnsafeCell::new(0),
         shadow_stack_top: std::cell::UnsafeCell::new(std::ptr::null_mut()),
         state: Mutex::new(TaskState {
             status: ThreadStatus::Runnable,
@@ -383,6 +406,8 @@ pub(crate) fn allocate_terminal_thread(result: i64, failed: bool) -> *const Gree
         context: std::cell::UnsafeCell::new(super::context::MachineContext::new()),
         stack: std::cell::UnsafeCell::new(None),
         error_flag: std::cell::UnsafeCell::new(false),
+        error_tag: std::cell::UnsafeCell::new(0),
+        error_value: std::cell::UnsafeCell::new(0),
         shadow_stack_top: std::cell::UnsafeCell::new(std::ptr::null_mut()),
         state: Mutex::new(TaskState {
             status,
@@ -470,7 +495,16 @@ pub(crate) fn consume_thread_result(thread_ptr: *const GreenThread) -> i64 {
             0
         }
         ThreadStatus::Failed => {
+            // Restore the thrown error's tag and value (saved into the struct on
+            // the failing thread's switch-out) into this resolving thread's TLS,
+            // so a `.catch(T e)` arm dispatches on the right tag and `e.trace()`
+            // finds the trace captured across the thread boundary. The flag alone
+            // is not enough for a typed error.
             crate::runtime::error_flag_set(true);
+            unsafe {
+                crate::runtime::error_tag_set(thread.get_error_tag());
+                crate::runtime::error_value_set(thread.get_error_value());
+            }
             0
         }
         _ => {

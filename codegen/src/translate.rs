@@ -470,6 +470,13 @@ fn translate_stmt(builder: &mut FunctionBuilder, state: &mut TranslationState, s
         }
 
         FirStmt::NoOp => {}
+
+        FirStmt::SrcLine(line) => {
+            // Sticky: sets the source location for every instruction emitted
+            // until the next marker, so the finalized function's srcloc map
+            // resolves a captured PC to its originating statement's line.
+            builder.set_srcloc(ir::SourceLoc::new(*line));
+        }
     }
 }
 

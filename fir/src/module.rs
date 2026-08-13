@@ -41,6 +41,8 @@ impl FirModule {
                 body: vec![],
                 is_entry: false,
                 suspendable: false,
+                file: String::new(),
+                def_line: 0,
             });
         }
         self.functions[idx] = func;
@@ -92,6 +94,15 @@ pub struct FirFunction {
     pub body: Vec<FirStmt>,
     pub is_entry: bool,
     pub suspendable: bool,
+    /// Source file this function was defined in, for stack-trace symbolization.
+    /// Empty for synthesized functions with no source location.
+    #[serde(default)]
+    pub file: String,
+    /// 1-based line of the function's definition, used as the fallback frame
+    /// line when a captured PC has no finer-grained source mapping. `0` means
+    /// unknown (synthesized function).
+    #[serde(default)]
+    pub def_line: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

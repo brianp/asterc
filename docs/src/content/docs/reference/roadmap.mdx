@@ -79,7 +79,12 @@ The rest of the documentation describes only what is actually implemented.
 
 ## Diagnostics & tooling
 
-- **Error stacktraces** — there is no stack trace capture on thrown errors.
+- **Test-failure trace trimming** — error stack traces themselves are
+  implemented (see the [error handling](/advanced/errors/) docs and
+  [codegen internals](/internals/codegen/)). What remains scaffolded is the
+  frame-trimming and assertion-pairing logic for test failures: it ships as a
+  tested runtime helper but has no caller, since wiring it in waits on the
+  test harness (see **Testing story** below).
 - **Unreachable catch arm detection** — the compiler does not warn when an earlier
   `catch` arm shadows a later one.
 - **L008 `MissingNewline`** — the diagnostic template exists but the lexer never

@@ -106,6 +106,10 @@ pub(super) struct ScopeState {
     pub(super) cleanup_locals: Vec<(LocalId, String, bool, bool)>,
     pub(super) cleanup_scope_stack: Vec<usize>,
     pub(super) async_scope_stack: Vec<LocalId>,
+    /// True while lowering the program entry function (`main`). A bare `!` here
+    /// is the uncaught boundary: it renders the error + trace and aborts rather
+    /// than propagating by early return.
+    pub(super) is_entry_fn: bool,
 }
 
 /// Module-level state accumulated while lowering.
@@ -150,6 +154,14 @@ pub struct Lowerer {
     /// In eval mode: class name and method signatures from the snapshot.
     /// Maps bare method name to (qualified_name, method_type).
     pub(super) eval_class_methods: HashMap<String, (String, Type)>,
+    /// Source file name for stack-trace symbolization (empty if not set).
+    pub(super) source_file: String,
+    /// Byte offset of the start of each source line, for offset -> line lookup.
+    /// Always non-empty (`[0]` when no source is set).
+    pub(super) line_starts: Vec<usize>,
+    /// Definition line of the function currently being lowered, consumed by
+    /// `register_function`. `0` when unknown.
+    pub(super) current_def_line: u32,
 }
 
 impl Lowerer {
@@ -196,6 +208,32 @@ impl Lowerer {
                 ("params".into(), FirType::Ptr, 8),
                 ("return_type".into(), FirType::Ptr, 16),
                 ("is_public".into(), FirType::Bool, 24),
+            ],
+        );
+
+        // Frame: function(ptr,0), file(ptr,8), line(val,16). Layout mirrors
+        // `ast::builtin_errors::FRAME_*`; the runtime constructs frames with the
+        // same offsets when `error.trace()` is called.
+        let frame_id = ClassId(ast::builtin_errors::FRAME_CLASS_ID);
+        classes.insert("Frame".to_string(), frame_id);
+        class_fields.insert(
+            frame_id,
+            vec![
+                (
+                    "function".into(),
+                    FirType::Ptr,
+                    ast::builtin_errors::FRAME_FUNCTION_OFFSET,
+                ),
+                (
+                    "file".into(),
+                    FirType::Ptr,
+                    ast::builtin_errors::FRAME_FILE_OFFSET,
+                ),
+                (
+                    "line".into(),
+                    FirType::I64,
+                    ast::builtin_errors::FRAME_LINE_OFFSET,
+                ),
             ],
         );
 
@@ -280,6 +318,31 @@ impl Lowerer {
             pending_stmts: Vec::new(),
             eval_env: None,
             eval_class_methods: HashMap::new(),
+            source_file: String::new(),
+            line_starts: vec![0],
+            current_def_line: 0,
+        }
+    }
+
+    /// Provide the source file name and text so lowered functions carry their
+    /// source location for stack-trace symbolization. Optional: contexts without
+    /// a backing file (REPL, eval) simply leave frames with no file/line.
+    pub fn set_source(&mut self, filename: &str, source: &str) {
+        self.source_file = filename.to_string();
+        let mut starts = vec![0usize];
+        for (i, b) in source.bytes().enumerate() {
+            if b == b'\n' {
+                starts.push(i + 1);
+            }
+        }
+        self.line_starts = starts;
+    }
+
+    /// 1-based source line containing byte `offset`.
+    pub(super) fn line_at(&self, offset: usize) -> u32 {
+        match self.line_starts.binary_search(&offset) {
+            Ok(i) => (i + 1) as u32,
+            Err(i) => i as u32, // i = number of line-starts <= offset
         }
     }
 
@@ -428,6 +491,8 @@ impl Lowerer {
             body: vec![FirStmt::Return(fir_expr)],
             is_entry: true,
             suspendable: false,
+            file: String::new(),
+            def_line: 0,
         };
         self.ms.module.add_function(func);
         Ok(id)
@@ -679,7 +744,7 @@ impl Lowerer {
             FirStmt::Block(body) => {
                 Self::remap_stmts_with(body, fr, cr, fo, co, eco);
             }
-            FirStmt::Break | FirStmt::Continue | FirStmt::NoOp => {}
+            FirStmt::Break | FirStmt::Continue | FirStmt::NoOp | FirStmt::SrcLine(_) => {}
         }
     }
 

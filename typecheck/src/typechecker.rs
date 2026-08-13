@@ -175,13 +175,42 @@ impl TypeChecker {
             },
         );
 
-        // Built-in error hierarchy: Exception (root) -> Error (app base)
+        // The `Frame` built-in class: one entry of a captured stack trace.
+        // Compiler-constructed (no user constructor), implements Printable so a
+        // trace renders through the ordinary Printable path. Field order and
+        // types must match the runtime layout in `ast::builtin_errors`
+        // (function, file: String; line: Int).
+        env.set_class("Frame".into(), {
+            let mut info = ClassInfo::new(
+                Type::Custom("Frame".into(), Vec::new()),
+                IndexMap::from([
+                    ("function".into(), Type::String),
+                    ("file".into(), Type::String),
+                    ("line".into(), Type::Int),
+                ]),
+                HashMap::new(),
+            );
+            info.includes = vec!["Printable".into()];
+            info
+        });
+
+        // Built-in error hierarchy: Exception (root) -> Error (app base).
+        // `trace()` is registered on Exception so every error subclass resolves
+        // it through the inheritance chain. It returns the captured frames
+        // worst (deepest / throw site) first.
         env.set_class(
             "Exception".into(),
             ClassInfo::new(
                 Type::Custom("Exception".into(), Vec::new()),
                 IndexMap::from([("message".into(), Type::String)]),
-                HashMap::new(),
+                HashMap::from([(
+                    "trace".to_string(),
+                    Type::func(
+                        vec![],
+                        vec![],
+                        Type::List(Box::new(Type::Custom("Frame".into(), Vec::new()))),
+                    ),
+                )]),
             ),
         );
         env.set_var_type(

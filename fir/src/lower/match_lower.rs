@@ -375,6 +375,8 @@ impl Lowerer {
                 body,
                 is_entry: false,
                 suspendable: false,
+                file: String::new(),
+                def_line: 0,
             };
             self.ms.module.add_function(func);
         }

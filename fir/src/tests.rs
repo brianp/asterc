@@ -104,6 +104,8 @@ fn module_add_and_get_function() {
         body: vec![FirStmt::Return(FirExpr::IntLit(0))],
         is_entry: false,
         suspendable: false,
+        file: String::new(),
+        def_line: 0,
     };
     let id = m.add_function(func);
     assert_eq!(id, FunctionId(0));
@@ -122,6 +124,8 @@ fn module_mark_and_functions_since() {
         body: vec![],
         is_entry: false,
         suspendable: false,
+        file: String::new(),
+        def_line: 0,
     };
     m.add_function(f0);
 
@@ -136,6 +140,8 @@ fn module_mark_and_functions_since() {
         body: vec![],
         is_entry: false,
         suspendable: false,
+        file: String::new(),
+        def_line: 0,
     };
     m.add_function(f1);
 
@@ -179,6 +185,8 @@ fn fir_module_serializes_to_json() {
         body: vec![FirStmt::Return(FirExpr::LocalVar(LocalId(0), FirType::I64))],
         is_entry: false,
         suspendable: false,
+        file: String::new(),
+        def_line: 0,
     };
     m.add_function(func);
 

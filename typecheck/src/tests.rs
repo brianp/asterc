@@ -2098,3 +2098,75 @@ def safe_parse(s: String) -> Int
     let mut tc = super::typechecker::TypeChecker::new();
     tc.check_module(&module).expect("typecheck ok");
 }
+
+// ─── Stack-trace surface: Frame class + Exception.trace() ────────────
+
+#[test]
+fn test_frame_builtin_class_registered_with_fields() {
+    let tc = TypeChecker::new();
+    let info = tc
+        .env
+        .get_class("Frame")
+        .expect("Frame builtin class must be registered");
+    assert_eq!(info.fields.get("function"), Some(&Type::String));
+    assert_eq!(info.fields.get("file"), Some(&Type::String));
+    assert_eq!(info.fields.get("line"), Some(&Type::Int));
+}
+
+#[test]
+fn test_frame_builtin_class_implements_printable() {
+    let tc = TypeChecker::new();
+    let info = tc.env.get_class("Frame").expect("Frame class registered");
+    assert!(
+        info.includes.iter().any(|t| t == "Printable"),
+        "Frame must implement Printable, got includes {:?}",
+        info.includes
+    );
+}
+
+#[test]
+fn test_exception_trace_method_returns_list_of_frame() {
+    let tc = TypeChecker::new();
+    let info = tc.env.get_class("Exception").expect("Exception registered");
+    let trace_ty = info
+        .methods
+        .get("trace")
+        .expect("Exception must expose a trace() method");
+    let expected_ret = Type::List(Box::new(Type::Custom("Frame".into(), Vec::new())));
+    match trace_ty {
+        Type::Function { ret, params, .. } => {
+            assert!(params.is_empty(), "trace() takes no arguments");
+            assert_eq!(**ret, expected_ret, "trace() must return List[Frame]");
+        }
+        other => panic!("trace should be a function type, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_trace_available_on_error_subclass_via_inheritance() {
+    // A subclass of Error (which extends Exception) must resolve trace()
+    // through the inheritance chain and yield List[Frame].
+    let tc = TypeChecker::new();
+    let info = tc.env.get_class("IOError").expect("IOError registered");
+    // IOError itself declares no trace(); it inherits from Error -> Exception.
+    assert!(info.methods.get("trace").is_none());
+    let mut current = Some("IOError".to_string());
+    let mut found = None;
+    while let Some(name) = current {
+        let ci = tc.env.get_class(&name).unwrap();
+        if let Some(t) = ci.methods.get("trace") {
+            found = Some(t.clone());
+            break;
+        }
+        current = ci.extends.clone();
+    }
+    let trace_ty = found.expect("trace() resolvable via ancestor chain");
+    if let Type::Function { ret, .. } = trace_ty {
+        assert_eq!(
+            *ret,
+            Type::List(Box::new(Type::Custom("Frame".into(), Vec::new())))
+        );
+    } else {
+        panic!("trace should be a function type");
+    }
+}

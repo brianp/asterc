@@ -579,3 +579,117 @@ def main() -> Int
 ",
     );
 }
+
+// ─── Captured stack traces ────────────────────────────────────────
+
+#[test]
+fn parity_error_trace_frame_count() {
+    // A thrown-and-caught error carries a captured trace whose frame count is
+    // identical under JIT and AOT. This pins the trace() surface end to end
+    // through both backends (AOT links aster_error_trace from the staticlib and
+    // aster_runtime_init / aster_register_symbols from the main wrapper).
+    assert_parity(
+        "error-trace-count",
+        "\
+class AppError extends Error
+  code: Int
+
+def deep() throws AppError -> Int
+  throw AppError(message: \"boom\", code: 1)
+
+def report(e: AppError) -> Int
+  say(message: to_string(e.trace().len()))
+  0
+
+def main() -> Int
+  deep()!.catch
+    AppError e -> report(e)
+    _ -> 1
+",
+    );
+}
+
+#[test]
+fn parity_nested_throw_symbolized_frames_match() {
+    // Symbolization parity (crit 14): a throw through nested Aster calls renders
+    // an identical trace — same function names, files, and lines — under JIT and
+    // AOT. This exercises JIT range registration vs the AOT symbol data section
+    // walked into the same runtime table.
+    assert_parity(
+        "error-trace-nested-symbols",
+        "\
+class AppError extends Error
+  code: Int
+
+def deep() throws AppError -> Int
+  throw AppError(message: \"boom\", code: 1)
+
+def middle() throws AppError -> Int
+  deep()!
+
+def report(e: AppError) -> Int
+  for f in e.trace()
+    say(message: f.function + \":\" + to_string(f.line))
+  0
+
+def main() -> Int
+  middle()!.catch
+    AppError e -> report(e)
+    _ -> 1
+",
+    );
+}
+
+#[test]
+fn parity_uncaught_error_renders_message_and_trace() {
+    // An uncaught error at the entry point renders the message followed by every
+    // frame, worst first, then aborts with the same output and exit code under
+    // both backends (crit 11).
+    assert_parity(
+        "error-uncaught-render",
+        "\
+class AppError extends Error
+  code: Int
+
+def deep() throws AppError -> Int
+  throw AppError(message: \"kaboom\", code: 1)
+
+def main() -> Int
+  deep()!
+  0
+",
+    );
+}
+
+#[test]
+fn parity_worker_error_trace_survives_cross_thread_resolve() {
+    // crit 17: a typed error thrown on a worker thread, NOT caught there,
+    // carries its value/tag/trace back across the cross-thread `resolve`. The
+    // main-thread catch dispatches on AppError and renders the same bounded,
+    // symbolized frame names under JIT and AOT. Regression guard for the prior
+    // gap where only the error flag propagated through consume_thread_result.
+    assert_parity(
+        "error-trace-cross-thread",
+        "\
+class AppError extends Error
+  code: Int
+
+def deep() throws AppError -> Int
+  throw AppError(message: \"pool-boom\", code: 9)
+
+def worker() throws AppError -> Int
+  deep()!
+
+def report(e: AppError) -> Int
+  for f in e.trace()
+    say(message: f.function)
+  0
+
+def main() -> Int
+  let t: Task[Int] = async worker()
+  resolve t!.catch
+    AppError e -> report(e)
+    _ -> 1
+",
+    );
+}

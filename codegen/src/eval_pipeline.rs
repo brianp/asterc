@@ -1,9 +1,8 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU32, Ordering};
 
 use ast::ContextSnapshot;
 use typecheck::module_loader::{FsResolver, ModuleLoader};
@@ -15,8 +14,13 @@ use crate::jit::CraneliftJIT;
 /// Prevents stack overflow from recursive jit_run/evaluate calls.
 const MAX_JIT_DEPTH: u32 = 16;
 
-/// Global counter tracking the current JIT nesting depth.
-static JIT_DEPTH: AtomicU32 = AtomicU32::new(0);
+thread_local! {
+    /// Per-thread counter tracking the current JIT nesting depth. JIT-from-JIT
+    /// recursion happens synchronously on one thread, so the depth limit is a
+    /// per-thread call-stack property; a thread-local also keeps independent
+    /// evaluations on different threads (and parallel tests) from contending.
+    static JIT_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
 
 /// Error returned by [`jit_compile_and_run`] when any stage of the
 /// compile-and-execute pipeline fails.
@@ -40,7 +44,7 @@ struct JitDepthGuard;
 
 impl Drop for JitDepthGuard {
     fn drop(&mut self) {
-        JIT_DEPTH.fetch_sub(1, Ordering::Relaxed);
+        JIT_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
     }
 }
 
@@ -64,7 +68,11 @@ pub fn jit_compile_and_run(
 ) -> Result<i64, RuntimeEvalError> {
     // Guard against unbounded recursive JIT invocations (e.g. jit_run
     // calling jit_run). Decrement on all exit paths via a drop guard.
-    let depth = JIT_DEPTH.fetch_add(1, Ordering::Relaxed);
+    let depth = JIT_DEPTH.with(|d| {
+        let v = d.get();
+        d.set(v + 1);
+        v
+    });
     let _guard = JitDepthGuard;
     if depth >= MAX_JIT_DEPTH {
         return Err(RuntimeEvalError {
@@ -582,19 +590,18 @@ def main() -> Int
 
     #[test]
     fn jit_depth_guard_prevents_overflow() {
-        // Manually exhaust the depth counter, then verify the next call is rejected.
-        // Reset the counter afterwards so other tests aren't affected.
-        use std::sync::atomic::Ordering;
-
-        let original = super::JIT_DEPTH.load(Ordering::Relaxed);
-        super::JIT_DEPTH.store(super::MAX_JIT_DEPTH, Ordering::Relaxed);
+        // Manually exhaust the (thread-local) depth counter, then verify the
+        // next call is rejected. Reset afterwards so sibling tests on this
+        // thread aren't affected; other threads have their own counter.
+        let original = super::JIT_DEPTH.with(|d| d.get());
+        super::JIT_DEPTH.with(|d| d.set(super::MAX_JIT_DEPTH));
 
         let result = jit_compile_and_run("def main() -> Int\n  0", "test.aster", None, None);
         let err = result.unwrap_err();
         assert_eq!(err.kind, "runtime");
         assert!(err.message.contains("nesting depth"));
 
-        super::JIT_DEPTH.store(original, Ordering::Relaxed);
+        super::JIT_DEPTH.with(|d| d.set(original));
     }
 
     // ── Phase 6: Function pointer capture ─────────────────────────────

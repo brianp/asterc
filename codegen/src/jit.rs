@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use cranelift_codegen::settings::{self, Configurable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, default_libcall_names};
 
@@ -21,17 +20,10 @@ pub struct CraneliftJIT {
 
 impl CraneliftJIT {
     pub fn with_config(config: &crate::config::BuildConfig) -> Self {
-        let mut flag_builder = settings::builder();
-        flag_builder
-            .set("opt_level", config.cranelift_opt_level())
-            .unwrap();
-        flag_builder.set("is_pic", "false").unwrap();
         let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
             panic!("host machine is not supported: {}", msg);
         });
-        let isa = isa_builder
-            .finish(settings::Flags::new(flag_builder))
-            .unwrap();
+        let isa = isa_builder.finish(config.cranelift_flags(false)).unwrap();
 
         let mut builder = JITBuilder::with_isa(isa, default_libcall_names());
         register_runtime_builtins(&mut builder);
@@ -63,17 +55,10 @@ impl CraneliftJIT {
     /// to JIT-compiled evaluated code.
     pub fn with_extra_symbols(symbols: &[(&str, *const u8)]) -> Self {
         let config = crate::config::BuildConfig::release();
-        let mut flag_builder = settings::builder();
-        flag_builder
-            .set("opt_level", config.cranelift_opt_level())
-            .unwrap();
-        flag_builder.set("is_pic", "false").unwrap();
         let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
             panic!("host machine is not supported: {}", msg);
         });
-        let isa = isa_builder
-            .finish(settings::Flags::new(flag_builder))
-            .unwrap();
+        let isa = isa_builder.finish(config.cranelift_flags(false)).unwrap();
 
         let mut builder = JITBuilder::with_isa(isa, default_libcall_names());
         register_runtime_builtins(&mut builder);
@@ -112,6 +97,28 @@ impl CraneliftJIT {
             if let Some(&func_id) = self.state.declared.get(&func.id) {
                 let ptr = self.state.module.get_finalized_function(func_id);
                 self.compiled.insert(func.id, ptr);
+            }
+        }
+
+        // JIT symbolization: register each finalized function's address range
+        // and source location into the shared runtime symbol table, so a captured
+        // PC during a throw resolves to the correct function name and line.
+        for func in &fir.functions {
+            if func.name.is_empty() {
+                continue;
+            }
+            if let (Some(&ptr), Some(info)) = (
+                self.compiled.get(&func.id),
+                self.state.symbol_info.get(&func.id),
+            ) {
+                crate::runtime::stacktrace::register_function(
+                    ptr as usize,
+                    info.size as usize,
+                    func.name.clone(),
+                    func.file.clone(),
+                    func.def_line as i64,
+                    info.lines.clone(),
+                );
             }
         }
 

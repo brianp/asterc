@@ -15,6 +15,7 @@ pub mod numeric;
 pub mod print;
 pub mod process;
 pub mod runtime_eval;
+pub mod stacktrace;
 pub mod string;
 pub mod sys;
 pub mod task;
@@ -47,7 +48,12 @@ pub use error::{
     aster_async_scope_enter, aster_async_scope_exit, aster_error_check, aster_error_get_tag,
     aster_error_get_value, aster_error_set, aster_error_set_typed, aster_panic, aster_safepoint,
 };
-pub(crate) use error::{error_flag_get, error_flag_set, set_message_error};
+pub(crate) use error::{
+    error_flag_get, error_flag_set, error_tag_get, error_tag_set, error_value_get, error_value_set,
+    set_message_error,
+};
+
+pub use stacktrace::{aster_error_trace, aster_register_symbols, aster_runtime_init};
 
 pub use task::{
     aster_task_block_on, aster_task_cancel, aster_task_from_f64, aster_task_from_i8,

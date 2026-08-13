@@ -136,6 +136,33 @@ impl Lowerer {
                 _ => None,
             });
 
+        // `error.trace()` on any Exception-derived value → captured stack trace.
+        // Walks the ancestor chain to confirm the receiver descends from
+        // Exception, then emits the runtime call that materializes List[Frame].
+        if method == "trace"
+            && let Some(Type::Custom(class_name, _)) = &object_ast_ty
+        {
+            let mut current = Some(class_name.clone());
+            let mut descends_from_exception = false;
+            while let Some(name) = current {
+                if name == "Exception" {
+                    descends_from_exception = true;
+                    break;
+                }
+                current = self
+                    .type_env
+                    .get_class(&name)
+                    .and_then(|ci| ci.extends.clone());
+            }
+            if descends_from_exception {
+                return Ok(FirExpr::RuntimeCall {
+                    name: "aster_error_trace".to_string(),
+                    args: vec![fir_object],
+                    ret_ty: FirType::Ptr,
+                });
+            }
+        }
+
         if matches!(object_ast_ty, Some(Type::Task(_)))
             && let Some((runtime_name, ret_ty)) = match method {
                 builtin_method::IS_READY => Some(("aster_task_is_ready", FirType::Bool)),

@@ -78,6 +78,17 @@ impl Lowerer {
     ) -> Result<FunctionId, LowerError> {
         let snapshot = self.save_scope();
         self.scope.current_return_type = Some(ret_type.clone());
+        // `main` is the uncaught boundary; every other function propagates `!`
+        // by early return.
+        self.scope.is_entry_fn = name == "main";
+
+        // Record the definition line for stack-trace symbolization. The first
+        // body statement sits on (or one line below) the `def` header; it is the
+        // best line-anchor available without threading spans through every node.
+        self.current_def_line = body
+            .first()
+            .map(|s| self.line_at(s.span().start))
+            .unwrap_or(0);
 
         // If this is the entry function and eval_env is set, inject
         // __eval_env: Ptr as the first parameter.
@@ -574,6 +585,8 @@ impl Lowerer {
             body,
             is_entry: name == "main",
             suspendable: self.function_is_suspendable(name),
+            file: self.source_file.clone(),
+            def_line: std::mem::take(&mut self.current_def_line),
         };
         self.ms.module.add_function(func);
 
@@ -644,6 +657,15 @@ impl Lowerer {
     pub(crate) fn lower_body(&mut self, stmts: &[Stmt]) -> Result<Vec<FirStmt>, LowerError> {
         let mut result = Vec::new();
         for stmt in stmts {
+            // Emit a per-statement source-line marker (only when a source file is
+            // set) so codegen can attach a srcloc to this statement's
+            // instructions, giving captured traces per-statement line accuracy.
+            if !self.source_file.is_empty() {
+                let line = self.line_at(stmt.span().start);
+                if line != 0 {
+                    result.push(FirStmt::SrcLine(line));
+                }
+            }
             let fir_stmt = self.lower_stmt_inner(stmt)?;
             // Drain any pending statements emitted by expression lowering (e.g. match setup)
             result.append(&mut self.pending_stmts);

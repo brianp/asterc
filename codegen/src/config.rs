@@ -61,6 +61,24 @@ impl BuildConfig {
         }
     }
 
+    /// Build the shared Cranelift ISA settings flags for this configuration.
+    ///
+    /// `is_pic` selects position-independent code (true for the AOT object
+    /// backend, false for the JIT). Frame pointers are always preserved so a
+    /// frame-pointer walk at throw time can traverse the native stack cleanly
+    /// in both backends; this is load-bearing for captured stack traces.
+    pub fn cranelift_flags(&self, is_pic: bool) -> cranelift_codegen::settings::Flags {
+        use cranelift_codegen::settings::{self, Configurable};
+        let mut b = settings::builder();
+        b.set("opt_level", self.cranelift_opt_level()).unwrap();
+        b.set("is_pic", if is_pic { "true" } else { "false" })
+            .unwrap();
+        // Force frame pointers on: the stack-trace walker relies on an intact
+        // frame-pointer chain from every Aster and runtime frame.
+        b.set("preserve_frame_pointers", "true").unwrap();
+        settings::Flags::new(b)
+    }
+
     /// Returns the profile directory name.
     pub fn profile_dir(&self) -> &'static str {
         match self.profile {
@@ -133,5 +151,40 @@ mod tests {
     fn profile_dir_names() {
         assert_eq!(BuildConfig::debug().profile_dir(), "debug");
         assert_eq!(BuildConfig::release().profile_dir(), "release");
+    }
+
+    // -- Frame pointer / cranelift flag tests --
+
+    #[test]
+    fn test_cranelift_flags_force_frame_pointers_jit() {
+        // The JIT backend (is_pic = false) must force frame pointers on so a
+        // frame-pointer walk at throw time can traverse the native stack.
+        let flags = BuildConfig::release().cranelift_flags(false);
+        assert!(
+            flags.preserve_frame_pointers(),
+            "JIT ISA flags must preserve frame pointers"
+        );
+    }
+
+    #[test]
+    fn test_cranelift_flags_force_frame_pointers_aot() {
+        // The AOT backend (is_pic = true) must force frame pointers on too so
+        // AOT and JIT frames both walk cleanly.
+        let flags = BuildConfig::release().cranelift_flags(true);
+        assert!(
+            flags.preserve_frame_pointers(),
+            "AOT ISA flags must preserve frame pointers"
+        );
+    }
+
+    #[test]
+    fn test_cranelift_flags_opt_level_threaded_through() {
+        let mut config = BuildConfig::release();
+        config.opt_level = OptLevel::SpeedAndSize;
+        let flags = config.cranelift_flags(false);
+        assert_eq!(
+            flags.opt_level(),
+            cranelift_codegen::settings::OptLevel::SpeedAndSize
+        );
     }
 }

@@ -140,6 +140,8 @@ runtime_functions! {
     fn aster_error_check() -> I8;
     fn aster_error_get_tag() -> I64;
     fn aster_error_get_value() -> I64;
+    fn aster_error_trace(I64) -> I64;
+    fn aster_runtime_init();
     fn aster_safepoint();
     fn aster_panic();
     // Async scope

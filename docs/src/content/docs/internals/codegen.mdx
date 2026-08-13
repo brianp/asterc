@@ -141,7 +141,21 @@ A throwing operation sets the flag; the caller emits `aster_error_check()` after
 
 Runtime builtins participate in this too: helpers like `set_message_error(class_id, message)` construct a real error object (a class instance whose first field is a heap string message) and set it as the current typed error, using the sentinel `ClassId`s from `ast::builtin_errors`. Because AOT and JIT link the same Rust helper, the error representation is identical across backends, and a typed `catch` can dispatch on errors thrown from inside the runtime just like user-thrown ones.
 
-`aster_panic` is the terminal path: it prints `aster: uncaught error` and aborts.
+Because the tag and payload ride with the flag in each green thread's saved
+state, a typed error thrown on a green thread or a blocking-pool worker survives
+the hop to whichever thread resolves the task: on switch-out the failing thread's
+tag/value are saved into its `GreenThread`, and `consume_thread_result` restores
+them (and the flag) into the resolving thread on the failed path. The blocking
+pool does the same hand-off — it snapshots the worker's error state after the
+work runs and stows it on the suspended green thread before re-enqueuing it. The
+captured trace itself is keyed on the error object pointer in a process-global
+map, so once the value pointer crosses the boundary, `error.trace()` resolves the
+same frames from any thread.
+
+`aster_panic` is the terminal path for an error that reaches the entry point
+uncaught: it prints `aster: uncaught error: <message>` (or just `aster: uncaught
+error` when the error has no message), then every frame of the captured trace
+worst frame first, and aborts.
 
 ## Memory Layout
 
@@ -275,3 +289,69 @@ The sweep walks the whole heap linked list. Unmarked objects are unlinked and fr
 ### Green thread integration
 
 Each green thread carries its own `shadow_stack_top` and error flag. When a scheduler worker switches to a green thread it installs that thread's shadow stack into the worker's thread-local state; when the thread yields, the current top is saved back. The GC therefore always sees exactly the roots of whatever green thread is running on the collecting OS thread, and per-green-thread error state never leaks across tasks. See [Green Threads Internals](/concurrency/green-threads/) for the scheduler side of this handshake.
+
+## Stack Traces
+
+Thrown errors carry a captured stack trace. The capture is a native
+frame-pointer walk taken **once**, at throw time, and symbolized through
+compiler-emitted tables. Because Aster propagates errors by ordinary returns
+(`!` checks the error slot) rather than unwinding, the native stack is fully
+intact at the moment of `throw`, so the entire trace is walkable exactly
+there — no per-`!` bookkeeping, zero steady-state cost.
+
+### Frame pointers
+
+Both backends force frame pointers on. `BuildConfig::cranelift_flags` sets
+Cranelift's `preserve_frame_pointers` for the JIT and AOT ISAs alike, and the
+workspace `.cargo/config.toml` passes `-C force-frame-pointers=yes` so the
+runtime (Rust) staticlib frames walk cleanly too. A desynced chain — Aster
+frames with pointers, runtime frames without — would make the walk unreliable.
+
+### Stack bounds
+
+The walker never reads past the stack. Every execution context records its
+bounds so the walk can stop at the top of the stack:
+
+- **Main thread**: `aster_runtime_init` records the bounds at program start,
+  emitted into the AOT `main` wrapper and called on the JIT run path. The
+  throw path also records lazily on first use as a fallback.
+- **Blocking pool**: each pool OS thread records its bounds at thread start.
+- **Green threads**: the scheduler installs a green thread's exact mmap'd
+  stack bounds when it switches in, and restores the worker's own bounds when
+  the thread yields.
+
+### The walker
+
+`aster_error_set_typed` (the throw entry point) reads the current frame
+pointer and follows the saved-`rbp` chain up to the recorded bounds,
+collecting return-address PCs into a per-thread buffer. Each step is bounds-
+and alignment-checked and the chain must move strictly upward, so a corrupt
+frame can only terminate the walk, never run off the stack. Capture is
+keyed on the error object pointer: an error that already carries a trace
+keeps it (rethrowing the same value preserves the original trace), and a new
+object captures fresh.
+
+### Symbolization tables
+
+Resolution turns a PC into `(function, file, line)`:
+
+- **JIT**: as each function finalizes, its address range → function-id is
+  registered in a sorted table.
+- **AOT**: codegen emits a data section of (function address via relocation,
+  size, name-string-index) entries plus a string table; runtime init walks it
+  into the same sorted range structure the JIT uses. No `dladdr` and no
+  platform symbol tables, so binaries stay self-contained.
+- **Line info**: lowering emits a per-statement source-line marker
+  (`FirStmt::SrcLine`) before each statement, and `translate` turns it into a
+  Cranelift srcloc so every instruction carries its originating statement's
+  line. Each finalized function keeps a PC-offset → line table built from those
+  srclocs, so a captured PC resolves to the throwing statement's line, not just
+  the function's definition line (the definition line is only the fallback for
+  functions with no threaded source). Both backends read the identical table, so
+  AOT and JIT report the same file and line.
+
+Frames that resolve in the Aster function table become real `Frame` values;
+contiguous runtime-internal frames that do not resolve collapse into a single
+`[runtime]` marker. `aster_error_trace` materializes the captured PCs into a
+`List[Frame]` (built under a GC pause, like the other error-path allocations)
+ordered worst frame first, which is what `error.trace()` returns.

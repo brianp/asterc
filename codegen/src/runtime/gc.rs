@@ -355,6 +355,10 @@ fn gc_collect_inner() {
                     } else {
                         head.set(next);
                     }
+                    // Drop any captured stack trace keyed on this object before
+                    // its address can be reused, so the trace map stays bounded
+                    // and a reused address never inherits a dead error's trace.
+                    super::stacktrace::forget(obj_payload(current) as i64);
                     aster_dealloc(current, total);
                 } else {
                     // Marked — reset mark for next cycle

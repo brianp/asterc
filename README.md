@@ -113,7 +113,7 @@ Indent-based (no braces, no semicolons), functions with named arguments, classes
 Generics with constraints (`T extends Class`, `T includes Trait`), parametric traits (`trait From[T]`), auto-derivable protocols (Eq, Ord, Printable, Iterable, From/Into), dynamic dispatch (`DynamicReceiver`/`method_missing`), nullable types (`T?`) with `.or()`, `.or_else()`, `.or_throw()`.
 
 **Error handling:**
-`throws` declarations, `throw`, `!` propagation, `!.or(default)`, `!.or_else(-> expr)`, `!.catch` with typed arms that dispatch on the error's actual type at runtime.
+`throws` declarations, `throw`, `!` propagation, `!.or(default)`, `!.or_else(-> expr)`, `!.catch` with typed arms that dispatch on the error's actual type at runtime. Every thrown error captures a stack trace once at `throw` (a native frame-pointer walk, zero cost on the happy path), read back with `error.trace() -> List[Frame]`.
 
 **Concurrency:**
 Call-site async (`async f()` returns `Task[T]`, `blocking` for suspendable calls, `resolve task!` to consume), M:N green threads with work stealing and safepoint preemption, `Mutex[T]`, `Channel[T]`, must-consume task tracking, `Drop`/`Close` cleanup on every scope exit (cancellation-path cleanup is [#51](https://github.com/brianp/asterc/issues/51)).

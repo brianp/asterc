@@ -25,6 +25,11 @@ pub extern "C" fn aster_error_set_typed(type_tag: i64, value: i64) {
     ERROR_FLAG.set(true);
     ERROR_TYPE_TAG.set(type_tag);
     ERROR_VALUE.set(value);
+    // Capture the stack trace once, here at the throw site, while the native
+    // stack is fully intact. Capture-once keyed on the error object: a rethrow
+    // of the same value preserves its original trace. This is the only place
+    // trace bookkeeping happens — the no-throw happy path pays nothing.
+    super::stacktrace::capture_for(value);
 }
 
 /// Construct a built-in error object carrying a single `message: String`
@@ -102,14 +107,56 @@ pub(crate) fn error_flag_set(val: bool) {
     ERROR_FLAG.set(val);
 }
 
+/// Current error type tag / object pointer on this OS thread. Saved into and
+/// restored from the `GreenThread` struct across context switches, and copied
+/// out of a blocking-pool worker so a typed error thrown there survives the
+/// cross-thread `resolve` (the flag alone is not enough — the catch arm needs
+/// the tag to dispatch and the value to read fields and its captured trace).
+pub(crate) fn error_tag_get() -> i64 {
+    ERROR_TYPE_TAG.get()
+}
+
+pub(crate) fn error_tag_set(val: i64) {
+    ERROR_TYPE_TAG.set(val);
+}
+
+pub(crate) fn error_value_get() -> i64 {
+    ERROR_VALUE.get()
+}
+
+pub(crate) fn error_value_set(val: i64) {
+    ERROR_VALUE.set(val);
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn aster_safepoint() {
     scheduler::safepoint();
 }
 
+/// Program-entry uncaught-error handler: render the error message followed by
+/// every frame of its captured trace (worst frame first), then abort. Reached
+/// when a bare `!` at the entry boundary propagates an error nobody caught.
 #[unsafe(no_mangle)]
 pub extern "C" fn aster_panic() {
-    eprintln!("aster: uncaught error");
+    let val = ERROR_VALUE.get();
+    // Every Error subclass carries `message: String` as its first field, so the
+    // message string pointer sits at offset 0 of the error object.
+    let msg = if val != 0 {
+        unsafe {
+            let msg_ptr = *(val as *const i64) as *const u8;
+            super::string::aster_string_to_rust(msg_ptr)
+        }
+    } else {
+        String::new()
+    };
+    if msg.is_empty() {
+        eprintln!("aster: uncaught error");
+    } else {
+        eprintln!("aster: uncaught error: {msg}");
+    }
+    for line in super::stacktrace::resolved_trace_lines(val) {
+        eprintln!("{line}");
+    }
     std::process::abort();
 }
 

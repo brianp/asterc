@@ -12,6 +12,16 @@ use fir::types::{FirType, FunctionId};
 use crate::translate::{self, TranslationState};
 use crate::types::fir_type_to_clif;
 
+/// Per-function symbolization data captured at compile time: the finalized
+/// machine-code size and a `(code_offset, source_line)` table derived from
+/// Cranelift srclocs. Both backends feed this into the runtime symbol table so
+/// a captured PC resolves to a function name and source line.
+#[derive(Default, Clone)]
+pub(crate) struct FuncSymInfo {
+    pub size: u32,
+    pub lines: Vec<(u32, u32)>,
+}
+
 /// Shared compilation state used by both JIT and AOT backends.
 pub(crate) struct CompileState<M: Module> {
     pub module: M,
@@ -21,6 +31,8 @@ pub(crate) struct CompileState<M: Module> {
     pub runtime_declared: HashMap<String, cranelift_module::FuncId>,
     pub async_entry_declared: HashMap<FunctionId, cranelift_module::FuncId>,
     pub function_param_types: HashMap<FunctionId, Vec<FirType>>,
+    /// Symbolization data per user function, keyed by FIR `FunctionId`.
+    pub symbol_info: HashMap<FunctionId, FuncSymInfo>,
 }
 
 impl<M: Module> CompileState<M> {
@@ -34,6 +46,7 @@ impl<M: Module> CompileState<M> {
             runtime_declared: HashMap::new(),
             async_entry_declared: HashMap::new(),
             function_param_types: HashMap::new(),
+            symbol_info: HashMap::new(),
         }
     }
 
@@ -277,6 +290,24 @@ impl<M: Module> CompileState<M> {
             .define_function(clif_func_id, &mut self.ctx)
             .map_err(|e| format!("compile error in {}: {}", func.name, e))?;
 
+        // Capture symbolization data from the finalized code: total size plus a
+        // (code_offset -> source_line) table from Cranelift srclocs. The table is
+        // empty when no srclocs were set, in which case frame resolution falls
+        // back to the function's definition line.
+        if let Some(cc) = self.ctx.compiled_code() {
+            let size = cc.code_info().total_size;
+            let mut lines: Vec<(u32, u32)> = cc
+                .buffer
+                .get_srclocs_sorted()
+                .iter()
+                .filter(|s| !s.loc.is_default())
+                .map(|s| (s.start, s.loc.bits()))
+                .collect();
+            lines.dedup_by_key(|(_, line)| *line);
+            self.symbol_info
+                .insert(func.id, FuncSymInfo { size, lines });
+        }
+
         self.module.clear_context(&mut self.ctx);
         Ok(())
     }
@@ -471,7 +502,7 @@ pub(crate) fn collect_string_lits_stmts(
             FirStmt::Block(stmts) => {
                 collect_string_lits_stmts(stmts, strings);
             }
-            FirStmt::Break | FirStmt::Continue | FirStmt::NoOp => {}
+            FirStmt::Break | FirStmt::Continue | FirStmt::NoOp | FirStmt::SrcLine(_) => {}
         }
     }
 }
@@ -603,7 +634,7 @@ fn collect_eval_context_strings(
             FirStmt::Block(stmts) => {
                 collect_eval_context_strings(stmts, eval_contexts, strings);
             }
-            FirStmt::Break | FirStmt::Continue | FirStmt::NoOp => {}
+            FirStmt::Break | FirStmt::Continue | FirStmt::NoOp | FirStmt::SrcLine(_) => {}
         }
     }
 }

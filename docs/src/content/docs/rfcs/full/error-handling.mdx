@@ -34,7 +34,7 @@ Aster provides two built-in base types for the error hierarchy:
 # Do not extend directly in application code
 class Exception
   def message() -> String
-  def stacktrace() -> List[String]
+  def trace() -> List[Frame]
 
 # Built-in — the base for application errors
 # Extend this in your code
@@ -156,8 +156,9 @@ let data = fetch(url)!.catch
 - Propagates the error to the enclosing function
 - Enclosing function must also be `throws` (with a compatible error type)
 - Reads as "pass it up"
-- Each `!` propagation appends the current file/line to the error's
-  stacktrace (see section 5)
+- Propagation is an ordinary early return — `!` appends nothing to the
+  trace. The complete trace was already captured once, at `throw` (see
+  section 5)
 
 ### `!.or(default)` — eager fallback
 
@@ -253,33 +254,60 @@ should be intentional.
 
 ---
 
-## 5. Stacktrace
+## 5. Stack traces
 
-Errors carry a stacktrace built incrementally during propagation. This is
-zero-cost on the happy path.
+Errors carry a **captured stack trace**: a native frame-pointer walk taken
+**once**, at `throw`, and symbolized through compiler-emitted tables. Zero
+steady-state cost — no per-call bookkeeping, the price is paid only when an
+error is actually thrown.
+
+### Why the frame-pointer walk, not an incremental append
+
+Aster does not unwind. `!` is "if error, return it" — the stack unwinds by
+ordinary returns. That has one decisive consequence: a `throw` executes at
+the deepest live frame with the **native stack still fully intact**, so the
+whole trace is walkable right there, exactly once. There is no need to
+append a frame on every `!` hop and no second source of truth to keep in
+sync with the native stack.
 
 ### Mechanism
 
-1. `throw` creates the error value and records the origin location
-   (file, line)
-2. Each `!` that propagates the error appends the current file/line to
-   the error's trace
-3. The trace is a list of locations built as the error travels up the
-   call chain
-4. `.stacktrace()` is available on any error via `Exception` —
-   it reads the trace that was built during propagation
+1. Frame pointers are forced on everywhere: Cranelift `preserve_frame_pointers`
+   in both the JIT and AOT ISA configs, and `force-frame-pointers` for the
+   codegen staticlib so runtime (Rust) frames walk cleanly too.
+2. At `throw` (`aster_error_set_typed`), the runtime walks the frame-pointer
+   chain from the current frame up to the recorded stack bounds, collecting
+   return-address PCs. The main thread, the blocking pool, and green threads
+   (mmap'd stacks) all record their stack bounds so the walk stays in bounds
+   and never reads past the stack.
+3. Capture is **once per error object**. An error that already carries a
+   trace keeps it — a `catch` arm that rethrows the same error preserves the
+   original trace; constructing and throwing a new error captures fresh.
+4. PCs are symbolized through the compiler's own tables (no DWARF, no
+   `dladdr`, so binaries stay self-contained):
+   - **JIT**: as functions finalize, an address-range → function-id table is
+     registered.
+   - **AOT**: codegen emits a data section of (function address, size, name)
+     entries plus a string table; runtime init walks it into the same sorted
+     range structure the JIT uses.
+   - **Line info**: FIR lowering threads AST spans through to Cranelift
+     srclocs; each finalized function keeps a PC-offset → span table, so a PC
+     resolves to file and line.
+5. Frames that resolve in the Aster function table become real frames;
+   contiguous runtime-internal frames that do not resolve collapse into a
+   single `[runtime]` marker rather than noise.
+6. `.trace()` is available on any error via `Exception` and returns
+   `List[Frame]`, ordered worst frame (deepest / throw site) first. A `Frame`
+   is a structured value (`function: String`, `file: String`, `line: Int`,
+   `Printable`) — there is no string-only interim API.
 
 ### Cost model
 
-- **Happy path**: zero cost. No trace is created, no allocations.
-- **Error path**: one list append per `!` hop. Proportional to
-  propagation depth.
-- **`.stacktrace()` call**: reads already-built data. No reconstruction
-  needed.
-
-Since `!` is syntactic sugar for "if error, return it," the stack is not
-unwinding — it's normal returns. The trace must be built incrementally
-because frames are gone after returning.
+- **Happy path**: zero cost. No trace is created, no allocations, no
+  bookkeeping on any `!` hop.
+- **Throw path**: one frame-pointer walk, bounded by the stack, paid once.
+- **`.trace()` call**: materializes the captured PCs into `List[Frame]`,
+  symbolizing through the tables already built at compile time.
 
 ---
 
@@ -475,12 +503,12 @@ boundary.
 4. **Error classes can `includes` traits** — for cross-cutting concerns, not hierarchy
 5. **`throws ErrorType`** on function signatures — strong typed errors, no parens
 6. **`throw ErrorValue`** to raise errors — no string shortcuts, must be a defined class
-7. **`!`** for error propagation — appends to stacktrace, requires compatible `throws` on caller
+7. **`!`** for error propagation — an ordinary early return, appends nothing to the trace, requires compatible `throws` on caller
 8. **`!.or(default)`** for eager fallback on errors
 9. **`!.or_else(-> expr)`** for lazy recovery on errors
 10. **`!.catch`** for pattern matching on error types — match expression, full control flow
 11. **Catch arms are order-dependent** — compiler error on shadowed (unreachable) arms
-12. **Errors carry stacktrace** — built incrementally through `!`, zero cost on happy path
+12. **Errors carry a captured stack trace** — a native frame-pointer walk taken once at `throw`, symbolized through compiler-emitted tables; `.trace() -> List[Frame]`, zero cost on the happy path
 13. **No `try`/`catch`** — one error handling mechanism only
 14. **`T?`** as nullable type — postfix syntax, Option/Maybe semantics
 15. **`T?` API is exactly four operations**: `.or()`, `.or_else()`, `.or_throw()`, `match`
@@ -507,3 +535,9 @@ boundary.
 - Union throws types
 - `model` vs `class` distinction for nullability
 - Nested nullability (`T??`)
+- **Incremental stacktrace append** — appending a file/line on every `!`
+  hop, with a `.stacktrace() -> List[String]` string surface. Rejected: it
+  puts steady-state cost on the propagation path to subsidize the rare throw
+  and keeps a second source of truth for what the native stack already knows.
+  Replaced by a single frame-pointer walk at `throw` and a structured
+  `.trace() -> List[Frame]` surface (section 5).

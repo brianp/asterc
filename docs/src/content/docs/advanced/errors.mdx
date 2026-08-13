@@ -166,6 +166,62 @@ These are independent concepts:
 - `db.connect(url)` `throws DbError` — something went wrong. An error.
 - `db.find_user(id)` could `throws DbError` and return `User?` — both.
 
+## Stack traces
+
+Every thrown error carries a **captured stack trace**. The trace is taken
+once, at the moment of `throw`, by walking the native frame-pointer chain —
+there is no per-call bookkeeping, so the happy path pays nothing.
+
+### `error.trace() -> List[Frame]`
+
+`trace()` is available on any error (it lives on the `Exception` base class,
+so every error type inherits it). It returns the captured frames ordered
+**worst frame first** — the deepest frame, at the throw site, comes first.
+
+```
+def load(path: String) throws IOError -> String
+  File.read(path)!
+
+def main() -> Int
+  load("/nope")!.catch
+    IOError e ->
+      for frame in e.trace()
+        say(message: to_string(frame))
+      1
+    _ -> 0
+```
+
+### The `Frame` class
+
+Each entry is a built-in `Frame` value:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `function` | `String` | The function the frame is in (or `[runtime]`) |
+| `file` | `String` | Source file |
+| `line` | `Int` | Line within the file |
+
+`Frame` implements `Printable`, so `to_string(frame)` and printing a whole
+trace work out of the box. Frames that belong to the Aster program resolve to
+real function names and `file:line`; contiguous runtime-internal frames
+collapse into a single `[runtime]` marker instead of appearing as noise. The
+line is per-statement: a frame reports the line of the exact statement in
+progress in that call (the throw site for the worst frame, the call site for the
+frames above it), not just the function's definition line. A trace captured on a
+green thread or a blocking-pool worker survives being resolved on another
+thread, so `error.trace()` works the same whether the throw crossed a task
+boundary or not.
+
+### Capture-once and rethrow
+
+The trace is captured **once per error object**. A `catch` arm that rethrows
+the *same* error value preserves the original trace; constructing and
+throwing a *new* error captures a fresh one. Propagating with `!` is an
+ordinary early return and never changes the trace.
+
+If an error reaches the program entry point uncaught, the runtime renders the
+error message followed by its trace, worst frame first.
+
 ## Design Philosophy
 
 - `!` is for errors, `?` is for nullable types — clean separation
